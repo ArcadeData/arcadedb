@@ -34,8 +34,8 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public MatchPrefetchStep(final CommandContext ctx, final InternalExecutionPlan prefetchExecPlan, final String alias, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public MatchPrefetchStep(final CommandContext context, final InternalExecutionPlan prefetchExecPlan, final String alias, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.prefetchExecutionPlan = prefetchExecPlan;
     this.alias = alias;
   }
@@ -43,13 +43,13 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
   @Override
   public void reset() {
     executed = false;
-    prefetchExecutionPlan.reset(ctx);
+    prefetchExecutionPlan.reset(context);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (!executed) {
-      getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+      getPrev().ifPresent(x -> x.syncPull(context, nRecords));
 
       ResultSet nextBlock = prefetchExecutionPlan.fetchNext(nRecords);
       final List<Result> prefetched = new ArrayList<>();
@@ -60,7 +60,7 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
         nextBlock = prefetchExecutionPlan.fetchNext(nRecords);
       }
       prefetchExecutionPlan.close();
-      ctx.setVariable(PREFETCHED_MATCH_ALIAS_PREFIX + alias, prefetched);
+      context.setVariable(PREFETCHED_MATCH_ALIAS_PREFIX + alias, prefetched);
       executed = true;
     }
     return new InternalResultSet();

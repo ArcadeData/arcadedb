@@ -45,8 +45,8 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-    final Database db = ctx.getDatabase();
+  public ResultSet executeDDL(final CommandContext context) {
+    final Database db = context.getDatabase();
     final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
 
     if (typez == null)
@@ -63,7 +63,7 @@ public class AlterPropertyStatement extends DDLStatement {
     if (customPropertyName != null) {
       final String customName = customPropertyName.getStringValue();
       final Object oldValue = property.getCustomValue(customName);
-      final Object finalValue = customPropertyValue.execute((Identifiable) null, ctx);
+      final Object finalValue = customPropertyValue.execute((Identifiable) null, context);
       property.setCustomValue(customName, finalValue);
 
       result.setProperty("operation", "alter property custom");
@@ -72,7 +72,7 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
       final String setting = settingName.getStringValue().toLowerCase();
-      final Object finalValue = settingValue.execute((Identifiable) null, ctx);
+      final Object finalValue = settingValue.execute((Identifiable) null, context);
 
       final Object oldValue;
       if ("default".equals(setting)) {

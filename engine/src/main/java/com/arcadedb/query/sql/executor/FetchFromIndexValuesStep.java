@@ -27,8 +27,8 @@ public class FetchFromIndexValuesStep extends FetchFromIndexStep {
 
   private final boolean asc;
 
-  public FetchFromIndexValuesStep(final RangeIndex index, final boolean asc, final CommandContext ctx, final boolean profilingEnabled) {
-    super(index, null, null, ctx, profilingEnabled);
+  public FetchFromIndexValuesStep(final RangeIndex index, final boolean asc, final CommandContext context, final boolean profilingEnabled) {
+    super(index, null, null, context, profilingEnabled);
     this.asc = asc;
   }
 

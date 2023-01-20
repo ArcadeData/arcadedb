@@ -61,19 +61,19 @@ public class DeleteEdgeExecutionPlanner {
     this.limit = stm.getLimit() == null ? null : stm.getLimit().copy();
   }
 
-  public DeleteExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    final DeleteExecutionPlan result = new DeleteExecutionPlan(ctx);
+  public DeleteExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final DeleteExecutionPlan result = new DeleteExecutionPlan(context);
 
     if (leftExpression != null || rightExpression != null) {
       if (leftExpression != null)
-        handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_fromV"), leftExpression, ctx, enableProfiling);
+        handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_fromV"), leftExpression, context, enableProfiling);
       if (rightExpression != null)
-        handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_toV"), rightExpression, ctx, enableProfiling);
-      handleFetchFromTo(result, ctx,//
+        handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_toV"), rightExpression, context, enableProfiling);
+      handleFetchFromTo(result, context,//
           leftExpression != null ? "$__ARCADEDB_DELETE_EDGE_fromV" : null,//
           rightExpression != null ? "$__ARCADEDB_DELETE_EDGE_toV" : null,//
           className, targetClusterName, enableProfiling);
-      handleWhere(result, ctx, whereClause, enableProfiling);
+      handleWhere(result, context, whereClause, enableProfiling);
     } else if (whereClause != null) {
       final FromClause fromClause = new FromClause(-1);
       final FromItem item = new FromItem(-1);
@@ -83,93 +83,93 @@ public class DeleteEdgeExecutionPlanner {
         item.setIdentifier(className);
       }
       fromClause.setItem(item);
-      handleTarget(result, ctx, fromClause, this.whereClause, enableProfiling);
+      handleTarget(result, context, fromClause, this.whereClause, enableProfiling);
     } else {
-      handleTargetClass(result, ctx, className, enableProfiling);
-      handleTargetCluster(result, ctx, targetClusterName, enableProfiling);
-      handleTargetRids(result, ctx, rids, enableProfiling);
+      handleTargetClass(result, context, className, enableProfiling);
+      handleTargetCluster(result, context, targetClusterName, enableProfiling);
+      handleTargetRids(result, context, rids, enableProfiling);
     }
 
-    handleLimit(result, ctx, this.limit, enableProfiling);
-    handleCastToEdge(result, ctx, enableProfiling);
-    handleDelete(result, ctx, enableProfiling);
-    handleReturn(result, ctx, enableProfiling);
+    handleLimit(result, context, this.limit, enableProfiling);
+    handleCastToEdge(result, context, enableProfiling);
+    handleDelete(result, context, enableProfiling);
+    handleReturn(result, context, enableProfiling);
     return result;
   }
 
-  private void handleWhere(final DeleteExecutionPlan result, final CommandContext ctx, final WhereClause whereClause, final boolean profilingEnabled) {
+  private void handleWhere(final DeleteExecutionPlan result, final CommandContext context, final WhereClause whereClause, final boolean profilingEnabled) {
     if (whereClause != null)
-      result.chain(new FilterStep(whereClause, ctx, profilingEnabled));
+      result.chain(new FilterStep(whereClause, context, profilingEnabled));
   }
 
-  private void handleFetchFromTo(final DeleteExecutionPlan result, final CommandContext ctx, final String fromAlias, final String toAlias,
+  private void handleFetchFromTo(final DeleteExecutionPlan result, final CommandContext context, final String fromAlias, final String toAlias,
       final Identifier targetClass, final Identifier targetCluster, final boolean profilingEnabled) {
     if (fromAlias != null)
-      result.chain(new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetClass, targetCluster, ctx, profilingEnabled));
+      result.chain(new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetClass, targetCluster, context, profilingEnabled));
     else if (toAlias != null)
-      result.chain(new FetchEdgesToVerticesStep(toAlias, targetClass, targetCluster, ctx, profilingEnabled));
+      result.chain(new FetchEdgesToVerticesStep(toAlias, targetClass, targetCluster, context, profilingEnabled));
   }
 
-  private void handleTargetRids(final DeleteExecutionPlan result, final CommandContext ctx, final List<Rid> rids, final boolean profilingEnabled) {
+  private void handleTargetRids(final DeleteExecutionPlan result, final CommandContext context, final List<Rid> rids, final boolean profilingEnabled) {
     if (rids != null) {
-      result.chain(new FetchFromRidsStep(rids.stream().map(x -> x.toRecordId((Result) null, ctx)).collect(Collectors.toList()), ctx, profilingEnabled));
+      result.chain(new FetchFromRidsStep(rids.stream().map(x -> x.toRecordId((Result) null, context)).collect(Collectors.toList()), context, profilingEnabled));
     }
   }
 
-  private void handleTargetCluster(final DeleteExecutionPlan result, final CommandContext ctx, final Identifier targetClusterName,
+  private void handleTargetCluster(final DeleteExecutionPlan result, final CommandContext context, final Identifier targetClusterName,
       final boolean profilingEnabled) {
     if (targetClusterName != null) {
       final String name = targetClusterName.getStringValue();
-      final int bucketId = ctx.getDatabase().getSchema().getBucketByName(name).getId();
+      final int bucketId = context.getDatabase().getSchema().getBucketByName(name).getId();
       if (bucketId < 0)
         throw new CommandExecutionException("Cluster not found: " + name);
 
-      result.chain(new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled));
+      result.chain(new FetchFromClusterExecutionStep(bucketId, context, profilingEnabled));
     }
   }
 
-  private void handleTargetClass(final DeleteExecutionPlan result, final CommandContext ctx, final Identifier className, final boolean profilingEnabled) {
+  private void handleTargetClass(final DeleteExecutionPlan result, final CommandContext context, final Identifier className, final boolean profilingEnabled) {
     if (className != null)
-      result.chain(new FetchFromClassExecutionStep(className.getStringValue(), null, ctx, null, profilingEnabled));
+      result.chain(new FetchFromClassExecutionStep(className.getStringValue(), null, context, null, profilingEnabled));
   }
 
 //  private boolean handleIndexAsTarget(DeleteExecutionPlan result, IndexIdentifier indexIdentifier, WhereClause whereClause,
-//      CommandContext ctx, boolean profilingEnabled) {
+//      CommandContext context, boolean profilingEnabled) {
 //    if (indexIdentifier == null) {
 //      return false;
 //    }
 //    throw new CommandExecutionException("DELETE VERTEX FROM INDEX is not supported");
 //  }
 
-  private void handleDelete(final DeleteExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
-    result.chain(new DeleteStep(ctx, profilingEnabled));
+  private void handleDelete(final DeleteExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
+    result.chain(new DeleteStep(context, profilingEnabled));
   }
 
-  private void handleReturn(final DeleteExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
-    result.chain(new CountStep(ctx, profilingEnabled));
+  private void handleReturn(final DeleteExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
+    result.chain(new CountStep(context, profilingEnabled));
   }
 
-  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext ctx, final Limit limit, final boolean profilingEnabled) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit, final boolean profilingEnabled) {
     if (limit != null)
-      plan.chain(new LimitExecutionStep(limit, ctx, profilingEnabled));
+      plan.chain(new LimitExecutionStep(limit, context, profilingEnabled));
   }
 
-  private void handleCastToEdge(final DeleteExecutionPlan plan, final CommandContext ctx, final boolean profilingEnabled) {
-    plan.chain(new CastToEdgeStep(ctx, profilingEnabled));
+  private void handleCastToEdge(final DeleteExecutionPlan plan, final CommandContext context, final boolean profilingEnabled) {
+    plan.chain(new CastToEdgeStep(context, profilingEnabled));
   }
 
-  private void handleTarget(final UpdateExecutionPlan result, final CommandContext ctx, final FromClause target, final WhereClause whereClause,
+  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target, final WhereClause whereClause,
       final boolean profilingEnabled) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    result.chain(new SubQueryStep(planner.createExecutionPlan(ctx, profilingEnabled), ctx, ctx, profilingEnabled));
+    result.chain(new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled), context, context, profilingEnabled));
   }
 
-  private void handleGlobalLet(final DeleteExecutionPlan result, final Identifier name, final Expression expression, final CommandContext ctx,
+  private void handleGlobalLet(final DeleteExecutionPlan result, final Identifier name, final Expression expression, final CommandContext context,
       final boolean profilingEnabled) {
     if (expression != null)
-      result.chain(new GlobalLetExpressionStep(name, expression, ctx, profilingEnabled));
+      result.chain(new GlobalLetExpressionStep(name, expression, context, profilingEnabled));
   }
 }

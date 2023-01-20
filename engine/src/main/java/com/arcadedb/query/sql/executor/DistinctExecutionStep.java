@@ -36,16 +36,16 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   Result    nextValue;
   private final long maxElementsAllowed;
 
-  public DistinctExecutionStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
-    final Database db = ctx == null ? null : ctx.getDatabase();
+  public DistinctExecutionStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
+    final Database db = context == null ? null : context.getDatabase();
     maxElementsAllowed = db == null ?
         GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
         db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
 
     return new ResultSet() {
       int nextLocal = 0;
@@ -88,7 +88,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         return;
       }
       if (lastResult == null || !lastResult.hasNext()) {
-        lastResult = getPrev().get().syncPull(ctx, nRecords);
+        lastResult = getPrev().get().syncPull(context, nRecords);
       }
       if (lastResult == null || !lastResult.hasNext()) {
         return;

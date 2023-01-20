@@ -34,13 +34,13 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
   boolean served = false;
   long    cost   = 0;
 
-  public FetchFromSchemaDatabaseStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromSchemaDatabaseStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -55,7 +55,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
           if (!served) {
             final ResultInternal result = new ResultInternal();
 
-            final Database db = ctx.getDatabase();
+            final Database db = context.getDatabase();
             result.setProperty("name", db.getName());
             result.setProperty("path", db.getDatabasePath());
             result.setProperty("mode", db.getMode());

@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -37,13 +36,13 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (getSubBlocks() == null) {
       return true;
     }
 
     for (final BooleanExpression block : subBlocks) {
-      if (block.evaluate(currentRecord, ctx)) {
+      if (block.evaluate(currentRecord, context)) {
         return true;
       }
     }
@@ -51,27 +50,27 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (getSubBlocks() == null)
       return true;
 
     for (final BooleanExpression block : subBlocks) {
-      if (block.evaluate(currentRecord, ctx)) {
+      if (block.evaluate(currentRecord, context)) {
         return true;
       }
     }
     return false;
   }
 
-  public boolean evaluate(final Object currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Object currentRecord, final CommandContext context) {
     if (currentRecord instanceof Result) {
-      return evaluate((Result) currentRecord, ctx);
+      return evaluate((Result) currentRecord, context);
     } else if (currentRecord instanceof Identifiable) {
-      return evaluate((Identifiable) currentRecord, ctx);
+      return evaluate((Identifiable) currentRecord, context);
     } else if (currentRecord instanceof Map) {
 //      ODocument doc = new ODocument();
 //      doc.fromMap((Map<String, Object>) currentRecord);
-//      return evaluate(doc, ctx);
+//      return evaluate(doc, context);
       throw new UnsupportedOperationException();
     }
     return false;
@@ -100,13 +99,13 @@ public class OrBlock extends BooleanExpression {
     }
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (subBlocks == null || subBlocks.size() > 1) {
       return null;
     }
     final List<BinaryCondition> result = new ArrayList<BinaryCondition>();
     for (final BooleanExpression exp : subBlocks) {
-      final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, database);
+      final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, context);
       if (sub != null && sub.size() > 0) {
         result.addAll(sub);
       }

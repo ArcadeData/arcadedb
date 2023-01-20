@@ -86,10 +86,10 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
-      final Object rightValue = right.execute(currentRecord, ctx);
+      final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
       if (!MultiValue.isMultiValue(leftValue)) {
@@ -99,11 +99,11 @@ public class ContainsAllCondition extends BooleanExpression {
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, ctx)) {
+          if (!rightBlock.evaluate((Identifiable) item, context)) {
             return false;
           }
         } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, ctx)) {
+          if (!rightBlock.evaluate((Result) item, context)) {
             return false;
           }
         } else {
@@ -115,10 +115,10 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
-      final Object rightValue = right.execute(currentRecord, ctx);
+      final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
       if (!MultiValue.isMultiValue(leftValue)) {
@@ -128,11 +128,11 @@ public class ContainsAllCondition extends BooleanExpression {
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, ctx)) {
+          if (!rightBlock.evaluate((Identifiable) item, context)) {
             return false;
           }
         } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, ctx)) {
+          if (!rightBlock.evaluate((Result) item, context)) {
             return false;
           }
         } else {

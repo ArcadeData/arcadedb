@@ -37,22 +37,22 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
   final String targetType;
   boolean found = false;
 
-  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.bucketName = targetBucketName;
     this.bucket = null;
     this.targetType = typez;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
         return new InternalResultSet();
       }
-      final Database db = ctx.getDatabase();
+      final Database db = context.getDatabase();
       final com.arcadedb.engine.Bucket bucketObj;
       if (bucketName != null) {
         bucketObj = db.getSchema().getBucketByName(bucketName);

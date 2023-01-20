@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -29,19 +28,33 @@ import com.arcadedb.schema.DocumentType;
 import java.util.*;
 
 public class AndBlock extends BooleanExpression {
-  final List<BooleanExpression> subBlocks = new ArrayList<>();
+  final List<BooleanExpression> subBlocks;
 
   public AndBlock(final int id) {
     super(id);
+    this.subBlocks = new ArrayList<>();
+  }
+
+  public AndBlock(final List<BooleanExpression>... expressions) {
+    super(-1);
+
+    int total = 0;
+    for (int i = 0; i < expressions.length; i++)
+      total += expressions[i].size();
+
+    this.subBlocks = new ArrayList<>(total);
+
+    for (int i = 0; i < expressions.length; i++)
+      subBlocks.addAll(expressions[i]);
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (getSubBlocks() == null)
       return true;
 
     for (final BooleanExpression block : subBlocks) {
-      if (!block.evaluate(currentRecord, ctx)) {
+      if (!block.evaluate(currentRecord, context)) {
         return false;
       }
     }
@@ -49,12 +62,12 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (getSubBlocks() == null)
       return true;
 
     for (final BooleanExpression block : subBlocks) {
-      if (!block.evaluate(currentRecord, ctx)) {
+      if (!block.evaluate(currentRecord, context)) {
         return false;
       }
     }
@@ -79,13 +92,13 @@ public class AndBlock extends BooleanExpression {
     }
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (subBlocks == null) {
       return null;
     }
     final List<BinaryCondition> result = new ArrayList<>();
     for (final BooleanExpression exp : subBlocks) {
-      final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, database);
+      final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, context);
       if (sub != null && sub.size() > 0) {
         result.addAll(sub);
       }

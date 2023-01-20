@@ -30,14 +30,14 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
 
   protected final SimpleExecStatement statement;
 
-  final CommandContext ctx;
+  final CommandContext context;
 
   boolean executed = false;
 
   private ResultSet result;
 
-  public SingleOpExecutionPlan(final CommandContext ctx, final SimpleExecStatement stm) {
-    this.ctx = ctx;
+  public SingleOpExecutionPlan(final CommandContext context, final SimpleExecStatement stm) {
+    this.context = context;
     this.statement = stm;
   }
 
@@ -48,7 +48,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     }
     if (!executed) {
       executed = true;
-      result = statement.executeSimple(this.ctx);
+      result = statement.executeSimple(this.context);
       if (result instanceof InternalResultSet) {
         ((InternalResultSet) result).plan = this;
       }
@@ -78,7 +78,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     };
   }
 
-  public void reset(final CommandContext ctx) {
+  public void reset(final CommandContext context) {
     executed = false;
   }
 
@@ -92,7 +92,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
       throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
     }
     executed = true;
-    result = statement.executeSimple(this.ctx);
+    result = statement.executeSimple(this.context);
     if (result instanceof InternalResultSet) {
       ((InternalResultSet) result).plan = this;
     }

@@ -45,23 +45,23 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
     if (expression != null) {
-      return expression.execute(iCurrentRecord, ctx);
+      return expression.execute(iCurrentRecord, context);
     }
     if (statement != null) {
       throw new UnsupportedOperationException("Execution of select in parentheses is not supported");
     }
-    return super.execute(iCurrentRecord, ctx);
+    return super.execute(iCurrentRecord, context);
   }
 
   @Override
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     if (expression != null) {
-      return expression.execute(iCurrentRecord, ctx);
+      return expression.execute(iCurrentRecord, context);
     }
     if (statement != null) {
-      final InternalExecutionPlan execPlan = statement.createExecutionPlan(ctx, false);
+      final InternalExecutionPlan execPlan = statement.createExecutionPlan(context, false);
 
       if (execPlan instanceof InsertExecutionPlan) {
         ((InsertExecutionPlan) execPlan).executeInternal();
@@ -75,7 +75,7 @@ public class ParenthesisExpression extends MathExpression {
       rs.close();
       return result;
     }
-    return super.execute(iCurrentRecord, ctx);
+    return super.execute(iCurrentRecord, context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -95,9 +95,9 @@ public class ParenthesisExpression extends MathExpression {
     return false;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(CommandContext context) {
     if (expression != null) {
-      return expression.isAggregate();
+      return expression.isAggregate(context);
     }
     return false;
   }
@@ -110,15 +110,15 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public boolean isEarlyCalculated(final CommandContext ctx) {
+  public boolean isEarlyCalculated(final CommandContext context) {
     // TODO implement query execution and early calculation;
-    return expression != null && expression.isEarlyCalculated(ctx);
+    return expression != null && expression.isEarlyCalculated(context);
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
-    if (isAggregate()) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
       final ParenthesisExpression result = new ParenthesisExpression(-1);
-      result.expression = expression.splitForAggregation(aggregateProj, ctx);
+      result.expression = expression.splitForAggregation(aggregateProj, context);
       return result;
     } else {
       return this;
@@ -194,9 +194,9 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext context) {
     if (expression != null) {
-      expression.applyRemove(result, ctx);
+      expression.applyRemove(result, context);
     } else {
       throw new CommandExecutionException("Cannot apply REMOVE " + this);
     }

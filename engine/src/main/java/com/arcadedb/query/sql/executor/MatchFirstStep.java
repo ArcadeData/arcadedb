@@ -53,9 +53,9 @@ public class MatchFirstStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    init(ctx);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    init(context);
     return new ResultSet() {
 
       int currentCount = 0;
@@ -83,7 +83,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
         } else {
           result.setProperty(getAlias(), subResultSet.next());
         }
-        ctx.setVariable("matched", result);
+        context.setVariable("matched", result);
         currentCount++;
         return result;
       }
@@ -102,19 +102,19 @@ public class MatchFirstStep extends AbstractExecutionStep {
 //    return result;
 //  }
 
-  private void init(final CommandContext ctx) {
+  private void init(final CommandContext context) {
     if (iterator == null && subResultSet == null) {
       final String alias = getAlias();
-      final Object matchedNodes = ctx.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
+      final Object matchedNodes = context.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
       if (matchedNodes != null) {
         initFromPrefetch(matchedNodes);
       } else {
-        initFromExecutionPlan(ctx);
+        initFromExecutionPlan(context);
       }
     }
   }
 
-  private void initFromExecutionPlan(final CommandContext ctx) {
+  private void initFromExecutionPlan(final CommandContext context) {
     this.subResultSet = new LocalResultSet(executionPlan);
   }
 

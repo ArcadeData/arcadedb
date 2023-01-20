@@ -30,13 +30,13 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
 
 
-  public UnwrapPreviousValueStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UnwrapPreviousValueStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = prev.get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = prev.get().syncPull(context, nRecords);
     return new ResultSet() {
 
       @Override

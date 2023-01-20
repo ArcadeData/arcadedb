@@ -1897,7 +1897,6 @@ RecordAttribute RecordAttribute():
 FunctionCall FunctionCall():
 {
   Expression lastExpression = null;
-  jjtn000.parser = this;
 }
 {
   (

@@ -45,32 +45,32 @@ public class DeleteEdgeStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final DeleteExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final DeleteExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
     final Map<String, Object> params = new HashMap<>();
     if (args != null) {
       for (int i = 0; i < args.length; i++) {
         params.put(String.valueOf(i), args[i]);
       }
     }
-    return execute(db, params, parentCtx);
+    return execute(db, params, parentcontext);
   }
 
-  public DeleteExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public DeleteExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final DeleteEdgeExecutionPlanner planner = new DeleteEdgeExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

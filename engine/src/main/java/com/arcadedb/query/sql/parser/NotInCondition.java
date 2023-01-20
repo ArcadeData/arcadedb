@@ -44,15 +44,15 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object leftVal = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftVal = left.execute(currentRecord, context);
     Object rightVal = null;
     if (rightStatement != null) {
-      rightVal = InCondition.executeQuery(rightStatement, ctx);
+      rightVal = InCondition.executeQuery(rightStatement, context);
     } else if (rightParam != null) {
-      rightVal = rightParam.getValue(ctx.getInputParameters());
+      rightVal = rightParam.getValue(context.getInputParameters());
     } else if (rightMathExpression != null) {
-      rightVal = rightMathExpression.execute(currentRecord, ctx);
+      rightVal = rightMathExpression.execute(currentRecord, context);
     }
     if (rightVal == null) {
       return true;
@@ -61,15 +61,15 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftVal = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftVal = left.execute(currentRecord, context);
     Object rightVal = null;
     if (rightStatement != null) {
-      rightVal = InCondition.executeQuery(rightStatement, ctx);
+      rightVal = InCondition.executeQuery(rightStatement, context);
     } else if (rightParam != null) {
-      rightVal = rightParam.getValue(ctx.getInputParameters());
+      rightVal = rightParam.getValue(context.getInputParameters());
     } else if (rightMathExpression != null) {
-      rightVal = rightMathExpression.execute(currentRecord, ctx);
+      rightVal = rightMathExpression.execute(currentRecord, context);
     }
     if (rightVal == null) {
       return true;

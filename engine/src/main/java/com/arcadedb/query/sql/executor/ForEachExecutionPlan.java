@@ -28,8 +28,8 @@ import com.arcadedb.query.sql.parser.WhileStep;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ForEachExecutionPlan extends UpdateExecutionPlan {
-  public ForEachExecutionPlan(final CommandContext ctx) {
-    super(ctx);
+  public ForEachExecutionPlan(final CommandContext context) {
+    super(context);
   }
 
   public boolean containsReturn() {

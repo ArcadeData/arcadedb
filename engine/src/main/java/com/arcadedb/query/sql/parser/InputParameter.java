@@ -61,7 +61,7 @@ public class InputParameter extends SimpleNode {
     }
     if (value instanceof BigDecimal) {
       final Expression result = new Expression(-1);
-      final FunctionCall funct = new FunctionCall(parser, -1);
+      final FunctionCall funct = new FunctionCall(-1);
       result.mathExpression = new BaseExpression(-1);
       ((BaseExpression) result.mathExpression).identifier = new BaseIdentifier(-1);
       ((BaseExpression) result.mathExpression).identifier.levelZero = new LevelZeroIdentifier(-1);
@@ -125,7 +125,7 @@ public class InputParameter extends SimpleNode {
       return rid;
     }
     if (value instanceof Date) {
-      final FunctionCall function = new FunctionCall(parser, -1);
+      final FunctionCall function = new FunctionCall(-1);
       function.name = new Identifier("date");
 
       final Expression dateExpr = new Expression(-1);

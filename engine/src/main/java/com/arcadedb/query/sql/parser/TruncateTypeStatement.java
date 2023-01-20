@@ -41,15 +41,15 @@ public class TruncateTypeStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-    final Database db = ctx.getDatabase();
+  public ResultSet executeDDL(final CommandContext context) {
+    final Database db = context.getDatabase();
     final Schema schema = db.getSchema();
     final DocumentType typez = schema.getType(typeName.getStringValue());
     if (typez == null) {
       throw new CommandExecutionException("Schema Class not found: " + typeName);
     }
 
-    final long recs = ctx.getDatabase().countType(typeName.getStringValue(), polymorphic);
+    final long recs = context.getDatabase().countType(typeName.getStringValue(), polymorphic);
     if (recs > 0 && !unsafe) {
       if (typez.isSubTypeOf("V")) {
         throw new CommandExecutionException(
@@ -64,7 +64,7 @@ public class TruncateTypeStatement extends DDLStatement {
     final Collection<DocumentType> subTypes = typez.getSubTypes();
     if (polymorphic && !unsafe) {// for multiple inheritance
       for (final DocumentType subType : subTypes) {
-        final long subTypeRecs = ctx.getDatabase().countType(typeName.getStringValue(), false);
+        final long subTypeRecs = context.getDatabase().countType(typeName.getStringValue(), false);
         if (subTypeRecs > 0) {
           if (subType.isSubTypeOf("V")) {
             throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty vertex classes (" + subType.getName()

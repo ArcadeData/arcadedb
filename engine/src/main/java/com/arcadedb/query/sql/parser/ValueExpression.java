@@ -40,11 +40,11 @@ public class ValueExpression extends Expression {
     this.value = val;
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
     return value;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     return value;
   }
 
@@ -68,7 +68,7 @@ public class ValueExpression extends Expression {
     return true;
   }
 
-  public boolean isIndexedFunctionCal() {
+  public boolean isIndexedFunctionCal(CommandContext context) {
     return false;
   }
 
@@ -95,7 +95,7 @@ public class ValueExpression extends Expression {
     return null;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(CommandContext context) {
     return false;
   }
 
@@ -103,7 +103,7 @@ public class ValueExpression extends Expression {
     return this;
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     throw new CommandExecutionException("Cannot aggregate on " + this);
   }
 
@@ -145,7 +145,7 @@ public class ValueExpression extends Expression {
     return null;
   }
 
-  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext context) {
     throw new CommandExecutionException("Cannot apply REMOVE " + this);
   }
 

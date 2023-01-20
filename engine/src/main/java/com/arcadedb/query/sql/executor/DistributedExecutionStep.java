@@ -32,17 +32,17 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
 
   private ResultSet remoteResultSet;
 
-  public DistributedExecutionStep(final SelectExecutionPlan subExecutionPlan, final String nodeName, final CommandContext ctx,
+  public DistributedExecutionStep(final SelectExecutionPlan subExecutionPlan, final String nodeName, final CommandContext context,
       final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+    super(context, profilingEnabled);
     this.subExecutionPlan = subExecutionPlan;
     this.nodeName = nodeName;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    init(ctx);
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    init(context);
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -65,17 +65,17 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
     };
   }
 
-  public void init(final CommandContext ctx) {
+  public void init(final CommandContext context) {
     if (!inited) {
       inited = true;
-      this.remoteResultSet = sendSerializedExecutionPlan(nodeName, subExecutionPlan, ctx);
+      this.remoteResultSet = sendSerializedExecutionPlan(nodeName, subExecutionPlan, context);
     }
   }
 
-  private ResultSet sendSerializedExecutionPlan(final String nodeName, final ExecutionPlan serializedExecutionPlan, final CommandContext ctx) {
-//    Database db = ctx.getDatabase();
+  private ResultSet sendSerializedExecutionPlan(final String nodeName, final ExecutionPlan serializedExecutionPlan, final CommandContext context) {
+//    Database db = context.getDatabase();
     throw new UnsupportedOperationException();
-//    return db.queryOnNode(nodeName, serializedExecutionPlan, ctx.getInputParameters());
+//    return db.queryOnNode(nodeName, serializedExecutionPlan, context.getInputParameters());
   }
 
   @Override

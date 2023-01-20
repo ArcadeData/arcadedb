@@ -38,8 +38,8 @@ public class DropBucketStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-    final Database database = ctx.getDatabase();
+  public ResultSet executeDDL(final CommandContext context) {
+    final Database database = context.getDatabase();
     // CHECK IF ANY USERTYPE IS USING IT
     final int bucketId;
     if (id != null) {

@@ -36,12 +36,12 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (!(leftValue instanceof String))
       return false;
 
-    final Object rightValue = right.execute(currentRecord, ctx);
+    final Object rightValue = right.execute(currentRecord, context);
     if (!(rightValue instanceof String))
       return false;
 
@@ -49,12 +49,12 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (!(leftValue instanceof String))
       return false;
 
-    final Object rightValue = right.execute(currentRecord, ctx);
+    final Object rightValue = right.execute(currentRecord, context);
     if (!(rightValue instanceof String))
       return false;
 

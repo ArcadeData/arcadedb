@@ -45,19 +45,19 @@ public class CreatePropertyStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "create property");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("propertyName", propertyName.getStringValue());
-    executeInternal(ctx, result);
+    executeInternal(context, result);
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
 
-  private void executeInternal(final CommandContext ctx, final ResultInternal result) {
-    final Database db = ctx.getDatabase();
+  private void executeInternal(final CommandContext context, final ResultInternal result) {
+    final Database db = context.getDatabase();
     final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
     if (typez == null) {
       throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
@@ -74,7 +74,7 @@ public class CreatePropertyStatement extends DDLStatement {
     // CREATE IT LOCALLY
     final Property internalProp = typez.createProperty(propertyName.getStringValue(), type);
     for (final CreatePropertyAttributeStatement attr : attributes) {
-      final Object val = attr.setOnProperty(internalProp, ctx);
+      final Object val = attr.setOnProperty(internalProp, context);
       result.setProperty(attr.settingName.getStringValue(), val);
     }
   }

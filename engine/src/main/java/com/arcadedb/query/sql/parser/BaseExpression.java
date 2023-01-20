@@ -87,33 +87,33 @@ public class BaseExpression extends MathExpression {
 
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
     Object result = null;
     if (isNull)
       result = null;
     else if (number != null)
       result = number.getValue();
     else if (identifier != null)
-      result = identifier.execute(iCurrentRecord != null ? iCurrentRecord.getRecord() : null, ctx);
+      result = identifier.execute(iCurrentRecord != null ? iCurrentRecord.getRecord() : null, context);
     else if (string != null && string.length() > 1)
       result = decode(string.substring(1, string.length() - 1));
     else if (inputParam != null)
-      result = inputParam.getValue(ctx.getInputParameters());
+      result = inputParam.getValue(context.getInputParameters());
 
     if (modifier != null)
-      result = modifier.execute(iCurrentRecord, result, ctx);
+      result = modifier.execute(iCurrentRecord, result, context);
 
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     Object result = null;
     if (isNull)
       result = null;
     if (number != null) {
       result = number.getValue();
     } else {
-      final Map<String, Object> params = ctx != null ? ctx.getInputParameters() : null;
+      final Map<String, Object> params = context != null ? context.getInputParameters() : null;
 
       if (identifier != null) {
         // CHECK FOR SPECIAL CASE FOR POSTGRES DRIVER THAT TRANSLATES POSITIONAL PARAMETERS (?) WITH $N
@@ -131,11 +131,11 @@ public class BaseExpression extends MathExpression {
               // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
               result = params.get(String.valueOf(pos - 1));
             else
-              result = identifier.execute(iCurrentRecord, ctx);
+              result = identifier.execute(iCurrentRecord, context);
           } else
-            result = identifier.execute(iCurrentRecord, ctx);
+            result = identifier.execute(iCurrentRecord, context);
         } else
-          result = identifier.execute(iCurrentRecord, ctx);
+          result = identifier.execute(iCurrentRecord, context);
       } else if (string != null && string.length() > 1) {
         result = decode(string.substring(1, string.length() - 1));
       } else if (inputParam != null) {
@@ -143,17 +143,17 @@ public class BaseExpression extends MathExpression {
       }
     }
     if (modifier != null) {
-      result = modifier.execute(iCurrentRecord, result, ctx);
+      result = modifier.execute(iCurrentRecord, result, context);
     }
     return result;
   }
 
   @Override
-  public boolean isIndexedFunctionCall() {
+  public boolean isIndexedFunctionCall(final CommandContext context) {
     if (this.identifier == null)
       return false;
 
-    return identifier.isIndexedFunctionCall();
+    return identifier.isIndexedFunctionCall(context);
   }
 
   public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
@@ -229,11 +229,11 @@ public class BaseExpression extends MathExpression {
     return identifier != null && modifier == null && identifier.isBaseIdentifier();
   }
 
-  public boolean isEarlyCalculated(CommandContext ctx) {
+  public boolean isEarlyCalculated(CommandContext context) {
     if (number != null || inputParam != null || string != null)
       return true;
 
-    return identifier != null && identifier.isEarlyCalculated(ctx);
+    return identifier != null && identifier.isEarlyCalculated(context);
   }
 
   @Override
@@ -249,8 +249,8 @@ public class BaseExpression extends MathExpression {
   }
 
   @Override
-  public boolean isAggregate() {
-    return identifier != null && identifier.isAggregate();
+  public boolean isAggregate(final CommandContext context) {
+    return identifier != null && identifier.isAggregate(context);
   }
 
   @Override
@@ -258,9 +258,9 @@ public class BaseExpression extends MathExpression {
     return identifier != null && identifier.isCount();
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
-    if (isAggregate()) {
-      final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, ctx);
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
+      final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, context);
       if (splitResult instanceof BaseIdentifier) {
         final BaseExpression result = new BaseExpression(-1);
         result.identifier = (BaseIdentifier) splitResult;
@@ -272,9 +272,9 @@ public class BaseExpression extends MathExpression {
     }
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     if (identifier != null) {
-      return identifier.getAggregationContext(ctx);
+      return identifier.getAggregationContext(context);
     } else {
       throw new CommandExecutionException("cannot aggregate on " + this);
     }
@@ -322,13 +322,13 @@ public class BaseExpression extends MathExpression {
   }
 
   @Override
-  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext context) {
     if (identifier != null) {
       if (modifier == null) {
-        identifier.applyRemove(result, ctx);
+        identifier.applyRemove(result, context);
       } else {
-        final Object val = identifier.execute(result, ctx);
-        modifier.applyRemove(val, result, ctx);
+        final Object val = identifier.execute(result, context);
+        modifier.applyRemove(val, result, context);
       }
     }
   }

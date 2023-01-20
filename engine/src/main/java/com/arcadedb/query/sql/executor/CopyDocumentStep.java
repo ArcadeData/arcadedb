@@ -35,14 +35,14 @@ public class CopyDocumentStep extends AbstractExecutionStep {
 
   private final String targetType;
 
-  public CopyDocumentStep(final CommandContext ctx, final String targetType, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CopyDocumentStep(final CommandContext context, final String targetType, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetType = targetType;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {

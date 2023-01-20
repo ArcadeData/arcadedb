@@ -29,16 +29,16 @@ import java.util.*;
  */
 public class IfExecutionPlan implements InternalExecutionPlan {
 
-  private final CommandContext ctx;
+  private final CommandContext context;
 
   protected IfStep step;
 
-  public IfExecutionPlan(final CommandContext ctx) {
-    this.ctx = ctx;
+  public IfExecutionPlan(final CommandContext context) {
+    this.context = context;
   }
 
   @Override
-  public void reset(final CommandContext ctx) {
+  public void reset(final CommandContext context) {
     //TODO
     throw new UnsupportedOperationException();
   }
@@ -50,7 +50,7 @@ public class IfExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public ResultSet fetchNext(final int n) {
-    return step.syncPull(ctx, n);
+    return step.syncPull(context, n);
   }
 
   @Override
@@ -93,12 +93,12 @@ public class IfExecutionPlan implements InternalExecutionPlan {
   }
 
   public ExecutionStepInternal executeUntilReturn() {
-    step.init(ctx);
-    if (step.condition.evaluate(new ResultInternal(), ctx)) {
-      step.initPositivePlan(ctx);
+    step.init(context);
+    if (step.condition.evaluate(new ResultInternal(), context)) {
+      step.initPositivePlan(context);
       return step.positivePlan.executeUntilReturn();
     } else {
-      step.initNegativePlan(ctx);
+      step.initNegativePlan(context);
       if (step.negativePlan != null) {
         return step.negativePlan.executeUntilReturn();
       }

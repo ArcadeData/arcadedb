@@ -34,8 +34,8 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   private       Iterator<RID>   iterator;
   private       Result          nextResult = null;
 
-  public FetchFromRidsStep(final Collection<RID> rids, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromRidsStep(final Collection<RID> rids, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.rids = rids;
     reset();
   }
@@ -46,8 +46,8 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
       int internalNext = 0;
 
@@ -62,7 +62,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 
           Identifiable nextDoc = null;
           try {
-            nextDoc = ctx.getDatabase().lookupByRID(nextRid, true);
+            nextDoc = context.getDatabase().lookupByRID(nextRid, true);
           } catch (final RecordNotFoundException e) {
             // IGNORE HERE< HANDLED BELOW
           }

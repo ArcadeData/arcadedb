@@ -41,9 +41,9 @@ public class DropIndexStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
     final InternalResultSet rs = new InternalResultSet();
-    final Database db = ctx.getDatabase();
+    final Database db = context.getDatabase();
 
     if (all) {
       for (final Index idx : db.getSchema().getIndexes()) {

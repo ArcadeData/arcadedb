@@ -39,18 +39,18 @@ public class CountFromIndexStep extends AbstractExecutionStep {
   /**
    * @param targetIndex      the index name as it is parsed by the SQL parsed
    * @param alias            the name of the property returned in the result-set
-   * @param ctx              the query context
+   * @param context              the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromIndexStep(final IndexIdentifier targetIndex, final String alias, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CountFromIndexStep(final IndexIdentifier targetIndex, final String alias, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.target = targetIndex;
     this.alias = alias;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
 
     return new ResultSet() {
       @Override
@@ -65,7 +65,7 @@ public class CountFromIndexStep extends AbstractExecutionStep {
         }
         final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          final Index idx = ctx.getDatabase().getSchema().getIndexByName(target.getIndexName());
+          final Index idx = context.getDatabase().getSchema().getIndexByName(target.getIndexName());
           final long size = idx.countEntries();
           executed = true;
           final ResultInternal result = new ResultInternal();

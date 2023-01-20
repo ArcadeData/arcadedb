@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -39,15 +38,15 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    return operator.execute(ctx.getDatabase(), left.execute(currentRecord, ctx), right.execute(currentRecord, ctx));
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    return operator.execute(context.getDatabase(), left.execute(currentRecord, context), right.execute(currentRecord, context));
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftVal = left.execute(currentRecord, ctx);
-    final Object rightVal = right.execute(currentRecord, ctx);
-    return operator.execute(ctx.getDatabase(), leftVal, rightVal);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftVal = left.execute(currentRecord, context);
+    final Object rightVal = right.execute(currentRecord, context);
+    return operator.execute(context.getDatabase(), leftVal, rightVal);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -105,8 +104,8 @@ public class BinaryCondition extends BooleanExpression {
     return left.executeIndexedFunctionAfterIndexSearch(target, context, operator, right.execute((Result) null, context));
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
-    if (left.isIndexedFunctionCal()) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
+    if (left.isIndexedFunctionCal(context)) {
       return Collections.singletonList(this);
     }
     return null;

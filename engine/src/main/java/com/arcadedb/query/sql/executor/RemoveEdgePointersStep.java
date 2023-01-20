@@ -33,13 +33,13 @@ import java.util.stream.*;
  */
 public class RemoveEdgePointersStep extends AbstractExecutionStep {
 
-  public RemoveEdgePointersStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public RemoveEdgePointersStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {

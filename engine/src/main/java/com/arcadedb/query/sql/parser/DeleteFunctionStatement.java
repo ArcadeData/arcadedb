@@ -19,8 +19,8 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
-    final Database database = ctx.getDatabase();
+  public ResultSet executeSimple(final CommandContext context) {
+    final Database database = context.getDatabase();
 
     database.getSchema().getFunctionLibrary(libraryName.getStringValue()).unregisterFunction(functionName.getStringValue());
 

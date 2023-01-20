@@ -60,10 +60,10 @@ public class AlterBucketStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
 //    InternalResultSet result = new InternalResultSet();
-//    List<com.orientechnologies.orient.core.storage.OCluster> clustersToUpdate = getClusters(ctx);
-//    Object finalValue = attributeValue.execute((PIdentifiable) null, ctx);
+//    List<com.orientechnologies.orient.core.storage.OCluster> clustersToUpdate = getClusters(context);
+//    Object finalValue = attributeValue.execute((PIdentifiable) null, context);
 //
 //    com.orientechnologies.orient.core.storage.OCluster.ATTRIBUTES attribute;
 //    try {
@@ -96,8 +96,8 @@ public class AlterBucketStatement extends DDLStatement {
 //    return null;
 //  }
 //
-//  private List<com.orientechnologies.orient.core.storage.OCluster> getClusters(OCommandContext ctx) {
-//    OStorage storage = ((ODatabaseDocumentInternal) ctx.getDatabase()).getStorage();
+//  private List<com.orientechnologies.orient.core.storage.OCluster> getClusters(OCommandContext context) {
+//    OStorage storage = ((ODatabaseDocumentInternal) context.getDatabase()).getStorage();
 //    if (starred) {
 //      List<com.orientechnologies.orient.core.storage.OCluster> result = new ArrayList<>();
 //      for (String bucketName : storage.getClusterNames()) {
@@ -107,7 +107,7 @@ public class AlterBucketStatement extends DDLStatement {
 //      }
 //      return result;
 //    } else {
-//      int bucketId = ctx.getDatabase().getClusterIdByName(name.getStringValue());
+//      int bucketId = context.getDatabase().getClusterIdByName(name.getStringValue());
 //      if (bucketId <= 0) {
 //        throw new PCommandExecutionException("Cannot find bucket " + name);
 //      }

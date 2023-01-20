@@ -27,18 +27,18 @@ import com.arcadedb.query.sql.parser.Projection;
 public class ProjectionCalculationStep extends AbstractExecutionStep {
   protected final Projection projection;
 
-  public ProjectionCalculationStep(final Projection projection, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public ProjectionCalculationStep(final Projection projection, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.projection = projection;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("Cannot calculate projections without a previous source");
     }
 
-    final ResultSet parentRs = prev.get().syncPull(ctx, nRecords);
+    final ResultSet parentRs = prev.get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -48,10 +48,10 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result item = parentRs.next();
-        final Object oldCurrent = ctx.getVariable("current");
-        ctx.setVariable("current", item);
-        final Result result = calculateProjections(ctx, item);
-        ctx.setVariable("current", oldCurrent);
+        final Object oldCurrent = context.getVariable("current");
+        context.setVariable("current", item);
+        final Result result = calculateProjections(context, item);
+        context.setVariable("current", oldCurrent);
         return result;
       }
 
@@ -62,10 +62,10 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
     };
   }
 
-  private Result calculateProjections(final CommandContext ctx, final Result next) {
+  private Result calculateProjections(final CommandContext context, final Result next) {
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
-      return this.projection.calculateSingle(ctx, next);
+      return this.projection.calculateSingle(context, next);
     } finally {
       if (profilingEnabled) {
         cost += (System.nanoTime() - begin);
@@ -90,7 +90,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new ProjectionCalculationStep(projection.copy(), ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new ProjectionCalculationStep(projection.copy(), context, profilingEnabled);
   }
 }

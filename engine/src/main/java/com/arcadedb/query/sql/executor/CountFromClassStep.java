@@ -42,18 +42,18 @@ public class CountFromClassStep extends AbstractExecutionStep {
   /**
    * @param targetClass      An identifier containing the name of the class to count
    * @param alias            the name of the property returned in the result-set
-   * @param ctx              the query context
+   * @param context              the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromClassStep(final Identifier targetClass, final String alias, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CountFromClassStep(final Identifier targetClass, final String alias, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.target = targetClass;
     this.alias = alias;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -67,12 +67,12 @@ public class CountFromClassStep extends AbstractExecutionStep {
         }
         final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          final DocumentType typez = ctx.getDatabase().getSchema().getType(target.getStringValue());
+          final DocumentType typez = context.getDatabase().getSchema().getType(target.getStringValue());
           if (typez == null) {
             throw new CommandExecutionException("Type " + target.getStringValue() + " does not exist in the database schema");
           }
 
-          final long size = ctx.getDatabase().countType(target.getStringValue(), true);
+          final long size = context.getDatabase().countType(target.getStringValue(), true);
           executed = true;
           final ResultInternal result = new ResultInternal();
           result.setProperty(alias, size);

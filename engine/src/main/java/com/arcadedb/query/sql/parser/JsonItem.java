@@ -55,16 +55,16 @@ public class JsonItem {
     return null;
   }
 
-  public boolean isAggregate() {
-    return right.isAggregate();
+  public boolean isAggregate(final CommandContext context) {
+    return right.isAggregate(context);
   }
 
-  public JsonItem splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext ctx) {
-    if (isAggregate()) {
+  public JsonItem splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
+    if (isAggregate(context)) {
       final JsonItem item = new JsonItem();
       item.leftIdentifier = leftIdentifier;
       item.leftString = leftString;
-      item.right = right.splitForAggregation(aggregateSplit, ctx);
+      item.right = right.splitForAggregation(aggregateSplit, context);
       return item;
     } else {
       return this;

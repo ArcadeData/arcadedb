@@ -33,19 +33,19 @@ public class LetQueryStep extends AbstractExecutionStep {
   private final Identifier varName;
   private final Statement  query;
 
-  public LetQueryStep(final Identifier varName, final Statement query, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public LetQueryStep(final Identifier varName, final Statement query, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.varName = varName;
     this.query = query;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (getPrev().isEmpty()) {
       throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
     }
     return new ResultSet() {
-      final ResultSet source = getPrev().get().syncPull(ctx, nRecords);
+      final ResultSet source = getPrev().get().syncPull(context, nRecords);
 
       @Override
       public boolean hasNext() {
@@ -56,19 +56,19 @@ public class LetQueryStep extends AbstractExecutionStep {
       public Result next() {
         final ResultInternal result = (ResultInternal) source.next();
         if (result != null) {
-          calculate(result, ctx);
+          calculate(result, context);
         }
         return result;
       }
 
-      private void calculate(final ResultInternal result, final CommandContext ctx) {
+      private void calculate(final ResultInternal result, final CommandContext context) {
         final BasicCommandContext subCtx = new BasicCommandContext();
-        subCtx.setDatabase(ctx.getDatabase());
-        subCtx.setParentWithoutOverridingChild(ctx);
+        subCtx.setDatabase(context.getDatabase());
+        subCtx.setParentWithoutOverridingChild(context);
         final InternalExecutionPlan subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
         final List<Result> value = toList(new LocalResultSet(subExecutionPlan));
         result.setMetadata(varName.getStringValue(), value);
-        ctx.setVariable(varName.getStringValue(), value);
+        context.setVariable(varName.getStringValue(), value);
       }
 
       private List<Result> toList(final LocalResultSet oLocalResultSet) {

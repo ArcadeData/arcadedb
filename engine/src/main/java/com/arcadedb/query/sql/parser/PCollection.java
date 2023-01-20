@@ -52,37 +52,37 @@ public class PCollection extends SimpleNode {
     this.expressions.add(exp);
   }
 
-  public Object execute(final Record iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Record iCurrentRecord, final CommandContext context) {
     final List<Object> result = new ArrayList<Object>();
     for (final Expression exp : expressions) {
-      result.add(exp.execute(iCurrentRecord, ctx));
+      result.add(exp.execute(iCurrentRecord, context));
     }
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     final List<Object> result = new ArrayList<Object>();
     for (final Expression exp : expressions) {
-      result.add(exp.execute(iCurrentRecord, ctx));
+      result.add(exp.execute(iCurrentRecord, context));
     }
     return result;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(final CommandContext context) {
     for (final Expression exp : this.expressions) {
-      if (exp.isAggregate()) {
+      if (exp.isAggregate(context)) {
         return true;
       }
     }
     return false;
   }
 
-  public PCollection splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
-    if (isAggregate()) {
+  public PCollection splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
       final PCollection result = new PCollection(-1);
       for (final Expression exp : this.expressions) {
-        if (exp.isAggregate() || exp.isEarlyCalculated(ctx)) {
-          result.expressions.add(exp.splitForAggregation(aggregateProj, ctx));
+        if (exp.isAggregate(context) || exp.isEarlyCalculated(context)) {
+          result.expressions.add(exp.splitForAggregation(aggregateProj, context));
         } else {
           throw new CommandExecutionException("Cannot mix aggregate and non-aggregate operations in a collection: " + this);
         }
@@ -93,9 +93,9 @@ public class PCollection extends SimpleNode {
     }
   }
 
-  public boolean isEarlyCalculated(final CommandContext ctx) {
+  public boolean isEarlyCalculated(final CommandContext context) {
     for (final Expression exp : expressions) {
-      if (!exp.isEarlyCalculated(ctx)) {
+      if (!exp.isEarlyCalculated(context)) {
         return false;
       }
     }

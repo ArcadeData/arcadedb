@@ -217,7 +217,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     return neighbors;
   }
 
-  private void bindAdditionalParams(final Object additionalParams, final SQLFunctionAstar ctx) {
+  private void bindAdditionalParams(final Object additionalParams, final SQLFunctionAstar context) {
     if (additionalParams == null) {
       return;
     }
@@ -228,31 +228,31 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).toMap();
     }
     if (mapParams != null) {
-      ctx.paramEdgeTypeNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES));
-      ctx.paramVertexAxisNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES));
+      context.paramEdgeTypeNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES));
+      context.paramVertexAxisNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES));
       if (mapParams.get(SQLFunctionAstar.PARAM_DIRECTION) != null) {
         if (mapParams.get(SQLFunctionAstar.PARAM_DIRECTION) instanceof String) {
-          ctx.paramDirection = Vertex.DIRECTION.valueOf(stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_DIRECTION), "OUT").toUpperCase(Locale.ENGLISH));
+          context.paramDirection = Vertex.DIRECTION.valueOf(stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_DIRECTION), "OUT").toUpperCase(Locale.ENGLISH));
         } else {
-          ctx.paramDirection = (Vertex.DIRECTION) mapParams.get(SQLFunctionAstar.PARAM_DIRECTION);
+          context.paramDirection = (Vertex.DIRECTION) mapParams.get(SQLFunctionAstar.PARAM_DIRECTION);
         }
       }
 
-      ctx.paramParallel = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_PARALLEL), false);
-      ctx.paramMaxDepth = longOrDefault(mapParams.get(SQLFunctionAstar.PARAM_MAX_DEPTH), ctx.paramMaxDepth);
-      ctx.paramEmptyIfMaxDepth = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_EMPTY_IF_MAX_DEPTH), ctx.paramEmptyIfMaxDepth);
-      ctx.paramTieBreaker = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_TIE_BREAKER), ctx.paramTieBreaker);
-      ctx.paramDFactor = doubleOrDefault(mapParams.get(SQLFunctionAstar.PARAM_D_FACTOR), ctx.paramDFactor);
+      context.paramParallel = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_PARALLEL), false);
+      context.paramMaxDepth = longOrDefault(mapParams.get(SQLFunctionAstar.PARAM_MAX_DEPTH), context.paramMaxDepth);
+      context.paramEmptyIfMaxDepth = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_EMPTY_IF_MAX_DEPTH), context.paramEmptyIfMaxDepth);
+      context.paramTieBreaker = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_TIE_BREAKER), context.paramTieBreaker);
+      context.paramDFactor = doubleOrDefault(mapParams.get(SQLFunctionAstar.PARAM_D_FACTOR), context.paramDFactor);
       if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) != null) {
         if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) instanceof String) {
-          ctx.paramHeuristicFormula = SQLHeuristicFormula.valueOf(
+          context.paramHeuristicFormula = SQLHeuristicFormula.valueOf(
               stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA), "MANHATTAN").toUpperCase(Locale.ENGLISH));
         } else {
-          ctx.paramHeuristicFormula = (SQLHeuristicFormula) mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA);
+          context.paramHeuristicFormula = (SQLHeuristicFormula) mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA);
         }
       }
 
-      ctx.paramCustomHeuristicFormula = stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_CUSTOM_HEURISTIC_FORMULA), "");
+      context.paramCustomHeuristicFormula = stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_CUSTOM_HEURISTIC_FORMULA), "");
     }
   }
 

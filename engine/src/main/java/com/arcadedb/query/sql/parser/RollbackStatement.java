@@ -33,8 +33,8 @@ public class RollbackStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
-    ctx.getDatabase().rollback();
+  public ResultSet executeSimple(final CommandContext context) {
+    context.getDatabase().rollback();
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "rollback");

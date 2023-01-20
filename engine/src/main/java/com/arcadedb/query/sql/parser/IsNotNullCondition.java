@@ -34,13 +34,13 @@ public class IsNotNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    return expression.execute(currentRecord, ctx) != null;
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    return expression.execute(currentRecord, context) != null;
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    return expression.execute(currentRecord, ctx) != null;
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    return expression.execute(currentRecord, context) != null;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

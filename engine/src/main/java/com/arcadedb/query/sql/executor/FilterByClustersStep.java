@@ -33,10 +33,10 @@ public class FilterByClustersStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public FilterByClustersStep(final Set<String> filterClusters, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FilterByClustersStep(final Set<String> filterClusters, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.clusters = filterClusters;
-    final Database db = ctx.getDatabase();
+    final Database db = context.getDatabase();
     init(db);
 
   }
@@ -48,8 +48,8 @@ public class FilterByClustersStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    init(ctx.getDatabase());
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    init(context.getDatabase());
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
@@ -67,7 +67,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -75,7 +75,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;

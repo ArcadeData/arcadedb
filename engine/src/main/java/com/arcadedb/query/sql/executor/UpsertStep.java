@@ -38,19 +38,19 @@ public class UpsertStep extends AbstractExecutionStep {
   private final WhereClause initialFilter;
   boolean applied = false;
 
-  public UpsertStep(final FromClause target, final WhereClause where, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UpsertStep(final FromClause target, final WhereClause where, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.commandTarget = target;
     this.initialFilter = where;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (applied)
-      return getPrev().get().syncPull(ctx, nRecords);
+      return getPrev().get().syncPull(context, nRecords);
 
     applied = true;
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     if (upstream.hasNext())
       return upstream;
 
@@ -60,7 +60,7 @@ public class UpsertStep extends AbstractExecutionStep {
   }
 
   private Result createNewRecord(final FromClause commandTarget, final WhereClause initialFilter) {
-    final DatabaseInternal database = ctx.getDatabase();
+    final DatabaseInternal database = context.getDatabase();
     final DocumentType type;
 
     if (commandTarget.getItem().getBucket() != null) {
@@ -77,7 +77,7 @@ public class UpsertStep extends AbstractExecutionStep {
     } else
       throw new CommandExecutionException("Cannot execute UPSERT on target '" + commandTarget + "'");
 
-    final MutableDocument doc = (MutableDocument) ctx.getDatabase().getRecordFactory().newMutableRecord(ctx.getDatabase(), type);
+    final MutableDocument doc = (MutableDocument) context.getDatabase().getRecordFactory().newMutableRecord(context.getDatabase(), type);
     final UpdatableResult result = new UpdatableResult(doc);
     if (initialFilter != null)
       setContent(result, initialFilter);
@@ -95,7 +95,7 @@ public class UpsertStep extends AbstractExecutionStep {
 
     final AndBlock andCond = flattened.get(0);
     for (final BooleanExpression condition : andCond.getSubBlocks())
-      condition.transformToUpdateItem().ifPresent(x -> x.applyUpdate(doc, ctx));
+      condition.transformToUpdateItem().ifPresent(x -> x.applyUpdate(doc, context));
   }
 
   @Override

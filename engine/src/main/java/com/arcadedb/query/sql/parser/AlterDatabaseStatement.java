@@ -47,14 +47,14 @@ public class AlterDatabaseStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
     final InternalResultSet result = new InternalResultSet();
-    result.add(executeSimpleAlter(settingName, settingValue, ctx));
+    result.add(executeSimpleAlter(settingName, settingValue, context));
     return result;
   }
 
-  private Result executeSimpleAlter(final Identifier settingName, final Expression settingValue, final CommandContext ctx) {
-    final DatabaseInternal db = ctx.getDatabase();
+  private Result executeSimpleAlter(final Identifier settingName, final Expression settingValue, final CommandContext context) {
+    final DatabaseInternal db = context.getDatabase();
     db.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
 
     final String settingNameAsString = settingName.getStringValue();
@@ -63,7 +63,7 @@ public class AlterDatabaseStatement extends DDLStatement {
       throw new DatabaseOperationException("Database setting '" + settingNameAsString + "' not found");
 
     final Object oldValue = db.getConfiguration().getValue(cfg);
-    Object finalValue = settingValue.execute((Identifiable) null, ctx);
+    Object finalValue = settingValue.execute((Identifiable) null, context);
 
     if ("arcadedb.dateFormat".equals(settingNameAsString)) {
       db.getSchema().setDateFormat(finalValue.toString());
@@ -75,14 +75,14 @@ public class AlterDatabaseStatement extends DDLStatement {
       if ("arcadedb.dateTimeImplementation".equals(settingNameAsString)) {
         try {
           finalValue = FileUtils.getStringContent(settingValue);
-          ctx.getDatabase().getSerializer().setDateTimeImplementation(Class.forName(finalValue.toString()));
+          context.getDatabase().getSerializer().setDateTimeImplementation(Class.forName(finalValue.toString()));
         } catch (ClassNotFoundException e) {
           throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
         }
       } else if ("arcadedb.dateImplementation".equals(settingNameAsString)) {
         try {
           finalValue = FileUtils.getStringContent(settingValue);
-          ctx.getDatabase().getSerializer().setDateImplementation(Class.forName(finalValue.toString()));
+          context.getDatabase().getSerializer().setDateImplementation(Class.forName(finalValue.toString()));
         } catch (ClassNotFoundException e) {
           throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
         }

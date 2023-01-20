@@ -24,7 +24,7 @@ import com.arcadedb.graph.Edge;
  * Created by luigidellaquila on 20/02/17.
  */
 public class CastToEdgeStep extends CastToStepAbstract {
-  public CastToEdgeStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(Edge.class, "edge", ctx, profilingEnabled);
+  public CastToEdgeStep(final CommandContext context, final boolean profilingEnabled) {
+    super(Edge.class, "edge", context, profilingEnabled);
   }
 }

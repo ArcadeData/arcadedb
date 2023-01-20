@@ -38,22 +38,22 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     final String targetUrl = this.url != null ? this.url.getUrlString() : null;
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "backup database");
     if (targetUrl != null)
       result.setProperty("target", targetUrl);
 
-    if (ctx.getDatabase().isTransactionActive())
-      ctx.getDatabase().rollback();
+    if (context.getDatabase().isTransactionActive())
+      context.getDatabase().rollback();
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
-      final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), targetUrl);
+      final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), targetUrl);
 
       // ASSURE THE DIRECTORY CANNOT BE CHANGED
-      clazz.getMethod("setDirectory", String.class).invoke(backup, "backups/" + ctx.getDatabase().getName());
+      clazz.getMethod("setDirectory", String.class).invoke(backup, "backups/" + context.getDatabase().getName());
       clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
       final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
 

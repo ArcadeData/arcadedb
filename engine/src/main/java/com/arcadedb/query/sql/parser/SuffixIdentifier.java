@@ -62,14 +62,14 @@ public class SuffixIdentifier extends SimpleNode {
     }
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
     if (star) {
       return iCurrentRecord;
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (ctx != null && ctx.getVariable(varName) != null) {
-        return ctx.getVariable(varName);
+      if (context != null && context.getVariable(varName) != null) {
+        return context.getVariable(varName);
       }
 
       if (iCurrentRecord != null) {
@@ -96,17 +96,17 @@ public class SuffixIdentifier extends SimpleNode {
     return null;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     if (star) {
       return iCurrentRecord;
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (ctx != null && varName.equalsIgnoreCase("$parent")) {
-        return ctx.getParent();
+      if (context != null && varName.equalsIgnoreCase("$parent")) {
+        return context.getParent();
       }
-      if (ctx != null && (varName.startsWith("$") || varName.startsWith("_$$$")) && ctx.getVariable(varName) != null) {
-        final Object result = ctx.getVariable(varName);
+      if (context != null && (varName.startsWith("$") || varName.startsWith("_$$$")) && context.getVariable(varName) != null) {
+        final Object result = context.getVariable(varName);
         return result;
       }
       if (iCurrentRecord != null) {
@@ -124,13 +124,13 @@ public class SuffixIdentifier extends SimpleNode {
     }
 
     if (iCurrentRecord != null && recordAttribute != null) {
-      return recordAttribute.evaluate(iCurrentRecord, ctx);
+      return recordAttribute.evaluate(iCurrentRecord, context);
     }
 
     return null;
   }
 
-  public Object execute(final Map iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Map iCurrentRecord, final CommandContext context) {
     if (star) {
       final ResultInternal result = new ResultInternal();
       if (iCurrentRecord != null) {
@@ -143,11 +143,11 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (ctx != null && varName.equalsIgnoreCase("$parent")) {
-        return ctx.getParent();
+      if (context != null && varName.equalsIgnoreCase("$parent")) {
+        return context.getParent();
       }
-      if (ctx != null && ctx.getVariable(varName) != null) {
-        return ctx.getVariable(varName);
+      if (context != null && context.getVariable(varName) != null) {
+        return context.getVariable(varName);
       }
       if (iCurrentRecord != null) {
         return iCurrentRecord.get(varName);
@@ -160,24 +160,24 @@ public class SuffixIdentifier extends SimpleNode {
     return null;
   }
 
-  public Object execute(final Iterable iterable, final CommandContext ctx) {
+  public Object execute(final Iterable iterable, final CommandContext context) {
     if (star) {
       return null;
     }
     final List<Object> result = new ArrayList<>();
     for (final Object o : iterable) {
-      result.add(execute(o, ctx));
+      result.add(execute(o, context));
     }
     return result;
   }
 
-  public Object execute(final Iterator iterator, final CommandContext ctx) {
+  public Object execute(final Iterator iterator, final CommandContext context) {
     if (star) {
       return null;
     }
     final List<Object> result = new ArrayList<>();
     while (iterator.hasNext()) {
-      result.add(execute(iterator.next(), ctx));
+      result.add(execute(iterator.next(), context));
     }
     if (iterator instanceof ResultSet) {
       try {
@@ -205,27 +205,27 @@ public class SuffixIdentifier extends SimpleNode {
     return null;
   }
 
-  public Object execute(final Object currentValue, final CommandContext ctx) {
+  public Object execute(final Object currentValue, final CommandContext context) {
     if (currentValue instanceof Result)
-      return execute((Result) currentValue, ctx);
+      return execute((Result) currentValue, context);
 
     if (currentValue instanceof Identifiable)
-      return execute((Identifiable) currentValue, ctx);
+      return execute((Identifiable) currentValue, context);
 
     if (currentValue instanceof Map)
-      return execute((Map) currentValue, ctx);
+      return execute((Map) currentValue, context);
 
     if (currentValue instanceof CommandContext)
       return execute((CommandContext) currentValue);
 
     if (currentValue instanceof Iterable)
-      return execute((Iterable) currentValue, ctx);
+      return execute((Iterable) currentValue, context);
 
     if (currentValue instanceof Iterator)
-      return execute((Iterator) currentValue, ctx);
+      return execute((Iterator) currentValue, context);
 
     if (currentValue == null)
-      return execute((Result) null, ctx);
+      return execute((Result) null, context);
 
     return null;
     // TODO other cases?
@@ -235,7 +235,7 @@ public class SuffixIdentifier extends SimpleNode {
     return identifier != null;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(final CommandContext context) {
     return false;
   }
 
@@ -251,11 +251,11 @@ public class SuffixIdentifier extends SimpleNode {
     return identifier != null && identifier.internalAlias;
   }
 
-  public void aggregate(final Object value, final CommandContext ctx) {
+  public void aggregate(final Object value, final CommandContext context) {
     throw new UnsupportedOperationException("this operation does not support plain aggregation: " + this);
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     throw new UnsupportedOperationException("this operation does not support plain aggregation: " + this);
   }
 
@@ -281,16 +281,16 @@ public class SuffixIdentifier extends SimpleNode {
     return identifier != null && identifier.getStringValue().equalsIgnoreCase("$parent");
   }
 
-  public void setValue(final Object target, final Object value, final CommandContext ctx) {
+  public void setValue(final Object target, final Object value, final CommandContext context) {
     if (target instanceof Result)
-      setValue((Result) target, value, ctx);
+      setValue((Result) target, value, context);
     else if (target instanceof Identifiable)
-      setValue((Identifiable) target, value, ctx);
+      setValue((Identifiable) target, value, context);
     else if (target instanceof Map)
-      setValue((Map) target, value, ctx);
+      setValue((Map) target, value, context);
   }
 
-  public void setValue(final Identifiable target, final Object value, final CommandContext ctx) {
+  public void setValue(final Identifiable target, final Object value, final CommandContext context) {
     if (target == null)
       return;
 
@@ -306,7 +306,7 @@ public class SuffixIdentifier extends SimpleNode {
       throw new CommandExecutionException("Cannot set record attribute " + recordAttribute + " on existing document");
   }
 
-  public void setValue(final Map target, final Object value, final CommandContext ctx) {
+  public void setValue(final Map target, final Object value, final CommandContext context) {
     if (target == null)
       return;
 
@@ -316,7 +316,7 @@ public class SuffixIdentifier extends SimpleNode {
       target.put(recordAttribute.getName(), value);
   }
 
-  public void setValue(final Result target, final Object value, final CommandContext ctx) {
+  public void setValue(final Result target, final Object value, final CommandContext context) {
     if (target == null)
       return;
 
@@ -332,7 +332,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
   }
 
-  public void applyRemove(final Object currentValue, final CommandContext ctx) {
+  public void applyRemove(final Object currentValue, final CommandContext context) {
     if (currentValue == null)
       return;
 

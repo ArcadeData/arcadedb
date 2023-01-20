@@ -30,7 +30,7 @@ import java.util.*;
  */
 public class RidSet implements Set<RID> {
 
-  CommandContext ctx; //TODO, set this!!!
+  CommandContext context; //TODO, set this!!!
 
   protected static final int INITIAL_BLOCK_SIZE = 4096;
 
@@ -113,7 +113,7 @@ public class RidSet implements Set<RID> {
 
   @Override
   public Iterator<RID> iterator() {
-    return new RidSetIterator(ctx, this);
+    return new RidSetIterator(context, this);
   }
 
   @Override

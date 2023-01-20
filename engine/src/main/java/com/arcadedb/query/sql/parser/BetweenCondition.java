@@ -38,25 +38,25 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object firstValue = first.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object firstValue = first.execute(currentRecord, context);
     if (firstValue == null) {
       return false;
     }
 
-    Object secondValue = second.execute(currentRecord, ctx);
+    Object secondValue = second.execute(currentRecord, context);
     if (secondValue == null) {
       return false;
     }
 
-    secondValue = Type.convert(ctx.getDatabase(), secondValue, firstValue.getClass());
+    secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
 
-    Object thirdValue = third.execute(currentRecord, ctx);
+    Object thirdValue = third.execute(currentRecord, context);
     if (thirdValue == null) {
       return false;
     }
 
-    thirdValue = Type.convert(ctx.getDatabase(), thirdValue, firstValue.getClass());
+    thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
 
     final int leftResult = ((Comparable<Object>) firstValue).compareTo(secondValue);
     final int rightResult = ((Comparable<Object>) firstValue).compareTo(thirdValue);
@@ -65,24 +65,24 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object firstValue = first.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object firstValue = first.execute(currentRecord, context);
     if (firstValue == null) {
       return false;
     }
 
-    Object secondValue = second.execute(currentRecord, ctx);
+    Object secondValue = second.execute(currentRecord, context);
     if (secondValue == null) {
       return false;
     }
 
-    secondValue = Type.convert(ctx.getDatabase(), secondValue, firstValue.getClass());
+    secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
 
-    Object thirdValue = third.execute(currentRecord, ctx);
+    Object thirdValue = third.execute(currentRecord, context);
     if (thirdValue == null) {
       return false;
     }
-    thirdValue = Type.convert(ctx.getDatabase(), thirdValue, firstValue.getClass());
+    thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
 
     final int leftResult = ((Comparable<Object>) firstValue).compareTo(secondValue);
     final int rightResult = ((Comparable<Object>) firstValue).compareTo(thirdValue);

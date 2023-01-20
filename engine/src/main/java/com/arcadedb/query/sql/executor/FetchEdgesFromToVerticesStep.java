@@ -51,8 +51,8 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   private Edge nextEdge = null;
 
   public FetchEdgesFromToVerticesStep(final String fromAlias, final String toAlias, final Identifier targetType, final Identifier targetCluster,
-      final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+      final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetType = targetType;
     this.targetCluster = targetCluster;
     this.fromAlias = fromAlias;
@@ -60,8 +60,8 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     init();
     return new ResultSet() {
       int currentBatch = 0;
@@ -116,7 +116,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
     Object fromValues;
 
-    fromValues = ctx.getVariable(fromAlias);
+    fromValues = context.getVariable(fromAlias);
     if (fromValues != null)
       if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable))
         fromValues = ((Iterable) fromValues).iterator();
@@ -125,7 +125,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
     Object toValues;
 
-    toValues = ctx.getVariable(toAlias);
+    toValues = context.getVariable(toAlias);
     if (toValues != null)
       if (toValues instanceof Iterable && !(toValues instanceof Identifiable))
         toValues = ((Iterable) toValues).iterator();
@@ -195,7 +195,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
       return true;
 
     final int bucketId = edge.getIdentity().getBucketId();
-    final String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
+    final String bucketName = context.getDatabase().getSchema().getBucketById(bucketId).getName();
     return bucketName.equals(targetCluster.getStringValue());
   }
 
@@ -221,7 +221,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetType, targetCluster, ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetType, targetCluster, context, profilingEnabled);
   }
 }

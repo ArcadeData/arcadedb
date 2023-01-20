@@ -130,8 +130,8 @@ public class NestedProjectionItem extends SimpleNode {
     return result;
   }
 
-  public Object expand(final Expression expression, final String name, final Object value, final CommandContext ctx, final int recursion) {
-    return expansion.apply(expression, value, ctx);
+  public Object expand(final Expression expression, final String name, final Object value, final CommandContext context, final int recursion) {
+    return expansion.apply(expression, value, context);
   }
 }
 /* JavaCC - OriginalChecksum=606b3fe37ff952934e3e2e3daa9915f2 (do not edit this line) */

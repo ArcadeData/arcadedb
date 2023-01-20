@@ -36,9 +36,9 @@ public class UpdateEdgeStatement extends UpdateStatement {
   }
 
   @Override
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   @Override

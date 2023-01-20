@@ -37,11 +37,11 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
    * iterates over a class and its subTypes
    *
    * @param bucketIds the clusters
-   * @param ctx       the query context
+   * @param context       the query context
    * @param ridOrder  true to sort by RID asc, false to sort by RID desc, null for no sort.
    */
-  public FetchFromClustersExecutionStep(final int[] bucketIds, final CommandContext ctx, final Boolean ridOrder, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromClustersExecutionStep(final int[] bucketIds, final CommandContext context, final Boolean ridOrder, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
 
     if (Boolean.TRUE.equals(ridOrder))
       orderByRidAsc = true;
@@ -51,7 +51,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     subSteps = new ArrayList<>();
     sort(bucketIds);
     for (final int bucketId : bucketIds) {
-      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
+      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context, profilingEnabled);
       if (orderByRidAsc)
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
       else if (orderByRidDesc)
@@ -76,8 +76,8 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
 
       int totDispatched = 0;
@@ -92,9 +92,9 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
             if (currentStep >= subSteps.size())
               return false;
 
-            currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep)).syncPull(ctx, nRecords);
+            currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep)).syncPull(context, nRecords);
             if (!currentResultSet.hasNext()) {
-              currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep++)).syncPull(ctx, nRecords);
+              currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep++)).syncPull(context, nRecords);
             }
           }
 
@@ -113,9 +113,9 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
             if (currentStep >= subSteps.size())
               throw new NoSuchElementException();
 
-            currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep)).syncPull(ctx, nRecords);
+            currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep)).syncPull(context, nRecords);
             if (!currentResultSet.hasNext())
-              currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep++)).syncPull(ctx, nRecords);
+              currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep++)).syncPull(context, nRecords);
           }
           if (!currentResultSet.hasNext())
             continue;

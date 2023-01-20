@@ -45,12 +45,12 @@ public class Limit extends SimpleNode {
     }
   }
 
-  public int getValue(final CommandContext ctx) {
+  public int getValue(final CommandContext context) {
     if (num != null) {
       return num.getValue().intValue();
     }
     if (inputParam != null) {
-      final Object paramValue = inputParam.getValue(ctx.getInputParameters());
+      final Object paramValue = inputParam.getValue(context.getInputParameters());
       if (paramValue instanceof Number) {
         return ((Number) paramValue).intValue();
       } else {

@@ -502,4 +502,22 @@ public class QueryTest extends TestHelper {
       Assertions.assertEquals(2, total.get());
     });
   }
+
+  @Test
+  public void test() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("test");
+      String query = "SELECT FROM test WHERE (";
+      for (int i = 1; i < 20; i++) {
+        if (i > 1)
+          query += " and ";
+        query += "((property" + i + " is null) or (property" + i + " = #107:150))";
+      }
+      query += ")";
+
+      try (ResultSet set = database.query("sql", query)) {
+        Assertions.assertEquals(set.stream().count(), 0);
+      }
+    });
+  }
 }

@@ -47,18 +47,18 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
   /**
    * @param targetClass      a class to be checked
    * @param parentClass      a class that is supposed to be the same or a parent class of the target class
-   * @param ctx              execution context
+   * @param context              execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckClassTypeStep(final String targetClass, final String parentClass, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CheckClassTypeStep(final String targetClass, final String parentClass, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetClass = targetClass;
     this.parentClass = parentClass;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
@@ -67,7 +67,7 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
       if (this.targetClass.equals(this.parentClass)) {
         return new InternalResultSet();
       }
-      final Database db = ctx.getDatabase();
+      final Database db = context.getDatabase();
 
       final Schema schema = db.getSchema();
       final DocumentType parentClazz = schema.getType(this.parentClass);

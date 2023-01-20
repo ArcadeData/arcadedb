@@ -29,14 +29,14 @@ import java.util.*;
 public class UpdateSetStep extends AbstractExecutionStep {
   private final List<UpdateItem> items;
 
-  public UpdateSetStep(final List<UpdateItem> updateItems, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UpdateSetStep(final List<UpdateItem> updateItems, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.items = updateItems;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -48,7 +48,7 @@ public class UpdateSetStep extends AbstractExecutionStep {
         final Result result = upstream.next();
         if (result instanceof ResultInternal) {
           for (final UpdateItem item : items) {
-            item.applyUpdate((ResultInternal) result, ctx);
+            item.applyUpdate((ResultInternal) result, context);
           }
         }
         return result;

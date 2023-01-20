@@ -49,61 +49,61 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object leftVal = evaluateLeft(currentRecord, ctx);
-    final Object rightVal = evaluateRight(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftVal = evaluateLeft(currentRecord, context);
+    final Object rightVal = evaluateRight(currentRecord, context);
     if (rightVal == null)
       return false;
 
     return evaluateExpression(leftVal, rightVal);
   }
 
-  public Object evaluateRight(final Identifiable currentRecord, final CommandContext ctx) {
+  public Object evaluateRight(final Identifiable currentRecord, final CommandContext context) {
     Object rightVal = null;
     if (rightStatement != null)
-      rightVal = executeQuery(rightStatement, ctx);
+      rightVal = executeQuery(rightStatement, context);
     else if (rightParam != null)
-      rightVal = rightParam.getValue(ctx.getInputParameters());
+      rightVal = rightParam.getValue(context.getInputParameters());
     else if (rightMathExpression != null)
-      rightVal = rightMathExpression.execute(currentRecord, ctx);
+      rightVal = rightMathExpression.execute(currentRecord, context);
 
     return rightVal;
   }
 
-  public Object evaluateLeft(final Identifiable currentRecord, final CommandContext ctx) {
-    return left.execute(currentRecord, ctx);
+  public Object evaluateLeft(final Identifiable currentRecord, final CommandContext context) {
+    return left.execute(currentRecord, context);
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftVal = evaluateLeft(currentRecord, ctx);
-    final Object rightVal = evaluateRight(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftVal = evaluateLeft(currentRecord, context);
+    final Object rightVal = evaluateRight(currentRecord, context);
     if (rightVal == null)
       return false;
 
     return evaluateExpression(leftVal, rightVal);
   }
 
-  public Object evaluateRight(final Result currentRecord, final CommandContext ctx) {
+  public Object evaluateRight(final Result currentRecord, final CommandContext context) {
     Object rightVal = null;
     if (rightStatement != null)
-      rightVal = executeQuery(rightStatement, ctx);
+      rightVal = executeQuery(rightStatement, context);
     else if (rightParam != null)
-      rightVal = rightParam.getValue(ctx.getInputParameters());
+      rightVal = rightParam.getValue(context.getInputParameters());
     else if (rightMathExpression != null)
-      rightVal = rightMathExpression.execute(currentRecord, ctx);
+      rightVal = rightMathExpression.execute(currentRecord, context);
 
     return rightVal;
   }
 
-  public Object evaluateLeft(final Result currentRecord, final CommandContext ctx) {
-    return left.execute(currentRecord, ctx);
+  public Object evaluateLeft(final Result currentRecord, final CommandContext context) {
+    return left.execute(currentRecord, context);
   }
 
-  protected static Object executeQuery(final SelectStatement rightStatement, final CommandContext ctx) {
-    final BasicCommandContext subCtx = new BasicCommandContext();
-    subCtx.setParentWithoutOverridingChild(ctx);
-    final ResultSet result = rightStatement.execute(ctx.getDatabase(), ctx.getInputParameters());
+  protected static Object executeQuery(final SelectStatement rightStatement, final CommandContext context) {
+    final BasicCommandContext subcontext = new BasicCommandContext();
+    subcontext.setParentWithoutOverridingChild(context);
+    final ResultSet result = rightStatement.execute(context.getDatabase(), context.getInputParameters());
     return result.stream().collect(Collectors.toSet());
   }
 
@@ -251,7 +251,7 @@ public class InCondition extends BooleanExpression {
     if (left.isBaseIdentifier()) {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
         if (rightMathExpression != null) {
-          return rightMathExpression.isEarlyCalculated(info.getCtx());
+          return rightMathExpression.isEarlyCalculated(info.getContext());
         } else
           return rightParam != null;
       }

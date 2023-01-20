@@ -29,13 +29,13 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
   private ResultSet prevResult = null;
 
 
-  public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext ctx, final boolean enableProfiling) {
-    super(ctx, enableProfiling);
+  public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext context, final boolean enableProfiling) {
+    super(context, enableProfiling);
     this.subSteps = steps;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
@@ -53,7 +53,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -61,7 +61,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
@@ -70,7 +70,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
           nextItem = prevResult.next();
           final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
-            if (!matchesPattern(nextItem, ctx)) {
+            if (!matchesPattern(nextItem, context)) {
               break;
             }
 
@@ -120,20 +120,20 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
     };
   }
 
-  private boolean matchesPattern(final Result nextItem, final CommandContext ctx) {
-    final SelectExecutionPlan plan = createExecutionPlan(nextItem, ctx);
+  private boolean matchesPattern(final Result nextItem, final CommandContext context) {
+    final SelectExecutionPlan plan = createExecutionPlan(nextItem, context);
     try (final ResultSet rs = plan.fetchNext(1)) {
       return rs.hasNext();
     }
   }
 
-  private SelectExecutionPlan createExecutionPlan(final Result nextItem, final CommandContext ctx) {
-    final SelectExecutionPlan plan = new SelectExecutionPlan(ctx);
-    plan.chain(new AbstractExecutionStep(ctx, profilingEnabled) {
+  private SelectExecutionPlan createExecutionPlan(final Result nextItem, final CommandContext context) {
+    final SelectExecutionPlan plan = new SelectExecutionPlan(context);
+    plan.chain(new AbstractExecutionStep(context, profilingEnabled) {
       private boolean executed = false;
 
       @Override
-      public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+      public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
         final InternalResultSet result = new InternalResultSet();
         if (!executed) {
           result.add(copy(nextItem));

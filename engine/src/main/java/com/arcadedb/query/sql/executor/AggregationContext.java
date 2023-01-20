@@ -24,5 +24,5 @@ package com.arcadedb.query.sql.executor;
 public interface AggregationContext {
   Object getFinalValue();
 
-  void apply(Result next, CommandContext ctx);
+  void apply(Result next, CommandContext context);
 }

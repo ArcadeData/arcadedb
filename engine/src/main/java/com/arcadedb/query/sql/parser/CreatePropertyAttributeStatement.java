@@ -51,9 +51,9 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     return result;
   }
 
-  public Object setOnProperty(final Property internalProp, final CommandContext ctx) {
+  public Object setOnProperty(final Property internalProp, final CommandContext context) {
     final String attrName = settingName.getStringValue();
-    final Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, ctx);
+    final Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, context);
     try {
       if (attrName.equalsIgnoreCase("readonly")) {
         internalProp.setReadonly((boolean) attrValue);

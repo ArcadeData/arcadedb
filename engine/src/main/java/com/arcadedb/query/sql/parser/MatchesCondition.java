@@ -37,36 +37,36 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     String regex = right;
     if (regex != null) {
       regex = regex.substring(1, regex.length() - 1);
     } else if (rightExpression != null) {
-      final Object val = rightExpression.execute(currentRecord, ctx);
+      final Object val = rightExpression.execute(currentRecord, context);
       if (val instanceof String) {
         regex = (String) val;
       } else {
         return false;
       }
     } else {
-      final Object paramVal = rightParam.getValue(ctx.getInputParameters());
+      final Object paramVal = rightParam.getValue(context.getInputParameters());
       if (paramVal instanceof String) {
         regex = (String) paramVal;
       } else {
         return false;
       }
     }
-    final Object value = expression.execute(currentRecord, ctx);
+    final Object value = expression.execute(currentRecord, context);
 
-    return matches(value, regex, ctx);
+    return matches(value, regex, context);
   }
 
-  private boolean matches(final Object value, final String regex, final CommandContext ctx) {
+  private boolean matches(final Object value, final String regex, final CommandContext context) {
     final String key = "MATCHES_" + regex.hashCode();
-    java.util.regex.Pattern p = (java.util.regex.Pattern) ctx.getVariable(key);
+    java.util.regex.Pattern p = (java.util.regex.Pattern) context.getVariable(key);
     if (p == null) {
       p = java.util.regex.Pattern.compile(regex);
-      ctx.setVariable(key, p);
+      context.setVariable(key, p);
     }
 
     if (value instanceof CharSequence) {
@@ -77,28 +77,28 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     String regex = right;
     if (regex != null) {
       regex = regex.substring(1, regex.length() - 1);
     } else if (rightExpression != null) {
-      final Object val = rightExpression.execute(currentRecord, ctx);
+      final Object val = rightExpression.execute(currentRecord, context);
       if (val instanceof String) {
         regex = (String) val;
       } else {
         return false;
       }
     } else {
-      final Object paramVal = rightParam.getValue(ctx.getInputParameters());
+      final Object paramVal = rightParam.getValue(context.getInputParameters());
       if (paramVal instanceof String) {
         regex = (String) paramVal;
       } else {
         return false;
       }
     }
-    final Object value = expression.execute(currentRecord, ctx);
+    final Object value = expression.execute(currentRecord, context);
 
-    return matches(value, regex, ctx);
+    return matches(value, regex, context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

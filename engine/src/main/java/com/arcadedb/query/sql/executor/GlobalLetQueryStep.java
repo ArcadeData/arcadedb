@@ -33,28 +33,28 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
   private final InternalExecutionPlan subExecutionPlan;
   boolean executed = false;
 
-  public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.varName = varName;
 
     final BasicCommandContext subCtx = new BasicCommandContext();
-    subCtx.setDatabase(ctx.getDatabase());
-    subCtx.setParent(ctx);
+    subCtx.setDatabase(context.getDatabase());
+    subCtx.setParent(context);
     subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    calculate(ctx);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    calculate(context);
     return new InternalResultSet();
   }
 
-  private void calculate(final CommandContext ctx) {
+  private void calculate(final CommandContext context) {
     if (executed) {
       return;
     }
-    ctx.setVariable(varName.getStringValue(), toList(new LocalResultSet(subExecutionPlan)));
+    context.setVariable(varName.getStringValue(), toList(new LocalResultSet(subExecutionPlan)));
     executed = true;
   }
 

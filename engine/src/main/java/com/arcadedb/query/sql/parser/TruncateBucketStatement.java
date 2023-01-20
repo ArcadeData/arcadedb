@@ -36,8 +36,8 @@ public class TruncateBucketStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-//    ODatabaseDocumentAbstract database = (ODatabaseDocumentAbstract) ctx.getDatabase();
+  public ResultSet executeDDL(final CommandContext context) {
+//    ODatabaseDocumentAbstract database = (ODatabaseDocumentAbstract) context.getDatabase();
 //    OInternalResultSet rs = new OInternalResultSet();
 //
 //    Integer bucketId = null;

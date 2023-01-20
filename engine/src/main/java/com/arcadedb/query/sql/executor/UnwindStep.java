@@ -40,14 +40,14 @@ public class UnwindStep extends AbstractExecutionStep {
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
-  public UnwindStep(final Unwind unwind, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UnwindStep(final Unwind unwind, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.unwind = unwind;
     unwindFields = unwind.getItems().stream().map(x -> x.getStringValue()).collect(Collectors.toList());
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
@@ -60,7 +60,7 @@ public class UnwindStep extends AbstractExecutionStep {
           return false;
         }
         if (nextElement == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         return nextElement != null;
       }
@@ -71,7 +71,7 @@ public class UnwindStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
         if (nextElement == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         if (nextElement == null) {
           throw new NoSuchElementException();
@@ -80,7 +80,7 @@ public class UnwindStep extends AbstractExecutionStep {
         final Result result = nextElement;
         localCount++;
         nextElement = null;
-        fetchNext(ctx, nRecords);
+        fetchNext(context, nRecords);
         return result;
       }
 
@@ -92,7 +92,7 @@ public class UnwindStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNext(final CommandContext ctx, final int n) {
+  private void fetchNext(final CommandContext context, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
         nextElement = nextSubsequence.next();
@@ -101,7 +101,7 @@ public class UnwindStep extends AbstractExecutionStep {
 
       if (nextSubsequence == null || !nextSubsequence.hasNext()) {
         if (lastResult == null || !lastResult.hasNext()) {
-          lastResult = getPrev().get().syncPull(ctx, n);
+          lastResult = getPrev().get().syncPull(context, n);
         }
         if (!lastResult.hasNext()) {
           return;
@@ -109,7 +109,7 @@ public class UnwindStep extends AbstractExecutionStep {
       }
 
       final Result nextAggregateItem = lastResult.next();
-      nextSubsequence = unwind(nextAggregateItem, unwindFields, ctx).iterator();
+      nextSubsequence = unwind(nextAggregateItem, unwindFields, context).iterator();
 
     } while (true);
 

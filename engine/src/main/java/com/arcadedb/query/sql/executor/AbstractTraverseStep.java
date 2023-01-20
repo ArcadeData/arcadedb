@@ -39,16 +39,16 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   final Set<RID> traversed = new RidSet();
 
-  public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth, final CommandContext ctx,
+  public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth, final CommandContext context,
       final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+    super(context, profilingEnabled);
     this.whileClause = whileClause;
     this.maxDepth = maxDepth;
     this.projections = projections.stream().map(TraverseProjectionItem::copy).collect(Collectors.toList());
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) {
     //TODO
 
     return new ResultSet() {
@@ -60,7 +60,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
           return false;
         }
         if (results.isEmpty()) {
-          fetchNextBlock(ctx, nRecords);
+          fetchNextBlock(context, nRecords);
         }
         return !results.isEmpty();
       }
@@ -71,7 +71,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
         if (results.isEmpty()) {
-          fetchNextBlock(ctx, nRecords);
+          fetchNextBlock(context, nRecords);
           if (results.isEmpty()) {
             throw new NoSuchElementException();
           }
@@ -87,27 +87,27 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNextBlock(final CommandContext ctx, final int nRecords) {
+  private void fetchNextBlock(final CommandContext context, final int nRecords) {
     if (this.entryPoints == null) {
       this.entryPoints = new ArrayList<>();
     }
 
     while (this.results.isEmpty()) {
       if (this.entryPoints.isEmpty()) {
-        fetchNextEntryPoints(ctx, nRecords);
+        fetchNextEntryPoints(context, nRecords);
       }
       if (this.entryPoints.isEmpty()) {
         return;
       }
       final long begin = profilingEnabled ? System.nanoTime() : 0;
-      fetchNextResults(ctx, nRecords);
+      fetchNextResults(context, nRecords);
       if (profilingEnabled) {
         cost += (System.nanoTime() - begin);
       }
     }
   }
 
-  protected abstract void fetchNextEntryPoints(CommandContext ctx, int nRecords);
+  protected abstract void fetchNextEntryPoints(CommandContext context, int nRecords);
 
-  protected abstract void fetchNextResults(CommandContext ctx, int nRecords);
+  protected abstract void fetchNextResults(CommandContext context, int nRecords);
 }

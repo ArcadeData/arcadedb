@@ -30,9 +30,9 @@ public class OptionalMatchEdgeTraverser extends MatchEdgeTraverser {
     super(lastUpstreamRecord, edge);
   }
 
-  protected void init(final CommandContext ctx) {
+  protected void init(final CommandContext context) {
     if (downstream == null) {
-      super.init(ctx);
+      super.init(context);
       if (!downstream.hasNext()) {
         final List x = new ArrayList();
         x.add(EMPTY_OPTIONAL);
@@ -41,8 +41,8 @@ public class OptionalMatchEdgeTraverser extends MatchEdgeTraverser {
     }
   }
 
-  public Result next(final CommandContext ctx) {
-    init(ctx);
+  public Result next(final CommandContext context) {
+    init(context);
     if (!downstream.hasNext()) {
       throw new NoSuchElementException();
     }

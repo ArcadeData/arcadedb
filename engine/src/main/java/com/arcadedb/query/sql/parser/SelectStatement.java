@@ -166,12 +166,12 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
+    context.setDatabase(db);
     final Map<String, Object> params = new HashMap<>();
     if (args != null) {
       for (int i = 0; i < args.length; i++) {
@@ -181,19 +181,19 @@ public class SelectStatement extends Statement {
 
     setProfilingConstraints((DatabaseInternal) db);
 
-    ctx.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setInputParameters(params);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
     final LocalResultSet result = new LocalResultSet(executionPlan);
     return result;
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
+    context.setDatabase(db);
 
     setProfilingConstraints((DatabaseInternal) db);
 
@@ -202,15 +202,15 @@ public class SelectStatement extends Statement {
       profileExecution = (Boolean) params.remove("$profileExecution");
     }
 
-    ctx.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, profileExecution);
+    context.setInputParameters(params);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, profileExecution);
     final LocalResultSet result = new LocalResultSet(executionPlan);
     return result;
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   @Override

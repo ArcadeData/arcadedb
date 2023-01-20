@@ -133,10 +133,10 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
-      final Object rightValue = right.execute(currentRecord, ctx);
+      final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
       if (!MultiValue.isMultiValue(leftValue)) {
@@ -145,11 +145,11 @@ public class ContainsCondition extends BooleanExpression {
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, ctx))
+        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, context))
           return true;
-        else if (item instanceof Result && condition.evaluate((Result) item, ctx))
+        else if (item instanceof Result && condition.evaluate((Result) item, context))
           return true;
-        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), ctx))
+        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), context))
           return true;
       }
       return false;
@@ -157,10 +157,10 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
-      final Object rightValue = right.execute(currentRecord, ctx);
+      final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
       if (!MultiValue.isMultiValue(leftValue)) {
@@ -169,11 +169,11 @@ public class ContainsCondition extends BooleanExpression {
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, ctx))
+        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, context))
           return true;
-        else if (item instanceof Result && condition.evaluate((Result) item, ctx))
+        else if (item instanceof Result && condition.evaluate((Result) item, context))
           return true;
-        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), ctx))
+        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), context))
           return true;
       }
       return false;
@@ -246,7 +246,7 @@ public class ContainsCondition extends BooleanExpression {
     if (left.isBaseIdentifier()) {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
         if (right != null) {
-          return right.isEarlyCalculated(info.getCtx());
+          return right.isEarlyCalculated(info.getContext());
         }
       }
     }

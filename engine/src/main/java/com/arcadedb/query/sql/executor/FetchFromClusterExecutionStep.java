@@ -38,29 +38,29 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
   private Iterator<Record> iterator;
 
-  public FetchFromClusterExecutionStep(final int bucketId, final CommandContext ctx, final boolean profilingEnabled) {
-    this(bucketId, null, ctx, profilingEnabled);
+  public FetchFromClusterExecutionStep(final int bucketId, final CommandContext context, final boolean profilingEnabled) {
+    this(bucketId, null, context, profilingEnabled);
   }
 
-  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.bucketId = bucketId;
     this.queryPlanning = queryPlanning;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
-        iterator = ctx.getDatabase().getSchema().getBucketById(bucketId).iterator();
+        iterator = context.getDatabase().getSchema().getBucketById(bucketId).iterator();
 
         //TODO check how to support ranges and DESC
 //        long minClusterPosition = calculateMinClusterPosition();
 //        long maxClusterPosition = calculateMaxClusterPosition();
-//            new ORecordIteratorCluster((ODatabaseDocumentInternal) ctx.getDatabase(),
-//            (ODatabaseDocumentInternal) ctx.getDatabase(), bucketId, minClusterPosition, maxClusterPosition);
+//            new ORecordIteratorCluster((ODatabaseDocumentInternal) context.getDatabase(),
+//            (ODatabaseDocumentInternal) context.getDatabase(), bucketId, minClusterPosition, maxClusterPosition);
 //        if (ORDER_DESC == order) {
 //          iterator.last();
 //        }
@@ -112,7 +112,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             nFetched++;
             final ResultInternal result = new ResultInternal();
             result.element = (Document) record;
-            ctx.setVariable("current", result);
+            context.setVariable("current", result);
             return result;
           } finally {
             if (profilingEnabled) {
@@ -167,9 +167,9 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //
 //        final Object obj;
 //        if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null) {
-//          obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, ctx);
+//          obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, context);
 //        } else {
-//          obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, ctx);
+//          obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, context);
 //        }
 //
 //        conditionRid = ((Identifiable) obj).getIdentity();
@@ -191,7 +191,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result =
-        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + ctx.getDatabase().getSchema().getBucketById(bucketId)
+        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + context.getDatabase().getSchema().getBucketById(bucketId)
             .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC");
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -209,7 +209,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), context, profilingEnabled);
   }
 }

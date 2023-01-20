@@ -542,7 +542,7 @@ public class MatchExecutionPlanner {
     return prefetchStm;
   }
 
-  private void buildPatterns(final CommandContext ctx) {
+  private void buildPatterns(final CommandContext context) {
     if (this.pattern != null) {
       return;
     }
@@ -557,7 +557,7 @@ public class MatchExecutionPlanner {
     final Map<String, String> aliasClusters = new LinkedHashMap<>();
     final Map<String, Rid> aliasRids = new LinkedHashMap<>();
     for (final MatchExpression expr : this.matchExpressions) {
-      addAliases(expr, aliasFilters, aliasUserTypes, aliasClusters, aliasRids, ctx);
+      addAliases(expr, aliasFilters, aliasUserTypes, aliasClusters, aliasRids, context);
     }
 
     this.aliasFilters = aliasFilters;
@@ -678,14 +678,14 @@ public class MatchExecutionPlanner {
   }
 
   private Map<String, Long> estimateRootEntries(final Map<String, String> aliasUserTypes, final Map<String, String> aliasClusters,
-      final Map<String, Rid> aliasRids, final Map<String, WhereClause> aliasFilters, final CommandContext ctx) {
+      final Map<String, Rid> aliasRids, final Map<String, WhereClause> aliasFilters, final CommandContext context) {
     final Set<String> allAliases = new LinkedHashSet<>();
     allAliases.addAll(aliasUserTypes.keySet());
     allAliases.addAll(aliasFilters.keySet());
     allAliases.addAll(aliasClusters.keySet());
     allAliases.addAll(aliasRids.keySet());
 
-    final Schema schema = ctx.getDatabase().getSchema();
+    final Schema schema = context.getDatabase().getSchema();
 
     final Map<String, Long> result = new LinkedHashMap<>();
     for (final String alias : allAliases) {
@@ -704,13 +704,13 @@ public class MatchExecutionPlanner {
         final long upperBound;
         final WhereClause filter = aliasFilters.get(alias);
         if (filter != null) {
-          upperBound = filter.estimate(oClass, threshold, ctx);
+          upperBound = filter.estimate(oClass, threshold, context);
         } else {
-          upperBound = ctx.getDatabase().countType(oClass.getName(), true);
+          upperBound = context.getDatabase().countType(oClass.getName(), true);
         }
         result.put(alias, upperBound);
       } else if (bucketName != null) {
-        final Database db = ctx.getDatabase();
+        final Database db = context.getDatabase();
         if (db.getSchema().getBucketByName(bucketName) == null) {
           throw new CommandExecutionException("Bucket '" + bucketName + "' not defined");
         }
@@ -720,7 +720,7 @@ public class MatchExecutionPlanner {
           final long upperBound;
           final WhereClause filter = aliasFilters.get(alias);
           if (filter != null) {
-            upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, threshold, ctx));
+            upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, threshold, context));
           } else {
             upperBound = db.countBucket(bucketName);
           }

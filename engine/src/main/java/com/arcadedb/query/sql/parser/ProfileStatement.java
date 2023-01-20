@@ -46,14 +46,14 @@ public class ProfileStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, true);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, true);
     if (executionPlan instanceof UpdateExecutionPlan) {
       ((UpdateExecutionPlan) executionPlan).executeInternal();
     }
@@ -72,15 +72,15 @@ public class ProfileStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
+    context.setDatabase(db);
+    context.setInputParameters(args);
 
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, true);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, true);
 
     final LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
 
@@ -95,8 +95,8 @@ public class ProfileStatement extends Statement {
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean profile) {
-    return statement.createExecutionPlan(ctx, profile);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean profile) {
+    return statement.createExecutionPlan(context, profile);
   }
 
   @Override

@@ -42,18 +42,18 @@ public class WhereClause extends SimpleNode {
     super(id);
   }
 
-  public boolean matchesFilters(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean matchesFilters(final Identifiable currentRecord, final CommandContext context) {
     if (baseExpression == null)
       return true;
 
-    return baseExpression.evaluate(currentRecord, ctx);
+    return baseExpression.evaluate(currentRecord, context);
   }
 
-  public boolean matchesFilters(final Result currentRecord, final CommandContext ctx) {
+  public boolean matchesFilters(final Result currentRecord, final CommandContext context) {
     if (baseExpression == null)
       return true;
 
-    return baseExpression.evaluate(currentRecord, ctx);
+    return baseExpression.evaluate(currentRecord, context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -71,8 +71,8 @@ public class WhereClause extends SimpleNode {
    * @return an estimation of the number of records of this class returned applying this filter, 0 if and only if sure that no
    * records are returned
    */
-  public long estimate(final DocumentType oClass, final long threshold, final CommandContext ctx) {
-    long count = ctx.getDatabase().countType(oClass.getName(), true);
+  public long estimate(final DocumentType oClass, final long threshold, final CommandContext context) {
+    long count = context.getDatabase().countType(oClass.getName(), true);
     if (count > 1) {
       count = count / 2;
     }
@@ -85,7 +85,7 @@ public class WhereClause extends SimpleNode {
     final Collection<TypeIndex> indexes = oClass.getAllIndexes(true);
     for (final AndBlock condition : flattenedConditions) {
 
-      final List<BinaryCondition> indexedFunctConditions = condition.getIndexedFunctionConditions(oClass, ctx.getDatabase());
+      final List<BinaryCondition> indexedFunctConditions = condition.getIndexedFunctionConditions(oClass, context);
 
       long conditionEstimation = Long.MAX_VALUE;
 
@@ -94,13 +94,13 @@ public class WhereClause extends SimpleNode {
           final FromClause from = new FromClause(-1);
           from.item = new FromItem(-1);
           from.item.setIdentifier(new Identifier(oClass.getName()));
-          final long newCount = cond.estimateIndexed(from, ctx);
+          final long newCount = cond.estimateIndexed(from, context);
           if (newCount < conditionEstimation) {
             conditionEstimation = newCount;
           }
         }
       } else {
-        final Map<String, Object> conditions = getEqualityOperations(condition, ctx);
+        final Map<String, Object> conditions = getEqualityOperations(condition, context);
 
         for (final Index index : indexes) {
           if (index.getType().equals(Schema.INDEX_TYPE.FULL_TEXT))
@@ -151,14 +151,14 @@ public class WhereClause extends SimpleNode {
     return Long.MAX_VALUE;
   }
 
-  private Map<String, Object> getEqualityOperations(final AndBlock condition, final CommandContext ctx) {
+  private Map<String, Object> getEqualityOperations(final AndBlock condition, final CommandContext context) {
     final Map<String, Object> result = new HashMap<String, Object>();
     for (final BooleanExpression expression : condition.subBlocks) {
       if (expression instanceof BinaryCondition) {
         final BinaryCondition b = (BinaryCondition) expression;
         if (b.operator instanceof EqualsCompareOperator) {
-          if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated(ctx)) {
-            result.put(b.left.toString(), b.right.execute((Result) null, ctx));
+          if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated(context)) {
+            result.put(b.left.toString(), b.right.execute((Result) null, context));
           }
         }
       }

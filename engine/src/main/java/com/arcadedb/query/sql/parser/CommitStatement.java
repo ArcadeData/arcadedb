@@ -36,8 +36,8 @@ public class CommitStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
-    ctx.getDatabase().commit();
+  public ResultSet executeSimple(final CommandContext context) {
+    context.getDatabase().commit();
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "commit");

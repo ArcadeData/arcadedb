@@ -112,17 +112,17 @@ public class UpdateItem extends SimpleNode {
     return result;
   }
 
-  public void applyUpdate(final ResultInternal doc, final CommandContext ctx) {
-    final Object rightValue = right.execute(doc, ctx);
+  public void applyUpdate(final ResultInternal doc, final CommandContext context) {
+    final Object rightValue = right.execute(doc, context);
     if (leftModifier == null) {
-      applyOperation(doc, left, rightValue, ctx);
+      applyOperation(doc, left, rightValue, context);
     } else {
       final Object val = doc.getProperty(left.getStringValue());
-      leftModifier.setValue(doc, val, rightValue, ctx);
+      leftModifier.setValue(doc, val, rightValue, context);
     }
   }
 
-  public void applyOperation(final ResultInternal doc, final Identifier attrName, final Object rightValue, final CommandContext ctx) {
+  public void applyOperation(final ResultInternal doc, final Identifier attrName, final Object rightValue, final CommandContext context) {
     switch (operator) {
     case OPERATOR_EQ:
       Object newValue = convertResultToDocument(rightValue);
@@ -130,16 +130,16 @@ public class UpdateItem extends SimpleNode {
       doc.setProperty(attrName.getStringValue(), newValue);
       break;
     case OPERATOR_MINUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, ctx, MathExpression.Operator.MINUS));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.MINUS));
       break;
     case OPERATOR_PLUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, ctx, MathExpression.Operator.PLUS));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.PLUS));
       break;
     case OPERATOR_SLASHASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, ctx, MathExpression.Operator.SLASH));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.SLASH));
       break;
     case OPERATOR_STARASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, ctx, MathExpression.Operator.STAR));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.STAR));
       break;
     }
   }
@@ -193,7 +193,7 @@ public class UpdateItem extends SimpleNode {
     return value.stream().anyMatch(x -> x instanceof Result);
   }
 
-  private Object calculateNewValue(final ResultInternal doc, final CommandContext ctx, final MathExpression.Operator explicitOperator) {
+  private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final MathExpression.Operator explicitOperator) {
     final Expression leftEx = new Expression(left.copy());
     if (leftModifier != null) {
       ((BaseExpression) leftEx.mathExpression).modifier = leftModifier.copy();
@@ -202,7 +202,7 @@ public class UpdateItem extends SimpleNode {
     mathExp.getChildExpressions().add(leftEx.getMathExpression());
     mathExp.getChildExpressions().add(new ParenthesisExpression(right.copy()));
     mathExp.getOperators().add(explicitOperator);
-    return mathExp.execute(doc, ctx);
+    return mathExp.execute(doc, context);
   }
 
   public Identifier getLeft() {

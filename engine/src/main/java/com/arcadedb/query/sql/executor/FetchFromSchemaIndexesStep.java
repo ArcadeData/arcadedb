@@ -40,18 +40,18 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
   private int  cursor = 0;
 
 
-  public FetchFromSchemaIndexesStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromSchemaIndexesStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
 
     if (cursor == 0) {
       final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
-        final Schema schema = ctx.getDatabase().getSchema();
+        final Schema schema = context.getDatabase().getSchema();
 
         for (final Index index : schema.getIndexes()) {
           final ResultInternal r = new ResultInternal();
@@ -77,7 +77,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
           if (fileId > -1) {
             r.setProperty("fileId", fileId);
             try {
-              r.setProperty("size", FileUtils.getSizeAsString(ctx.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
+              r.setProperty("size", FileUtils.getSizeAsString(context.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
             } catch (final IOException e) {
               // IGNORE IT, NO SIZE AVAILABLE
             }

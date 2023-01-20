@@ -73,71 +73,71 @@ public class MethodCall extends SimpleNode {
     return bidirectionalMethods.containsKey(methodName.getStringValue().toLowerCase(Locale.ENGLISH));
   }
 
-  public Object execute(final Object targetObjects, final CommandContext ctx) {
-    return execute(targetObjects, ctx, methodName.getStringValue(), params, null);
+  public Object execute(final Object targetObjects, final CommandContext context) {
+    return execute(targetObjects, context, methodName.getStringValue(), params, null);
   }
 
-  public Object execute(final Object targetObjects, final Iterable<Identifiable> iPossibleResults, final CommandContext ctx) {
-    return execute(targetObjects, ctx, methodName.getStringValue(), params, iPossibleResults);
+  public Object execute(final Object targetObjects, final Iterable<Identifiable> iPossibleResults, final CommandContext context) {
+    return execute(targetObjects, context, methodName.getStringValue(), params, iPossibleResults);
   }
 
-  private Object execute(final Object targetObjects, final CommandContext ctx, final String name, final List<Expression> iParams,
+  private Object execute(final Object targetObjects, final CommandContext context, final String name, final List<Expression> iParams,
       final Iterable<Identifiable> iPossibleResults) {
     final List<Object> paramValues = new ArrayList<Object>();
-    Object val = ctx.getVariable("current");
+    Object val = context.getVariable("current");
     if (val == null && targetObjects == null) {
       return null;
     }
     for (final Expression expr : iParams) {
       if (val instanceof Identifiable) {
-        paramValues.add(expr.execute((Identifiable) val, ctx));
+        paramValues.add(expr.execute((Identifiable) val, context));
       } else if (val instanceof Result) {
-        paramValues.add(expr.execute((Result) val, ctx));
+        paramValues.add(expr.execute((Result) val, context));
       } else if (targetObjects instanceof Identifiable) {
-        paramValues.add(expr.execute((Identifiable) targetObjects, ctx));
+        paramValues.add(expr.execute((Identifiable) targetObjects, context));
       } else if (targetObjects instanceof Result) {
-        paramValues.add(expr.execute((Result) targetObjects, ctx));
+        paramValues.add(expr.execute((Result) targetObjects, context));
       } else {
         throw new CommandExecutionException("Invalid value for $current: " + val);
       }
     }
     if (isGraphFunction()) {
-      final SQLFunction function = ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql")).getFunction(name);
+      final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
       if (function instanceof SQLFunctionFiltered) {
-        Object current = ctx.getVariable("current");
+        Object current = context.getVariable("current");
         if (current instanceof Result) {
           current = ((Result) current).getElement().orElse(null);
         }
-        return ((SQLFunctionFiltered) function).execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, ctx);
+        return ((SQLFunctionFiltered) function).execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, context);
       } else {
-        final Object current = ctx.getVariable("current");
+        final Object current = context.getVariable("current");
         if (current instanceof Identifiable) {
-          return function.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), ctx);
+          return function.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), context);
         } else if (current instanceof Result) {
-          return function.execute(targetObjects, ((Result) current).getElement().orElse(null), null, paramValues.toArray(), ctx);
+          return function.execute(targetObjects, ((Result) current).getElement().orElse(null), null, paramValues.toArray(), context);
         } else {
-          return function.execute(targetObjects, null, null, paramValues.toArray(), ctx);
+          return function.execute(targetObjects, null, null, paramValues.toArray(), context);
         }
       }
 
     }
 
-    final SQLMethod method = ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql")).getMethod(name);
+    final SQLMethod method = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getMethod(name);
     if (method != null) {
       if (val instanceof Result)
         val = ((Result) val).getElement().orElse(null);
 
-      return method.execute(targetObjects, (Identifiable) val, ctx, targetObjects, paramValues.toArray());
+      return method.execute(targetObjects, (Identifiable) val, context, targetObjects, paramValues.toArray());
     }
     throw new UnsupportedOperationException("OMethod call, something missing in the implementation...?");
   }
 
-  public Object executeReverse(final Object targetObjects, final CommandContext ctx) {
+  public Object executeReverse(final Object targetObjects, final CommandContext context) {
     final String straightName = methodName.getStringValue().toLowerCase();
     final String inverseMethodName = bidirectionalMethods.get(straightName);
 
     if (inverseMethodName != null)
-      return execute(targetObjects, ctx, inverseMethodName, params, null);
+      return execute(targetObjects, context, inverseMethodName, params, null);
 
     throw new UnsupportedOperationException("Invalid reverse traversal: " + methodName);
   }

@@ -42,7 +42,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     final String targetUrl = this.url.getUrlString();
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "export database");
@@ -56,7 +56,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
-      final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), fileName);
+      final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), fileName);
 
       String formatExport = format.getStringValue();
       if ((formatExport.startsWith("'") && formatExport.endsWith("'")) ||//

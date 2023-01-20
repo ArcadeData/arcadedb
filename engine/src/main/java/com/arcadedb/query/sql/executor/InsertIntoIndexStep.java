@@ -29,13 +29,13 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public InsertIntoIndexStep(final IndexIdentifier targetIndex, final InsertBody insertBody, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public InsertIntoIndexStep(final IndexIdentifier targetIndex, final InsertBody insertBody, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     throw new UnsupportedOperationException();
 //    return new OResultSet() {
 //      @Override
@@ -49,7 +49,7 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 //          throw new NoSuchElementException();
 //        }
 //        //TODO
-//        OIndex<?> index = ctx.getDatabase().getMetadata().getIndexManager().getIndex(targetIndex.getIndexName());
+//        OIndex<?> index = context.getDatabase().getMetadata().getIndexManager().getIndex(targetIndex.getIndexName());
 //        if (index == null) {
 //          throw new PCommandExecutionException("Index not found: " + targetIndex);
 //        }
@@ -59,9 +59,9 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 //        }
 //        int count;
 //        if (setExps != null) {
-//          count = handleSet(setExps, index, ctx);
+//          count = handleSet(setExps, index, context);
 //        } else {
-//          count = handleKeyValues(body.getIdentifierList(), body.getValueExpressions(), index, ctx);
+//          count = handleKeyValues(body.getIdentifierList(), body.getValueExpressions(), index, context);
 //        }
 //
 //        executed = true;
@@ -71,7 +71,7 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 //      }
 //
 //      private int handleKeyValues(List<OIdentifier> identifierList, List<List<OExpression>> setExpressions, OIndex index,
-//          OCommandContext ctx) {
+//          OCommandContext context) {
 //        OExpression keyExp = null;
 //        OExpression valueExp = null;
 //        if (identifierList == null || setExpressions == null) {
@@ -91,7 +91,7 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 //              valueExp = valList.get(i);
 //            }
 //          }
-//          count += doExecute(index, ctx, keyExp, valueExp);
+//          count += doExecute(index, context, keyExp, valueExp);
 //        }
 //        if (keyExp == null || valueExp == null) {
 //          throw new PCommandExecutionException("Invalid insert expression");
@@ -99,7 +99,7 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 //        return count;
 //      }
 //
-//      private int handleSet(List<OInsertSetExpression> setExps, OIndex index, OCommandContext ctx) {
+//      private int handleSet(List<OInsertSetExpression> setExps, OIndex index, OCommandContext context) {
 //        OExpression keyExp = null;
 //        OExpression valueExp = null;
 //        for (OInsertSetExpression exp : setExps) {
@@ -114,13 +114,13 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 //        if (keyExp == null || valueExp == null) {
 //          throw new PCommandExecutionException("Invalid insert expression");
 //        }
-//        return doExecute(index, ctx, keyExp, valueExp);
+//        return doExecute(index, context, keyExp, valueExp);
 //      }
 //
-//      private int doExecute(OIndex index, OCommandContext ctx, OExpression keyExp, OExpression valueExp) {
+//      private int doExecute(OIndex index, OCommandContext context, OExpression keyExp, OExpression valueExp) {
 //        int count = 0;
-//        Object key = keyExp.execute((OResult) null, ctx);
-//        Object value = valueExp.execute((OResult) null, ctx);
+//        Object key = keyExp.execute((OResult) null, context);
+//        Object value = valueExp.execute((OResult) null, context);
 //        if (value instanceof PIdentifiable) {
 //          index.put(key, (PIdentifiable) value);
 //          count++;

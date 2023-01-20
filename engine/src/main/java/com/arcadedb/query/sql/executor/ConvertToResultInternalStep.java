@@ -37,12 +37,12 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public ConvertToResultInternalStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public ConvertToResultInternalStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
@@ -60,7 +60,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -68,7 +68,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;

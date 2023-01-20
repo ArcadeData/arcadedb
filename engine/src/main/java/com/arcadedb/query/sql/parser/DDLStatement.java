@@ -36,31 +36,31 @@ public abstract class DDLStatement extends Statement {
     super(id);
   }
 
-  public abstract ResultSet executeDDL(CommandContext ctx);
+  public abstract ResultSet executeDDL(CommandContext context);
 
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null)
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null)
+      context.setParentWithoutOverridingChild(parentcontext);
 
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(context, false);
     return executionPlan.executeInternal();
   }
 
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(context, false);
     return executionPlan.executeInternal();
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    return new DDLExecutionPlan(ctx, this);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    return new DDLExecutionPlan(context, this);
   }
 }

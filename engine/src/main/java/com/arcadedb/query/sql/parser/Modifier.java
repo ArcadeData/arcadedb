@@ -71,47 +71,47 @@ public class Modifier extends SimpleNode {
     }
   }
 
-  public Object execute(final Identifiable iCurrentRecord, Object result, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, Object result, final CommandContext context) {
     if (methodCall != null) {
-      result = methodCall.execute(result, ctx);
+      result = methodCall.execute(result, context);
     } else if (suffix != null) {
-      result = suffix.execute(result, ctx);
+      result = suffix.execute(result, context);
     } else if (arrayRange != null) {
-      result = arrayRange.execute(iCurrentRecord, result, ctx);
+      result = arrayRange.execute(iCurrentRecord, result, context);
     } else if (condition != null) {
-      result = filterByCondition(result, ctx);
+      result = filterByCondition(result, context);
     } else if (arraySingleValues != null) {
-      result = arraySingleValues.execute(iCurrentRecord, result, ctx);
+      result = arraySingleValues.execute(iCurrentRecord, result, context);
     } else if (rightBinaryCondition != null) {
-      result = rightBinaryCondition.execute(iCurrentRecord, result, ctx);
+      result = rightBinaryCondition.execute(iCurrentRecord, result, context);
     }
     if (next != null) {
-      result = next.execute(iCurrentRecord, result, ctx);
+      result = next.execute(iCurrentRecord, result, context);
     }
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, Object result, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, Object result, final CommandContext context) {
     if (methodCall != null) {
-      result = methodCall.execute(result, ctx);
+      result = methodCall.execute(result, context);
     } else if (suffix != null) {
-      result = suffix.execute(result, ctx);
+      result = suffix.execute(result, context);
     } else if (arrayRange != null) {
-      result = arrayRange.execute(iCurrentRecord, result, ctx);
+      result = arrayRange.execute(iCurrentRecord, result, context);
     } else if (condition != null) {
-      result = filterByCondition(result, ctx);
+      result = filterByCondition(result, context);
     } else if (arraySingleValues != null) {
-      result = arraySingleValues.execute(iCurrentRecord, result, ctx);
+      result = arraySingleValues.execute(iCurrentRecord, result, context);
     } else if (rightBinaryCondition != null) {
-      result = rightBinaryCondition.execute(iCurrentRecord, result, ctx);
+      result = rightBinaryCondition.execute(iCurrentRecord, result, context);
     }
     if (next != null) {
-      result = next.execute(iCurrentRecord, result, ctx);
+      result = next.execute(iCurrentRecord, result, context);
     }
     return result;
   }
 
-  private Object filterByCondition(Object iResult, final CommandContext ctx) {
+  private Object filterByCondition(Object iResult, final CommandContext context) {
     if (iResult == null) {
       return null;
     }
@@ -119,7 +119,7 @@ public class Modifier extends SimpleNode {
     if (iResult.getClass().isArray()) {
       for (int i = 0; i < Array.getLength(iResult); i++) {
         final Object item = Array.get(iResult, i);
-        if (condition.evaluate(item, ctx)) {
+        if (condition.evaluate(item, context)) {
           result.add(item);
         }
       }
@@ -134,7 +134,7 @@ public class Modifier extends SimpleNode {
     if (iResult instanceof Iterator) {
       while (((Iterator) iResult).hasNext()) {
         final Object item = ((Iterator) iResult).next();
-        if (condition.evaluate(item, ctx)) {
+        if (condition.evaluate(item, context)) {
           result.add(item);
         }
       }
@@ -190,44 +190,44 @@ public class Modifier extends SimpleNode {
     return new SimpleNode[] { arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix };
   }
 
-  protected void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
+  protected void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {
     if (next == null) {
-      doSetValue(currentRecord, target, value, ctx);
+      doSetValue(currentRecord, target, value, context);
     } else {
-      final Object newTarget = calculateLocal(currentRecord, target, ctx);
+      final Object newTarget = calculateLocal(currentRecord, target, context);
       if (newTarget != null) {
-        next.setValue(currentRecord, newTarget, value, ctx);
+        next.setValue(currentRecord, newTarget, value, context);
       }
     }
   }
 
-  private void doSetValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
+  private void doSetValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {
     if (methodCall != null) {
       //do nothing
     } else if (suffix != null) {
-      suffix.setValue(target, value, ctx);
+      suffix.setValue(target, value, context);
     } else if (arrayRange != null) {
-      arrayRange.setValue(target, value, ctx);
+      arrayRange.setValue(target, value, context);
     } else if (condition != null) {
       //TODO
       throw new UnsupportedOperationException("SET value on conditional filtering will be supported soon");
     } else if (arraySingleValues != null) {
-      arraySingleValues.setValue(currentRecord, target, value, ctx);
+      arraySingleValues.setValue(currentRecord, target, value, context);
     } else if (rightBinaryCondition != null) {
       throw new UnsupportedOperationException("SET value on conditional filtering will be supported soon");
     }
   }
 
-  private Object calculateLocal(final Result currentRecord, final Object target, final CommandContext ctx) {
+  private Object calculateLocal(final Result currentRecord, final Object target, final CommandContext context) {
     if (methodCall != null) {
-      return methodCall.execute(target, ctx);
+      return methodCall.execute(target, context);
     } else if (suffix != null) {
-      return suffix.execute(target, ctx);
+      return suffix.execute(target, context);
     } else if (arrayRange != null) {
-      return arrayRange.execute(currentRecord, target, ctx);
+      return arrayRange.execute(currentRecord, target, context);
     } else if (condition != null) {
       if (target instanceof Result || target instanceof Identifiable || target instanceof Map) {
-        if (condition.evaluate(target, ctx)) {
+        if (condition.evaluate(target, context)) {
           return target;
         } else {
           return null;
@@ -235,7 +235,7 @@ public class Modifier extends SimpleNode {
       } else if (MultiValue.isMultiValue(target)) {
         final List<Object> result = new ArrayList<>();
         for (final Object o : MultiValue.getMultiValueIterable(target)) {
-          if (condition.evaluate(target, ctx)) {
+          if (condition.evaluate(target, context)) {
             result.add(o);
           }
         }
@@ -244,29 +244,29 @@ public class Modifier extends SimpleNode {
         return null;
       }
     } else if (arraySingleValues != null) {
-      return arraySingleValues.execute(currentRecord, target, ctx);
+      return arraySingleValues.execute(currentRecord, target, context);
     } else if (rightBinaryCondition != null) {
-      return rightBinaryCondition.execute(currentRecord, target, ctx);
+      return rightBinaryCondition.execute(currentRecord, target, context);
     }
     return null;
   }
 
-  public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext ctx) {
+  public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext context) {
     if (next != null) {
-      final Object val = calculateLocal(originalRecord, currentValue, ctx);
-      next.applyRemove(val, originalRecord, ctx);
+      final Object val = calculateLocal(originalRecord, currentValue, context);
+      next.applyRemove(val, originalRecord, context);
     } else {
       if (arrayRange != null) {
-        arrayRange.applyRemove(currentValue, originalRecord, ctx);
+        arrayRange.applyRemove(currentValue, originalRecord, context);
       } else if (condition != null) {
 //TODO
         throw new UnsupportedOperationException("Remove on conditional filtering will be supported soon");
       } else if (arraySingleValues != null) {
-        arraySingleValues.applyRemove(currentValue, originalRecord, ctx);
+        arraySingleValues.applyRemove(currentValue, originalRecord, context);
       } else if (rightBinaryCondition != null) {
         throw new UnsupportedOperationException("Remove on conditional filtering will be supported soon");
       } else if (suffix != null) {
-        suffix.applyRemove(currentValue, ctx);
+        suffix.applyRemove(currentValue, context);
       } else {
         throw new CommandExecutionException("cannot apply REMOVE " + this);
       }

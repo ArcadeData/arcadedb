@@ -34,7 +34,6 @@ import java.util.*;
 import java.util.stream.*;
 
 public class MathExpression extends SimpleNode {
-
   private static final Object               NULL_VALUE       = new Object();
   protected            List<MathExpression> childExpressions = new ArrayList<MathExpression>();
   protected final      List<Operator>       operators        = new ArrayList<>();
@@ -600,51 +599,51 @@ public class MathExpression extends SimpleNode {
     return childExpressions.toArray(new MathExpression[childExpressions.size()]);
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
     if (childExpressions.isEmpty()) {
       return null;
     }
     if (childExpressions.size() == 1) {
-      return childExpressions.get(0).execute(iCurrentRecord, ctx);
+      return childExpressions.get(0).execute(iCurrentRecord, context);
     }
 
     if (childExpressions.size() == 2) {
-      final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, ctx);
-      final Object rightValue = childExpressions.get(1).execute(iCurrentRecord, ctx);
+      final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, context);
+      final Object rightValue = childExpressions.get(1).execute(iCurrentRecord, context);
       return operators.get(0).apply(leftValue, rightValue);
     }
 
-    return calculateWithOpPriority(iCurrentRecord, ctx);
+    return calculateWithOpPriority(iCurrentRecord, context);
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     if (childExpressions.isEmpty()) {
       return null;
     }
     if (childExpressions.size() == 1) {
-      return childExpressions.get(0).execute(iCurrentRecord, ctx);
+      return childExpressions.get(0).execute(iCurrentRecord, context);
     }
 
     if (childExpressions.size() == 2) {
-      final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, ctx);
-      final Object rightValue = childExpressions.get(1).execute(iCurrentRecord, ctx);
+      final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, context);
+      final Object rightValue = childExpressions.get(1).execute(iCurrentRecord, context);
       return operators.get(0).apply(leftValue, rightValue);
     }
 
-    return calculateWithOpPriority(iCurrentRecord, ctx);
+    return calculateWithOpPriority(iCurrentRecord, context);
   }
 
-  private Object calculateWithOpPriority(final Result iCurrentRecord, final CommandContext ctx) {
+  private Object calculateWithOpPriority(final Result iCurrentRecord, final CommandContext context) {
     final Deque valuesStack = new ArrayDeque<>();
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
     final MathExpression nextExpression = childExpressions.get(0);
-    final Object val = nextExpression.execute(iCurrentRecord, ctx);
+    final Object val = nextExpression.execute(iCurrentRecord, context);
     valuesStack.push(val == null ? NULL_VALUE : val);
 
     for (int i = 0; i < operators.size() && i + 1 < childExpressions.size(); i++) {
       final Operator nextOperator = operators.get(i);
-      final Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, ctx);
+      final Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, context);
 
       if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
         Object right = valuesStack.poll();
@@ -662,17 +661,17 @@ public class MathExpression extends SimpleNode {
     return iterateOnPriorities(valuesStack, operatorsStack);
   }
 
-  private Object calculateWithOpPriority(final Identifiable iCurrentRecord, final CommandContext ctx) {
+  private Object calculateWithOpPriority(final Identifiable iCurrentRecord, final CommandContext context) {
     final Deque valuesStack = new ArrayDeque<>();
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
     final MathExpression nextExpression = childExpressions.get(0);
-    final Object val = nextExpression.execute(iCurrentRecord, ctx);
+    final Object val = nextExpression.execute(iCurrentRecord, context);
     valuesStack.push(val == null ? NULL_VALUE : val);
 
     for (int i = 0; i < operators.size() && i + 1 < childExpressions.size(); i++) {
       final Operator nextOperator = operators.get(i);
-      final Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, ctx);
+      final Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, context);
 
       if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
         Object right = valuesStack.poll();
@@ -790,11 +789,11 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  public boolean isIndexedFunctionCall() {
+  public boolean isIndexedFunctionCall(CommandContext context) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
-    return this.childExpressions.get(0).isIndexedFunctionCall();
+    return this.childExpressions.get(0).isIndexedFunctionCall(context);
   }
 
   public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
@@ -882,18 +881,18 @@ public class MathExpression extends SimpleNode {
     return false;
   }
 
-  public boolean isEarlyCalculated(final CommandContext ctx) {
+  public boolean isEarlyCalculated(final CommandContext context) {
     for (final MathExpression exp : childExpressions) {
-      if (!exp.isEarlyCalculated(ctx)) {
+      if (!exp.isEarlyCalculated(context)) {
         return false;
       }
     }
     return true;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(CommandContext context) {
     for (final MathExpression expr : this.childExpressions) {
-      if (expr.isAggregate()) {
+      if (expr.isAggregate(context)) {
         return true;
       }
     }
@@ -907,18 +906,18 @@ public class MathExpression extends SimpleNode {
     return this.childExpressions.get(0).isCount();
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
-    if (isAggregate()) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
       final MathExpression result = new MathExpression(-1);
       int i = 0;
       for (final MathExpression expr : this.childExpressions) {
         if (i > 0)
           result.operators.add(operators.get(i - 1));
 
-        final SimpleNode splitResult = expr.splitForAggregation(aggregateProj, ctx);
+        final SimpleNode splitResult = expr.splitForAggregation(aggregateProj, context);
         if (splitResult instanceof MathExpression) {
           final MathExpression res = (MathExpression) splitResult;
-          if (res.isEarlyCalculated(ctx) || res.isAggregate()) {
+          if (res.isEarlyCalculated(context) || res.isAggregate(context)) {
             result.childExpressions.add(res);
           } else {
             throw new CommandExecutionException("Cannot mix aggregate and single record attribute values in the same projection");
@@ -934,7 +933,7 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     throw new UnsupportedOperationException("multiple math expressions do not allow plain aggregation");
   }
 
@@ -980,11 +979,11 @@ public class MathExpression extends SimpleNode {
     return result;
   }
 
-  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext context) {
     if (childExpressions.size() != 1) {
       throw new CommandExecutionException("cannot apply REMOVE " + this);
     }
-    childExpressions.get(0).applyRemove(result, ctx);
+    childExpressions.get(0).applyRemove(result, context);
   }
 
   private static Long toLong(final Object left) {

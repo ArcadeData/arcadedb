@@ -40,13 +40,7 @@ public class FunctionCall extends SimpleNode {
   protected List<Expression> params = new ArrayList<>();
   private   SQLFunction      cachedFunction;
 
-  public FunctionCall(final int id) {
-    super(id);
-  }
-
-  public FunctionCall(SqlParser parser, int i) {
-    super(i);
-    this.parser = parser;
+  public FunctionCall(int id) {
   }
 
   public boolean isStar() {
@@ -86,11 +80,11 @@ public class FunctionCall extends SimpleNode {
     builder.append(")");
   }
 
-  public Object execute(final Object targetObjects, final CommandContext ctx) {
-    return execute(targetObjects, ctx, name.getStringValue());
+  public Object execute(final Object targetObjects, final CommandContext context) {
+    return execute(targetObjects, context, name.getStringValue());
   }
 
-  private Object execute(final Object targetObjects, final CommandContext ctx, final String name) {
+  private Object execute(final Object targetObjects, final CommandContext context, final String name) {
     final List<Object> paramValues = new ArrayList<>();
 
     Object record;
@@ -103,7 +97,7 @@ public class FunctionCall extends SimpleNode {
     }
 
     if (record == null) {
-      final Object current = ctx == null ? null : ctx.getVariable("current");
+      final Object current = context == null ? null : context.getVariable("current");
       if (current != null) {
         if (current instanceof Identifiable) {
           record = current;
@@ -116,24 +110,24 @@ public class FunctionCall extends SimpleNode {
     }
     for (final Expression expr : this.params) {
       if (record instanceof Identifiable) {
-        paramValues.add(expr.execute((Identifiable) record, ctx));
+        paramValues.add(expr.execute((Identifiable) record, context));
       } else if (record instanceof Result) {
-        paramValues.add(expr.execute((Result) record, ctx));
+        paramValues.add(expr.execute((Result) record, context));
       } else if (record == null) {
-        paramValues.add(expr.execute((Result) record, ctx));
+        paramValues.add(expr.execute((Result) record, context));
       } else {
         throw new CommandExecutionException("Invalid value for $current: " + record);
       }
     }
 
-    final SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name);
+    final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
     if (function != null) {
       if (record instanceof Identifiable) {
-        return function.execute(targetObjects, (Identifiable) record, null, paramValues.toArray(), ctx);
+        return function.execute(targetObjects, (Identifiable) record, null, paramValues.toArray(), context);
       } else if (record instanceof Result) {
-        return function.execute(targetObjects, ((Result) record).getElement().orElse(null), null, paramValues.toArray(), ctx);
+        return function.execute(targetObjects, ((Result) record).getElement().orElse(null), null, paramValues.toArray(), context);
       } else if (record == null) {
-        return function.execute(targetObjects, null, null, paramValues.toArray(), ctx);
+        return function.execute(targetObjects, null, null, paramValues.toArray(), context);
       } else {
         throw new CommandExecutionException("Invalid value for $current: " + record);
       }
@@ -142,8 +136,8 @@ public class FunctionCall extends SimpleNode {
     }
   }
 
-  public boolean isIndexedFunctionCall() {
-    final SQLFunction function = getCachedFunction();
+  public boolean isIndexedFunctionCall(final CommandContext context) {
+    final SQLFunction function = getCachedFunction(context);
     return (function instanceof IndexableSQLFunction);
   }
 
@@ -151,33 +145,33 @@ public class FunctionCall extends SimpleNode {
    * see OIndexableSQLFunction.searchFromTarget()
    *
    * @param target
-   * @param ctx
+   * @param context
    * @param operator
    * @param rightValue
    *
    * @return
    */
-  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext ctx, final BinaryCompareOperator operator,
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
       final Object rightValue) {
-    final SQLFunction function = getFunction();
+    final SQLFunction function = getFunction(context);
     if (function instanceof IndexableSQLFunction)
-      return ((IndexableSQLFunction) function).searchFromTarget(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
+      return ((IndexableSQLFunction) function).searchFromTarget(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}));
 
     return null;
   }
 
   /**
    * @param target     query target
-   * @param ctx        execution context
+   * @param context    execution context
    * @param operator   operator at the right of the function
    * @param rightValue value to compare to function result
    *
    * @return the approximate number of items returned by the condition execution, -1 if the estimation cannot be executed
    */
-  public long estimateIndexedFunction(final FromClause target, final CommandContext ctx, final BinaryCompareOperator operator, final Object rightValue) {
-    final SQLFunction function = getFunction();
+  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object rightValue) {
+    final SQLFunction function = getFunction(context);
     if (function instanceof IndexableSQLFunction)
-      return ((IndexableSQLFunction) function).estimate(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
+      return ((IndexableSQLFunction) function).estimate(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}));
 
     return -1;
   }
@@ -195,7 +189,7 @@ public class FunctionCall extends SimpleNode {
    */
   public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
       final Object right) {
-    final SQLFunction function = getCachedFunction();
+    final SQLFunction function = getCachedFunction(context);
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
 
@@ -214,7 +208,7 @@ public class FunctionCall extends SimpleNode {
    */
   public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
       final Object right) {
-    final SQLFunction function = getCachedFunction();
+    final SQLFunction function = getCachedFunction(context);
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
 
@@ -233,7 +227,7 @@ public class FunctionCall extends SimpleNode {
    */
   public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
       final Object right) {
-    final SQLFunction function = getFunction();
+    final SQLFunction function = getFunction(context);
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).shouldExecuteAfterSearch(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
 
@@ -244,13 +238,13 @@ public class FunctionCall extends SimpleNode {
     return name.getStringValue().equals("expand");
   }
 
-  public boolean isAggregate() {
-    if (isAggregateFunction()) {
+  public boolean isAggregate(final CommandContext context) {
+    if (isAggregateFunction(context)) {
       return true;
     }
 
     for (final Expression exp : params) {
-      if (exp.isAggregate()) {
+      if (exp.isAggregate(context)) {
         return true;
       }
     }
@@ -258,20 +252,20 @@ public class FunctionCall extends SimpleNode {
     return false;
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
-    if (isAggregate()) {
-      final FunctionCall newFunct = new FunctionCall(parser, -1);
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
+      final FunctionCall newFunct = new FunctionCall(-1);
       newFunct.name = this.name;
       final Identifier functionResultAlias = aggregateProj.getNextAlias();
 
-      if (isAggregateFunction()) {
+      if (isAggregateFunction(context)) {
         if (isStar()) {
           for (final Expression param : params) {
             newFunct.getParams().add(param);
           }
         } else {
           for (final Expression param : params) {
-            if (param.isAggregate()) {
+            if (param.isAggregate(context)) {
               throw new CommandExecutionException("Cannot calculate an aggregate function of another aggregate function " + this);
             }
             final Identifier nextAlias = aggregateProj.getNextAlias();
@@ -292,7 +286,7 @@ public class FunctionCall extends SimpleNode {
           }
         } else {
           for (final Expression param : params) {
-            newFunct.getParams().add(param.splitForAggregation(aggregateProj, ctx));
+            newFunct.getParams().add(param.splitForAggregation(aggregateProj, context));
           }
         }
       }
@@ -301,8 +295,8 @@ public class FunctionCall extends SimpleNode {
     return this;
   }
 
-  private boolean isAggregateFunction() {
-    return getCachedFunction().aggregateResults();
+  private boolean isAggregateFunction(final CommandContext context) {
+    return getCachedFunction(context).aggregateResults();
   }
 
   private ProjectionItem createProjection(final FunctionCall newFunct, final Identifier alias) {
@@ -320,32 +314,32 @@ public class FunctionCall extends SimpleNode {
     return item;
   }
 
-  public boolean isEarlyCalculated(final CommandContext ctx) {
-    if (isTraverseFunction())
+  public boolean isEarlyCalculated(final CommandContext context) {
+    if (isTraverseFunction(context))
       return false;
 
     for (final Expression param : params) {
-      if (!param.isEarlyCalculated(ctx)) {
+      if (!param.isEarlyCalculated(context)) {
         return false;
       }
     }
     return true;
   }
 
-  private boolean isTraverseFunction() {
+  private boolean isTraverseFunction(final CommandContext context) {
     if (name == null)
       return false;
 
-    final SQLFunction function = getFunction();
+    final SQLFunction function = getFunction(context);
     return function instanceof SQLFunctionMove;
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
-    return new FunctionAggregationContext(getFunction(), this.params);
+  public AggregationContext getAggregationContext(final CommandContext context) {
+    return new FunctionAggregationContext(getFunction(context), this.params);
   }
 
   public FunctionCall copy() {
-    final FunctionCall result = new FunctionCall(parser, -1);
+    final FunctionCall result = new FunctionCall(-1);
     result.name = name;
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
@@ -416,13 +410,13 @@ public class FunctionCall extends SimpleNode {
       return string.equalsIgnoreCase("bothV");
   }
 
-  private SQLFunction getFunction() {
-    return ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue()).config(params.toArray());
+  private SQLFunction getFunction(final CommandContext context) {
+    return ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue()).config(params.toArray());
   }
 
-  private SQLFunction getCachedFunction() {
+  private SQLFunction getCachedFunction(CommandContext context) {
     if (cachedFunction == null)
-      cachedFunction = getFunction();
+      cachedFunction = getFunction(context);
 
     return cachedFunction;
   }

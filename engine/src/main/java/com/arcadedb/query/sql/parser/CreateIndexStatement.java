@@ -52,8 +52,8 @@ public class CreateIndexStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-    final Long totalIndexed = (Long) execute(ctx);
+  public ResultSet executeDDL(final CommandContext context) {
+    final Long totalIndexed = (Long) execute(context);
 
     final InternalResultSet rs = new InternalResultSet();
     final ResultInternal result = new ResultInternal();
@@ -78,8 +78,8 @@ public class CreateIndexStatement extends DDLStatement {
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
   }
 
-  Object execute(final CommandContext ctx) {
-    final Database database = ctx.getDatabase();
+  Object execute(final CommandContext context) {
+    final Database database = context.getDatabase();
 
     if (name == null)
       // GENERATE THE NAME AUTOMATICALLY
@@ -93,7 +93,7 @@ public class CreateIndexStatement extends DDLStatement {
       }
     }
 
-    final String[] fields = calculateProperties(ctx);
+    final String[] fields = calculateProperties(context);
 
     final EmbeddedSchema.INDEX_TYPE indexType;
     boolean unique = false;
@@ -130,7 +130,7 @@ public class CreateIndexStatement extends DDLStatement {
    *
    * @return Array of property names
    */
-  private String[] calculateProperties(final CommandContext ctx) {
+  private String[] calculateProperties(final CommandContext context) {
     if (propertyList == null) {
       return null;
     }

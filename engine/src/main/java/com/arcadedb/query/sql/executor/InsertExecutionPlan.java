@@ -33,8 +33,8 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
   final List<Result> result = new ArrayList<>();
   int next = 0;
 
-  public InsertExecutionPlan(final CommandContext ctx) {
-    super(ctx);
+  public InsertExecutionPlan(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -48,10 +48,10 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
   }
 
   @Override
-  public void reset(final CommandContext ctx) {
+  public void reset(final CommandContext context) {
     result.clear();
     next = 0;
-    super.reset(ctx);
+    super.reset(context);
     executeInternal();
   }
 

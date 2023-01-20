@@ -35,7 +35,7 @@ public class TruncateRecordStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
 //    List<ORid> recs = new ArrayList<>();
 //    if (record != null) {
 //      recs.add(record);
@@ -44,10 +44,10 @@ public class TruncateRecordStatement extends SimpleExecStatement {
 //    }
 //
 //    OInternalResultSet rs = new OInternalResultSet();
-//    final ODatabaseDocumentInternal database = (ODatabaseDocumentInternal) ctx.getDatabase();
+//    final ODatabaseDocumentInternal database = (ODatabaseDocumentInternal) context.getDatabase();
 //    for (ORid rec : recs) {
 //      try {
-//        final ORecordId rid = rec.toRecordId((OResult) null, ctx);
+//        final ORecordId rid = rec.toRecordId((OResult) null, context);
 //        final OStorageOperationResult<Boolean> result = database.getStorage().deleteRecord(rid, -1, 0, null);
 //        database.getLocalCache().deleteRecord(rid);
 //

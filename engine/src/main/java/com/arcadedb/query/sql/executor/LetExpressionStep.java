@@ -30,19 +30,19 @@ public class LetExpressionStep extends AbstractExecutionStep {
   private final Identifier varname;
   private final Expression expression;
 
-  public LetExpressionStep(final Identifier varName, final Expression expression, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public LetExpressionStep(final Identifier varName, final Expression expression, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.varname = varName;
     this.expression = expression;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (!getPrev().isPresent())
       throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
 
     return new ResultSet() {
-      final ResultSet source = getPrev().get().syncPull(ctx, nRecords);
+      final ResultSet source = getPrev().get().syncPull(context, nRecords);
 
       @Override
       public boolean hasNext() {
@@ -52,9 +52,9 @@ public class LetExpressionStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final ResultInternal result = (ResultInternal) source.next();
-        final Object value = expression.execute(result, ctx);
+        final Object value = expression.execute(result, context);
         result.setMetadata(varname.getStringValue(), value);
-        ctx.setVariable(varname.getStringValue(), value);
+        context.setVariable(varname.getStringValue(), value);
         return result;
       }
 

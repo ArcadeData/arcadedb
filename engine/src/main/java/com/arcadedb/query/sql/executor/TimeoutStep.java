@@ -29,20 +29,20 @@ public class TimeoutStep extends AbstractExecutionStep {
 
   private Long expiryTime;
 
-  public TimeoutStep(final Timeout timeout, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public TimeoutStep(final Timeout timeout, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.timeout = timeout;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (this.expiryTime == null) {
       this.expiryTime = System.currentTimeMillis() + timeout.getVal().longValue();
     }
     if (System.currentTimeMillis() > expiryTime) {
       return fail();
     }
-    return getPrev().get().syncPull(ctx, nRecords);//TODO do it more granular
+    return getPrev().get().syncPull(context, nRecords);//TODO do it more granular
   }
 
   private ResultSet fail() {
@@ -56,7 +56,7 @@ public class TimeoutStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new TimeoutStep(this.timeout.copy(), ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new TimeoutStep(this.timeout.copy(), context, profilingEnabled);
   }
 }

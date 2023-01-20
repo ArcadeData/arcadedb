@@ -35,7 +35,7 @@ public class SleepStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
 
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal();

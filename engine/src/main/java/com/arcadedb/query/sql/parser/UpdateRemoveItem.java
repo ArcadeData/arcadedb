@@ -70,15 +70,15 @@ public class UpdateRemoveItem extends SimpleNode {
     return result;
   }
 
-  public void applyUpdate(final ResultInternal result, final CommandContext ctx) {
+  public void applyUpdate(final ResultInternal result, final CommandContext context) {
     if (right != null) {
-      final Object leftVal = left.execute(result, ctx);
-      final Object rightVal = right.execute(result, ctx);
+      final Object leftVal = left.execute(result, context);
+      final Object rightVal = right.execute(result, context);
       if (MultiValue.isMultiValue(leftVal)) {
         MultiValue.remove(leftVal, rightVal, false);
       }
     } else {
-      left.applyRemove(result, ctx);
+      left.applyRemove(result, context);
     }
   }
 }

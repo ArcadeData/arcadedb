@@ -44,38 +44,38 @@ public class ExplainStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
+    context.setDatabase(db);
+    context.setInputParameters(args);
 
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, false);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, false);
 
     final ExplainResultSet result = new ExplainResultSet(executionPlan);
     return result;
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
+    context.setDatabase(db);
+    context.setInputParameters(args);
 
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, false);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, false);
 
     final ExplainResultSet result = new ExplainResultSet(executionPlan);
     return result;
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    return statement.createExecutionPlan(ctx, enableProfiling);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    return statement.createExecutionPlan(context, enableProfiling);
   }
 
   @Override

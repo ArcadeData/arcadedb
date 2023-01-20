@@ -41,18 +41,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   private int nextItem = 0;
 
-  public AggregateProjectionCalculationStep(final Projection projection, final GroupBy groupBy, final long limit, final CommandContext ctx,
+  public AggregateProjectionCalculationStep(final Projection projection, final GroupBy groupBy, final long limit, final CommandContext context,
       final long timeoutMillis, final boolean profilingEnabled) {
-    super(projection, ctx, profilingEnabled);
+    super(projection, context, profilingEnabled);
     this.groupBy = groupBy;
     this.timeoutMillis = timeoutMillis;
     this.limit = limit;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) {
     if (finalResults == null) {
-      executeAggregation(ctx, nRecords);
+      executeAggregation(context, nRecords);
     }
 
     return new ResultSet() {
@@ -76,20 +76,20 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     };
   }
 
-  private void executeAggregation(final CommandContext ctx, final int nRecords) {
+  private void executeAggregation(final CommandContext context, final int nRecords) {
     final long timeoutBegin = System.currentTimeMillis();
     if (prev.isEmpty()) {
       throw new CommandExecutionException("Cannot execute an aggregation or a GROUP BY without a previous result");
     }
     final ExecutionStepInternal prevStep = prev.get();
-    ResultSet lastRs = prevStep.syncPull(ctx, nRecords);
+    ResultSet lastRs = prevStep.syncPull(context, nRecords);
     while (lastRs.hasNext()) {
       if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
         sendTimeout();
       }
-      aggregate(lastRs.next(), ctx);
+      aggregate(lastRs.next(), context);
       if (!lastRs.hasNext()) {
-        lastRs = prevStep.syncPull(ctx, nRecords);
+        lastRs = prevStep.syncPull(context, nRecords);
       }
     }
     finalResults = new ArrayList<>();
@@ -108,13 +108,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     }
   }
 
-  private void aggregate(final Result next, final CommandContext ctx) {
+  private void aggregate(final Result next, final CommandContext context) {
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       final List<Object> key = new ArrayList<>();
       if (groupBy != null) {
         for (final Expression item : groupBy.getItems()) {
-          final Object val = item.execute(next, ctx);
+          final Object val = item.execute(next, context);
           key.add(val);
         }
       }
@@ -127,8 +127,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
         for (final ProjectionItem proj : this.projection.getItems()) {
           final String alias = proj.getProjectionAlias().getStringValue();
-          if (!proj.isAggregate()) {
-            preAggr.setProperty(alias, proj.execute(next, ctx));
+          if (!proj.isAggregate(context)) {
+            preAggr.setProperty(alias, proj.execute(next, context));
           }
         }
         aggregateResults.put(key, preAggr);
@@ -136,13 +136,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
       for (final ProjectionItem proj : this.projection.getItems()) {
         final String alias = proj.getProjectionAlias().getStringValue();
-        if (proj.isAggregate()) {
+        if (proj.isAggregate(context)) {
           AggregationContext aggrCtx = (AggregationContext) preAggr.getTemporaryProperty(alias);
           if (aggrCtx == null) {
-            aggrCtx = proj.getAggregationContext(ctx);
+            aggrCtx = proj.getAggregationContext(context);
             preAggr.setTemporaryProperty(alias, aggrCtx);
           }
-          aggrCtx.apply(next, ctx);
+          aggrCtx.apply(next, context);
         }
       }
     } finally {

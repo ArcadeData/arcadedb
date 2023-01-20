@@ -32,14 +32,14 @@ public class ParallelExecStep extends AbstractExecutionStep {
   int current = 0;
   private ResultSet currentResultSet = null;
 
-  public ParallelExecStep(final List<InternalExecutionPlan> subExecutionPlans, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public ParallelExecStep(final List<InternalExecutionPlan> subExecutionPlans, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.subExecutionPlans = subExecutionPlans;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
       int localCount = 0;
 
@@ -49,7 +49,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
           return false;
         }
         while (currentResultSet == null || !currentResultSet.hasNext()) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
           if (currentResultSet == null) {
             return false;
           }
@@ -63,7 +63,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
         while (currentResultSet == null || !currentResultSet.hasNext()) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
           if (currentResultSet == null) {
             throw new NoSuchElementException();
           }
@@ -80,7 +80,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
     };
   }
 
-  void fetchNext(final CommandContext ctx, final int nRecords) {
+  void fetchNext(final CommandContext context, final int nRecords) {
     do {
       if (current >= subExecutionPlans.size()) {
         currentResultSet = null;
@@ -213,8 +213,8 @@ public class ParallelExecStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(ctx)).collect(Collectors.toList()), ctx,
+  public ExecutionStep copy(final CommandContext context) {
+    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(context)).collect(Collectors.toList()), context,
         profilingEnabled);
   }
 }

@@ -30,8 +30,8 @@ public class ReturnMatchPatternsStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {

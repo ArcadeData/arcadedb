@@ -40,46 +40,46 @@ public class ForEachStep extends AbstractExecutionStep {
     private ExecutionStepInternal finalResult = null;
     private boolean inited = false;
 
-    public ForEachStep(final Identifier loopVariable, final Expression oExpression, final List<Statement> statements, final CommandContext ctx,
+    public ForEachStep(final Identifier loopVariable, final Expression oExpression, final List<Statement> statements, final CommandContext context,
                        final boolean enableProfiling) {
-        super(ctx, enableProfiling);
+        super(context, enableProfiling);
         this.loopVariable = loopVariable;
         this.source = oExpression;
         this.body = statements;
     }
 
     @Override
-    public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-        prev.get().syncPull(ctx, nRecords);
+    public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+        prev.get().syncPull(context, nRecords);
         if (finalResult != null) {
-            return finalResult.syncPull(ctx, nRecords);
+            return finalResult.syncPull(context, nRecords);
         }
-        init(ctx);
+        init(context);
         while (iterator.hasNext()) {
-            ctx.setVariable(loopVariable.getStringValue(), iterator.next());
-            final ScriptExecutionPlan plan = initPlan(ctx);
+            context.setVariable(loopVariable.getStringValue(), iterator.next());
+            final ScriptExecutionPlan plan = initPlan(context);
             final ExecutionStepInternal result = plan.executeFull();
             if (result != null) {
                 this.finalResult = result;
-                return result.syncPull(ctx, nRecords);
+                return result.syncPull(context, nRecords);
             }
         }
-        finalResult = new EmptyStep(ctx, false);
-        return finalResult.syncPull(ctx, nRecords);
+        finalResult = new EmptyStep(context, false);
+        return finalResult.syncPull(context, nRecords);
 
     }
 
-    protected void init(final CommandContext ctx) {
+    protected void init(final CommandContext context) {
         if (!this.inited) {
-            final Object val = source.execute(new ResultInternal(), ctx);
+            final Object val = source.execute(new ResultInternal(), context);
             this.iterator = MultiValue.getMultiValueIterator(val);
             this.inited = true;
         }
     }
 
-    public ScriptExecutionPlan initPlan(final CommandContext ctx) {
+    public ScriptExecutionPlan initPlan(final CommandContext context) {
         final BasicCommandContext subCtx1 = new BasicCommandContext();
-        subCtx1.setParent(ctx);
+        subCtx1.setParent(context);
         final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
         for (final Statement stm : body) {
             plan.chain(stm.createExecutionPlan(subCtx1, profilingEnabled), profilingEnabled);

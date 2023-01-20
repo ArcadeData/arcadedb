@@ -34,16 +34,16 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
 
   private AtomicLong totalTime = new AtomicLong(0);
 
-  public AccumulatingTimeoutStep(final Timeout timeout, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public AccumulatingTimeoutStep(final Timeout timeout, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.timeout = timeout;
     this.timeoutMillis = this.timeout.getVal().longValue();
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws CommandExecutionException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws CommandExecutionException {
 
-    final ResultSet internal = getPrev().get().syncPull(ctx, nRecords);
+    final ResultSet internal = getPrev().get().syncPull(context, nRecords);
 
     if (getPrev().get().isTimedOut())
       fail();
@@ -108,8 +108,8 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new AccumulatingTimeoutStep(timeout.copy(), ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new AccumulatingTimeoutStep(timeout.copy(), context, profilingEnabled);
   }
 
   @Override

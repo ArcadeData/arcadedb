@@ -44,11 +44,11 @@ public class FunctionAggregationContext implements AggregationContext {
   }
 
   @Override
-  public void apply(final Result next, final CommandContext ctx) {
+  public void apply(final Result next, final CommandContext context) {
     final List<Object> paramValues = new ArrayList<>();
     for (final Expression expr : params)
-      paramValues.add(expr.execute(next, ctx));
+      paramValues.add(expr.execute(next, context));
 
-    aggregateFunction.execute(next, null, null, paramValues.toArray(), ctx);
+    aggregateFunction.execute(next, null, null, paramValues.toArray(), context);
   }
 }

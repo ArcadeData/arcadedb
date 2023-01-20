@@ -37,17 +37,17 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   //runtime0
   Iterator<Record> fullResult = null;
 
-  public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final CommandContext ctx,
+  public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final CommandContext context,
       final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+    super(context, profilingEnabled);
     this.functionCondition = functionCondition;
     this.queryTarget = queryTarget;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    init(ctx);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    init(context);
 
     return new ResultSet() {
       int localCount = 0;
@@ -89,11 +89,11 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     };
   }
 
-  private void init(final CommandContext ctx) {
+  private void init(final CommandContext context) {
     if (fullResult == null) {
       final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
-        fullResult = functionCondition.executeIndexedFunction(queryTarget, ctx).iterator();
+        fullResult = functionCondition.executeIndexedFunction(queryTarget, context).iterator();
       } finally {
         if (profilingEnabled) {
           cost += (System.nanoTime() - begin);

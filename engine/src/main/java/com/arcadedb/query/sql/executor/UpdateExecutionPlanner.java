@@ -68,23 +68,23 @@ public class UpdateExecutionPlanner {
     this.timeout = oUpdateStatement.getTimeout() == null ? null : oUpdateStatement.getTimeout().copy();
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    final UpdateExecutionPlan result = new UpdateExecutionPlan(ctx);
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final UpdateExecutionPlan result = new UpdateExecutionPlan(context);
 
-    handleTarget(result, ctx, this.target, this.whereClause, this.timeout, enableProfiling);
+    handleTarget(result, context, this.target, this.whereClause, this.timeout, enableProfiling);
     if (updateEdge) {
-      result.chain(new CheckRecordTypeStep(ctx, "E", enableProfiling));
+      result.chain(new CheckRecordTypeStep(context, "E", enableProfiling));
     }
-    handleUpsert(result, ctx, this.target, this.whereClause, this.upsert, enableProfiling);
-    handleTimeout(result, ctx, this.timeout, enableProfiling);
-    convertToModifiableResult(result, ctx, enableProfiling);
-    handleLimit(result, ctx, this.limit, enableProfiling);
-    handleReturnBefore(result, ctx, this.returnBefore, enableProfiling);
-    handleOperations(result, ctx, this.operations, enableProfiling);
-    handleSave(result, target.getItem().getBucket(), ctx, enableProfiling);
-    handleResultForReturnBefore(result, ctx, this.returnBefore, returnProjection, enableProfiling);
-    handleResultForReturnAfter(result, ctx, this.returnAfter, returnProjection, enableProfiling);
-    handleResultForReturnCount(result, ctx, this.returnCount, enableProfiling);
+    handleUpsert(result, context, this.target, this.whereClause, this.upsert, enableProfiling);
+    handleTimeout(result, context, this.timeout, enableProfiling);
+    convertToModifiableResult(result, context, enableProfiling);
+    handleLimit(result, context, this.limit, enableProfiling);
+    handleReturnBefore(result, context, this.returnBefore, enableProfiling);
+    handleOperations(result, context, this.operations, enableProfiling);
+    handleSave(result, target.getItem().getBucket(), context, enableProfiling);
+    handleResultForReturnBefore(result, context, this.returnBefore, returnProjection, enableProfiling);
+    handleResultForReturnAfter(result, context, this.returnAfter, returnProjection, enableProfiling);
+    handleResultForReturnCount(result, context, this.returnCount, enableProfiling);
     return result;
   }
 
@@ -92,93 +92,93 @@ public class UpdateExecutionPlanner {
    * add a step that transforms a normal OResult in a specific object that under setProperty() updates the actual PIdentifiable
    *
    * @param plan the execution plan
-   * @param ctx  the execution context
+   * @param context  the execution context
    */
-  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext ctx, final boolean profilingEnabled) {
-    plan.chain(new ConvertToUpdatableResultStep(ctx, profilingEnabled));
+  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context, final boolean profilingEnabled) {
+    plan.chain(new ConvertToUpdatableResultStep(context, profilingEnabled));
   }
 
-  private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext ctx, final boolean returnCount,
+  private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext context, final boolean returnCount,
       final boolean profilingEnabled) {
     if (returnCount) {
-      result.chain(new CountStep(ctx, profilingEnabled));
+      result.chain(new CountStep(context, profilingEnabled));
     }
   }
 
-  private void handleResultForReturnAfter(final UpdateExecutionPlan result, final CommandContext ctx, final boolean returnAfter,
+  private void handleResultForReturnAfter(final UpdateExecutionPlan result, final CommandContext context, final boolean returnAfter,
       final Projection returnProjection, final boolean profilingEnabled) {
     if (returnAfter) {
       //re-convert to normal step
-      result.chain(new ConvertToResultInternalStep(ctx, profilingEnabled));
+      result.chain(new ConvertToResultInternalStep(context, profilingEnabled));
       if (returnProjection != null) {
-        result.chain(new ProjectionCalculationStep(returnProjection, ctx, profilingEnabled));
+        result.chain(new ProjectionCalculationStep(returnProjection, context, profilingEnabled));
       }
     }
   }
 
-  private void handleResultForReturnBefore(final UpdateExecutionPlan result, final CommandContext ctx, final boolean returnBefore,
+  private void handleResultForReturnBefore(final UpdateExecutionPlan result, final CommandContext context, final boolean returnBefore,
       final Projection returnProjection, final boolean profilingEnabled) {
     if (returnBefore) {
-      result.chain(new UnwrapPreviousValueStep(ctx, profilingEnabled));
+      result.chain(new UnwrapPreviousValueStep(context, profilingEnabled));
       if (returnProjection != null) {
-        result.chain(new ProjectionCalculationStep(returnProjection, ctx, profilingEnabled));
+        result.chain(new ProjectionCalculationStep(returnProjection, context, profilingEnabled));
       }
     }
   }
 
-  private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext context, final boolean profilingEnabled) {
     if (bucket != null) {
       final String bucketName =
-          bucket.getBucketName() != null ? bucket.getBucketName() : ctx.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
-      result.chain(new SaveElementStep(ctx, new Identifier(bucketName), profilingEnabled));
+          bucket.getBucketName() != null ? bucket.getBucketName() : context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
+      result.chain(new SaveElementStep(context, new Identifier(bucketName), profilingEnabled));
     } else
-      result.chain(new SaveElementStep(ctx, profilingEnabled));
+      result.chain(new SaveElementStep(context, profilingEnabled));
   }
 
-  private void handleTimeout(final UpdateExecutionPlan result, final CommandContext ctx, final Timeout timeout, final boolean profilingEnabled) {
+  private void handleTimeout(final UpdateExecutionPlan result, final CommandContext context, final Timeout timeout, final boolean profilingEnabled) {
     if (timeout != null && timeout.getVal().longValue() > 0) {
-      result.chain(new TimeoutStep(timeout, ctx, profilingEnabled));
+      result.chain(new TimeoutStep(timeout, context, profilingEnabled));
     }
   }
 
-  private void handleReturnBefore(final UpdateExecutionPlan result, final CommandContext ctx, final boolean returnBefore, final boolean profilingEnabled) {
+  private void handleReturnBefore(final UpdateExecutionPlan result, final CommandContext context, final boolean returnBefore, final boolean profilingEnabled) {
     if (returnBefore) {
-      result.chain(new CopyRecordContentBeforeUpdateStep(ctx, profilingEnabled));
+      result.chain(new CopyRecordContentBeforeUpdateStep(context, profilingEnabled));
     }
   }
 
-  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext ctx, final Limit limit, final boolean profilingEnabled) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit, final boolean profilingEnabled) {
     if (limit != null) {
-      plan.chain(new LimitExecutionStep(limit, ctx, profilingEnabled));
+      plan.chain(new LimitExecutionStep(limit, context, profilingEnabled));
     }
   }
 
-  private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext ctx, final FromClause target, final WhereClause where, final boolean upsert,
+  private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext context, final FromClause target, final WhereClause where, final boolean upsert,
       final boolean profilingEnabled) {
     if (upsert) {
-      plan.chain(new UpsertStep(target, where, ctx, profilingEnabled));
+      plan.chain(new UpsertStep(target, where, context, profilingEnabled));
     }
   }
 
-  private void handleOperations(final UpdateExecutionPlan plan, final CommandContext ctx, final List<UpdateOperations> ops, final boolean profilingEnabled) {
+  private void handleOperations(final UpdateExecutionPlan plan, final CommandContext context, final List<UpdateOperations> ops, final boolean profilingEnabled) {
     if (ops != null) {
       for (final UpdateOperations op : ops) {
         switch (op.getType()) {
         case UpdateOperations.TYPE_SET:
-          plan.chain(new UpdateSetStep(op.getUpdateItems(), ctx, profilingEnabled));
+          plan.chain(new UpdateSetStep(op.getUpdateItems(), context, profilingEnabled));
           //TODO: ARCADEDB MANAGES EDGES IN DIFFERENT WAY. DO WE NEED THIS?
           //if(updateEdge){
-          //plan.chain(new UpdateEdgePointersStep( ctx, profilingEnabled));
+          //plan.chain(new UpdateEdgePointersStep( context, profilingEnabled));
           //}
           break;
         case UpdateOperations.TYPE_REMOVE:
-          plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), ctx, profilingEnabled));
+          plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), context, profilingEnabled));
           break;
         case UpdateOperations.TYPE_MERGE:
-          plan.chain(new UpdateMergeStep(op.getJson(), ctx, profilingEnabled));
+          plan.chain(new UpdateMergeStep(op.getJson(), context, profilingEnabled));
           break;
         case UpdateOperations.TYPE_CONTENT:
-          plan.chain(new UpdateContentStep(op.getJson(), ctx, profilingEnabled));
+          plan.chain(new UpdateContentStep(op.getJson(), context, profilingEnabled));
           break;
         case UpdateOperations.TYPE_PUT:
         case UpdateOperations.TYPE_INCREMENT:
@@ -189,7 +189,7 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleTarget(final UpdateExecutionPlan result, final CommandContext ctx, final FromClause target, final WhereClause whereClause,
+  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target, final WhereClause whereClause,
       final Timeout timeout, final boolean profilingEnabled) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
@@ -198,6 +198,6 @@ public class UpdateExecutionPlanner {
       sourceStatement.setTimeout(this.timeout.copy());
     }
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    result.chain(new SubQueryStep(planner.createExecutionPlan(ctx, profilingEnabled), ctx, ctx, profilingEnabled));
+    result.chain(new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled), context, context, profilingEnabled));
   }
 }

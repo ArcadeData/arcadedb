@@ -61,7 +61,7 @@ public class RightBinaryCondition extends SimpleNode {
     }
   }
 
-  public Object execute(final Result iCurrentRecord, final Object elementToFilter, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final Object elementToFilter, final CommandContext context) {
     if (elementToFilter == null) {
       return null;
     }
@@ -79,14 +79,14 @@ public class RightBinaryCondition extends SimpleNode {
     final List result = new ArrayList();
     while (iterator.hasNext()) {
       final Object element = iterator.next();
-      if (matchesFilters(iCurrentRecord, element, ctx)) {
+      if (matchesFilters(iCurrentRecord, element, context)) {
         result.add(element);
       }
     }
     return result;
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final Object elementToFilter, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final Object elementToFilter, final CommandContext context) {
     if (elementToFilter == null) {
       return null;
     }
@@ -104,19 +104,19 @@ public class RightBinaryCondition extends SimpleNode {
     final List result = new ArrayList();
     while (iterator.hasNext()) {
       final Object element = iterator.next();
-      if (matchesFilters(iCurrentRecord, element, ctx)) {
+      if (matchesFilters(iCurrentRecord, element, context)) {
         result.add(element);
       }
     }
     return result;
   }
 
-  private boolean matchesFilters(final Identifiable iCurrentRecord, final Object element, final CommandContext ctx) {
+  private boolean matchesFilters(final Identifiable iCurrentRecord, final Object element, final CommandContext context) {
     if (operator != null) {
-      operator.execute(ctx.getDatabase(), element, right.execute(iCurrentRecord, ctx));
+      operator.execute(context.getDatabase(), element, right.execute(iCurrentRecord, context));
     } else if (inOperator != null) {
 
-      final Object rightVal = evaluateRight(iCurrentRecord, ctx);
+      final Object rightVal = evaluateRight(iCurrentRecord, context);
       if (rightVal == null) {
         return false;
       }
@@ -129,12 +129,12 @@ public class RightBinaryCondition extends SimpleNode {
     return false;
   }
 
-  private boolean matchesFilters(final Result iCurrentRecord, final Object element, final CommandContext ctx) {
+  private boolean matchesFilters(final Result iCurrentRecord, final Object element, final CommandContext context) {
     if (operator != null) {
-      return operator.execute(ctx.getDatabase(), element, right.execute(iCurrentRecord, ctx));
+      return operator.execute(context.getDatabase(), element, right.execute(iCurrentRecord, context));
     } else if (inOperator != null) {
 
-      final Object rightVal = evaluateRight(iCurrentRecord, ctx);
+      final Object rightVal = evaluateRight(iCurrentRecord, context);
       if (rightVal == null) {
         return false;
       }
@@ -147,12 +147,12 @@ public class RightBinaryCondition extends SimpleNode {
     return false;
   }
 
-  public Object evaluateRight(final Identifiable currentRecord, final CommandContext ctx) {
-    return right.execute(currentRecord, ctx);
+  public Object evaluateRight(final Identifiable currentRecord, final CommandContext context) {
+    return right.execute(currentRecord, context);
   }
 
-  public Object evaluateRight(final Result currentRecord, final CommandContext ctx) {
-    return right.execute(currentRecord, ctx);
+  public Object evaluateRight(final Result currentRecord, final CommandContext context) {
+    return right.execute(currentRecord, context);
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {

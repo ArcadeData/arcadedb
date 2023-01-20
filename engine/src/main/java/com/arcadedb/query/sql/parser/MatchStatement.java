@@ -124,42 +124,42 @@ public class MatchStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
     this.database = db;
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
+    context.setDatabase(db);
+    context.setInputParameters(args);
 
     setProfilingConstraints((DatabaseInternal) database);
 
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
 
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
     this.database = db;
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
+    context.setDatabase(db);
 
     setProfilingConstraints((DatabaseInternal) database);
 
-    ctx.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setInputParameters(params);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
 
     return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final MatchExecutionPlanner planner = new MatchExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   protected void buildPatterns() {

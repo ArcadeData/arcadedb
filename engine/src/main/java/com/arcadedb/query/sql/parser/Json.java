@@ -51,13 +51,13 @@ public class Json extends SimpleNode {
     builder.append("}");
   }
 
-  public Document toDocument(final Identifiable source, final CommandContext ctx) {
-    final String className = getClassNameForDocument(ctx, source);
+  public Document toDocument(final Identifiable source, final CommandContext context) {
+    final String className = getClassNameForDocument(context, source);
     final MutableDocument doc;
     if (className != null) {
-      doc = ctx.getDatabase().newDocument(className);
+      doc = context.getDatabase().newDocument(className);
     } else {
-      doc = ctx.getDatabase().newDocument(null);
+      doc = context.getDatabase().newDocument(null);
     }
     for (final JsonItem item : items) {
       final String name = item.getLeftValue();
@@ -66,9 +66,9 @@ public class Json extends SimpleNode {
       }
       final Object value;
       if (item.right.value instanceof Json) {
-        value = ((Json) item.right.value).toDocument(source, ctx);
+        value = ((Json) item.right.value).toDocument(source, context);
       } else {
-        value = item.right.execute(source, ctx);
+        value = item.right.execute(source, context);
       }
       doc.set(name, value);
     }
@@ -76,35 +76,35 @@ public class Json extends SimpleNode {
     return doc;
   }
 
-  public Map<String, Object> toMap(final Identifiable source, final CommandContext ctx) {
+  public Map<String, Object> toMap(final Identifiable source, final CommandContext context) {
     final Map<String, Object> doc = new HashMap<String, Object>();
     for (final JsonItem item : items) {
       final String name = item.getLeftValue();
       if (name == null) {
         continue;
       }
-      final Object value = item.right.execute(source, ctx);
+      final Object value = item.right.execute(source, context);
       doc.put(name, value);
     }
 
     return doc;
   }
 
-  public Map<String, Object> toMap(final Result source, final CommandContext ctx) {
+  public Map<String, Object> toMap(final Result source, final CommandContext context) {
     final Map<String, Object> doc = new HashMap<String, Object>();
     for (final JsonItem item : items) {
       final String name = item.getLeftValue();
       if (name == null) {
         continue;
       }
-      final Object value = item.right.execute(source, ctx);
+      final Object value = item.right.execute(source, context);
       doc.put(name, value);
     }
 
     return doc;
   }
 
-  private String getClassNameForDocument(final CommandContext ctx, final Identifiable record) {
+  private String getClassNameForDocument(final CommandContext context, final Identifiable record) {
     if (record != null) {
       final Document doc = record.asDocument();
       if (doc != null)
@@ -114,27 +114,27 @@ public class Json extends SimpleNode {
     for (final JsonItem item : items) {
       final String left = item.getLeftValue();
       if (left != null && left.toLowerCase(Locale.ENGLISH).equals("@type")) {
-        return "" + item.right.execute((Result) null, ctx);
+        return "" + item.right.execute((Result) null, context);
       }
     }
 
     return null;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(final CommandContext context) {
     for (final JsonItem item : items) {
-      if (item.isAggregate()) {
+      if (item.isAggregate(context)) {
         return true;
       }
     }
     return false;
   }
 
-  public Json splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext ctx) {
-    if (isAggregate()) {
+  public Json splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
+    if (isAggregate(context)) {
       final Json result = new Json(-1);
       for (final JsonItem item : items) {
-        result.items.add(item.splitForAggregation(aggregateSplit, ctx));
+        result.items.add(item.splitForAggregation(aggregateSplit, context));
       }
       return result;
     } else {

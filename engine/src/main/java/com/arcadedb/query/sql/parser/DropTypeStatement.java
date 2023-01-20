@@ -44,14 +44,14 @@ public class DropTypeStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-    final Schema schema = ctx.getDatabase().getSchema();
+  public ResultSet executeDDL(final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
 
     final String typeName;
     if (name != null) {
       typeName = name.getStringValue();
     } else {
-      typeName = String.valueOf(nameParam.getValue(ctx.getInputParameters()));
+      typeName = String.valueOf(nameParam.getValue(context.getInputParameters()));
     }
 
     if (ifExists && !schema.existsType(typeName))
@@ -62,7 +62,7 @@ public class DropTypeStatement extends DDLStatement {
       throw new CommandExecutionException("Type '" + typeName + "' does not exist");
     }
 
-    if (!unsafe && ctx.getDatabase().countType(typez.getName(), false) > 0) {
+    if (!unsafe && context.getDatabase().countType(typez.getName(), false) > 0) {
       //check vertex or edge
       if (typez.getType() == Vertex.RECORD_TYPE) {
         throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName

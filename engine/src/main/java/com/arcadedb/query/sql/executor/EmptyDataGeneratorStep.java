@@ -32,14 +32,14 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
   final int size;
   int served = 0;
 
-  public EmptyDataGeneratorStep(final int size, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public EmptyDataGeneratorStep(final int size, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.size = size;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -54,7 +54,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
           if (served < size) {
             served++;
             final ResultInternal result = new ResultInternal();
-            ctx.setVariable("current", result);
+            context.setVariable("current", result);
             return result;
           }
           throw new NoSuchElementException();

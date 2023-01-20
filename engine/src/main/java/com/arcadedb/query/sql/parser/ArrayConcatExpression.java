@@ -89,49 +89,49 @@ public class ArrayConcatExpression extends SimpleNode {
     return result;
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
-    Object result = childExpressions.get(0).execute(iCurrentRecord, ctx);
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
+    Object result = childExpressions.get(0).execute(iCurrentRecord, context);
     for (int i = 1; i < childExpressions.size(); i++) {
-      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, ctx));
+      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, context));
     }
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
-    Object result = childExpressions.get(0).execute(iCurrentRecord, ctx);
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+    Object result = childExpressions.get(0).execute(iCurrentRecord, context);
     for (int i = 1; i < childExpressions.size(); i++) {
-      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, ctx));
+      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, context));
     }
     return result;
   }
 
-  public boolean isEarlyCalculated(final CommandContext ctx) {
+  public boolean isEarlyCalculated(final CommandContext context) {
     for (final ArrayConcatExpressionElement element : childExpressions) {
-      if (!element.isEarlyCalculated(ctx)) {
+      if (!element.isEarlyCalculated(context)) {
         return false;
       }
     }
     return true;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(final CommandContext context) {
     for (final ArrayConcatExpressionElement expr : this.childExpressions) {
-      if (expr.isAggregate()) {
+      if (expr.isAggregate(context)) {
         return true;
       }
     }
     return false;
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
-    if (isAggregate()) {
+  public SimpleNode splitForAggregation(final CommandContext context) {
+    if (isAggregate(context)) {
       throw new CommandExecutionException("Cannot use aggregate functions in array concatenation");
     } else {
       return this;
     }
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     throw new UnsupportedOperationException("array concatenation expressions do not allow plain aggregation");
   }
 

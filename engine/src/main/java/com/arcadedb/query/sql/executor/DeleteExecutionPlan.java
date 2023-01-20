@@ -23,8 +23,8 @@ package com.arcadedb.query.sql.executor;
  */
 public class DeleteExecutionPlan extends UpdateExecutionPlan {
 
-  public DeleteExecutionPlan(final CommandContext ctx) {
-    super(ctx);
+  public DeleteExecutionPlan(final CommandContext context) {
+    super(context);
   }
 
   @Override public Result toResult() {

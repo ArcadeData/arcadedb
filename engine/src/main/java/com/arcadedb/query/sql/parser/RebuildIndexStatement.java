@@ -46,13 +46,13 @@ public class RebuildIndexStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "rebuild index");
 
     final AtomicLong total = new AtomicLong();
 
-    final Database database = ctx.getDatabase();
+    final Database database = context.getDatabase();
     database.transaction(() -> {
       final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
         total.incrementAndGet();

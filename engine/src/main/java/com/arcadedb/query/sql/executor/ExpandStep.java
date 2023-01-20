@@ -35,12 +35,12 @@ public class ExpandStep extends AbstractExecutionStep {
   Iterator  nextSubsequence = null;
   Result    nextElement     = null;
 
-  public ExpandStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public ExpandStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
@@ -53,7 +53,7 @@ public class ExpandStep extends AbstractExecutionStep {
           return false;
 
         if (nextElement == null)
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
 
         return nextElement != null;
       }
@@ -64,7 +64,7 @@ public class ExpandStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
 
         if (nextElement == null)
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
 
         if (nextElement == null)
           throw new NoSuchElementException();
@@ -72,14 +72,14 @@ public class ExpandStep extends AbstractExecutionStep {
         final Result result = nextElement;
         localCount++;
         nextElement = null;
-        fetchNext(ctx, nRecords);
+        fetchNext(context, nRecords);
         return result;
       }
 
     };
   }
 
-  private void fetchNext(final CommandContext ctx, final int n) {
+  private void fetchNext(final CommandContext context, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
         final long begin = profilingEnabled ? System.nanoTime() : 0;
@@ -110,7 +110,7 @@ public class ExpandStep extends AbstractExecutionStep {
 
       if (nextSubsequence == null || !nextSubsequence.hasNext()) {
         if (lastResult == null || !lastResult.hasNext()) {
-          lastResult = getPrev().get().syncPull(ctx, n);
+          lastResult = getPrev().get().syncPull(context, n);
         }
       }
 

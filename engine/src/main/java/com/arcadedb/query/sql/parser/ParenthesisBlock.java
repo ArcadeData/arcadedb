@@ -34,13 +34,13 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    return subElement.evaluate(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    return subElement.evaluate(currentRecord, context);
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    return subElement.evaluate(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    return subElement.evaluate(currentRecord, context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

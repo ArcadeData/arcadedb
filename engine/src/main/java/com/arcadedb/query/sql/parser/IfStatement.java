@@ -59,30 +59,30 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
+    context.setDatabase(db);
+    context.setInputParameters(args);
     final IfExecutionPlan executionPlan;
     if (usePlanCache) {
-      executionPlan = createExecutionPlan(ctx, false);
+      executionPlan = createExecutionPlan(context, false);
     } else {
-      executionPlan = (IfExecutionPlan) createExecutionPlanNoCache(ctx, false);
+      executionPlan = (IfExecutionPlan) createExecutionPlanNoCache(context, false);
     }
 
     ExecutionStepInternal last = executionPlan.executeUntilReturn();
     if (last == null) {
-      last = new EmptyStep(ctx, false);
+      last = new EmptyStep(context, false);
     }
     if (isIdempotent()) {
-      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(ctx);
+      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(context);
       finalPlan.chain(last);
       return new LocalResultSet(finalPlan);
     } else {
-      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(ctx);
+      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(context);
       finalPlan.chain(last);
       finalPlan.executeInternal();
       return new LocalResultSet(finalPlan);
@@ -90,31 +90,31 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
+    context.setDatabase(db);
+    context.setInputParameters(params);
 
     final IfExecutionPlan executionPlan;
     if (usePlanCache) {
-      executionPlan = createExecutionPlan(ctx, false);
+      executionPlan = createExecutionPlan(context, false);
     } else {
-      executionPlan = (IfExecutionPlan) createExecutionPlanNoCache(ctx, false);
+      executionPlan = (IfExecutionPlan) createExecutionPlanNoCache(context, false);
     }
 
     ExecutionStepInternal last = executionPlan.executeUntilReturn();
     if (last == null) {
-      last = new EmptyStep(ctx, false);
+      last = new EmptyStep(context, false);
     }
     if (isIdempotent()) {
-      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(ctx);
+      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(context);
       finalPlan.chain(last);
       return new LocalResultSet(finalPlan);
     } else {
-      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(ctx);
+      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(context);
       finalPlan.chain(last);
       finalPlan.executeInternal();
       return new LocalResultSet(finalPlan);
@@ -122,11 +122,11 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public IfExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public IfExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
 
-    final IfExecutionPlan plan = new IfExecutionPlan(ctx);
+    final IfExecutionPlan plan = new IfExecutionPlan(context);
 
-    final IfStep step = new IfStep(ctx, enableProfiling);
+    final IfStep step = new IfStep(context, enableProfiling);
     step.setCondition(this.expression);
     plan.chain(step);
 

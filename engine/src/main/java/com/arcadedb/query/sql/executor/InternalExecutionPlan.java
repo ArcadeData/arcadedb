@@ -43,13 +43,13 @@ public interface InternalExecutionPlan extends ExecutionPlan {
    */
   ResultSet fetchNext(int n);
 
-  void reset(CommandContext ctx);
+  void reset(CommandContext context);
 
   default long getCost() {
     return -1;
   }
 
-  default InternalExecutionPlan copy(final CommandContext ctx) {
+  default InternalExecutionPlan copy(final CommandContext context) {
     throw new UnsupportedOperationException();
   }
 

@@ -33,15 +33,15 @@ public class CountStep extends AbstractExecutionStep {
   boolean executed = false;
 
   /**
-   * @param ctx              the query context
+   * @param context              the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CountStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (executed) {
       return new InternalResultSet();
     }
@@ -49,7 +49,7 @@ public class CountStep extends AbstractExecutionStep {
     executed = true;
     long count = 0;
     while (true) {
-      final ResultSet prevResult = getPrev().get().syncPull(ctx, nRecords);
+      final ResultSet prevResult = getPrev().get().syncPull(context, nRecords);
 
       if (!prevResult.hasNext()) {
         final long begin = profilingEnabled ? System.nanoTime() : 0;
@@ -86,7 +86,7 @@ public class CountStep extends AbstractExecutionStep {
 
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new CountStep(ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new CountStep(context, profilingEnabled);
   }
 }

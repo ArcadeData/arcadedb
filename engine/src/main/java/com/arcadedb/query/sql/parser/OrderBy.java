@@ -57,9 +57,9 @@ public class OrderBy extends SimpleNode {
     }
   }
 
-  public int compare(final Result a, final Result b, final CommandContext ctx) {
+  public int compare(final Result a, final Result b, final CommandContext context) {
     for (final OrderByItem item : items) {
-      final int result = item.compare(a, b, ctx);
+      final int result = item.compare(a, b, context);
       if (result != 0) {
         return result > 0 ? 1 : -1;
       }

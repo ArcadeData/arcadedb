@@ -67,14 +67,14 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private Iterator                   nullKeyIterator;
   private Pair<Object, Identifiable> nextEntry = null;
 
-  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final CommandContext ctx,
+  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final CommandContext context,
       final boolean profilingEnabled) {
-    this(index, condition, additionalRangeCondition, true, ctx, profilingEnabled);
+    this(index, condition, additionalRangeCondition, true, context, profilingEnabled);
   }
 
-  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final boolean orderAsc, final CommandContext ctx,
+  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final boolean orderAsc, final CommandContext context,
       final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+    super(context, profilingEnabled);
     this.index = index;
     this.indexName = index.getName();
     this.condition = condition;
@@ -84,9 +84,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    init(ctx.getDatabase());
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    init(context.getDatabase());
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
       int localCount = 0;
 
@@ -117,7 +117,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           final ResultInternal result = new ResultInternal();
           result.setProperty("key", key);
           result.setProperty("rid", value);
-          ctx.setVariable("current", result);
+          context.setVariable("current", result);
           return result;
         } finally {
           if (profilingEnabled) {
@@ -166,7 +166,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   private void updateIndexStats() {
     //stats
-    final QueryStats stats = QueryStats.get(ctx.getDatabase());
+    final QueryStats stats = QueryStats.get(context.getDatabase());
     if (index == null) {
       return;//this could happen, if not inited yet
     }
@@ -235,12 +235,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (!left.toString().equalsIgnoreCase("key")) {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
-    final Object rightValue = inCondition.evaluateRight((Result) null, ctx);
+    final Object rightValue = inCondition.evaluateRight((Result) null, context);
     final EqualsCompareOperator equals = new EqualsCompareOperator(-1);
     if (MultiValue.isMultiValue(rightValue)) {
       customIterator = new MultiIterator<>();
       for (final Object item : MultiValue.getMultiValueIterable(rightValue)) {
-        final IndexCursor localCursor = createCursor(equals, item, ctx);
+        final IndexCursor localCursor = createCursor(equals, item, context);
 
         customIterator.addIterator(new Iterator<Map.Entry>() {
           @Override
@@ -277,7 +277,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
       customIterator.reset();
     } else {
-      cursor = createCursor(equals, rightValue, ctx);
+      cursor = createCursor(equals, rightValue, context);
     }
     fetchNextEntry();
   }
@@ -325,8 +325,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     for (int i = 0; i < secondValueCombinations.size(); i++) {
 
-      Object secondValue = secondValueCombinations.get(i).execute((Result) null, ctx);
-      Object thirdValue = thirdValueCombinations.get(i).execute((Result) null, ctx);
+      Object secondValue = secondValueCombinations.get(i).execute((Result) null, context);
+      Object thirdValue = thirdValueCombinations.get(i).execute((Result) null, context);
 
       secondValue = convertToIndexDefinitionTypes(secondValue);
       thirdValue = convertToIndexDefinitionTypes(thirdValue);
@@ -374,7 +374,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return Collections.singletonList(head);
     }
     final Expression nextElementInKey = key.getExpressions().get(0);
-    final Object value = nextElementInKey.execute(new ResultInternal(), ctx);
+    final Object value = nextElementInKey.execute(new ResultInternal(), context);
     if (value instanceof Iterable && !(value instanceof Identifiable)) {
       final List<PCollection> result = new ArrayList<>();
       for (final Object elemInKey : (Iterable<?>) value) {
@@ -447,8 +447,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final Expression second = ((BetweenCondition) condition).getSecond();
     final Expression third = ((BetweenCondition) condition).getThird();
 
-    final Object secondValue = second.execute((Result) null, ctx);
-    final Object thirdValue = third.execute((Result) null, ctx);
+    final Object secondValue = second.execute((Result) null, context);
+    final Object thirdValue = third.execute((Result) null, context);
     if (isOrderAsc())
       cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
     else
@@ -464,8 +464,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (!left.toString().equalsIgnoreCase("key")) {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
-    final Object rightValue = ((BinaryCondition) condition).getRight().execute((Result) null, ctx);
-    cursor = createCursor(operator, rightValue, ctx);
+    final Object rightValue = ((BinaryCondition) condition).getRight().execute((Result) null, context);
+    cursor = createCursor(operator, rightValue, context);
     if (cursor != null) {
       fetchNextEntry();
     }
@@ -503,7 +503,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     throw new UnsupportedOperationException();
   }
 
-  private IndexCursor createCursor(final BinaryCompareOperator operator, final Object value, final CommandContext ctx) {
+  private IndexCursor createCursor(final BinaryCompareOperator operator, final Object value, final CommandContext context) {
     // TODO: WHAT TO DO WITH ASCORDER?
 
     final Object[] values;
@@ -700,8 +700,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext context) {
     return new FetchFromIndexStep(index, this.condition == null ? null : this.condition.copy(),
-        this.additionalRangeCondition == null ? null : this.additionalRangeCondition.copy(), this.orderAsc, ctx, this.profilingEnabled);
+        this.additionalRangeCondition == null ? null : this.additionalRangeCondition.copy(), this.orderAsc, context, this.profilingEnabled);
   }
 }

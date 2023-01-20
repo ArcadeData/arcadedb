@@ -31,18 +31,18 @@ public class SubQueryStep extends AbstractExecutionStep {
    * executes a sub-query
    *
    * @param subExecutionPlan the execution plan of the sub-query
-   * @param ctx              the context of the current execution plan
+   * @param context              the context of the current execution plan
    * @param subCtx           the context of the subquery execution plan
    */
-  public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext ctx, final CommandContext subCtx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext context, final CommandContext subCtx, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.subExecutionPlan = subExecutionPlan;
-    this.sameContextAsParent = (ctx == subCtx);
+    this.sameContextAsParent = (context == subCtx);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     ResultSet parentRs = subExecutionPlan.fetchNext(nRecords);
     return new ResultSet() {
       @Override
@@ -53,7 +53,7 @@ public class SubQueryStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         Result item = parentRs.next();
-        ctx.setVariable("$current", item);
+        context.setVariable("$current", item);
         return item;
       }
 
@@ -70,8 +70,8 @@ public class SubQueryStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    return new SubQueryStep(subExecutionPlan.copy(ctx), ctx, ctx, profilingEnabled);
+  public ExecutionStep copy(CommandContext context) {
+    return new SubQueryStep(subExecutionPlan.copy(context), context, context, profilingEnabled);
   }
 
   @Override

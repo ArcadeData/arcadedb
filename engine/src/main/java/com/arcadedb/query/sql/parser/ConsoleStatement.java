@@ -40,10 +40,10 @@ public class ConsoleStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal();
-    final Object msg = "" + message.execute((Identifiable) null, ctx);
+    final Object msg = "" + message.execute((Identifiable) null, context);
 
     if (logLevel.getStringValue().equalsIgnoreCase("log")) {
       LogManager.instance().log(this, Level.INFO, "%s", msg);

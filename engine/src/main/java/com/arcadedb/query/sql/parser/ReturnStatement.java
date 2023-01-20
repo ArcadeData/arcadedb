@@ -38,10 +38,10 @@ public class ReturnStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     final InternalResultSet rs = new InternalResultSet();
 
-    final Object result = expression == null ? null : expression.execute((Result) null, ctx);
+    final Object result = expression == null ? null : expression.execute((Result) null, context);
     if (result instanceof Result) {
       rs.add((Result) result);
     } else if (result instanceof Identifiable) {

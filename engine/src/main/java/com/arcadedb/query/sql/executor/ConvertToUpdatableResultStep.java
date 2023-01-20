@@ -39,12 +39,12 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public ConvertToUpdatableResultStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public ConvertToUpdatableResultStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
@@ -62,7 +62,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -70,7 +70,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
@@ -124,7 +124,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
         final Result result = nextItem;
         nextItem = null;
         fetched++;
-        ctx.setVariable("current", result);
+        context.setVariable("current", result);
         return result;
       }
 

@@ -40,25 +40,25 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
 
   /**
    * @param targetClass      a type to be checked
-   * @param ctx              execution context
+   * @param context              execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckIsVertexTypeStep(final String targetClass, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CheckIsVertexTypeStep(final String targetClass, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetClass = targetClass;
 
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
         return new InternalResultSet();
       }
 
-      final Database db = ctx.getDatabase();
+      final Database db = context.getDatabase();
 
       final Schema schema = db.getSchema();
 

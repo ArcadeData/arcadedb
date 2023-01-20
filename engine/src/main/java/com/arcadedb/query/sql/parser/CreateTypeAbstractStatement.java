@@ -63,9 +63,9 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   protected abstract DocumentType createType(Schema schema);
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
 
-    final Schema schema = ctx.getDatabase().getSchema();
+    final Schema schema = context.getDatabase().getSchema();
     if (schema.existsType(name.getStringValue())) {
       if (ifNotExists) {
         return new InternalResultSet();
@@ -73,7 +73,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
         throw new CommandExecutionException("Type " + name + " already exists");
       }
     }
-    checkSuperTypes(schema, ctx);
+    checkSuperTypes(schema, context);
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", commandType());
@@ -96,7 +96,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList()).toArray(new DocumentType[] {});
   }
 
-  protected void checkSuperTypes(final Schema schema, final CommandContext ctx) {
+  protected void checkSuperTypes(final Schema schema, final CommandContext context) {
     if (supertypes != null) {
       for (final Identifier superType : supertypes) {
         if (!schema.existsType(superType.getStringValue())) {

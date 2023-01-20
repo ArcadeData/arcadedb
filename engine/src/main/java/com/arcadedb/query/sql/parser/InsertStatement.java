@@ -105,34 +105,34 @@ public class InsertStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null)
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null)
+      context.setParentWithoutOverridingChild(parentcontext);
 
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    final InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null)
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null)
+      context.setParentWithoutOverridingChild(parentcontext);
 
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public InsertExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final InsertExecutionPlanner planner = new InsertExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   @Override

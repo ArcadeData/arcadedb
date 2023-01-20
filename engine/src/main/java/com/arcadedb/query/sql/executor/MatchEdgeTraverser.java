@@ -47,13 +47,13 @@ public class MatchEdgeTraverser {
     this.item = item;
   }
 
-  public boolean hasNext(final CommandContext ctx) {
-    init(ctx);
+  public boolean hasNext(final CommandContext context) {
+    init(context);
     return downstream.hasNext();
   }
 
-  public Result next(final CommandContext ctx) {
-    init(ctx);
+  public Result next(final CommandContext context) {
+    init(context);
     if (!downstream.hasNext()) {
       throw new NoSuchElementException();
     }
@@ -105,13 +105,13 @@ public class MatchEdgeTraverser {
     return this.edge.edge.in.alias;
   }
 
-  protected void init(final CommandContext ctx) {
+  protected void init(final CommandContext context) {
     if (downstream == null) {
       Identifiable startingElem = sourceRecord.getElementProperty(getStartingPointAlias());
       if (startingElem instanceof Result) {
         startingElem = ((Result) startingElem).getElement().orElse(null);
       }
-      downstream = executeTraversal(ctx, this.item, startingElem, 0, null).iterator();
+      downstream = executeTraversal(context, this.item, startingElem, 0, null).iterator();
     }
   }
 

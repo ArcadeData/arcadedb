@@ -28,20 +28,20 @@ public class SkipExecutionStep extends AbstractExecutionStep {
   private       int     skipped = 0;
   private       boolean finished;
 
-  public SkipExecutionStep(final Skip skip, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public SkipExecutionStep(final Skip skip, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.skip = skip;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) {
     if (finished) {
       return new InternalResultSet();//empty
     }
-    final int skipValue = skip.getValue(ctx);
+    final int skipValue = skip.getValue(context);
     while (skipped < skipValue) {
       //fetch and discard
-      final ResultSet rs = prev.get().syncPull(ctx, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
+      final ResultSet rs = prev.get().syncPull(context, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
       if (!rs.hasNext()) {
         finished = true;
         return new InternalResultSet();//empty
@@ -52,7 +52,7 @@ public class SkipExecutionStep extends AbstractExecutionStep {
       }
     }
 
-    return prev.get().syncPull(ctx, nRecords);
+    return prev.get().syncPull(context, nRecords);
   }
 
   @Override

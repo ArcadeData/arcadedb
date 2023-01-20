@@ -29,7 +29,7 @@ import java.util.*;
 
 /**
  * Superclass for SQL statements that are too simple to deserve an execution planner.
- * All the execution is delegated to the statement itself, with the execute(ctx) method.
+ * All the execution is delegated to the statement itself, with the execute(context) method.
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
@@ -39,32 +39,32 @@ public abstract class SimpleExecStatement extends Statement {
     super(id);
   }
 
-  public abstract ResultSet executeSimple(CommandContext ctx);
+  public abstract ResultSet executeSimple(CommandContext context);
 
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
+    final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null) {
-      ctx.setParentWithoutOverridingChild(parentContext);
+      context.setParentWithoutOverridingChild(parentContext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context, false);
     return executionPlan.executeInternal();
   }
 
   public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
+    final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null) {
-      ctx.setParentWithoutOverridingChild(parentContext);
+      context.setParentWithoutOverridingChild(parentContext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context, false);
     return executionPlan.executeInternal();
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    return new SingleOpExecutionPlan(ctx, this);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    return new SingleOpExecutionPlan(context, this);
   }
 
 }

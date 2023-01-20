@@ -30,18 +30,18 @@ public class SaveElementStep extends AbstractExecutionStep {
 
   private final Identifier bucket;
 
-  public SaveElementStep(final CommandContext ctx, final Identifier bucket, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.bucket = bucket;
   }
 
-  public SaveElementStep(final CommandContext ctx, final boolean profilingEnabled) {
-    this(ctx, null, profilingEnabled);
+  public SaveElementStep(final CommandContext context, final boolean profilingEnabled) {
+    this(context, null, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -89,7 +89,7 @@ public class SaveElementStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new SaveElementStep(ctx, bucket == null ? null : bucket.copy(), profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new SaveElementStep(context, bucket == null ? null : bucket.copy(), profilingEnabled);
   }
 }

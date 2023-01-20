@@ -28,13 +28,13 @@ import com.arcadedb.exception.TimeoutException;
 public class DeleteStep extends AbstractExecutionStep {
 
 
-  public DeleteStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public DeleteStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -47,7 +47,7 @@ public class DeleteStep extends AbstractExecutionStep {
         final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (result.isElement()) {
-            ctx.getDatabase().deleteRecord(result.getElement().get());
+            context.getDatabase().deleteRecord(result.getElement().get());
           }
           return result;
         } finally {

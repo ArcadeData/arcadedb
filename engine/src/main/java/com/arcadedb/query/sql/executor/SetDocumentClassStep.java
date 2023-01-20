@@ -32,14 +32,14 @@ import com.arcadedb.query.sql.parser.Identifier;
 public class SetDocumentClassStep extends AbstractExecutionStep {
   private final String targetClass;
 
-  public SetDocumentClassStep(final Identifier targetClass, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public SetDocumentClassStep(final Identifier targetClass, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetClass = targetClass.getStringValue();
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {

@@ -62,34 +62,34 @@ public class TraverseStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
 
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
 
     return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final TraverseExecutionPlanner planner = new TraverseExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

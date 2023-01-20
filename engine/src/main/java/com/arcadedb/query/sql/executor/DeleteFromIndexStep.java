@@ -60,13 +60,13 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
 
   public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final BooleanExpression ridCondition,
-      final CommandContext ctx, final boolean profilingEnabled) {
-    this(index, condition, additionalRangeCondition, ridCondition, true, ctx, profilingEnabled);
+      final CommandContext context, final boolean profilingEnabled) {
+    this(index, condition, additionalRangeCondition, ridCondition, true, context, profilingEnabled);
   }
 
   public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final BooleanExpression ridCondition,
-      final boolean orderAsc, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+      final boolean orderAsc, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.index = index;
     this.condition = condition;
     this.additional = additionalRangeCondition;
@@ -75,8 +75,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     init();
 
     return new ResultSet() {
@@ -100,7 +100,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
           index.remove(new Object[] { entry.getFirst() }, value);
           localCount++;
-          nextEntry = loadNextEntry(ctx);
+          nextEntry = loadNextEntry(context);
           return result;
         } finally {
           if (profilingEnabled) {
@@ -123,7 +123,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       init(condition);
-      nextEntry = loadNextEntry(ctx);
+      nextEntry = loadNextEntry(context);
     } catch (final IOException e) {
       e.printStackTrace();
     } finally {
@@ -180,8 +180,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   }
 
   private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey, final boolean toKeyIncluded) {
-    final Object secondValue = fromKey.execute((Result) null, ctx);
-    final Object thirdValue = toKey.execute((Result) null, ctx);
+    final Object secondValue = fromKey.execute((Result) null, context);
+    final Object thirdValue = toKey.execute((Result) null, context);
 
     if (index.supportsOrderedIterations()) {
       if (isOrderAsc())
@@ -225,8 +225,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     final Expression second = ((BetweenCondition) condition).getSecond();
     final Expression third = ((BetweenCondition) condition).getThird();
 
-    final Object secondValue = second.execute((Result) null, ctx);
-    final Object thirdValue = third.execute((Result) null, ctx);
+    final Object secondValue = second.execute((Result) null, context);
+    final Object thirdValue = third.execute((Result) null, context);
     if (isOrderAsc())
       cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
     else
@@ -239,11 +239,11 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     if (!left.toString().equalsIgnoreCase("key")) {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
-    final Object rightValue = ((BinaryCondition) condition).getRight().execute((Result) null, ctx);
-    cursor = createCursor(operator, index, rightValue, ctx);
+    final Object rightValue = ((BinaryCondition) condition).getRight().execute((Result) null, context);
+    cursor = createCursor(operator, index, rightValue, context);
   }
 
-  private IndexCursor createCursor(final BinaryCompareOperator operator, final Index definition, final Object value, final CommandContext ctx) {
+  private IndexCursor createCursor(final BinaryCompareOperator operator, final Index definition, final Object value, final CommandContext context) {
     final boolean orderAsc = isOrderAsc();
     if (operator instanceof EqualsCompareOperator) {
       return index.iterator(orderAsc, new Object[] { value }, true);

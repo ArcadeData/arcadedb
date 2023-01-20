@@ -32,14 +32,14 @@ import java.util.*;
 public class UpdateMergeStep extends AbstractExecutionStep {
   private final Json json;
 
-  public UpdateMergeStep(final Json json, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UpdateMergeStep(final Json json, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.json = json;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -56,7 +56,7 @@ public class UpdateMergeStep extends AbstractExecutionStep {
           if (!(result.getElement().orElse(null) instanceof Document)) {
             return result;
           }
-          handleMerge(result.getElement().orElse(null), ctx);
+          handleMerge(result.getElement().orElse(null), context);
         }
         return result;
       }
@@ -72,9 +72,9 @@ public class UpdateMergeStep extends AbstractExecutionStep {
     };
   }
 
-  private void handleMerge(final Record record, final CommandContext ctx) {
+  private void handleMerge(final Record record, final CommandContext context) {
     final MutableDocument doc = ((Document) record).modify();
-    final Map<String, Object> map = json.toMap(record, ctx);
+    final Map<String, Object> map = json.toMap(record, context);
     for (final Map.Entry<String, Object> entry : map.entrySet())
       doc.set(entry.getKey(), entry.getValue());
   }

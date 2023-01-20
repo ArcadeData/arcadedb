@@ -34,15 +34,15 @@ public class CreateRecordStep extends AbstractExecutionStep {
   private final int    total;
   private final String typeName;
 
-  public CreateRecordStep(final String typeName, final CommandContext ctx, final int total, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CreateRecordStep(final String typeName, final CommandContext context, final int total, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.typeName = typeName;
     this.total = total;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
     return new ResultSet() {
       int locallyCreated = 0;
 
@@ -64,15 +64,15 @@ public class CreateRecordStep extends AbstractExecutionStep {
           created++;
           locallyCreated++;
 
-          final DocumentType type = ctx.getDatabase().getSchema().getType(typeName);
+          final DocumentType type = context.getDatabase().getSchema().getType(typeName);
 
           final MutableDocument instance;
           if (type instanceof VertexType)
-            instance = ctx.getDatabase().newVertex(typeName);
+            instance = context.getDatabase().newVertex(typeName);
           else if (type instanceof EdgeType)
             throw new IllegalArgumentException("Cannot instantiate an edge");
           else
-            instance = ctx.getDatabase().newDocument(typeName);
+            instance = context.getDatabase().newDocument(typeName);
 
           return new UpdatableResult(instance);
         } finally {

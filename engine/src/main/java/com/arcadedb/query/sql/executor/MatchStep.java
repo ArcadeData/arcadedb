@@ -48,7 +48,7 @@ public class MatchStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     return new ResultSet() {
       int localCount = 0;
 
@@ -58,7 +58,7 @@ public class MatchStep extends AbstractExecutionStep {
           return false;
         }
         if (nextResult == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         return nextResult != null;
       }
@@ -69,15 +69,15 @@ public class MatchStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
         if (nextResult == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         if (nextResult == null) {
           throw new NoSuchElementException();
         }
         final Result result = nextResult;
-        fetchNext(ctx, nRecords);
+        fetchNext(context, nRecords);
         localCount++;
-        ctx.setVariable("matched", result);
+        context.setVariable("matched", result);
         return result;
       }
 
@@ -89,16 +89,16 @@ public class MatchStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNext(final CommandContext ctx, final int nRecords) {
+  private void fetchNext(final CommandContext context, final int nRecords) {
     nextResult = null;
     while (true) {
-      if (traverser != null && traverser.hasNext(ctx)) {
-        nextResult = traverser.next(ctx);
+      if (traverser != null && traverser.hasNext(context)) {
+        nextResult = traverser.next(context);
         break;
       }
 
       if (upstream == null || !upstream.hasNext()) {
-        upstream = getPrev().get().syncPull(ctx, nRecords);
+        upstream = getPrev().get().syncPull(context, nRecords);
       }
       if (!upstream.hasNext()) {
         return;
@@ -109,8 +109,8 @@ public class MatchStep extends AbstractExecutionStep {
       traverser = createTraverser(lastUpstreamRecord);
 
       boolean found = false;
-      while (traverser.hasNext(ctx)) {
-        nextResult = traverser.next(ctx);
+      while (traverser.hasNext(context)) {
+        nextResult = traverser.next(context);
         if (nextResult != null) {
           found = true;
           break;

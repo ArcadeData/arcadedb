@@ -40,12 +40,12 @@ public class IndexMatchCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO
   }
 

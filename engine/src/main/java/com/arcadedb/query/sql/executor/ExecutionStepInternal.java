@@ -29,7 +29,7 @@ import java.util.*;
  * (upstream) step, does its elaboration (eg. for a filtering step, it can discard the record and fetch another one if it doesn't
  * match the conditions) and returns the elaborated step</p>
  * <br>
- * <p>The invocation of {@literal syncPull(ctx, nResults)} has to return a result set of at most nResults records. If the upstream
+ * <p>The invocation of {@literal syncPull(context, nResults)} has to return a result set of at most nResults records. If the upstream
  * (the previous steps) return more records, they have to be returned by next call of {@literal syncPull()}. The returned result
  * set can have less than nResults records ONLY if current step cannot produce any more records (eg. the upstream does not have any
  * more records)</p>
@@ -48,7 +48,7 @@ public interface ExecutionStepInternal extends ExecutionStep {
     return result.toString();
   }
 
-  ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException;
+  ResultSet syncPull(CommandContext context, int nRecords) throws TimeoutException;
 
   void sendTimeout();
 
@@ -87,7 +87,7 @@ public interface ExecutionStepInternal extends ExecutionStep {
     //do nothing
   }
 
-  default ExecutionStep copy(final CommandContext ctx) {
+  default ExecutionStep copy(final CommandContext context) {
     throw new UnsupportedOperationException();
   }
 

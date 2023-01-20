@@ -44,9 +44,9 @@ public class DropPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
     final InternalResultSet rs = new InternalResultSet();
-    final Database database = ctx.getDatabase();
+    final Database database = context.getDatabase();
     final DocumentType sourceClass = database.getSchema().getType(typeName.getStringValue());
     if (sourceClass == null)
       throw new CommandExecutionException("Source class '" + typeName + "' not found");

@@ -34,19 +34,19 @@ public class UpdateContentStep extends AbstractExecutionStep {
   private Json           json;
   private InputParameter inputParameter;
 
-  public UpdateContentStep(final Json json, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UpdateContentStep(final Json json, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.json = json;
   }
 
-  public UpdateContentStep(final InputParameter inputParameter, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UpdateContentStep(final InputParameter inputParameter, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.inputParameter = inputParameter;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -63,7 +63,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
           if (!(result.getElement().get() instanceof Document))
             return result;
 
-          handleContent(result.getElement().get(), ctx);
+          handleContent(result.getElement().get(), context);
         }
         return result;
       }
@@ -75,14 +75,14 @@ public class UpdateContentStep extends AbstractExecutionStep {
     };
   }
 
-  private boolean handleContent(final Document record, final CommandContext ctx) {
+  private boolean handleContent(final Document record, final CommandContext context) {
     // REPLACE ALL THE CONTENT
     final MutableDocument doc = record.modify();
 
     if (json != null) {
-      doc.fromMap(json.toMap(record, ctx));
+      doc.fromMap(json.toMap(record, context));
     } else if (inputParameter != null) {
-      final Object val = inputParameter.getValue(ctx.getInputParameters());
+      final Object val = inputParameter.getValue(context.getInputParameters());
       if (val instanceof Document) {
         doc.fromMap(((Document) val).getRecord().toJSON().toMap());
       } else if (val instanceof Map) {

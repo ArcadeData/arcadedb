@@ -100,15 +100,15 @@ public class ProjectionItem extends SimpleNode {
     }
   }
 
-  public Object execute(final Record iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Record iCurrentRecord, final CommandContext context) {
     Object result;
     if (all) {
       result = iCurrentRecord;
     } else {
-      result = expression.execute(iCurrentRecord, ctx);
+      result = expression.execute(iCurrentRecord, context);
     }
     if (nestedProjection != null) {
-      result = nestedProjection.apply(expression, result, ctx);
+      result = nestedProjection.apply(expression, result, context);
     }
     return convert(result);
   }
@@ -129,18 +129,18 @@ public class ProjectionItem extends SimpleNode {
     return value;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     Object result;
     if (all) {
       result = iCurrentRecord;
     } else {
-      result = expression.execute(iCurrentRecord, ctx);
+      result = expression.execute(iCurrentRecord, context);
     }
     if (nestedProjection != null) {
       if (result instanceof Document && ((Document) result).getPropertyNames().isEmpty()) {
         ((Document) result).reload();
       }
-      result = nestedProjection.apply(expression, result, ctx);
+      result = nestedProjection.apply(expression, result, context);
     }
     return convert(result);
   }
@@ -177,7 +177,7 @@ public class ProjectionItem extends SimpleNode {
     return result;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(final CommandContext context) {
     if (aggregate != null) {
       return aggregate;
     }
@@ -185,7 +185,7 @@ public class ProjectionItem extends SimpleNode {
       aggregate = false;
       return false;
     }
-    if (expression.isAggregate()) {
+    if (expression.isAggregate(context)) {
       aggregate = true;
       return true;
     }
@@ -198,11 +198,11 @@ public class ProjectionItem extends SimpleNode {
    *
    * @param aggregateSplit
    */
-  public ProjectionItem splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext ctx) {
-    if (isAggregate()) {
+  public ProjectionItem splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
+    if (isAggregate(context)) {
       final ProjectionItem result = new ProjectionItem(-1);
       result.alias = getProjectionAlias();
-      result.expression = expression.splitForAggregation(aggregateSplit, ctx);
+      result.expression = expression.splitForAggregation(aggregateSplit, context);
       result.nestedProjection = nestedProjection;
       return result;
     } else {
@@ -210,11 +210,11 @@ public class ProjectionItem extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     if (expression == null) {
       throw new CommandExecutionException("Cannot aggregate on this projection: " + this);
     }
-    return expression.getAggregationContext(ctx);
+    return expression.getAggregationContext(context);
   }
 
   public ProjectionItem copy() {

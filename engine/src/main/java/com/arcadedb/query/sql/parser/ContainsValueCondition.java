@@ -38,19 +38,19 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (leftValue instanceof Map) {
       final Map map = (Map) leftValue;
       if (condition != null) {
         for (final Object o : map.values()) {
-          if (condition.evaluate(o, ctx)) {
+          if (condition.evaluate(o, context)) {
             return true;
           }
         }
         return false;
       } else {
-        final Object rightValue = expression.execute(currentRecord, ctx);
+        final Object rightValue = expression.execute(currentRecord, context);
         return map.containsValue(rightValue);//TODO type conversions...?
       }
 
@@ -59,19 +59,19 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (leftValue instanceof Map) {
       final Map map = (Map) leftValue;
       if (condition != null) {
         for (final Object o : map.values()) {
-          if (condition.evaluate(o, ctx)) {
+          if (condition.evaluate(o, context)) {
             return true;
           }
         }
         return false;
       } else {
-        final Object rightValue = expression.execute(currentRecord, ctx);
+        final Object rightValue = expression.execute(currentRecord, context);
         return map.containsValue(rightValue);//TODO type conversions...?
       }
 
@@ -143,7 +143,7 @@ public class ContainsValueCondition extends BooleanExpression {
   public boolean isIndexAware(final IndexSearchInfo info) {
     if (left.isBaseIdentifier()) {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        return expression != null && expression.isEarlyCalculated(info.getCtx()) && info.isMap() && info.isIndexByValue();
+        return expression != null && expression.isEarlyCalculated(info.getContext()) && info.isMap() && info.isIndexByValue();
       }
     }
     return false;

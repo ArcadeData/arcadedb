@@ -5,15 +5,15 @@ public class IndexSearchInfo {
   private final boolean        map;
   private final boolean        indexByKey;
   private final String         field;
-  private final CommandContext ctx;
+  private final CommandContext context;
   private final boolean        indexByValue;
 
-  public IndexSearchInfo(String indexField, boolean allowsRangeQueries, boolean map, boolean indexByKey, boolean indexByValue, CommandContext ctx) {
+  public IndexSearchInfo(String indexField, boolean allowsRangeQueries, boolean map, boolean indexByKey, boolean indexByValue, CommandContext context) {
     this.field = indexField;
     this.allowsRangeQueries = allowsRangeQueries;
     this.map = map;
     this.indexByKey = indexByKey;
-    this.ctx = ctx;
+    this.context = context;
     this.indexByValue = indexByValue;
   }
 
@@ -21,8 +21,8 @@ public class IndexSearchInfo {
     return field;
   }
 
-  public CommandContext getCtx() {
-    return ctx;
+  public CommandContext getContext() {
+    return context;
   }
 
   public boolean allowsRange() {

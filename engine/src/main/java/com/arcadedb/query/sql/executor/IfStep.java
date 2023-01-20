@@ -36,18 +36,18 @@ public class IfStep extends AbstractExecutionStep {
     Boolean conditionMet = null;
 
 
-    public IfStep(final CommandContext ctx, final boolean profilingEnabled) {
-        super(ctx, profilingEnabled);
+    public IfStep(final CommandContext context, final boolean profilingEnabled) {
+        super(context, profilingEnabled);
     }
 
     @Override
-    public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-        init(ctx);
+    public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+        init(context);
         if (conditionMet) {
-            initPositivePlan(ctx);
+            initPositivePlan(context);
             return positivePlan.fetchNext(nRecords);
         } else {
-            initNegativePlan(ctx);
+            initNegativePlan(context);
             if (negativePlan != null) {
                 return negativePlan.fetchNext(nRecords);
             }
@@ -56,16 +56,16 @@ public class IfStep extends AbstractExecutionStep {
 
     }
 
-    protected void init(final CommandContext ctx) {
+    protected void init(final CommandContext context) {
         if (conditionMet == null) {
-            conditionMet = condition.evaluate((Result) null, ctx);
+            conditionMet = condition.evaluate((Result) null, context);
         }
     }
 
-    public void initPositivePlan(final CommandContext ctx) {
+    public void initPositivePlan(final CommandContext context) {
         if (positivePlan == null) {
             final BasicCommandContext subCtx1 = new BasicCommandContext();
-            subCtx1.setParent(ctx);
+            subCtx1.setParent(context);
             final ScriptExecutionPlan positivePlan = new ScriptExecutionPlan(subCtx1);
             for (final Statement stm : positiveStatements) {
                 positivePlan.chain(stm.createExecutionPlan(subCtx1, profilingEnabled), profilingEnabled);
@@ -74,11 +74,11 @@ public class IfStep extends AbstractExecutionStep {
         }
     }
 
-    public void initNegativePlan(final CommandContext ctx) {
+    public void initNegativePlan(final CommandContext context) {
         if (negativePlan == null && negativeStatements != null) {
             if (negativeStatements.size() > 0) {
                 final BasicCommandContext subCtx2 = new BasicCommandContext();
-                subCtx2.setParent(ctx);
+                subCtx2.setParent(context);
                 final ScriptExecutionPlan negativePlan = new ScriptExecutionPlan(subCtx2);
                 for (final Statement stm : negativeStatements) {
                     negativePlan.chain(stm.createExecutionPlan(subCtx2, profilingEnabled), profilingEnabled);

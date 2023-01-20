@@ -41,18 +41,18 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
   private int  cursor = 0;
 
 
-  public FetchFromSchemaTypesStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromSchemaTypesStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
 
     if (cursor == 0) {
       final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
-        final Schema schema = ctx.getDatabase().getSchema();
+        final Schema schema = context.getDatabase().getSchema();
 
         final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase).collect(Collectors.toList());
         for (final String typeName : orderedTypes) {

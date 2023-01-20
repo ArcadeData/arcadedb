@@ -50,10 +50,10 @@ public class DeleteExecutionPlanner {
     this.unsafe = stm.isUnsafe();
   }
 
-  public DeleteExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    final DeleteExecutionPlan result = new DeleteExecutionPlan(ctx);
+  public DeleteExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final DeleteExecutionPlan result = new DeleteExecutionPlan(context);
 
-    if (handleIndexAsTarget(result, fromClause.getItem().getIndex(), whereClause, ctx, enableProfiling)) {
+    if (handleIndexAsTarget(result, fromClause.getItem().getIndex(), whereClause, context, enableProfiling)) {
       if (limit != null) {
         throw new CommandExecutionException("Cannot apply a LIMIT on a delete from index");
       }
@@ -64,24 +64,24 @@ public class DeleteExecutionPlanner {
         throw new CommandExecutionException("Cannot apply a RETURN BEFORE on a delete from index");
       }
 
-      handleReturn(result, ctx, this.returnBefore, enableProfiling);
+      handleReturn(result, context, this.returnBefore, enableProfiling);
     } else {
-      handleTarget(result, ctx, this.fromClause, this.whereClause, enableProfiling);
-      handleUnsafe(result, ctx, this.unsafe, enableProfiling);
-      handleLimit(result, ctx, this.limit, enableProfiling);
-      handleDelete(result, ctx, enableProfiling);
-      handleReturn(result, ctx, this.returnBefore, enableProfiling);
+      handleTarget(result, context, this.fromClause, this.whereClause, enableProfiling);
+      handleUnsafe(result, context, this.unsafe, enableProfiling);
+      handleLimit(result, context, this.limit, enableProfiling);
+      handleDelete(result, context, enableProfiling);
+      handleReturn(result, context, this.returnBefore, enableProfiling);
     }
     return result;
   }
 
   private boolean handleIndexAsTarget(final DeleteExecutionPlan result, final IndexIdentifier indexIdentifier, WhereClause whereClause,
-      final CommandContext ctx, final boolean profilingEnabled) {
+      final CommandContext context, final boolean profilingEnabled) {
     if (indexIdentifier == null) {
       return false;
     }
     final String indexName = indexIdentifier.getIndexName();
-    final RangeIndex index = (RangeIndex) ctx.getDatabase().getSchema().getIndexByName(indexName);
+    final RangeIndex index = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
       throw new CommandExecutionException("Index not found: " + indexName);
     }
@@ -120,61 +120,61 @@ public class DeleteExecutionPlanner {
           throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + whereClause);
         }
       }
-      result.chain(new DeleteFromIndexStep(index, keyCondition, null, ridCondition, ctx, profilingEnabled));
+      result.chain(new DeleteFromIndexStep(index, keyCondition, null, ridCondition, context, profilingEnabled));
       if (ridCondition != null) {
         final WhereClause where = new WhereClause(-1);
         where.setBaseExpression(ridCondition);
-        result.chain(new FilterStep(where, ctx, profilingEnabled));
+        result.chain(new FilterStep(where, context, profilingEnabled));
       }
       return true;
     case VALUES:
-      result.chain(new FetchFromIndexValuesStep(index, true, ctx, profilingEnabled));
-      result.chain(new GetValueFromIndexEntryStep(ctx, null, profilingEnabled));
+      result.chain(new FetchFromIndexValuesStep(index, true, context, profilingEnabled));
+      result.chain(new GetValueFromIndexEntryStep(context, null, profilingEnabled));
       break;
     case VALUESASC:
 //      if (!index.supportsOrderedIterations()) {
       throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
 //      }
-//      result.chain(new FetchFromIndexValuesStep(index, true, ctx, profilingEnabled));
-//      result.chain(new GetValueFromIndexEntryStep(ctx, null, profilingEnabled));
+//      result.chain(new FetchFromIndexValuesStep(index, true, context, profilingEnabled));
+//      result.chain(new GetValueFromIndexEntryStep(context, null, profilingEnabled));
 //      break;
     case VALUESDESC:
 //      if (!index.supportsOrderedIterations()) {
       throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
 //      }
-//      result.chain(new FetchFromIndexValuesStep(index, false, ctx, profilingEnabled));
-//      result.chain(new GetValueFromIndexEntryStep(ctx, null, profilingEnabled));
+//      result.chain(new FetchFromIndexValuesStep(index, false, context, profilingEnabled));
+//      result.chain(new GetValueFromIndexEntryStep(context, null, profilingEnabled));
 //      break;
     }
     return false;
   }
 
-  private void handleDelete(final DeleteExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
-    result.chain(new DeleteStep(ctx, profilingEnabled));
+  private void handleDelete(final DeleteExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
+    result.chain(new DeleteStep(context, profilingEnabled));
   }
 
-  private void handleUnsafe(final DeleteExecutionPlan result, final CommandContext ctx, final boolean unsafe, final boolean profilingEnabled) {
+  private void handleUnsafe(final DeleteExecutionPlan result, final CommandContext context, final boolean unsafe, final boolean profilingEnabled) {
     if (!unsafe)
-      result.chain(new CheckSafeDeleteStep(ctx, profilingEnabled));
+      result.chain(new CheckSafeDeleteStep(context, profilingEnabled));
   }
 
-  private void handleReturn(final DeleteExecutionPlan result, final CommandContext ctx, final boolean returnBefore, final boolean profilingEnabled) {
+  private void handleReturn(final DeleteExecutionPlan result, final CommandContext context, final boolean returnBefore, final boolean profilingEnabled) {
     if (!returnBefore)
-      result.chain(new CountStep(ctx, profilingEnabled));
+      result.chain(new CountStep(context, profilingEnabled));
   }
 
-  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext ctx, final Limit limit, final boolean profilingEnabled) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit, final boolean profilingEnabled) {
     if (limit != null)
-      plan.chain(new LimitExecutionStep(limit, ctx, profilingEnabled));
+      plan.chain(new LimitExecutionStep(limit, context, profilingEnabled));
   }
 
-  private void handleTarget(final UpdateExecutionPlan result, final CommandContext ctx, final FromClause target, final WhereClause whereClause,
+  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target, final WhereClause whereClause,
       final boolean profilingEnabled) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    result.chain(new SubQueryStep(planner.createExecutionPlan(ctx, profilingEnabled), ctx, ctx, profilingEnabled));
+    result.chain(new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled), context, context, profilingEnabled));
   }
 
   private BooleanExpression getKeyCondition(final AndBlock andBlock) {

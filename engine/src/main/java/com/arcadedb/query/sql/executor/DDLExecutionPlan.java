@@ -29,12 +29,12 @@ import java.util.*;
 public class DDLExecutionPlan implements InternalExecutionPlan {
 
   private final DDLStatement   statement;
-  private final CommandContext ctx;
+  private final CommandContext context;
 
   boolean executed = false;
 
-  public DDLExecutionPlan(final CommandContext ctx, final DDLStatement stm) {
-    this.ctx = ctx;
+  public DDLExecutionPlan(final CommandContext context, final DDLStatement stm) {
+    this.context = context;
     this.statement = stm;
   }
 
@@ -43,7 +43,7 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
     return new InternalResultSet();
   }
 
-  public void reset(final CommandContext ctx) {
+  public void reset(final CommandContext context) {
     executed = false;
   }
 
@@ -57,7 +57,7 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
       throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
     }
     executed = true;
-    final ResultSet result = statement.executeDDL(this.ctx);
+    final ResultSet result = statement.executeDDL(this.context);
     if (result instanceof InternalResultSet) {
       ((InternalResultSet) result).plan = this;
     }

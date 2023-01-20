@@ -39,14 +39,14 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "check database");
 
-    if (ctx.getDatabase().isTransactionActive())
-      ctx.getDatabase().rollback();
+    if (context.getDatabase().isTransactionActive())
+      context.getDatabase().rollback();
 
-    final DatabaseChecker checker = new DatabaseChecker(ctx.getDatabase().getWrappedDatabaseInstance());
+    final DatabaseChecker checker = new DatabaseChecker(context.getDatabase().getWrappedDatabaseInstance());
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
     checker.setTypes(types.stream().map(x -> (x.getStringValue().startsWith("\"") || x.getStringValue().startsWith("'")) ?

@@ -79,7 +79,7 @@ public class OrderByItem {
     }
   }
 
-  public int compare(final Result a, final Result b, final CommandContext ctx) {
+  public int compare(final Result a, final Result b, final CommandContext context) {
     Object aVal = null;
     Object bVal = null;
 
@@ -106,8 +106,8 @@ public class OrderByItem {
       bVal = b.getMetadata(alias);
     }
     if (modifier != null) {
-      aVal = modifier.execute(a, aVal, ctx);
-      bVal = modifier.execute(b, bVal, ctx);
+      aVal = modifier.execute(a, aVal, context);
+      bVal = modifier.execute(b, bVal, context);
     }
     if (aVal == null) {
       if (bVal == null) {

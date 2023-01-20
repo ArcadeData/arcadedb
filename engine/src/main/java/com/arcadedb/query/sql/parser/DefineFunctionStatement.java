@@ -31,8 +31,8 @@ public class DefineFunctionStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
-    final Database database = ctx.getDatabase();
+  public ResultSet executeSimple(final CommandContext context) {
+    final Database database = context.getDatabase();
 
     final FunctionLibraryDefinition fLib;
     if (!database.getSchema().hasFunctionLibrary(libraryName.getStringValue())) {

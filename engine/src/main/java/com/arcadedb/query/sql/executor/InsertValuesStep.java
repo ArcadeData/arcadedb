@@ -34,16 +34,16 @@ public class InsertValuesStep extends AbstractExecutionStep {
   private final List<List<Expression>> values;
   private       int                    nextValueSet = 0;
 
-  public InsertValuesStep(final List<Identifier> identifierList, final List<List<Expression>> valueExpressions, final CommandContext ctx,
+  public InsertValuesStep(final List<Identifier> identifierList, final List<List<Expression>> valueExpressions, final CommandContext context,
       final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+    super(context, profilingEnabled);
     this.identifiers = identifierList;
     this.values = valueExpressions;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -67,7 +67,7 @@ public class InsertValuesStep extends AbstractExecutionStep {
         nextValueSet %= values.size();
         for (int i = 0; i < currentValues.size(); i++) {
           final Identifier identifier = identifiers.get(i);
-          final Object value = currentValues.get(i).execute(result, ctx);
+          final Object value = currentValues.get(i).execute(result, context);
           ((ResultInternal) result).setProperty(identifier.getStringValue(), value);
         }
         return result;

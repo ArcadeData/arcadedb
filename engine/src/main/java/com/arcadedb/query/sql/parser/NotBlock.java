@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -38,11 +37,11 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (sub == null) {
       return true;
     }
-    final boolean result = sub.evaluate(currentRecord, ctx);
+    final boolean result = sub.evaluate(currentRecord, context);
     if (negate) {
       return !result;
     }
@@ -50,11 +49,11 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (sub == null) {
       return true;
     }
-    final boolean result = sub.evaluate(currentRecord, ctx);
+    final boolean result = sub.evaluate(currentRecord, context);
     if (negate) {
       return !result;
     }
@@ -84,14 +83,14 @@ public class NotBlock extends BooleanExpression {
     sub.toString(params, builder);
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (sub == null) {
       return null;
     }
     if (negate) {
       return null;
     }
-    return sub.getIndexedFunctionConditions(iSchemaClass, database);
+    return sub.getIndexedFunctionConditions(iSchemaClass, context);
   }
 
   @Override

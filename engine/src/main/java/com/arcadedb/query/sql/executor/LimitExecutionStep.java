@@ -28,22 +28,22 @@ public class LimitExecutionStep extends AbstractExecutionStep {
   private final Limit limit;
   private       int   loaded = 0;
 
-  public LimitExecutionStep(final Limit limit, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public LimitExecutionStep(final Limit limit, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.limit = limit;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final int limitVal = limit.getValue(ctx);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final int limitVal = limit.getValue(context);
     if (limitVal == -1) {
-      return getPrev().get().syncPull(ctx, nRecords);
+      return getPrev().get().syncPull(context, nRecords);
     }
     if (limitVal <= loaded) {
       return new InternalResultSet();
     }
     final int nextBlockSize = Math.min(nRecords, limitVal - loaded);
-    final ResultSet result = prev.get().syncPull(ctx, nextBlockSize);
+    final ResultSet result = prev.get().syncPull(context, nextBlockSize);
     loaded += nextBlockSize;
     return result;
   }

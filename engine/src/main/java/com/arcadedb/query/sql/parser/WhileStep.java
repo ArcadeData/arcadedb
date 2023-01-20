@@ -36,40 +36,40 @@ public class WhileStep extends AbstractExecutionStep {
   private final List<Statement>       statements;
   private       ExecutionStepInternal finalResult = null;
 
-  public WhileStep(final BooleanExpression condition, final List<Statement> statements, final CommandContext ctx, final boolean enableProfiling) {
-    super(ctx, enableProfiling);
+  public WhileStep(final BooleanExpression condition, final List<Statement> statements, final CommandContext context, final boolean enableProfiling) {
+    super(context, enableProfiling);
     this.condition = condition;
     this.statements = statements;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    prev.ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    prev.ifPresent(x -> x.syncPull(context, nRecords));
     if (finalResult != null) {
-      return finalResult.syncPull(ctx, nRecords);
+      return finalResult.syncPull(context, nRecords);
     }
 
-    while (condition.evaluate(new ResultInternal(), ctx)) {
-      final ScriptExecutionPlan plan = initPlan(ctx);
+    while (condition.evaluate(new ResultInternal(), context)) {
+      final ScriptExecutionPlan plan = initPlan(context);
       final ExecutionStepInternal result = plan.executeFull();
       if (result != null) {
         this.finalResult = result;
-        return result.syncPull(ctx, nRecords);
+        return result.syncPull(context, nRecords);
       }
     }
-    finalResult = new EmptyStep(ctx, false);
-    return finalResult.syncPull(ctx, nRecords);
+    finalResult = new EmptyStep(context, false);
+    return finalResult.syncPull(context, nRecords);
   }
 
-  public ScriptExecutionPlan initPlan(final CommandContext ctx) {
-    final BasicCommandContext subCtx1 = new BasicCommandContext();
-    subCtx1.setParent(ctx);
-    final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
+  public ScriptExecutionPlan initPlan(final CommandContext context) {
+    final BasicCommandContext subcontext1 = new BasicCommandContext();
+    subcontext1.setParent(context);
+    final ScriptExecutionPlan plan = new ScriptExecutionPlan(subcontext1);
     for (final Statement stm : statements) {
       if (stm.originalStatement == null) {
         stm.originalStatement = stm;
       }
-      final InternalExecutionPlan subPlan = stm.createExecutionPlan(subCtx1, profilingEnabled);
+      final InternalExecutionPlan subPlan = stm.createExecutionPlan(subcontext1, profilingEnabled);
       plan.chain(subPlan, profilingEnabled);
     }
     return plan;

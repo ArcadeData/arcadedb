@@ -33,8 +33,8 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
-  public AbstractUnrollStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public AbstractUnrollStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
@@ -45,7 +45,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) {
     if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
@@ -58,7 +58,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
           return false;
         }
         if (nextElement == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         return nextElement != null;
       }
@@ -69,7 +69,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
         if (nextElement == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         if (nextElement == null) {
           throw new NoSuchElementException();
@@ -78,13 +78,13 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
         final Result result = nextElement;
         localCount++;
         nextElement = null;
-        fetchNext(ctx, nRecords);
+        fetchNext(context, nRecords);
         return result;
       }
     };
   }
 
-  private void fetchNext(final CommandContext ctx, final int n) {
+  private void fetchNext(final CommandContext context, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
         nextElement = nextSubsequence.next();
@@ -93,7 +93,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
 
       if (nextSubsequence == null || !nextSubsequence.hasNext()) {
         if (lastResult == null || !lastResult.hasNext()) {
-          lastResult = getPrev().get().syncPull(ctx, n);
+          lastResult = getPrev().get().syncPull(context, n);
         }
         if (!lastResult.hasNext()) {
           return;
@@ -101,7 +101,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
       }
 
       final Result nextAggregateItem = lastResult.next();
-      nextSubsequence = unroll(nextAggregateItem, ctx).iterator();
+      nextSubsequence = unroll(nextAggregateItem, context).iterator();
 
     } while (true);
 

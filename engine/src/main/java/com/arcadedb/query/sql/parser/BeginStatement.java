@@ -35,8 +35,8 @@ public class BeginStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
-    ctx.getDatabase().begin();
+  public ResultSet executeSimple(final CommandContext context) {
+    context.getDatabase().begin();
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "begin");

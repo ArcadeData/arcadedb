@@ -29,17 +29,17 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
     private boolean executed = false;
 
     public GuaranteeEmptyCountStep(
-            final ProjectionItem oProjectionItem, final CommandContext ctx, final boolean enableProfiling) {
-        super(ctx, enableProfiling);
+            final ProjectionItem oProjectionItem, final CommandContext context, final boolean enableProfiling) {
+        super(context, enableProfiling);
         this.item = oProjectionItem;
     }
 
     @Override
-    public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
         if (prev.isEmpty()) {
             throw new IllegalStateException("filter step requires a previous step");
         }
-        final ResultSet upstream = prev.get().syncPull(ctx, nRecords);
+        final ResultSet upstream = prev.get().syncPull(context, nRecords);
         return new ResultSet() {
             @Override
             public boolean hasNext() {
@@ -86,8 +86,8 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
     }
 
     @Override
-    public ExecutionStep copy(final CommandContext ctx) {
-        return new GuaranteeEmptyCountStep(item.copy(), ctx, profilingEnabled);
+    public ExecutionStep copy(final CommandContext context) {
+        return new GuaranteeEmptyCountStep(item.copy(), context, profilingEnabled);
     }
 
     public boolean canBeCached() {

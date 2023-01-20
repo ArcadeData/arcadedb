@@ -46,40 +46,40 @@ public class ForEachBlock extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    ForEachExecutionPlan plan = new ForEachExecutionPlan(ctx);
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    ForEachExecutionPlan plan = new ForEachExecutionPlan(context);
     int nextProg = FOREACH_VARIABLE_PROGR.incrementAndGet();
     if (nextProg < 0)
       FOREACH_VARIABLE_PROGR.set(0);
 
     Identifier varName = new Identifier("$__ARCADEDB_FOREACH_VAR_" + nextProg);
-    plan.chain(new GlobalLetExpressionStep(varName, loopValues, ctx, enableProfiling));
-    plan.chain(new ForEachStep(loopVariable, new Expression(varName), statements, ctx, enableProfiling));
+    plan.chain(new GlobalLetExpressionStep(varName, loopValues, context, enableProfiling));
+    plan.chain(new ForEachStep(loopVariable, new Expression(varName), statements, context, enableProfiling));
     return plan;
   }
 

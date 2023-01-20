@@ -23,26 +23,14 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public abstract class SimpleNode implements Node {
-  protected Node      parent;
-  protected       Node[] children;
-  protected final int    id;
-  protected       Object value;
-  protected SqlParser parser;
-  protected Token     firstToken;
-  protected Token     lastToken;
-  protected String    cachedStringForm;
+  protected Node[] children;
+  protected Object value;
+  protected String cachedStringForm;
 
   public SimpleNode() {
-    id = -1;
   }
 
   public SimpleNode(final int i) {
-    id = i;
-  }
-
-  public SimpleNode(final SqlParser p, final int i) {
-    this(i);
-    parser = p;
   }
 
   public void jjtOpen() {
@@ -54,11 +42,11 @@ public abstract class SimpleNode implements Node {
   }
 
   public void jjtSetParent(final Node n) {
-    parent = n;
+    // parent = n;
   }
 
   public Node jjtGetParent() {
-    return parent;
+    return null;//parent;
   }
 
   public void jjtAddChild(final Node n, final int i) {
@@ -89,19 +77,21 @@ public abstract class SimpleNode implements Node {
   }
 
   public Token jjtGetFirstToken() {
-    return firstToken;
+    //return firstToken;
+    return null;
   }
 
   public void jjtSetFirstToken(final Token token) {
-    this.firstToken = token;
+    //this.firstToken = token;
   }
 
   public Token jjtGetLastToken() {
-    return lastToken;
+    //return lastToken;
+    return null;
   }
 
   public void jjtSetLastToken(final Token token) {
-    this.lastToken = token;
+    //this.lastToken = token;
   }
 
   /**
@@ -176,7 +166,7 @@ public abstract class SimpleNode implements Node {
       if (!Objects.equals(ownElements[i], otherElements[i]))
         return false;
 
-    Objects.equals(1,2);
+    Objects.equals(1, 2);
 
     return true;
   }

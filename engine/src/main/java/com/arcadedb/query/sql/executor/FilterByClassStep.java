@@ -34,13 +34,13 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public FilterByClassStep(final Identifier identifier, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FilterByClassStep(final Identifier identifier, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.identifier = identifier;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
@@ -58,7 +58,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -66,7 +66,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
@@ -150,7 +150,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new FilterByClassStep(this.identifier.copy(), ctx, this.profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new FilterByClassStep(this.identifier.copy(), context, this.profilingEnabled);
   }
 }

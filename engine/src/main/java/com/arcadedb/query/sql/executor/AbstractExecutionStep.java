@@ -25,14 +25,14 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public abstract class AbstractExecutionStep implements ExecutionStepInternal {
-  protected final CommandContext                  ctx;
+  protected final CommandContext                  context;
   protected       Optional<ExecutionStepInternal> prev     = Optional.empty();
   protected       boolean                         timedOut = false;
   protected       long                            cost     = -1;
   protected final boolean                         profilingEnabled;
 
-  public AbstractExecutionStep(final CommandContext ctx, final boolean profilingEnabled) {
-    this.ctx = ctx;
+  public AbstractExecutionStep(final CommandContext context, final boolean profilingEnabled) {
+    this.context = context;
     this.profilingEnabled = profilingEnabled;
   }
 
@@ -42,7 +42,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   }
 
   public CommandContext getContext() {
-    return ctx;
+    return context;
   }
 
   public Optional<ExecutionStepInternal> getPrev() {

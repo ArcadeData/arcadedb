@@ -26,12 +26,12 @@ import java.util.stream.*;
  */
 public class SelectExecutionPlan implements InternalExecutionPlan {
   private       String                      location;
-  private final CommandContext              ctx;
+  private final CommandContext              context;
   protected     List<ExecutionStepInternal> steps    = new ArrayList<>();
   private       ExecutionStepInternal       lastStep = null;
 
-  public SelectExecutionPlan(final CommandContext ctx) {
-    this.ctx = ctx;
+  public SelectExecutionPlan(final CommandContext context) {
+    this.context = context;
   }
 
   @Override
@@ -41,7 +41,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public ResultSet fetchNext(final int n) {
-    return lastStep.syncPull(ctx, n);
+    return lastStep.syncPull(context, n);
   }
 
   @Override
@@ -58,7 +58,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public void reset(final CommandContext ctx) {
+  public void reset(final CommandContext context) {
     steps.forEach(ExecutionStepInternal::reset);
   }
 
@@ -97,12 +97,12 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public InternalExecutionPlan copy(final CommandContext ctx) {
-    final SelectExecutionPlan copy = new SelectExecutionPlan(ctx);
+  public InternalExecutionPlan copy(final CommandContext context) {
+    final SelectExecutionPlan copy = new SelectExecutionPlan(context);
 
     ExecutionStepInternal lastStep = null;
     for (final ExecutionStepInternal step : this.steps) {
-      final ExecutionStepInternal newStep = (ExecutionStepInternal) step.copy(ctx);
+      final ExecutionStepInternal newStep = (ExecutionStepInternal) step.copy(context);
       newStep.setPrevious(lastStep);
       lastStep = newStep;
       copy.getSteps().add(newStep);

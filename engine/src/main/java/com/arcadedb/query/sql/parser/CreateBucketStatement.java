@@ -40,8 +40,8 @@ public class CreateBucketStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-    final Database db = ctx.getDatabase();
+  public ResultSet executeDDL(final CommandContext context) {
+    final Database db = context.getDatabase();
     final String bucketName = name.getStringValue();
     if (db.getSchema().existsBucket(bucketName)) {
       if (ifNotExists)
@@ -83,7 +83,7 @@ public class CreateBucketStatement extends DDLStatement {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { name, ifNotExists, blob, id };
+    return new Object[] { name, ifNotExists, blob };
   }
 }
 /* JavaCC - OriginalChecksum=6011a26678f2175aa456a0a6c094cb13 (do not edit this line) */

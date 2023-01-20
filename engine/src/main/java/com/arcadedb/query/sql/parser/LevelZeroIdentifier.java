@@ -47,12 +47,12 @@ public class LevelZeroIdentifier extends SimpleNode {
     }
   }
 
-  public Object execute(final Record iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Record iCurrentRecord, final CommandContext context) {
     if (functionCall != null) {
-      return functionCall.execute(iCurrentRecord, ctx);
+      return functionCall.execute(iCurrentRecord, context);
     }
     if (collection != null) {
-      return collection.execute(iCurrentRecord, ctx);
+      return collection.execute(iCurrentRecord, context);
     }
     if (Boolean.TRUE.equals(self)) {
       return iCurrentRecord;
@@ -60,12 +60,12 @@ public class LevelZeroIdentifier extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     if (functionCall != null) {
-      return functionCall.execute(iCurrentRecord, ctx);
+      return functionCall.execute(iCurrentRecord, context);
     }
     if (collection != null) {
-      return collection.execute(iCurrentRecord, ctx);
+      return collection.execute(iCurrentRecord, context);
     }
     if (Boolean.TRUE.equals(self)) {
       return iCurrentRecord;
@@ -73,17 +73,16 @@ public class LevelZeroIdentifier extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
-  public boolean isIndexedFunctionCall() {
-    if (functionCall != null) {
-      return functionCall.isIndexedFunctionCall();
-    }
+  public boolean isIndexedFunctionCall(final CommandContext context) {
+    if (functionCall != null)
+      return functionCall.isIndexedFunctionCall(context);
+
     return false;
   }
 
   public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
-    if (functionCall != null) {
+    if (functionCall != null)
       return functionCall.estimateIndexedFunction(target, context, operator, right);
-    }
 
     return -1;
   }
@@ -164,39 +163,39 @@ public class LevelZeroIdentifier extends SimpleNode {
     return functionCall.getParams().get(0);
   }
 
-  public boolean isAggregate() {
-    if (functionCall != null && functionCall.isAggregate()) {
+  public boolean isAggregate(final CommandContext context) {
+    if (functionCall != null && functionCall.isAggregate(context)) {
       return true;
     }
-    return collection != null && collection.isAggregate();
+    return collection != null && collection.isAggregate(context);
   }
 
   public boolean isCount() {
     return functionCall != null && functionCall.name.getStringValue().equalsIgnoreCase("count");
   }
 
-  public boolean isEarlyCalculated(final CommandContext ctx) {
-    if (functionCall != null && functionCall.isEarlyCalculated(ctx))
+  public boolean isEarlyCalculated(final CommandContext context) {
+    if (functionCall != null && functionCall.isEarlyCalculated(context))
       return true;
 
     if (Boolean.TRUE.equals(self))
       return false;
 
-    return collection != null && collection.isEarlyCalculated(ctx);
+    return collection != null && collection.isEarlyCalculated(context);
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
-    if (isAggregate()) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
       final LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
       if (functionCall != null) {
-        final SimpleNode node = functionCall.splitForAggregation(aggregateProj, ctx);
+        final SimpleNode node = functionCall.splitForAggregation(aggregateProj, context);
         if (node instanceof FunctionCall) {
           result.functionCall = (FunctionCall) node;
         } else {
           return node;
         }
       } else if (collection != null) {
-        result.collection = collection.splitForAggregation(aggregateProj, ctx);
+        result.collection = collection.splitForAggregation(aggregateProj, context);
         return result;
       } else {
         throw new IllegalStateException();
@@ -207,10 +206,10 @@ public class LevelZeroIdentifier extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
-    if (isAggregate()) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
+    if (isAggregate(context)) {
       if (functionCall != null) {
-        return functionCall.getAggregationContext(ctx);
+        return functionCall.getAggregationContext(context);
       }
     }
     throw new CommandExecutionException("cannot aggregate on " + this);

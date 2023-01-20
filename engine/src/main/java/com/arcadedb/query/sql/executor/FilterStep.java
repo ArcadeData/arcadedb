@@ -31,13 +31,13 @@ public class FilterStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public FilterStep(final WhereClause whereClause, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FilterStep(final WhereClause whereClause, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.whereClause = whereClause;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (prev.isEmpty())
       throw new IllegalStateException("filter step requires a previous step");
 
@@ -55,7 +55,7 @@ public class FilterStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -63,7 +63,7 @@ public class FilterStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
@@ -72,7 +72,7 @@ public class FilterStep extends AbstractExecutionStep {
           nextItem = prevResult.next();
           final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
-            if (whereClause.matchesFilters(nextItem, ctx)) {
+            if (whereClause.matchesFilters(nextItem, context)) {
               break;
             }
 
@@ -140,7 +140,7 @@ public class FilterStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new FilterStep(this.whereClause.copy(), ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new FilterStep(this.whereClause.copy(), context, profilingEnabled);
   }
 }

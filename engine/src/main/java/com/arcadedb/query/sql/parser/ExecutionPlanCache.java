@@ -73,18 +73,18 @@ public class ExecutionPlanCache {
    * returns an already prepared SQL execution plan, taking it from the cache if it exists or creating a new one if it doesn't
    *
    * @param statement the SQL statement
-   * @param ctx
+   * @param context
    *
    * @return a statement executor from the cache
    */
-  public ExecutionPlan get(final String statement, final CommandContext ctx) {
+  public ExecutionPlan get(final String statement, final CommandContext context) {
     InternalExecutionPlan result;
     synchronized (map) {
       //LRU
       result = map.remove(statement);
       if (result != null) {
         map.put(statement, result);
-        result = result.copy(ctx);
+        result = result.copy(context);
       }
     }
 

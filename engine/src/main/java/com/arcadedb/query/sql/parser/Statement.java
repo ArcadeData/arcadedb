@@ -92,28 +92,28 @@ public class Statement extends SimpleNode {
   /**
    * creates an execution plan for current statement, with profiling disabled
    *
-   * @param ctx the context that will be used to execute the statement
+   * @param context the context that will be used to execute the statement
    *
    * @return an execution plan
    */
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx) {
-    return createExecutionPlan(ctx, false);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
+    return createExecutionPlan(context, false);
   }
 
   /**
    * creates an execution plan for current statement
    *
-   * @param ctx     the context that will be used to execute the statement
+   * @param context     the context that will be used to execute the statement
    * @param profile true to enable profiling, false to disable it
    *
    * @return an execution plan
    */
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean profile) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean profile) {
     throw new UnsupportedOperationException();
   }
 
-  public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext ctx, final boolean profile) {
-    return createExecutionPlan(ctx, profile);
+  public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context, final boolean profile) {
+    return createExecutionPlan(context, profile);
   }
 
   public Statement copy() {

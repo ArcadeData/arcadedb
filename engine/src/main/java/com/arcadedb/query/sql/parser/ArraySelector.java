@@ -50,12 +50,12 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public Integer getValue(final Identifiable iCurrentRecord, final Object iResult, final CommandContext ctx) {
+  public Integer getValue(final Identifiable iCurrentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
-      result = inputParam.getValue(ctx.getInputParameters());
+      result = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      result = expression.execute(iCurrentRecord, ctx);
+      result = expression.execute(iCurrentRecord, context);
     } else if (integer != null) {
       result = integer;
     }
@@ -69,12 +69,12 @@ public class ArraySelector extends SimpleNode {
     return null;
   }
 
-  public Object getValue(final Result iCurrentRecord, final Object iResult, final CommandContext ctx) {
+  public Object getValue(final Result iCurrentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
-      result = inputParam.getValue(ctx.getInputParameters());
+      result = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      result = expression.execute(iCurrentRecord, ctx);
+      result = expression.execute(iCurrentRecord, context);
     } else if (integer != null) {
       result = integer;
     }
@@ -113,30 +113,30 @@ public class ArraySelector extends SimpleNode {
     return new SimpleNode[] { inputParam, expression, inputParam };
   }
 
-  public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
+  public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {
     Object idx = null;
     if (this.rid != null) {
-      idx = this.rid.toRecordId(currentRecord, ctx);
+      idx = this.rid.toRecordId(currentRecord, context);
     } else if (inputParam != null) {
-      idx = inputParam.getValue(ctx.getInputParameters());
+      idx = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      idx = expression.execute(currentRecord, ctx);
+      idx = expression.execute(currentRecord, context);
     } else if (integer != null) {
       idx = integer.getValue();
     }
 
     if (target instanceof Set && idx instanceof Number) {
-      setValue((Set) target, ((Number) idx).intValue(), value, ctx);
+      setValue((Set) target, ((Number) idx).intValue(), value, context);
     } else if (target instanceof List && idx instanceof Number) {
-      setValue((List) target, ((Number) idx).intValue(), value, ctx);
+      setValue((List) target, ((Number) idx).intValue(), value, context);
     } else if (target instanceof Map) {
-      setValue((Map) target, idx, value, ctx);
+      setValue((Map) target, idx, value, context);
     } else if (target.getClass().isArray() && idx instanceof Number) {
-      setArrayValue(target, ((Number) idx).intValue(), value, ctx);
+      setArrayValue(target, ((Number) idx).intValue(), value, context);
     }
   }
 
-  public void setValue(final List target, final int idx, final Object value, final CommandContext ctx) {
+  public void setValue(final List target, final int idx, final Object value, final CommandContext context) {
     final int originalSize = target.size();
     for (int i = originalSize; i <= idx; i++) {
       if (i >= originalSize) {
@@ -146,7 +146,7 @@ public class ArraySelector extends SimpleNode {
     target.set(idx, value);
   }
 
-  public void setValue(final Set target, final int idx, final Object value, final CommandContext ctx) {
+  public void setValue(final Set target, final int idx, final Object value, final CommandContext context) {
     final Set result = new LinkedHashSet<>();
     final int originalSize = target.size();
     final int max = Math.max(idx, originalSize - 1);
@@ -168,11 +168,11 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public void setValue(final Map target, final Object idx, final Object value, final CommandContext ctx) {
+  public void setValue(final Map target, final Object idx, final Object value, final CommandContext context) {
     target.put(idx, value);
   }
 
-  private void setArrayValue(final Object target, final int idx, final Object value, final CommandContext ctx) {
+  private void setArrayValue(final Object target, final int idx, final Object value, final CommandContext context) {
     if (idx >= 0 && idx < Array.getLength(target)) {
       Array.set(target, idx, value);
     }

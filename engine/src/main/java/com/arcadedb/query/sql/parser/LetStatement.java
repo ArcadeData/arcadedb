@@ -37,13 +37,13 @@ public class LetStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     Object result;
     if (expression != null) {
-      result = expression.execute((Result) null, ctx);
+      result = expression.execute((Result) null, context);
     } else {
-      final Map<String, Object> params = ctx.getInputParameters();
-      result = statement.execute(ctx.getDatabase(), params, ctx);
+      final Map<String, Object> params = context.getInputParameters();
+      result = statement.execute(context.getDatabase(), params, context);
     }
     if (result instanceof ResultSet) {
       final InternalResultSet rs = new InternalResultSet();
@@ -53,11 +53,11 @@ public class LetStatement extends SimpleExecStatement {
       result = rs;
     }
 
-    if (ctx != null) {
-      if (ctx.getParent() != null) {
-        ctx.getParent().setVariable(name.getStringValue(), result);
+    if (context != null) {
+      if (context.getParent() != null) {
+        context.getParent().setVariable(name.getStringValue(), result);
       } else {
-        ctx.setVariable(name.getStringValue(), result);
+        context.setVariable(name.getStringValue(), result);
       }
     }
     return new InternalResultSet();

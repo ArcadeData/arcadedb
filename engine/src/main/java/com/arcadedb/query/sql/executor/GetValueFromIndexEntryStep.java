@@ -43,17 +43,17 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   private ResultSet prevResult = null;
 
   /**
-   * @param ctx              the execution context
+   * @param context              the execution context
    * @param filterClusterIds only extract values from these clusters. Pass null if no filtering is needed
    * @param profilingEnabled enable profiling
    */
-  public GetValueFromIndexEntryStep(final CommandContext ctx, final int[] filterClusterIds, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public GetValueFromIndexEntryStep(final CommandContext context, final int[] filterClusterIds, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.filterClusterIds = filterClusterIds;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
 
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
@@ -104,7 +104,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -112,7 +112,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
@@ -198,7 +198,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
-    return new GetValueFromIndexEntryStep(ctx, this.filterClusterIds, this.profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new GetValueFromIndexEntryStep(context, this.filterClusterIds, this.profilingEnabled);
   }
 }

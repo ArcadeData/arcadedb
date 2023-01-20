@@ -49,10 +49,10 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final Object iResult, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final Object iResult, final CommandContext context) {
     final List<Object> result = new ArrayList<>();
     for (final ArraySelector item : items) {
-      final Object index = item.getValue(iCurrentRecord, iResult, ctx);
+      final Object index = item.getValue(iCurrentRecord, iResult, context);
       if (index == null) {
         return null;
       }
@@ -81,10 +81,10 @@ public class ArraySingleValuesSelector extends SimpleNode {
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, final Object iResult, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final Object iResult, final CommandContext context) {
     final List<Object> result = new ArrayList<>();
     for (final ArraySelector item : items) {
-      final Object index = item.getValue(iCurrentRecord, iResult, ctx);
+      final Object index = item.getValue(iCurrentRecord, iResult, context);
       if (index == null) {
         return null;
       }
@@ -156,19 +156,19 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
   }
 
-  public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
+  public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {
     if (items != null) {
       for (final ArraySelector item : items) {
-        item.setValue(currentRecord, target, value, ctx);
+        item.setValue(currentRecord, target, value, context);
       }
     }
   }
 
-  public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext ctx) {
+  public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext context) {
     if (currentValue == null) {
       return;
     }
-    final List values = this.items.stream().map(x -> x.getValue(originalRecord, null, ctx)).collect(Collectors.toList());
+    final List values = this.items.stream().map(x -> x.getValue(originalRecord, null, context)).collect(Collectors.toList());
     if (currentValue instanceof List) {
       final List<Object> list = (List) currentValue;
       values.sort(this::compareKeysForRemoval);
