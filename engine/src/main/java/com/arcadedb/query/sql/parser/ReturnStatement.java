@@ -48,6 +48,17 @@ public class ReturnStatement extends SimpleExecStatement {
       final ResultInternal res = new ResultInternal();
       res.setElement((Document) ((Identifiable) result).getRecord());
       rs.add(res);
+    } else if (result instanceof Iterable) {
+      for (Object o : (Iterable) result) {
+        final Result r;
+        if (o instanceof Result)
+          r = (Result) o;
+        else if (o instanceof Map)
+          r = new ResultInternal((Map) o);
+        else
+          r = new ResultInternal(Map.of("value", o));
+        rs.add(r);
+      }
     } else if (result instanceof ResultSet) {
       if (!((ResultSet) result).hasNext()) {
         try {

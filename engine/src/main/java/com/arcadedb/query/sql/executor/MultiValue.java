@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.Callable;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.IterableObject;
 import com.arcadedb.utility.IterableObjectArray;
 import com.arcadedb.utility.MultiIterator;
@@ -93,7 +94,10 @@ public class MultiValue {
         i++;
       }
       return i;
+    } else if ((object instanceof Iterator)) {
+      return (int) CollectionUtils.countEntries((Iterator) object);
     }
+
     return 0;
   }
 

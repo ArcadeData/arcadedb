@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -51,16 +52,13 @@ public class SQLMethodToJSON extends AbstractSQLMethod {
     if (iThis == null)
       return null;
 
-    if (iThis instanceof Document) {
-
+    if (iThis instanceof Result) {
+      return ((Result) iThis).toJSON();
+    } else if (iThis instanceof Document) {
       return ((Document) iThis).toJSON();
-
     } else if (iThis instanceof Map) {
-
       return new JSONObject(iThis.toString());
-
     } else if (MultiValue.isMultiValue(iThis)) {
-
       final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;

@@ -22,8 +22,6 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
@@ -192,10 +190,8 @@ public class TraverseStatementExecutionTest extends TestHelper {
 
       final ResultSet result = database.execute("sql", script);
       Assertions.assertTrue(result.hasNext());
-      final Result item = result.next();
-      final Object val = item.getProperty("value");
-      Assertions.assertTrue(val instanceof Collection);
-      Assertions.assertEquals(1, ((Collection) val).size());
+      result.next();
+      Assertions.assertFalse(result.hasNext());
       result.close();
     });
   }

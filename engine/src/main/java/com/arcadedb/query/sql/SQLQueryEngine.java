@@ -47,10 +47,10 @@ import java.util.*;
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
 public class SQLQueryEngine implements QueryEngine {
-  public static final String           ENGINE_NAME = "sql";
-  private final       DatabaseInternal database;
-  private final DefaultSQLFunctionFactory functions;
-  private final DefaultSQLMethodFactory   methods;
+  public static final String                    ENGINE_NAME = "sql";
+  private final       DatabaseInternal          database;
+  private final       DefaultSQLFunctionFactory functions;
+  private final       DefaultSQLMethodFactory   methods;
 
   public static class SQLQueryEngineFactory implements QueryEngineFactory {
     @Override
@@ -179,8 +179,8 @@ public class SQLQueryEngine implements QueryEngine {
           // WRAP LIBRARY FUNCTION TO SQL FUNCTION TO BE EXECUTED BY SQL ENGINE
           sqlFunction = new SQLFunctionAbstract(name) {
             @Override
-            public Object execute(
-                final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+            public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+                final CommandContext iContext) {
               return function.execute(iParams);
             }
 
@@ -208,7 +208,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
-    final InputStream is = new ByteArrayInputStream(script.getBytes(DatabaseFactory.getDefaultCharset()));
+    final InputStream is = new ByteArrayInputStream(addSemicolons(script).getBytes(DatabaseFactory.getDefaultCharset()));
     return parseScript(is, database);
   }
 
@@ -219,5 +219,19 @@ public class SQLQueryEngine implements QueryEngine {
     } catch (final ParseException e) {
       throw new CommandSQLParsingException(e);
     }
+  }
+
+  private static String addSemicolons(final String parserText) {
+    String[] rows = parserText.split("\n");
+    StringBuilder builder = new StringBuilder();
+    for (String row : rows) {
+      row = row.trim();
+      builder.append(row);
+      if (!(row.endsWith(";") || row.endsWith("{"))) {
+        builder.append(";");
+      }
+      builder.append("\n");
+    }
+    return builder.toString();
   }
 }

@@ -123,7 +123,6 @@ public class IfStatement extends Statement {
 
   @Override
   public IfExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
-
     final IfExecutionPlan plan = new IfExecutionPlan(context);
 
     final IfStep step = new IfStep(context, enableProfiling);

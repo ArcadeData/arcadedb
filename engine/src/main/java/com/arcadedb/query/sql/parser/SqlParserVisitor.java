@@ -331,8 +331,6 @@ public interface SqlParserVisitor {
 
   Object visit(AlterDatabaseStatement node, Object data);
 
-  Object visit(CommandLineOption node, Object data);
-
   Object visit(ExplainStatement node, Object data);
 
   Object visit(ProfileStatement node, Object data);

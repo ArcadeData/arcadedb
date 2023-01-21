@@ -335,6 +335,8 @@ TOKEN:
   |
   < SLEEP: ("S"|"s")("L"|"l")("E"|"e")("E"|"e")("P"|"p") >
   |
+  < CONSOLE: ("C"|"c")("O"|"o")("N"|"n")("S"|"s")("O"|"o")("L"|"l")("E"|"e")>
+  |
   < START: ("S"|"s")("T"|"t")("A"|"a")("R"|"r")("T"|"t") >
   |
   < OPTIONAL: ("O"|"o")("P"|"p")("T"|"t")("I"|"i")("O"|"o")("N"|"n")("A"|"a")("L"|"l") >
@@ -848,6 +850,8 @@ Identifier Identifier():
   |
   token = <SLEEP>
   |
+  token = <CONSOLE>
+  |
   token = <START>
   |
   token = <OPTIONAL>
@@ -927,9 +931,22 @@ Statement Statement():
 Statement StatementSemicolon():
 {Statement result = null;}
 {
-  result = StatementInternal()
+  (
+    LOOKAHEAD(StatementInternal())
+    result = StatementInternal()
+    |
+    result = ExpressionStatement()
+  )
   <SEMICOLON>
   {return result;}
+}
+
+Statement ExpressionStatement():
+{}
+{
+  (
+    jjtThis.expression = Expression()
+  ) { return jjtThis; }
 }
 
 Statement StatementInternal():
@@ -1061,7 +1078,6 @@ Statement StatementInternal():
     result = ProfileStatement()
     |
     result = LetStatement()
-
   )
   {
     return result;
@@ -2011,7 +2027,7 @@ Expression Expression():
     LOOKAHEAD( ArrayConcatExpression() )
     jjtThis.arrayConcatExpression = ArrayConcatExpression() { jjtThis.value = jjtThis.arrayConcatExpression; }
     |
-    <NULL> {jjtThis.isNull = true; jjtThis.value = null;}
+    LOOKAHEAD(2) <NULL> {jjtThis.isNull = true; jjtThis.value = null;}
     |
     <TRUE> { jjtThis.booleanValue = true; jjtThis.value = true; }
     |
@@ -2049,7 +2065,7 @@ ArrayConcatExpressionElement ArrayConcatExpressionElement():
 {Token token; }
 {
   (
-    <NULL> {jjtThis.isNull = true; jjtThis.value = null;}
+    LOOKAHEAD(2) <NULL> {jjtThis.isNull = true; jjtThis.value = null;}
     |
     <TRUE> { jjtThis.booleanValue = true; jjtThis.value = true; }
     |
@@ -4044,6 +4060,17 @@ SleepStatement SleepStatement():
 { }
 {
   <SLEEP> jjtThis.millis = PInteger()
+  { return jjtThis; }
+}
+
+ConsoleStatement ConsoleStatement():
+{ }
+{
+  (
+    <CONSOLE> <DOT>
+    jjtThis.logLevel = Identifier()
+    jjtThis.message = Expression()
+  )
   { return jjtThis; }
 }
 

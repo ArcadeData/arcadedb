@@ -31,10 +31,13 @@ public class BatchTest extends TestHelper {
       final ResultSet rs = database.execute("SQL", "let a = select 1 as result;let b = select 2 as result;return [$a,$b];");
 
       Assertions.assertTrue(rs.hasNext());
-      final Result record = rs.next();
+      Result record = rs.next();
       Assertions.assertNotNull(record);
+      Assertions.assertEquals("{\"value\": [{\"result\": 1}]}", record.toJSON());
 
-      Assertions.assertEquals("{\"value\": [[{\"result\": 1}], [{\"result\": 2}]]}", record.toJSON());
+      record = rs.next();
+      Assertions.assertEquals("{\"value\": [{\"result\": 2}]}", record.toJSON());
+      Assertions.assertNotNull(record);
 
       Assertions.assertFalse(rs.hasNext());
     });

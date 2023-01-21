@@ -88,13 +88,8 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     return false;
   }
 
-  public boolean containsReturn() {
-    return step.getPositivePlan().containsReturn() || step.getNegativePlan() != null && step.getPositivePlan().containsReturn();
-  }
-
   public ExecutionStepInternal executeUntilReturn() {
-    step.init(context);
-    if (step.condition.evaluate(new ResultInternal(), context)) {
+    if (step.evaluate(context)) {
       step.initPositivePlan(context);
       return step.positivePlan.executeUntilReturn();
     } else {

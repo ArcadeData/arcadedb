@@ -652,10 +652,6 @@ public class SqlParserDefaultVisitor implements SqlParserVisitor {
     return defaultVisit(node, data);
   }
 
-  public Object visit(CommandLineOption node, Object data) {
-    return defaultVisit(node, data);
-  }
-
   public Object visit(ExplainStatement node, Object data) {
     return defaultVisit(node, data);
   }
