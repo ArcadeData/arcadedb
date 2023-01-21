@@ -20,6 +20,7 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure.io.graphson;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.io.graphson.AbstractObjectDeserializer;
@@ -29,17 +30,15 @@ import org.apache.tinkerpop.gremlin.structure.util.detached.DetachedVertex;
 
 import java.util.*;
 
-import static org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry.newRID;
-
 /**
  * Created by Enrico Risa on 06/09/2017.
  */
 public class ArcadeGraphSONV3 extends ArcadeGraphSON {
 
   protected static final Map<Class, String> TYPES = Collections.unmodifiableMap(new LinkedHashMap<>() {
-      {
-          put(RID.class, "RID");
-      }
+    {
+      put(RID.class, "RID");
+    }
   });
 
   private final Database database;
@@ -69,9 +68,10 @@ public class ArcadeGraphSONV3 extends ArcadeGraphSON {
     @SuppressWarnings({ "unchecked", "rawtypes" })
     @Override
     public Edge createObject(final Map<String, Object> edgeData) {
-      return new DetachedEdge(newRID(database, edgeData.get(GraphSONTokens.ID)), edgeData.get(GraphSONTokens.LABEL).toString(),
-          (Map) edgeData.get(GraphSONTokens.PROPERTIES), newRID(database, edgeData.get(GraphSONTokens.OUT)), edgeData.get(GraphSONTokens.OUT_LABEL).toString(),
-          newRID(database, edgeData.get(GraphSONTokens.IN)), edgeData.get(GraphSONTokens.IN_LABEL).toString());
+      return new DetachedEdge(ArcadeIoRegistry.newRID(database, edgeData.get(GraphSONTokens.ID)), edgeData.get(GraphSONTokens.LABEL).toString(),
+          (Map) edgeData.get(GraphSONTokens.PROPERTIES), ArcadeIoRegistry.newRID(database, edgeData.get(GraphSONTokens.OUT)),
+          edgeData.get(GraphSONTokens.OUT_LABEL).toString(), ArcadeIoRegistry.newRID(database, edgeData.get(GraphSONTokens.IN)),
+          edgeData.get(GraphSONTokens.IN_LABEL).toString());
     }
   }
 
@@ -87,7 +87,7 @@ public class ArcadeGraphSONV3 extends ArcadeGraphSON {
     @SuppressWarnings("unchecked")
     @Override
     public Vertex createObject(final Map<String, Object> vertexData) {
-      return new DetachedVertex(newRID(database, vertexData.get(GraphSONTokens.ID)), vertexData.get(GraphSONTokens.LABEL).toString(),
+      return new DetachedVertex(ArcadeIoRegistry.newRID(database, vertexData.get(GraphSONTokens.ID)), vertexData.get(GraphSONTokens.LABEL).toString(),
           (Map<String, Object>) vertexData.get(GraphSONTokens.PROPERTIES));
     }
   }

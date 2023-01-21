@@ -44,7 +44,7 @@ public class RedisNetworkListener extends Thread {
     super(server.getServerName() + " RedisW listening at " + iHostName + ":" + iHostPortRange);
 
     this.server = server;
-    this.socketFactory = iSocketFactory == null ? ServerSocketFactory.getDefault() : iSocketFactory;
+    this.socketFactory = iSocketFactory;
 
     listen(iHostName, iHostPortRange);
 

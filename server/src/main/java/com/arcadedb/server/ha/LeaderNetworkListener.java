@@ -44,7 +44,7 @@ public class LeaderNetworkListener extends Thread {
 
     this.ha = ha;
     this.hostName = iHostName;
-    this.socketFactory = iSocketFactory == null ? ServerSocketFactory.getDefault() : iSocketFactory;
+    this.socketFactory = iSocketFactory;
 
     listen(iHostName, iHostPortRange);
 

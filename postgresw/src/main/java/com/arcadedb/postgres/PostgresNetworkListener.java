@@ -43,7 +43,7 @@ public class PostgresNetworkListener extends Thread {
     super(server.getServerName() + " PostgresW listening at " + hostName + ":" + hostPortRange);
 
     this.server = server;
-    this.socketFactory = iSocketFactory == null ? ServerSocketFactory.getDefault() : iSocketFactory;
+    this.socketFactory = iSocketFactory;
 
     listen(hostName, hostPortRange);
     start();
