@@ -150,9 +150,11 @@ public interface Schema {
 
   TimeZone getTimeZone();
 
+  void setTimeZone(TimeZone timeZone);
+
   ZoneId getZoneId();
 
-  void setTimeZone(TimeZone timeZone);
+  void setZoneId(ZoneId zoneId);
 
   String getDateFormat();
 
@@ -163,6 +165,8 @@ public interface Schema {
   void setDateTimeFormat(String dateTimeFormat);
 
   String getEncoding();
+
+  void setEncoding(String encoding);
 
   EmbeddedSchema getEmbedded();
 
@@ -200,6 +204,7 @@ public interface Schema {
    * Returns the requested function library if defined or IllegalArgumentException if not
    *
    * @param name Function library to search
+   *
    * @throws IllegalArgumentException if the library is not defined
    */
   FunctionLibraryDefinition getFunctionLibrary(String name) throws IllegalArgumentException;

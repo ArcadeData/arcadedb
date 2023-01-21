@@ -69,7 +69,7 @@ public class EmbeddedSchema implements Schema {
   public static final  String                                 DEFAULT_ENCODING      = "UTF-8";
   public static final  String                                 SCHEMA_FILE_NAME      = "schema.json";
   public static final  String                                 SCHEMA_PREV_FILE_NAME = "schema.prev.json";
-  private static final String                                 ENCODING              = DEFAULT_ENCODING;
+  private              String                                 encoding              = DEFAULT_ENCODING;
   private static final int                                    EDGE_DEF_PAGE_SIZE    = Bucket.DEF_PAGE_SIZE / 3;
   private final        DatabaseInternal                       database;
   private final        SecurityManager                        security;
@@ -300,7 +300,12 @@ public class EmbeddedSchema implements Schema {
   }
 
   public String getEncoding() {
-    return ENCODING;
+    return encoding;
+  }
+
+  @Override
+  public void setEncoding(final String encoding) {
+    this.encoding = encoding;
   }
 
   @Override
@@ -618,7 +623,7 @@ public class EmbeddedSchema implements Schema {
     if (bucket == null)
       throw new IllegalArgumentException("bucket is null");
 
-    final String indexName = FileUtils.encode(bucket.getName(), ENCODING) + "_" + System.nanoTime();
+    final String indexName = FileUtils.encode(bucket.getName(), encoding) + "_" + System.nanoTime();
 
     if (indexMap.containsKey(indexName))
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
@@ -653,7 +658,7 @@ public class EmbeddedSchema implements Schema {
       final AtomicReference<IndexInternal> result = new AtomicReference<>();
       database.transaction(() -> {
 
-        final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
+        final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, encoding), unique,
             databasePath + File.separator + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
 
         result.set(index);
@@ -849,7 +854,7 @@ public class EmbeddedSchema implements Schema {
 
       if (bucketInstances.isEmpty()) {
         for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
+          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
           if (existsBucket(bucketName)) {
             LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
             c.addBucket(getBucketByName(bucketName));
@@ -941,7 +946,7 @@ public class EmbeddedSchema implements Schema {
 
       if (bucketInstances.isEmpty()) {
         for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
+          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
           if (existsBucket(bucketName)) {
             LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
             c.addBucket(getBucketByName(bucketName));
@@ -1033,7 +1038,7 @@ public class EmbeddedSchema implements Schema {
 
       if (bucketInstances.isEmpty()) {
         for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
+          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
           if (existsBucket(bucketName)) {
             LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
             c.addBucket(getBucketByName(bucketName));
@@ -1092,7 +1097,7 @@ public class EmbeddedSchema implements Schema {
 
       final JSONObject root;
       try (final FileInputStream fis = new FileInputStream(file)) {
-        final String fileContent = FileUtils.readStreamAsString(fis, ENCODING);
+        final String fileContent = FileUtils.readStreamAsString(fis, encoding);
         root = new JSONObject(fileContent);
       }
 
