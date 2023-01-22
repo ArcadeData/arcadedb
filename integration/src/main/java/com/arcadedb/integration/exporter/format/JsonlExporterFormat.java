@@ -72,7 +72,8 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     if (!exportFile.getParentFile().exists())
       exportFile.getParentFile().mkdirs();
 
-    try (final OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)), DatabaseFactory.getDefaultCharset())) {
+    try (final OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)),
+        DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 
       writeJsonLine("info", new JSONObject().put("description", "ArcadeDB Database Export").put("exporterVersion", VERSION)//
@@ -89,12 +90,19 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       final List<String> documentTypes = new ArrayList<>();
 
       for (final DocumentType type : database.getSchema().getTypes()) {
+        final String typeName = type.getName();
+
+        if (settings.includeTypes != null && !settings.includeTypes.contains(typeName))
+          continue;
+        if (settings.excludeTypes != null && settings.excludeTypes.contains(typeName))
+          continue;
+
         if (type instanceof VertexType)
-          vertexTypes.add(type.getName());
+          vertexTypes.add(typeName);
         else if (type instanceof EdgeType)
-          edgeTypes.add(type.getName());
+          edgeTypes.add(typeName);
         else
-          documentTypes.add(type.getName());
+          documentTypes.add(typeName);
       }
 
       final JSONObject recordJson = new JSONObject();

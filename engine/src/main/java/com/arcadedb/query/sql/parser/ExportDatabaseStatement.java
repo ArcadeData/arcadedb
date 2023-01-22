@@ -33,9 +33,12 @@ import java.util.*;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
 
-  protected Url               url;
-  protected Identifier        format    = new Identifier("jsonl");
-  protected BooleanExpression overwrite = BooleanExpression.FALSE;
+  protected       Url                         url;
+  protected       Identifier                  format    = new Identifier("jsonl");
+  protected       BooleanExpression           overwrite = BooleanExpression.FALSE;
+  protected       Expression                  key;
+  protected       Expression                  value;
+  protected final Map<Expression, Expression> settings  = new HashMap<>();
 
   public ExportDatabaseStatement(final int id) {
     super(id);
@@ -58,15 +61,24 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
       final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), fileName);
 
+      clazz.getMethod("setOverwrite", Boolean.TYPE).invoke(exporter, overwrite == BooleanExpression.TRUE);
+
       String formatExport = format.getStringValue();
       if ((formatExport.startsWith("'") && formatExport.endsWith("'")) ||//
           formatExport.startsWith("\"") && formatExport.endsWith("\"")) {
         formatExport = formatExport.substring(1, formatExport.length() - 1);
       }
-
-      clazz.getMethod("setOverwrite", Boolean.TYPE).invoke(exporter, overwrite == BooleanExpression.TRUE);
       clazz.getMethod("setFormat", String.class).invoke(exporter, formatExport);
-      clazz.getMethod("exportDatabase").invoke(exporter);
+
+      // TRANSFORM SETTINGS
+      final Map<String, String> settingsToString = new HashMap<>();
+      for (final Map.Entry<Expression, Expression> entry : settings.entrySet())
+        settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
+      clazz.getMethod("setSettings", Map.class).invoke(exporter, settingsToString);
+
+      final Map<String, Object> exportResult = (Map<String, Object>) clazz.getMethod("exportDatabase").invoke(exporter);
+
+      result.setPropertiesFromMap(exportResult);
 
     } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on exporting database, exporter libs not found in classpath", e);

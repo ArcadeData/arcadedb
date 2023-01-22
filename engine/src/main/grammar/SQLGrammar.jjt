@@ -4151,6 +4151,14 @@ ExportDatabaseStatement ExportDatabaseStatement():
   jjtThis.url = Url()
   [ <FORMAT> jjtThis.format = Identifier() ]
   [ <OVERWRITE> ( <TRUE> { jjtThis.overwrite = BooleanExpression.TRUE;} | <FALSE> { jjtThis.overwrite = BooleanExpression.FALSE;} ) ]
+  [
+    <WITH>
+    jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }
+    (
+      <COMMA>
+      jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }
+    )*
+  ]
   {return jjtThis; }
 }
 
