@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.time.*;
 import java.time.temporal.*;
 import java.util.*;
+import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,46 +51,22 @@ class SQLMethodPrecisionTest {
   }
 
   @Test
-  void testLocalDateTime() {
-    final LocalDateTime now = LocalDateTime.now();
-
-    Object result = method.execute(null, null, null, now, new String[] { "microsecond" });
-    assertThat(result).isInstanceOf(LocalDateTime.class);
-    Assertions.assertEquals(ChronoUnit.MICROS, DateUtils.getPrecision(((LocalDateTime) result).getNano()));
-
-    result = method.execute(null, null, null, now, new String[] { "millisecond" });
-    assertThat(result).isInstanceOf(LocalDateTime.class);
-    Assertions.assertEquals(ChronoUnit.MILLIS, DateUtils.getPrecision(((LocalDateTime) result).getNano()));
+  void testLocalDateTime() throws Exception {
+    testPrecision("microsecond", () -> LocalDateTime.now());
+    testPrecision("millisecond", () -> LocalDateTime.now());
   }
 
   @Test
-  void testZonedDateTime() {
-    final ZonedDateTime now = ZonedDateTime.now();
-
-    Object result = method.execute(null, null, null, now, new String[] { "microsecond" });
-    assertThat(result).isInstanceOf(ZonedDateTime.class);
-    Assertions.assertEquals(ChronoUnit.MICROS, DateUtils.getPrecision(((ZonedDateTime) result).getNano()));
-
-    result = method.execute(null, null, null, now, new String[] { "millisecond" });
-    assertThat(result).isInstanceOf(ZonedDateTime.class);
-    Assertions.assertEquals(ChronoUnit.MILLIS, DateUtils.getPrecision(((ZonedDateTime) result).getNano()));
+  void testZonedDateTime() throws Exception {
+    testPrecision("microsecond", () -> ZonedDateTime.now());
+    testPrecision("millisecond", () -> ZonedDateTime.now());
   }
 
   @Test
-  void testInstant() {
-    final Instant now = new NanoClock().instant();
-
-    Object result = method.execute(null, null, null, now, new String[] { "microsecond" });
-    assertThat(result).isInstanceOf(Instant.class);
-    Assertions.assertEquals(ChronoUnit.MICROS, DateUtils.getPrecision(((Instant) result).getNano()));
-
-    result = method.execute(null, null, null, now, new String[] { "millisecond" });
-    assertThat(result).isInstanceOf(Instant.class);
-    Assertions.assertEquals(ChronoUnit.MILLIS, DateUtils.getPrecision(((Instant) result).getNano()));
-
-    result = method.execute(null, null, null, now, new String[] { "nanosecond" });
-    assertThat(result).isInstanceOf(Instant.class);
-    Assertions.assertEquals(ChronoUnit.NANOS, DateUtils.getPrecision(((Instant) result).getNano()));
+  void testInstant() throws Exception {
+    testPrecision("microsecond", () -> new NanoClock().instant());
+    testPrecision("millisecond", () -> new NanoClock().instant());
+    testPrecision("nanosecond", () -> new NanoClock().instant());
   }
 
   @Test
@@ -100,4 +77,20 @@ class SQLMethodPrecisionTest {
     Assertions.assertEquals(now, result);
   }
 
+  private void testPrecision(final String precisionAsString, final Callable<Object> getNow) throws Exception {
+    final ChronoUnit precision = DateUtils.parsePrecision(precisionAsString);
+
+    // NANOS COULD END WITH 000 AND THEREFORE HE TEST WON'T PASS, RETRY MULTIPLE TIME IN CASE
+    Object result = null;
+    for (int retry = 0; retry < 10; retry++) {
+      final Object now = getNow.call();
+
+      result = method.execute(null, null, null, now, new String[] { precisionAsString });
+      assertThat(result).isInstanceOf(now.getClass());
+
+      if (DateUtils.getPrecision(DateUtils.getNanos(result)) == precision)
+        break;
+    }
+    Assertions.assertEquals(precision, DateUtils.getPrecision(DateUtils.getNanos(result)));
+  }
 }

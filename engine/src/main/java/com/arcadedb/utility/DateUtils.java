@@ -203,4 +203,16 @@ public class DateUtils {
       throw new IllegalArgumentException("Illegal date type from binary type " + type);
     }
   }
+
+  public static int getNanos(final Object obj) {
+    if (obj == null)
+      throw new IllegalArgumentException("Object i snull");
+    else if (obj instanceof LocalDateTime)
+      return ((LocalDateTime) obj).getNano();
+    else if (obj instanceof ZonedDateTime)
+      return ((ZonedDateTime) obj).getNano();
+    else if (obj instanceof Instant)
+      return ((Instant) obj).getNano();
+    throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
+  }
 }
