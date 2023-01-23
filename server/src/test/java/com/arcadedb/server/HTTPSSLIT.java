@@ -51,11 +51,6 @@ public class HTTPSSLIT extends BaseGraphServerTest {
     return false;
   }
 
-  @Override
-  protected int getServerCount() {
-    return 1;
-  }
-
   @Test
   public void testServerInfo() throws Exception {
     testEachServer((serverIndex) -> {

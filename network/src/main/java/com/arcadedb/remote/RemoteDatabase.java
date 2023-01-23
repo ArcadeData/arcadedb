@@ -51,6 +51,7 @@ import java.net.*;
 import java.nio.charset.*;
 import java.util.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 public class RemoteDatabase extends RWLockContext {
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
@@ -74,8 +75,16 @@ public class RemoteDatabase extends RWLockContext {
   private static final String                      charset                   = "UTF-8";
   private              String                      sessionId;
 
+  public List<String> getReplicaAddresses() {
+    return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
+  }
+
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN
+  }
+
+  public interface Callback {
+    Object call(HttpURLConnection iArgument, JSONObject response) throws Exception;
   }
 
   public RemoteDatabase(final String server, final int port, final String databaseName, final String userName, final String userPassword) {
@@ -424,8 +433,8 @@ public class RemoteDatabase extends RWLockContext {
     this.apiVersion = apiVersion;
   }
 
-  public interface Callback {
-    Object call(HttpURLConnection iArgument, JSONObject response) throws Exception;
+  public String getLeaderAddress() {
+    return leaderServer.getFirst() + ":" + leaderServer.getSecond();
   }
 
   protected HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
@@ -446,22 +455,24 @@ public class RemoteDatabase extends RWLockContext {
   }
 
   private void requestClusterConfiguration() {
-    serverCommand("GET", "server", "SQL", null, null, false, false, new Callback() {
+    serverCommand("GET", "server?mode=cluster", "SQL", null, null, false, false, new Callback() {
       @Override
       public Object call(final HttpURLConnection connection, final JSONObject response) {
         LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
 
-        if (!response.has("leaderServer")) {
+        if (!response.has("ha")) {
           leaderServer = new Pair<>(originalServer, originalPort);
           replicaServerList.clear();
           return null;
         }
 
-        final String cfgLeaderServer = (String) response.get("leaderServer");
+        final JSONObject ha = response.getJSONObject("ha");
+
+        final String cfgLeaderServer = (String) ha.get("leaderAddress");
         final String[] leaderServerParts = cfgLeaderServer.split(":");
         leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
 
-        final String cfgReplicaServers = (String) response.get("replicaServers");
+        final String cfgReplicaServers = (String) ha.get("replicaAddresses");
 
         // PARSE SERVER LISTS
         replicaServerList.clear();
@@ -469,18 +480,22 @@ public class RemoteDatabase extends RWLockContext {
         if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
           final String[] serverEntries = cfgReplicaServers.split(",");
           for (final String serverEntry : serverEntries) {
-            final String[] serverParts = serverEntry.split(":");
-            if (serverParts.length != 2)
-              LogManager.instance().log(this, Level.WARNING, "No port specified on remote server URL '%s'", null, serverEntry);
+            try {
+              final String[] serverParts = serverEntry.split(":");
+              if (serverParts.length != 2)
+                LogManager.instance().log(this, Level.WARNING, "No port specified on remote server URL '%s'", null, serverEntry);
 
-            final String sHost = serverParts[0];
-            final int sPort = Integer.parseInt(serverParts[1]);
+              final String sHost = serverParts[0];
+              final int sPort = Integer.parseInt(serverParts[1]);
 
-            replicaServerList.add(new Pair(sHost, sPort));
+              replicaServerList.add(new Pair(sHost, sPort));
+            } catch (Exception e) {
+              LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", null, serverEntry);
+            }
           }
         }
 
-        LogManager.instance().log(this, Level.INFO, "Remote Database configured with leader=%s and replicas=%s", null, leaderServer, replicaServerList);
+        LogManager.instance().log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s", null, leaderServer, replicaServerList);
 
         return null;
       }

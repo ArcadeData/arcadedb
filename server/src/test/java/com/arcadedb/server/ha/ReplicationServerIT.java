@@ -32,6 +32,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -128,6 +130,12 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck()) {
       checkEntriesOnServer(s);
+    }
+
+    for (ArcadeDBServer server : getServers()) {
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+      Assertions.assertNotNull(database.getLeaderAddress());
+      Assertions.assertFalse(database.getReplicaAddresses().isEmpty());
     }
 
     onAfterTest();

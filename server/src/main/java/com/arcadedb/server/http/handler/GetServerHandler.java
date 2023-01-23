@@ -58,67 +58,76 @@ public class GetServerHandler extends AbstractHandler {
 
     final String mode = getQueryParameter(exchange, "mode", "default");
 
-    if ("default".equals(mode)) {
+    if ("basic".equals(mode)) {
+      // JUST RETURN BASIC SERVER DATA
+    } else if ("default".equals(mode)) {
       exportMetrics(response);
       exportSettings(response);
-
     } else if ("cluster".equals(mode)) {
-      final HAServer ha = httpServer.getServer().getHA();
-      if (ha != null) {
-        final JSONObject haJSON = new JSONObject();
-        response.put("ha", haJSON);
-
-        haJSON.put("clusterName", ha.getClusterName());
-        haJSON.put("leader", ha.getLeaderName());
-        haJSON.put("electionStatus", ha.getElectionStatus().toString());
-        haJSON.put("network", ha.getStats());
-
-        if (!ha.isLeader()) {
-          // ASK TO THE LEADER THE NETWORK COMPOSITION
-          try {
-            HttpURLConnection connection = (HttpURLConnection) new URL(
-                "http://" + ha.getLeader().getRemoteHTTPAddress() + "/api/v1/server?mode=cluster").openConnection();
-
-            try {
-              connection.setRequestMethod("GET");
-              connection.setRequestProperty("Authorization", exchange.getRequestHeaders().get("Authorization").getFirst());
-              connection.connect();
-
-              JSONObject leaderResponse = new JSONObject(readResponse(connection));
-              final JSONObject network = leaderResponse.getJSONObject("ha").getJSONObject("network");
-              haJSON.getJSONObject("network").put("replicas", network.getJSONArray("replicas"));
-
-            } catch (Exception e) {
-              throw new RuntimeException(e);
-            } finally {
-              connection.disconnect();
-            }
-          } catch (Exception e) {
-            throw new RuntimeException(e);
-          }
-        }
-
-        final JSONArray databases = new JSONArray();
-
-        for (String dbName : httpServer.getServer().getDatabaseNames()) {
-          final ServerDatabase db = (ServerDatabase) httpServer.getServer().getDatabase(dbName);
-          final ReplicatedDatabase rdb = ((ReplicatedDatabase) db.getWrappedDatabaseInstance());
-
-          final JSONObject databaseJSON = new JSONObject();
-          databaseJSON.put("name", rdb.getName());
-          databaseJSON.put("quorum", rdb.getQuorum());
-          databases.put(databaseJSON);
-        }
-
-        haJSON.put("databases", databases);
-
-        final String leaderServer = ha.isLeader() ? ha.getServer().getHttpServer().getListeningAddress() : ha.getLeader().getRemoteHTTPAddress();
-        final String replicaServers = ha.getReplicaServersHTTPAddressesList();
-        LogManager.instance().log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
-      }
+      exportCluster(exchange, response);
     }
     exchange.getResponseSender().send(response.toString());
     exchange.endExchange();
+  }
+
+  private void exportCluster(final HttpServerExchange exchange, final JSONObject response) {
+    final HAServer ha = httpServer.getServer().getHA();
+    if (ha != null) {
+      final JSONObject haJSON = new JSONObject();
+      response.put("ha", haJSON);
+
+      haJSON.put("clusterName", ha.getClusterName());
+      haJSON.put("leader", ha.getLeaderName());
+      haJSON.put("electionStatus", ha.getElectionStatus().toString());
+      haJSON.put("network", ha.getStats());
+
+      if (!ha.isLeader()) {
+        // ASK TO THE LEADER THE NETWORK COMPOSITION
+        try {
+          HttpURLConnection connection = (HttpURLConnection) new URL(
+              "http://" + ha.getLeader().getRemoteHTTPAddress() + "/api/v1/server?mode=cluster").openConnection();
+
+          try {
+            connection.setRequestMethod("GET");
+            connection.setRequestProperty("Authorization", exchange.getRequestHeaders().get("Authorization").getFirst());
+            connection.connect();
+
+            JSONObject leaderResponse = new JSONObject(readResponse(connection));
+            final JSONObject network = leaderResponse.getJSONObject("ha").getJSONObject("network");
+            haJSON.getJSONObject("network").put("replicas", network.getJSONArray("replicas"));
+
+          } catch (Exception e) {
+            throw new RuntimeException(e);
+          } finally {
+            connection.disconnect();
+          }
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+      }
+
+      final JSONArray databases = new JSONArray();
+
+      for (String dbName : httpServer.getServer().getDatabaseNames()) {
+        final ServerDatabase db = (ServerDatabase) httpServer.getServer().getDatabase(dbName);
+        final ReplicatedDatabase rdb = ((ReplicatedDatabase) db.getWrappedDatabaseInstance());
+
+        final JSONObject databaseJSON = new JSONObject();
+        databaseJSON.put("name", rdb.getName());
+        databaseJSON.put("quorum", rdb.getQuorum());
+        databases.put(databaseJSON);
+      }
+
+      haJSON.put("databases", databases);
+
+      final String leaderServer = ha.isLeader() ? ha.getServer().getHttpServer().getListeningAddress() : ha.getLeader().getRemoteHTTPAddress();
+      final String replicaServers = ha.getReplicaServersHTTPAddressesList();
+
+      haJSON.put("leaderAddress", leaderServer);
+      haJSON.put("replicaAddresses", replicaServers);
+
+      LogManager.instance().log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
+    }
   }
 
   private void exportMetrics(final JSONObject response) {
@@ -175,7 +184,7 @@ public class GetServerHandler extends AbstractHandler {
     response.put("settings", settings);
   }
 
-  protected String readResponse(final HttpURLConnection connection) throws IOException {
+  private String readResponse(final HttpURLConnection connection) throws IOException {
     connection.setConnectTimeout(5000);
     connection.setReadTimeout(5000);
     final InputStream in = connection.getInputStream();
