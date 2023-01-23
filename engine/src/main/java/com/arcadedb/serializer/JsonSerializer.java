@@ -198,10 +198,9 @@ public class JsonSerializer {
 
   private void setMetadata(final Document document, final JSONObject object) {
     if (document instanceof Vertex) {
+      object.put("@cat", "v");
       if (includeVertexEdges) {
         final Vertex vertex = ((Vertex) document);
-
-        object.put("@cat", "v");
         if (useVertexEdgeSize) {
           object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
           object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
