@@ -25,7 +25,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -49,6 +48,8 @@ import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS
 public class RemoteDateIT {
   @Test
   public void testDateTimeMicros1() {
+    dropDatabase();
+
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
       if (!databaseFactory.exists()) {
         try (Database db = databaseFactory.create()) {
@@ -98,8 +99,16 @@ public class RemoteDateIT {
       Assertions.assertNotNull(result);
 
     } finally {
-      ((DatabaseInternal) database).getEmbedded().drop();
       arcadeDBServer.stop();
+
+      dropDatabase();
+    }
+  }
+
+  private static void dropDatabase() {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
     }
   }
 }
