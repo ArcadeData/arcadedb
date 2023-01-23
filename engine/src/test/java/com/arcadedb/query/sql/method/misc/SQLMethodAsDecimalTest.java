@@ -21,7 +21,6 @@
 package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.query.sql.function.conversion.SQLMethodAsDecimal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

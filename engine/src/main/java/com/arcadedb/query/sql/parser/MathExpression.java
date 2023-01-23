@@ -28,8 +28,11 @@ import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.DateUtils;
 
 import java.math.*;
+import java.time.*;
+import java.time.temporal.*;
 import java.util.*;
 import java.util.stream.*;
 
@@ -152,9 +155,8 @@ public class MathExpression extends SimpleNode {
 
       @Override
       public Object apply(final Object left, final Object right) {
-        if (left == null || right == null) {
+        if (left == null || right == null)
           return null;
-        }
         return super.apply(left, right);
       }
 
@@ -190,21 +192,21 @@ public class MathExpression extends SimpleNode {
 
       @Override
       public Object apply(final Object left, final Object right) {
-        if (left == null && right == null) {
+        if (left == null && right == null)
           return null;
-        }
-        if (left == null) {
+        else if (left == null)
           return right;
-        }
-        if (right == null) {
+        else if (right == null)
           return left;
-        }
-        if (left instanceof Number && right instanceof Number) {
+        else if (left instanceof Number && right instanceof Number)
           return super.apply(left, right);
-        }
-        if (left instanceof Date || right instanceof Date) {
-          final Number result = apply(toLong(left), toLong(right));
-          return new Date(result.longValue());
+        else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
+          final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
+          final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
+          final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
+
+          final Number r = apply(leftAsLong, rightAsLong);
+          return Duration.of( r.longValue(), highestPrecision );
         }
         return String.valueOf(left) + right;
       }
@@ -250,9 +252,14 @@ public class MathExpression extends SimpleNode {
           result = apply(0, this, (Number) right);
         } else if (left instanceof Number && right instanceof Number) {
           result = apply((Number) left, this, (Number) right);
-        } else if (left instanceof Date || right instanceof Date) {
-          final Number r = apply(toLong(left), toLong(right));
-          result = new Date(r.longValue());
+        } else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
+          final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
+          final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
+          final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
+
+          final Number r = apply(leftAsLong, rightAsLong);
+
+          result = Duration.of( r.longValue(), highestPrecision );
         }
 
         return result;
@@ -987,12 +994,10 @@ public class MathExpression extends SimpleNode {
   }
 
   private static Long toLong(final Object left) {
-    if (left instanceof Number) {
+    if (left instanceof Number)
       return ((Number) left).longValue();
-    }
-    if (left instanceof Date) {
+    else if (left instanceof Date)
       return ((Date) left).getTime();
-    }
     return null;
   }
 }

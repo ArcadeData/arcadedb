@@ -24,13 +24,15 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
 import java.time.*;
+import java.time.format.*;
 import java.time.temporal.*;
 import java.util.*;
 import java.util.concurrent.*;
 
 public class DateUtils {
-  public static final  long   MS_IN_A_DAY = 24 * 60 * 60 * 1000L; // 86_400_000
-  private static final ZoneId UTC_ZONE_ID = ZoneId.of("UTC");
+  public static final  long                                         MS_IN_A_DAY       = 24 * 60 * 60 * 1000L; // 86_400_000
+  private static final ZoneId                                       UTC_ZONE_ID       = ZoneId.of("UTC");
+  private static       ConcurrentHashMap<String, DateTimeFormatter> CACHED_FORMATTERS = new ConcurrentHashMap<>();
 
   public static Object dateTime(final Database database, final long timestamp, final ChronoUnit sourcePrecision, final Class dateTimeImplementation,
       final ChronoUnit destinationPrecision) {
@@ -101,14 +103,14 @@ public class DateUtils {
     return value;
   }
 
-  public static long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
+  public static Long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
     final long timestamp;
-    if (value instanceof Date)
+    if (value instanceof Date) {
       // WRITE MILLISECONDS
-      timestamp = ((Date) value).getTime();
-    else if (value instanceof Calendar)
+      timestamp = convertTimestamp(((Date) value).getTime(), ChronoUnit.MILLIS, precisionToUse);
+    } else if (value instanceof Calendar)
       // WRITE MILLISECONDS
-      timestamp = ((Calendar) value).getTimeInMillis();
+      timestamp = convertTimestamp(((Calendar) value).getTimeInMillis(), ChronoUnit.MILLIS, precisionToUse);
     else if (value instanceof LocalDateTime) {
       final LocalDateTime localDateTime = (LocalDateTime) value;
       if (precisionToUse.equals(ChronoUnit.SECONDS))
@@ -153,12 +155,25 @@ public class DateUtils {
       timestamp = ((Number) value).longValue();
     else
       // UNSUPPORTED
-      timestamp = 0;
+      return null;
+
     return timestamp;
   }
 
   public static ChronoUnit parsePrecision(final String precision) {
     switch (precision) {
+    case "year":
+      return ChronoUnit.YEARS;
+    case "month":
+      return ChronoUnit.MONTHS;
+    case "week":
+      return ChronoUnit.WEEKS;
+    case "day":
+      return ChronoUnit.DAYS;
+    case "hour":
+      return ChronoUnit.HOURS;
+    case "minute":
+      return ChronoUnit.MINUTES;
     case "second":
       return ChronoUnit.SECONDS;
     case "millisecond":
@@ -274,5 +289,65 @@ public class DateUtils {
     else if (obj instanceof Instant)
       return ((Instant) obj).getNano();
     throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
+  }
+
+  public static boolean isDate(final Object obj) {
+    if (obj == null)
+      return false;
+    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDateTime || obj instanceof ZonedDateTime || obj instanceof Instant;
+  }
+
+  public static ChronoUnit getHigherPrecision(final Object... objs) {
+    if (objs == null || objs.length == 0)
+      return null;
+
+    ChronoUnit highestPrecision = ChronoUnit.MILLIS;
+    for (int i = 0; i < objs.length; i++) {
+      final Object obj = objs[i];
+      final ChronoUnit precision;
+      if (obj instanceof Date || obj instanceof Calendar)
+        precision = ChronoUnit.MILLIS;
+      else if (obj instanceof LocalDateTime || obj instanceof ZonedDateTime || obj instanceof Instant)
+        precision = getPrecision(getNanos(obj));
+      else
+        continue;
+
+      if (precision.compareTo(highestPrecision) < 0)
+        highestPrecision = precision;
+    }
+    return highestPrecision;
+  }
+
+  public static LocalDateTime millisTolocalDateTime(final long millis) {
+    return Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDateTime();
+  }
+
+  public static String format(final Object obj, final String format) {
+    if (obj instanceof Date)
+      return getFormatter(format).format(millisTolocalDateTime(((Date) obj).getTime()));
+    else if (obj instanceof Calendar)
+      return getFormatter(format).format(millisTolocalDateTime(((Calendar) obj).getTimeInMillis()));
+    else if (obj instanceof TemporalAccessor)
+      return getFormatter(format).format((TemporalAccessor) obj);
+    return null;
+  }
+
+  public static Object parse(final String text, final String format) {
+    return LocalDateTime.parse(text, getFormatter(format));
+  }
+
+  public static DateTimeFormatter getFormatter(final String format) {
+    return CACHED_FORMATTERS.computeIfAbsent(format, (f) -> DateTimeFormatter.ofPattern(f));
+  }
+
+  public static Object getDate(final Object date, final Class impl) {
+    if (impl.equals(Date.class))
+      return new Date(DateUtils.dateTimeToTimestamp(date, ChronoUnit.MILLIS));
+    else if (impl.equals(Calendar.class)) {
+      final Calendar cal = Calendar.getInstance();
+      cal.setTimeInMillis(DateUtils.dateTimeToTimestamp(date, ChronoUnit.MILLIS));
+      return cal;
+    }
+    return date;
   }
 }

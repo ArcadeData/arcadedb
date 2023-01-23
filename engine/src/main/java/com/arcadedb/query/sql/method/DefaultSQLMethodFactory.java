@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.method;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.query.sql.function.conversion.SQLMethodAsDate;
-import com.arcadedb.query.sql.function.conversion.SQLMethodAsDateTime;
-import com.arcadedb.query.sql.function.conversion.SQLMethodAsDecimal;
-import com.arcadedb.query.sql.function.conversion.SQLMethodConvert;
+import com.arcadedb.query.sql.method.misc.SQLMethodAsDate;
+import com.arcadedb.query.sql.method.misc.SQLMethodAsDateTime;
+import com.arcadedb.query.sql.method.misc.SQLMethodAsDecimal;
+import com.arcadedb.query.sql.method.misc.SQLMethodConvert;
 import com.arcadedb.query.sql.function.text.SQLMethodAppend;
 import com.arcadedb.query.sql.function.text.SQLMethodHash;
 import com.arcadedb.query.sql.function.text.SQLMethodLength;

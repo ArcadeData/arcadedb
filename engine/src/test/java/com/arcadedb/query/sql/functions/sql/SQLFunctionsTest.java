@@ -317,7 +317,7 @@ public class SQLFunctionsTest {
 
   @Test
   public void querySysdateWithFormat() {
-    ResultSet result = database.command("sql", "select sysdate('dd-MM-yyyy') as date from Account");
+    ResultSet result = database.command("sql", "select sysdate().format('dd-MM-yyyy') as date from Account");
 
     Assertions.assertTrue(result.hasNext());
     Object lastDate = null;
@@ -335,7 +335,7 @@ public class SQLFunctionsTest {
       lastDate = d.getProperty("date");
     }
 
-    result = database.command("sql", "select sysdate('yyyy-MM-dd HH:mm:ss') as date");
+    result = database.command("sql", "select sysdate().format('yyyy-MM-dd HH:mm:ss') as date");
 
     Assertions.assertTrue(result.hasNext());
     lastDate = null;
@@ -353,7 +353,7 @@ public class SQLFunctionsTest {
       lastDate = d.getProperty("date");
     }
 
-    result = database.command("sql", "select sysdate('yyyy-MM-dd HH:mm:ss', 'GMT-5') as date");
+    result = database.command("sql", "select sysdate().format('yyyy-MM-dd HH:mm:ss', 'GMT-5') as date");
 
     Assertions.assertTrue(result.hasNext());
     lastDate = null;

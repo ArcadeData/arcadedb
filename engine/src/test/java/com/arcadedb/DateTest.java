@@ -20,6 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -426,4 +427,104 @@ public class DateTest extends TestHelper {
     Assertions.assertEquals(10_000_000, DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.MICROS));
     Assertions.assertEquals(10_000_000_000L, DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.NANOS));
   }
+
+  @Test
+  public void testSQLMath() {
+    database.command("sql", "alter database dateTimeImplementation `java.time.LocalDateTime`");
+    try {
+      database.begin();
+      final LocalDateTime date1 = LocalDateTime.now();
+      ResultSet resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date1);
+      Assertions.assertTrue(resultSet.hasNext());
+      Assertions.assertEquals(date1.truncatedTo(ChronoUnit.MICROS), resultSet.next().toElement().get("datetime_micros"));
+
+      final LocalDateTime date2 = LocalDateTime.now().plusSeconds(1);
+      resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date2);
+      Assertions.assertTrue(resultSet.hasNext());
+      Assertions.assertEquals(date2.truncatedTo(ChronoUnit.MICROS), resultSet.next().toElement().get("datetime_micros"));
+
+      resultSet = database.command("sql", "select from ConversionTest where datetime_micros between ? and ?", date1, date2);
+      Assertions.assertTrue(resultSet.hasNext());
+      resultSet.next();
+      Assertions.assertTrue(resultSet.hasNext());
+      resultSet.next();
+      Assertions.assertFalse(resultSet.hasNext());
+
+      try {
+        Thread.sleep(1001);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+
+      resultSet = database.command("sql", "select sysdate() - datetime_micros as diff from ConversionTest");
+
+      Assertions.assertTrue(resultSet.hasNext());
+      Result result = resultSet.next();
+      Assertions.assertFalse(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertFalse(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertFalse(resultSet.hasNext());
+
+      resultSet = database.command("sql",
+          "select sysdate() - datetime_micros as diff from ConversionTest where sysdate() - datetime_micros < duration(100000000000, 'nanosecond')");
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertFalse(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertFalse(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertFalse(resultSet.hasNext());
+
+      resultSet = database.command("sql",
+          "select datetime_micros - sysdate() as diff from ConversionTest where abs( datetime_micros - sysdate() ) < duration(100000000000, 'nanosecond')");
+
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertFalse(resultSet.hasNext());
+
+      resultSet = database.command("sql",
+          "select datetime_micros - date(?, 'yyyy-MM-dd HH:mm:ss.SSS') as diff from ConversionTest where abs( datetime_micros - sysdate() ) < duration(100000000000, 'nanosecond')",
+          DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now()));
+
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertFalse(resultSet.hasNext());
+
+      resultSet = database.command("sql",
+          "select datetime_micros - date(?, 'yyyy-MM-dd HH:mm:ss.SSS') as diff from ConversionTest where abs( datetime_micros - sysdate() ) < duration(3, \"second\")",
+          DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now()));
+
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+
+      Assertions.assertFalse(resultSet.hasNext());
+
+      database.commit();
+    } finally {
+      database.command("sql", "alter database dateTimeImplementation `java.util.Date`");
+    }
+  }
+
 }

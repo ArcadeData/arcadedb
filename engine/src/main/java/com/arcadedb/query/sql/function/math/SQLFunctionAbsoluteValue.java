@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.math.*;
+import java.time.*;
 
 /**
  * Evaluates the absolute value for numeric types.  The argument must be a
@@ -59,6 +60,14 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
       result = Math.abs((Double) inputValue);
     } else if (inputValue instanceof Float) {
       result = Math.abs((Float) inputValue);
+    } else if (inputValue instanceof Duration) {
+      final int seconds = ((Duration) inputValue).toSecondsPart();
+      final long nanos = ((Duration) inputValue).toNanosPart();
+      if (seconds > -1 && nanos > -1)
+        result = inputValue;
+      else {
+        result = Duration.ofSeconds(Math.abs(seconds), Math.abs(nanos));
+      }
     } else {
       throw new IllegalArgumentException("Argument to absolute value must be a number.");
     }

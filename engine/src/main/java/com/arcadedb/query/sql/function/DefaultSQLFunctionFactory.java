@@ -47,13 +47,11 @@ import com.arcadedb.query.sql.function.math.SQLFunctionMin;
 import com.arcadedb.query.sql.function.math.SQLFunctionSum;
 import com.arcadedb.query.sql.function.misc.SQLFunctionCoalesce;
 import com.arcadedb.query.sql.function.misc.SQLFunctionCount;
-import com.arcadedb.query.sql.function.misc.SQLFunctionDate;
 import com.arcadedb.query.sql.function.misc.SQLFunctionDecode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionEncode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIf;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIfNull;
 import com.arcadedb.query.sql.function.misc.SQLFunctionStrcmpci;
-import com.arcadedb.query.sql.function.misc.SQLFunctionSysdate;
 import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
 import com.arcadedb.query.sql.function.stat.SQLFunctionMedian;
 import com.arcadedb.query.sql.function.stat.SQLFunctionMode;
@@ -62,6 +60,9 @@ import com.arcadedb.query.sql.function.stat.SQLFunctionStandardDeviation;
 import com.arcadedb.query.sql.function.stat.SQLFunctionVariance;
 import com.arcadedb.query.sql.function.text.SQLFunctionConcat;
 import com.arcadedb.query.sql.function.text.SQLFunctionFormat;
+import com.arcadedb.query.sql.function.time.SQLFunctionDate;
+import com.arcadedb.query.sql.function.time.SQLFunctionDuration;
+import com.arcadedb.query.sql.function.time.SQLFunctionSysdate;
 
 /**
  * Default set of SQL function.
@@ -74,11 +75,12 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionAverage.NAME, SQLFunctionAverage.class);
     register(SQLFunctionCoalesce.NAME, new SQLFunctionCoalesce());
     register(SQLFunctionCount.NAME, SQLFunctionCount.class);
-    register(SQLFunctionDate.NAME, SQLFunctionDate.class);
+    register(SQLFunctionDate.NAME, new SQLFunctionDate());
     register(SQLFunctionDecode.NAME, new SQLFunctionDecode());
     register(SQLFunctionDifference.NAME, SQLFunctionDifference.class);
     register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
     register(SQLFunctionDistance.NAME, new SQLFunctionDistance());
+    register(SQLFunctionDuration.NAME, new SQLFunctionDuration());
     register(SQLFunctionEncode.NAME, new SQLFunctionEncode());
     register(SQLFunctionFirst.NAME, new SQLFunctionFirst());
     register(SQLFunctionFormat.NAME, new SQLFunctionFormat());
@@ -91,8 +93,8 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionMax.NAME, SQLFunctionMax.class);
     register(SQLFunctionMin.NAME, SQLFunctionMin.class);
     register(SQLFunctionSet.NAME, SQLFunctionSet.class);
-    register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
     register(SQLFunctionSum.NAME, SQLFunctionSum.class);
+    register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
     register(SQLFunctionUnionAll.NAME, SQLFunctionUnionAll.class);
     register(SQLFunctionMode.NAME, SQLFunctionMode.class);
     register(SQLFunctionPercentile.NAME, SQLFunctionPercentile.class);
