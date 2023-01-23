@@ -22,6 +22,7 @@ package com.arcadedb.serializer.json;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.DateUtils;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -31,6 +32,9 @@ import com.google.gson.JsonPrimitive;
 import java.io.*;
 import java.math.*;
 import java.text.*;
+import java.time.*;
+import java.time.format.*;
+import java.time.temporal.*;
 import java.util.*;
 
 /**
@@ -116,6 +120,13 @@ public class JSONObject {
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format((Date) value));
+    } else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant) {
+      if (dateFormat == null)
+        // SAVE AS TIMESTAMP
+        object.addProperty(name, DateUtils.dateTimeToTimestamp(value, ChronoUnit.NANOS)); // ALWAYS USE NANOS TO AVOID PRECISION LOSS
+      else
+        // SAVE AS STRING
+        object.addProperty(name, DateTimeFormatter.ofPattern(dateFormat.toPattern()).format((TemporalAccessor) value));
     } else if (value instanceof RID) {
       object.addProperty(name, value.toString());
     } else if (value instanceof Map) {

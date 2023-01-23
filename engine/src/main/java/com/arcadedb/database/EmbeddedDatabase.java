@@ -116,9 +116,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected            PageManager                               pageManager;
   protected            EmbeddedSchema                            schema;
   protected            TransactionManager                        transactionManager;
-  protected volatile DatabaseAsyncExecutorImpl async           = null;
-  protected final    Lock                      asyncLock       = new ReentrantLock();
-  protected          boolean                   autoTransaction = false;
+  protected volatile   DatabaseAsyncExecutorImpl                 async                                = null;
+  protected final      Lock                                      asyncLock                            = new ReentrantLock();
+  protected            boolean                                   autoTransaction                      = false;
   protected volatile   boolean                                   open                                 = false;
   private              boolean                                   readYourWrites                       = true;
   private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
@@ -1645,6 +1645,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           schema.create(mode);
         else
           schema.load(mode, true);
+
+        serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
+        serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
         if (mode == PaginatedFile.MODE.READ_WRITE)
           checkForRecovery();

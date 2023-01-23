@@ -37,9 +37,13 @@ public class DateUtils {
     final long convertedTimestamp = convertTimestamp(timestamp, sourcePrecision, destinationPrecision);
 
     final Object value;
-    if (dateTimeImplementation.equals(Date.class))
+    if (dateTimeImplementation.equals(Date.class)) {
+      if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
+        throw new IllegalArgumentException("java.util.Date implementation cannot handle datetime with precision " + destinationPrecision);
       value = new Date(convertedTimestamp);
-    else if (dateTimeImplementation.equals(Calendar.class)) {
+    } else if (dateTimeImplementation.equals(Calendar.class)) {
+      if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
+        throw new IllegalArgumentException("java.util.Calendar implementation cannot handle datetime with precision " + destinationPrecision);
       value = Calendar.getInstance(database.getSchema().getTimeZone());
       ((Calendar) value).setTimeInMillis(convertedTimestamp);
     } else if (dateTimeImplementation.equals(LocalDateTime.class)) {
@@ -95,6 +99,62 @@ public class DateUtils {
     } else
       throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
     return value;
+  }
+
+  public static long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
+    final long timestamp;
+    if (value instanceof Date)
+      // WRITE MILLISECONDS
+      timestamp = ((Date) value).getTime();
+    else if (value instanceof Calendar)
+      // WRITE MILLISECONDS
+      timestamp = ((Calendar) value).getTimeInMillis();
+    else if (value instanceof LocalDateTime) {
+      final LocalDateTime localDateTime = (LocalDateTime) value;
+      if (precisionToUse.equals(ChronoUnit.SECONDS))
+        timestamp = localDateTime.toInstant(ZoneOffset.UTC).getEpochSecond();
+      else if (precisionToUse.equals(ChronoUnit.MILLIS))
+        timestamp =
+            TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND);
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
+        timestamp = TimeUnit.MICROSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + (localDateTime.getNano() / 1000);
+      else if (precisionToUse.equals(ChronoUnit.NANOS))
+        timestamp = TimeUnit.NANOSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getNano();
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
+    } else if (value instanceof ZonedDateTime) {
+      final ZonedDateTime zonedDateTime = (ZonedDateTime) value;
+      if (precisionToUse.equals(ChronoUnit.SECONDS))
+        timestamp = zonedDateTime.toInstant().getEpochSecond();
+      else if (precisionToUse.equals(ChronoUnit.MILLIS))
+        timestamp = zonedDateTime.toInstant().toEpochMilli();
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
+        timestamp = TimeUnit.MICROSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + (zonedDateTime.getNano() / 1000);
+      else if (precisionToUse.equals(ChronoUnit.NANOS))
+        timestamp = TimeUnit.NANOSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + zonedDateTime.getNano();
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
+    } else if (value instanceof Instant) {
+      final Instant instant = (Instant) value;
+      if (precisionToUse.equals(ChronoUnit.SECONDS))
+        timestamp = instant.getEpochSecond();
+      else if (precisionToUse.equals(ChronoUnit.MILLIS))
+        timestamp = instant.toEpochMilli();
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
+        timestamp = TimeUnit.MICROSECONDS.convert(instant.getEpochSecond(), TimeUnit.SECONDS) + (instant.getNano() / 1000);
+      else if (precisionToUse.equals(ChronoUnit.NANOS))
+        timestamp = TimeUnit.NANOSECONDS.convert(instant.getEpochSecond(), TimeUnit.SECONDS) + instant.getNano();
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
+    } else if (value instanceof Number)
+      timestamp = ((Number) value).longValue();
+    else
+      // UNSUPPORTED
+      timestamp = 0;
+    return timestamp;
   }
 
   public static ChronoUnit parsePrecision(final String precision) {
@@ -206,7 +266,7 @@ public class DateUtils {
 
   public static int getNanos(final Object obj) {
     if (obj == null)
-      throw new IllegalArgumentException("Object i snull");
+      throw new IllegalArgumentException("Object is null");
     else if (obj instanceof LocalDateTime)
       return ((LocalDateTime) obj).getNano();
     else if (obj instanceof ZonedDateTime)
