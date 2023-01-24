@@ -27,7 +27,12 @@ import com.arcadedb.query.sql.function.coll.SQLFunctionMap;
 import com.arcadedb.query.sql.function.coll.SQLFunctionSet;
 import com.arcadedb.query.sql.function.coll.SQLFunctionSymmetricDifference;
 import com.arcadedb.query.sql.function.coll.SQLFunctionUnionAll;
+import com.arcadedb.query.sql.function.geo.SQLFunctionCircle;
 import com.arcadedb.query.sql.function.geo.SQLFunctionDistance;
+import com.arcadedb.query.sql.function.geo.SQLFunctionLineString;
+import com.arcadedb.query.sql.function.geo.SQLFunctionPoint;
+import com.arcadedb.query.sql.function.geo.SQLFunctionPolygon;
+import com.arcadedb.query.sql.function.geo.SQLFunctionRectangle;
 import com.arcadedb.query.sql.function.graph.SQLFunctionAstar;
 import com.arcadedb.query.sql.function.graph.SQLFunctionBoth;
 import com.arcadedb.query.sql.function.graph.SQLFunctionBothE;
@@ -79,7 +84,6 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionDecode.NAME, new SQLFunctionDecode());
     register(SQLFunctionDifference.NAME, SQLFunctionDifference.class);
     register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
-    register(SQLFunctionDistance.NAME, new SQLFunctionDistance());
     register(SQLFunctionDuration.NAME, new SQLFunctionDuration());
     register(SQLFunctionEncode.NAME, new SQLFunctionEncode());
     register(SQLFunctionFirst.NAME, new SQLFunctionFirst());
@@ -105,7 +109,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionConcat.NAME, SQLFunctionConcat.class);
     register(SQLFunctionAbsoluteValue.NAME, SQLFunctionAbsoluteValue.class);
     register(SQLFunctionStrcmpci.NAME, SQLFunctionStrcmpci.class);
-    //graph
+    // GRAPH
     register(SQLFunctionOut.NAME, SQLFunctionOut.class);
     register(SQLFunctionIn.NAME, SQLFunctionIn.class);
     register(SQLFunctionBoth.NAME, SQLFunctionBoth.class);
@@ -118,6 +122,13 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionShortestPath.NAME, SQLFunctionShortestPath.class);
     register(SQLFunctionDijkstra.NAME, SQLFunctionDijkstra.class);
     register(SQLFunctionAstar.NAME, SQLFunctionAstar.class);
+    // GEO
+    register(SQLFunctionCircle.NAME, new SQLFunctionCircle());
+    register(SQLFunctionDistance.NAME, new SQLFunctionDistance());
+    register(SQLFunctionPoint.NAME, new SQLFunctionPoint());
+    register(SQLFunctionPolygon.NAME, new SQLFunctionPolygon());
+    register(SQLFunctionRectangle.NAME, new SQLFunctionRectangle());
+    register(SQLFunctionLineString.NAME, new SQLFunctionLineString());
 
     reflectionFactory = new SQLFunctionReflectionFactory(this);
   }
