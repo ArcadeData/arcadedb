@@ -22,8 +22,10 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.DateUtils;
 
 import java.math.*;
+import java.time.temporal.*;
 import java.util.*;
 
 public class BinaryComparator {
@@ -277,56 +279,14 @@ public class BinaryComparator {
 
       return Integer.compare(v1, v2);
     }
-
     case BinaryTypes.TYPE_DATE:
-    case BinaryTypes.TYPE_DATETIME: {
-      final long v1;
-      if (value1 instanceof Date)
-        v1 = ((Date) value1).getTime();
-      else if (value1 instanceof Calendar)
-        v1 = ((Calendar) value1).getTimeInMillis();
-      else if (value1 instanceof Number)
-        v1 = ((Number) value1).longValue();
-      else if (value1 instanceof String)
-        v1 = Long.parseLong(value1.toString());
-      else
-        throw new IllegalArgumentException("Type '" + value1 + "' not supported in comparison for dates");
-
-      final long v2;
-
-      switch (type2) {
-      case BinaryTypes.TYPE_INT:
-      case BinaryTypes.TYPE_SHORT:
-      case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_BYTE:
-      case BinaryTypes.TYPE_DECIMAL:
-      case BinaryTypes.TYPE_FLOAT:
-      case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).longValue();
-        break;
-
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
-        if (value2 instanceof Date)
-          v2 = ((Date) value2).getTime();
-        else if (value2 instanceof Calendar)
-          v2 = ((Calendar) value2).getTimeInMillis();
-        else if (value2 instanceof Number)
-          v2 = ((Number) value2).longValue();
-        else if (value2 instanceof String)
-          v2 = Long.parseLong(value2.toString());
-        else
-          throw new IllegalArgumentException("Type '" + value2 + "' not supported in comparison for dates");
-        break;
-
-      case BinaryTypes.TYPE_STRING:
-        v2 = Long.parseLong(value2.toString());
-        break;
-
-      default:
-        return -1;
-      }
-
+    case BinaryTypes.TYPE_DATETIME:
+    case BinaryTypes.TYPE_DATETIME_SECOND:
+    case BinaryTypes.TYPE_DATETIME_MICROS:
+    case BinaryTypes.TYPE_DATETIME_NANOS: {
+      final ChronoUnit higherPrecision = DateUtils.getHigherPrecision(value1, value2);
+      final long v1 = DateUtils.dateTimeToTimestamp(value1, higherPrecision);
+      final long v2 = DateUtils.dateTimeToTimestamp(value2, higherPrecision);
       return Long.compare(v1, v2);
     }
 

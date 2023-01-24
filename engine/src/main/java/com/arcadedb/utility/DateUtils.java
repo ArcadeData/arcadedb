@@ -153,6 +153,8 @@ public class DateUtils {
         timestamp = 0;
     } else if (value instanceof Number)
       timestamp = ((Number) value).longValue();
+    else if (value instanceof String)
+      timestamp = Long.parseLong(value.toString());
     else
       // UNSUPPORTED
       return null;

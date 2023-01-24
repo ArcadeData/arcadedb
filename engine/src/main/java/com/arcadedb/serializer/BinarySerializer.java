@@ -44,7 +44,6 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Property;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.*;
@@ -241,13 +240,7 @@ public class BinarySerializer {
       final EmbeddedModifierProperty propertyModifier =
           embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
 
-      final Property property;
-      if (type == BinaryTypes.TYPE_DATETIME && documentType != null)
-        property = documentType.getPropertyIfExists(propertyName);
-      else
-        property = null;
-
-      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier, property);
+      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
 
       if (type == BinaryTypes.TYPE_COMPRESSED_STRING)
         propertyValue = dictionary.getNameById(((Long) propertyValue).intValue());
@@ -310,12 +303,8 @@ public class BinarySerializer {
       final byte type = buffer.getByte();
 
       final EmbeddedModifierProperty propertyModifier = embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
-      Property property = null;
-      if (type == BinaryTypes.TYPE_DATETIME)
-        // NEED THIS ONLY FOR PRECISION
-        property = documentType.getPropertyIfExists(fieldName);
 
-      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier, property);
+      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
 
       if (type == BinaryTypes.TYPE_COMPRESSED_STRING)
         propertyValue = dictionary.getNameById(((Long) propertyValue).intValue());
@@ -499,11 +488,6 @@ public class BinarySerializer {
   }
 
   public Object deserializeValue(final Database database, final Binary content, final byte type, final EmbeddedModifier embeddedModifier) {
-    return deserializeValue(database, content, type, embeddedModifier, null);
-  }
-
-  public Object deserializeValue(final Database database, final Binary content, final byte type, final EmbeddedModifier embeddedModifier,
-      final Property property) {
     final Object value;
     switch (type) {
     case BinaryTypes.TYPE_NULL:

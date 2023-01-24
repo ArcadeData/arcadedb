@@ -18,15 +18,19 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.time.*;
 import java.util.*;
 
 /**
@@ -773,5 +777,39 @@ public class UpdateStatementExecutionTest extends TestHelper {
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
+  }
+
+  @Test
+  public void testLocalDateTimeUpsertWithIndex() throws ClassNotFoundException {
+    database.transaction(() -> {
+      if (database.getSchema().existsType("Product"))
+        database.getSchema().dropType("Product");
+
+      DocumentType dtProduct = database.getSchema().createDocumentType("Product");
+      dtProduct.createProperty("start", Type.DATETIME_MICROS);
+      dtProduct.createProperty("stop", Type.DATETIME_MICROS);
+      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
+    });
+
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(java.time.LocalDateTime.class);
+
+    final LocalDateTime start = LocalDateTime.now();
+
+    for (int i = 0; i < 10; i++) {
+      database.transaction(() -> {
+        final LocalDateTime stop = LocalDateTime.now();
+        ResultSet resultSet = database.command("sql", "UPDATE Product SET start = ?, stop = ? UPSERT WHERE start = ? and stop = ?", start, stop);
+
+        Result result;
+        resultSet = database.query("sql", "SELECT from Product");
+        while (resultSet.hasNext()) {
+          result = resultSet.next();
+          System.out.print(", start = " + result.getProperty("start"));
+          System.out.print(", stop = " + result.getProperty("stop"));
+        }
+      });
+    }
   }
 }
