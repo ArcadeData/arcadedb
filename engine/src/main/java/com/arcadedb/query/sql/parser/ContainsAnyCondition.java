@@ -222,5 +222,23 @@ public class ContainsAnyCondition extends BooleanExpression {
     }
     return false;
   }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    if (getRight() != null) {
+      return getRight();
+    } else {
+      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    }
+  }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    if (getRight() != null) {
+      return getRight();
+    } else {
+      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    }
+  }
 }
 /* JavaCC - OriginalChecksum=7992ab9e8e812c6d9358ede8b67b4506 (do not edit this line) */

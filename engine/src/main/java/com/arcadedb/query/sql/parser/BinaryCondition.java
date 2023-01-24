@@ -221,5 +221,29 @@ public class BinaryCondition extends BooleanExpression {
 
     return false;
   }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    BinaryCompareOperator operator = getOperator();
+    if ((operator instanceof EqualsCompareOperator) || (operator instanceof GtOperator) || (operator instanceof GeOperator)
+        || (operator instanceof ContainsKeyOperator) || (operator instanceof ContainsValueOperator)) {
+      return getRight();
+    } else if (additional != null) {
+      return additional.getRight();
+    }
+    return null;
+  }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    BinaryCompareOperator operator = this.getOperator();
+    if ((operator instanceof EqualsCompareOperator) || (operator instanceof LtOperator) || (operator instanceof LeOperator)
+        || (operator instanceof ContainsKeyOperator) || (operator instanceof ContainsValueOperator)) {
+      return getRight();
+    } else if (additional != null) {
+      return additional.getRight();
+    }
+    return null;
+  }
 }
 /* JavaCC - OriginalChecksum=99ed1dd2812eb730de8e1931b1764da5 (do not edit this line) */

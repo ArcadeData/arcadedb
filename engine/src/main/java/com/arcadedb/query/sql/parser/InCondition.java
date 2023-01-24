@@ -258,5 +258,37 @@ public class InCondition extends BooleanExpression {
     }
     return false;
   }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    Expression item = new Expression(-1);
+    if (getRightMathExpression() != null) {
+      item.setMathExpression(getRightMathExpression());
+      return item;
+    } else if (getRightParam() != null) {
+      BaseExpression e = new BaseExpression(-1);
+      e.setInputParam(getRightParam().copy());
+      item.setMathExpression(e);
+      return item;
+    } else {
+      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    }
+  }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    Expression item = new Expression(-1);
+    if (getRightMathExpression() != null) {
+      item.setMathExpression(getRightMathExpression());
+      return item;
+    } else if (getRightParam() != null) {
+      BaseExpression e = new BaseExpression(-1);
+      e.setInputParam(getRightParam().copy());
+      item.setMathExpression(e);
+      return item;
+    } else {
+      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    }
+  }
 }
 /* JavaCC - OriginalChecksum=00df7cb1877c0a12d24205c1700653c7 (do not edit this line) */

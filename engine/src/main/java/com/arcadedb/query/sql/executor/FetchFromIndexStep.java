@@ -26,7 +26,6 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.AndBlock;
-import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
@@ -44,42 +43,40 @@ import com.arcadedb.query.sql.parser.ValueExpression;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
 import java.util.*;
 
 /**
  * Created by luigidellaquila on 23/07/16.
  */
 public class FetchFromIndexStep extends AbstractExecutionStep {
-  protected     RangeIndex        index;
-  protected     BooleanExpression condition;
-  private         BinaryCondition additionalRangeCondition;
-  private final   boolean         orderAsc;
-  protected final String          indexName;
-  private         long            cost        = 0;
-  private       long              count       = 0;
-  private       boolean           inited      = false;
-  private       IndexCursor       cursor;
-  private final List<IndexCursor> nextCursors = new ArrayList<>();
+  protected       RangeIndex        index;
+  protected       BooleanExpression condition;
+  private         BinaryCondition   additionalRangeCondition;
+  private         boolean           orderAsc;
+  protected final String            indexName;
+  private         long              cost        = 0;
+  private         long              count       = 0;
+  private         boolean           inited      = false;
+  private         IndexCursor       cursor;
+  private final   List<IndexCursor> nextCursors = new ArrayList<>();
 
   private MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
 
   private Iterator                   nullKeyIterator;
   private Pair<Object, Identifiable> nextEntry = null;
 
-  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final CommandContext context,
-      final boolean profilingEnabled) {
+  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
+      final CommandContext context, final boolean profilingEnabled) {
     this(index, condition, additionalRangeCondition, true, context, profilingEnabled);
   }
 
-  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final boolean orderAsc, final CommandContext context,
-      final boolean profilingEnabled) {
+  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final boolean orderAsc,
+      final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.index = index;
     this.indexName = index.getName();
     this.condition = condition;
     this.additionalRangeCondition = additionalRangeCondition;
-
     this.orderAsc = orderAsc;
   }
 
@@ -131,9 +128,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       public void close() {
         // NO ACTIONS
       }
-
-
-
 
     };
   }
@@ -332,14 +326,19 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       thirdValue = convertToIndexDefinitionTypes(thirdValue);
       final IndexCursor cursor;
 
-      final Object[] converted = convertToObjectArray(secondValue);
+      Object[] convertedFrom = convertToObjectArray(secondValue);
+      if (convertedFrom.length == 0)
+        convertedFrom = null;
+      Object[] convertedTo = convertToObjectArray(thirdValue);
+      if (convertedTo.length == 0)
+        convertedTo = null;
 
-      if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded && index.getPropertyNames().size() == converted.length)
-        cursor = index.get(converted);
+      if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded && index.getPropertyNames().size() == convertedFrom.length)
+        cursor = index.get(convertedFrom);
       else if (index.supportsOrderedIterations()) {
-        cursor = index.range(isOrderAsc(), converted, fromKeyIncluded, convertToObjectArray(thirdValue), toKeyIncluded);
+        cursor = index.range(isOrderAsc(), convertedFrom, fromKeyIncluded, convertedTo, toKeyIncluded);
       } else if (additionalRangeCondition == null && allEqualities((AndBlock) condition)) {
-        cursor = index.iterator(isOrderAsc(), converted, true);
+        cursor = index.iterator(isOrderAsc(), convertedFrom, true);
       } else {
         throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
       }
@@ -532,79 +531,23 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return orderAsc;
   }
 
-  private PCollection indexKeyFrom(final AndBlock keyCondition, final BinaryCondition additional) {
-    final PCollection result = new PCollection(-1);
-    for (final BooleanExpression exp : keyCondition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition) {
-        final BinaryCondition binaryCond = ((BinaryCondition) exp);
-        final BinaryCompareOperator operator = binaryCond.getOperator();
-        if ((operator instanceof EqualsCompareOperator) || (operator instanceof GtOperator) || (operator instanceof GeOperator)) {
-          result.add(binaryCond.getRight());
-        } else if (additional != null) {
-          result.add(additional.getRight());
-        }
-      } else if (exp instanceof InCondition) {
-        final Expression item = new Expression(-1);
-        if (((InCondition) exp).getRightMathExpression() != null) {
-          item.setMathExpression(((InCondition) exp).getRightMathExpression());
-          result.add(item);
-        } else if (((InCondition) exp).getRightParam() != null) {
-          final BaseExpression e = new BaseExpression(-1);
-          e.setInputParam(((InCondition) exp).getRightParam().copy());
-          item.setMathExpression(e);
-          result.add(item);
-        } else {
-          throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-        }
-
-      } else if (exp instanceof ContainsAnyCondition) {
-        if (((ContainsAnyCondition) exp).getRight() != null) {
-          result.add(((ContainsAnyCondition) exp).getRight());
-        } else {
-          throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-        }
-
-      } else {
-        throw new UnsupportedOperationException("Cannot execute index query with " + exp);
+  private static PCollection indexKeyFrom(final AndBlock keyCondition, final BinaryCondition additional) {
+    PCollection result = new PCollection(-1);
+    for (BooleanExpression exp : keyCondition.getSubBlocks()) {
+      Expression res = exp.resolveKeyFrom(additional);
+      if (res != null) {
+        result.add(res);
       }
     }
     return result;
   }
 
-  private PCollection indexKeyTo(final AndBlock keyCondition, final BinaryCondition additional) {
-    final PCollection result = new PCollection(-1);
-    for (final BooleanExpression exp : keyCondition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition) {
-        final BinaryCondition binaryCond = ((BinaryCondition) exp);
-        final BinaryCompareOperator operator = binaryCond.getOperator();
-        if ((operator instanceof EqualsCompareOperator) || (operator instanceof LtOperator) || (operator instanceof LeOperator)) {
-          result.add(binaryCond.getRight());
-        } else if (additional != null) {
-          result.add(additional.getRight());
-        }
-      } else if (exp instanceof InCondition) {
-        final Expression item = new Expression(-1);
-        if (((InCondition) exp).getRightMathExpression() != null) {
-          item.setMathExpression(((InCondition) exp).getRightMathExpression());
-          result.add(item);
-        } else if (((InCondition) exp).getRightParam() != null) {
-          final BaseExpression e = new BaseExpression(-1);
-          e.setInputParam(((InCondition) exp).getRightParam().copy());
-          item.setMathExpression(e);
-          result.add(item);
-        } else {
-          throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-        }
-
-      } else if (exp instanceof ContainsAnyCondition) {
-        if (((ContainsAnyCondition) exp).getRight() != null) {
-          result.add(((ContainsAnyCondition) exp).getRight());
-        } else {
-          throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-        }
-
-      } else {
-        throw new UnsupportedOperationException("Cannot execute index query with " + exp);
+  private static PCollection indexKeyTo(final AndBlock keyCondition, final BinaryCondition additional) {
+    PCollection result = new PCollection(-1);
+    for (BooleanExpression exp : keyCondition.getSubBlocks()) {
+      Expression res = exp.resolveKeyTo(additional);
+      if (res != null) {
+        result.add(res);
       }
     }
     return result;

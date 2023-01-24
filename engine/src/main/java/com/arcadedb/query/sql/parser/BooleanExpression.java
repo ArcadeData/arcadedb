@@ -198,4 +198,12 @@ public abstract class BooleanExpression extends SimpleNode {
   public boolean isIndexAware(final IndexSearchInfo info) {
     return false;
   }
+
+  public Expression resolveKeyFrom(BinaryCondition additional) {
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
+
+  public Expression resolveKeyTo(BinaryCondition additional) {
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
 }
