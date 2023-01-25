@@ -149,38 +149,37 @@ public interface SqlParserTreeConstants
   public int JJTCREATEEDGETYPESTATEMENT = 143;
   public int JJTALTERTYPESTATEMENT = 144;
   public int JJTDROPTYPESTATEMENT = 145;
-  public int JJTIFNOTEXISTS = 146;
-  public int JJTCREATEPROPERTYSTATEMENT = 147;
-  public int JJTCREATEPROPERTYATTRIBUTESTATEMENT = 148;
-  public int JJTALTERPROPERTYSTATEMENT = 149;
-  public int JJTDROPPROPERTYSTATEMENT = 150;
-  public int JJTCREATEINDEXSTATEMENT = 151;
-  public int JJTREBUILDINDEXSTATEMENT = 152;
-  public int JJTDROPINDEXSTATEMENT = 153;
-  public int JJTCREATEBUCKETSTATEMENT = 154;
-  public int JJTALTERBUCKETSTATEMENT = 155;
-  public int JJTDROPBUCKETSTATEMENT = 156;
-  public int JJTALTERDATABASESTATEMENT = 157;
-  public int JJTEXPLAINSTATEMENT = 158;
-  public int JJTPROFILESTATEMENT = 159;
-  public int JJTLETSTATEMENT = 160;
-  public int JJTBEGINSTATEMENT = 161;
-  public int JJTCOMMITSTATEMENT = 162;
-  public int JJTROLLBACKSTATEMENT = 163;
-  public int JJTRETURNSTATEMENT = 164;
-  public int JJTIFSTATEMENT = 165;
-  public int JJTSLEEPSTATEMENT = 166;
-  public int JJTCONSOLESTATEMENT = 167;
-  public int JJTFOREACHBLOCK = 168;
-  public int JJTWHILEBLOCK = 169;
-  public int JJTIMPORTDATABASESTATEMENT = 170;
-  public int JJTEXPORTDATABASESTATEMENT = 171;
-  public int JJTURL = 172;
-  public int JJTBACKUPDATABASESTATEMENT = 173;
-  public int JJTCHECKDATABASESTATEMENT = 174;
-  public int JJTALIGNDATABASESTATEMENT = 175;
-  public int JJTDEFINEFUNCTIONSTATEMENT = 176;
-  public int JJTDELETEFUNCTIONSTATEMENT = 177;
+  public int JJTCREATEPROPERTYSTATEMENT = 146;
+  public int JJTCREATEPROPERTYATTRIBUTESTATEMENT = 147;
+  public int JJTALTERPROPERTYSTATEMENT = 148;
+  public int JJTDROPPROPERTYSTATEMENT = 149;
+  public int JJTCREATEINDEXSTATEMENT = 150;
+  public int JJTREBUILDINDEXSTATEMENT = 151;
+  public int JJTDROPINDEXSTATEMENT = 152;
+  public int JJTCREATEBUCKETSTATEMENT = 153;
+  public int JJTALTERBUCKETSTATEMENT = 154;
+  public int JJTDROPBUCKETSTATEMENT = 155;
+  public int JJTALTERDATABASESTATEMENT = 156;
+  public int JJTEXPLAINSTATEMENT = 157;
+  public int JJTPROFILESTATEMENT = 158;
+  public int JJTLETSTATEMENT = 159;
+  public int JJTBEGINSTATEMENT = 160;
+  public int JJTCOMMITSTATEMENT = 161;
+  public int JJTROLLBACKSTATEMENT = 162;
+  public int JJTRETURNSTATEMENT = 163;
+  public int JJTIFSTATEMENT = 164;
+  public int JJTSLEEPSTATEMENT = 165;
+  public int JJTCONSOLESTATEMENT = 166;
+  public int JJTFOREACHBLOCK = 167;
+  public int JJTWHILEBLOCK = 168;
+  public int JJTIMPORTDATABASESTATEMENT = 169;
+  public int JJTEXPORTDATABASESTATEMENT = 170;
+  public int JJTURL = 171;
+  public int JJTBACKUPDATABASESTATEMENT = 172;
+  public int JJTCHECKDATABASESTATEMENT = 173;
+  public int JJTALIGNDATABASESTATEMENT = 174;
+  public int JJTDEFINEFUNCTIONSTATEMENT = 175;
+  public int JJTDELETEFUNCTIONSTATEMENT = 176;
 
 
   public String[] jjtNodeName = {
@@ -330,7 +329,6 @@ public interface SqlParserTreeConstants
     "CreateEdgeTypeStatement",
     "AlterTypeStatement",
     "DropTypeStatement",
-    "IfNotExists",
     "CreatePropertyStatement",
     "CreatePropertyAttributeStatement",
     "AlterPropertyStatement",
@@ -364,4 +362,4 @@ public interface SqlParserTreeConstants
     "DeleteFunctionStatement",
   };
 }
-/* JavaCC - OriginalChecksum=c149b37be01b3e72328b104879d3740a (do not edit this line) */
+/* JavaCC - OriginalChecksum=3f9f034b5d0a6d2ab37e528d49ff3df2 (do not edit this line) */

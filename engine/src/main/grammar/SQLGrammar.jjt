@@ -3698,10 +3698,6 @@ DropTypeStatement DropTypeStatement():
   { return jjtThis; }
 }
 
-void IfNotExists():{}
-{
-  <IF> <NOT> <EXISTS>
-}
 CreatePropertyStatement CreatePropertyStatement():
 {
   CreatePropertyAttributeStatement lastAttribute;
@@ -3711,9 +3707,7 @@ CreatePropertyStatement CreatePropertyStatement():
   jjtThis.typeName = Identifier()
   <DOT>
   jjtThis.propertyName = Identifier()
-
-    [ LOOKAHEAD(3) IfNotExists() { jjtThis.ifNotExists = true; }]
-
+  [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
   jjtThis.propertyType = Identifier()
   [
     <LPAREN>
