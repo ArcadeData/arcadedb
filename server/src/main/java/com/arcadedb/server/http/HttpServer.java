@@ -196,7 +196,6 @@ public class HttpServer implements ServerPlugin {
     throw new
 
         ServerException("Error on starting HTTP Server: " + msg);
-
   }
 
   private int[] extractPortRange(final Object configuredPort) {

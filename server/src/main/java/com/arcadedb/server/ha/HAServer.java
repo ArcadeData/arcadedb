@@ -777,9 +777,14 @@ public class HAServer implements ServerPlugin {
     if (isLeader()) {
       final StringBuilder list = new StringBuilder();
       for (final Leader2ReplicaNetworkExecutor r : replicaConnections.values()) {
+        final String addr = r.getRemoteServerHTTPAddress();
+        if (addr == null)
+          // HTTP SERVER NOT AVAILABLE YET
+          continue;
+
         if (list.length() > 0)
           list.append(",");
-        list.append(r.getRemoteServerHTTPAddress());
+        list.append(addr);
       }
       return list.toString();
     }
