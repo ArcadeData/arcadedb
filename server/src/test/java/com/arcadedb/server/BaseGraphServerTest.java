@@ -83,15 +83,14 @@ public abstract class BaseGraphServerTest {
 
     LogManager.instance().log(this, Level.FINE, "Starting test %s...", getClass().getName());
 
-    if (isCreateDatabases()) {
-      deleteDatabaseFolders();
+    deleteDatabaseFolders();
 
+    if (isCreateDatabases()) {
       databases = new Database[getServerCount()];
       for (int i = 0; i < getServerCount(); ++i) {
         GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
         databases[i] = new DatabaseFactory(getDatabasePath(i)).create();
         databases[i].async().setParallelLevel(PARALLEL_LEVEL);
-
       }
 
       populateDatabase();

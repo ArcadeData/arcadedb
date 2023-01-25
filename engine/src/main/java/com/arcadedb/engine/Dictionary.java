@@ -56,7 +56,8 @@ public class Dictionary extends PaginatedComponent {
   /**
    * Called at creation time.
    */
-  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
+  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize)
+      throws IOException {
     super(database, name, filePath, DICT_EXT, mode, pageSize, CURRENT_VERSION);
     if (file.getSize() == 0) {
       // NEW FILE, CREATE HEADER PAGE
@@ -222,8 +223,10 @@ public class Dictionary extends PaginatedComponent {
   public void reload() throws IOException {
     if (file.getSize() == 0) {
       // NEW FILE, CREATE HEADER PAGE
-      final MutablePage header = database.getTransaction().addPage(new PageId(file.getFileId(), 0), pageSize);
-      updateCounters(header);
+      database.transaction(() -> {
+        final MutablePage header = database.getTransaction().addPage(new PageId(file.getFileId(), 0), pageSize);
+        updateCounters(header);
+      });
 
     } else {
       final BasePage header = database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
