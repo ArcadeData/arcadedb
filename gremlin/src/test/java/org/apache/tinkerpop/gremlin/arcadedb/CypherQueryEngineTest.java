@@ -48,7 +48,6 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.notNullValue;
 
 public class CypherQueryEngineTest {
-
   private static final String DB_PATH = "./target/testsql";
 
   @Test
@@ -154,7 +153,25 @@ public class CypherQueryEngineTest {
           Assertions.assertTrue(query.hasNext());
           final Result r1 = query.next();
         }
+      });
+    } finally {
+      graph.drop();
+    }
+  }
 
+  /**
+   * Test null results are returned as null instead of `  cypher.null`. Issue https://github.com/ArcadeData/arcadedb/issues/804.
+   */
+  @Test
+  public void testNullReturn() {
+    final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
+    try (final Database database = graph.getDatabase()) {
+      database.transaction(() -> {
+        try (final ResultSet query = database.command("cypher", "CREATE (n:Person) return n.name")) {
+          Assertions.assertTrue(query.hasNext());
+          final Result r1 = query.next();
+          Assertions.assertNull(r1.getProperty("n.name"));
+        }
       });
     } finally {
       graph.drop();

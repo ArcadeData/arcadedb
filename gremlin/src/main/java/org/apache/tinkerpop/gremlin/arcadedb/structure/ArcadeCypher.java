@@ -102,7 +102,10 @@ public class ArcadeCypher extends ArcadeGremlin {
       // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
       final CypherAst ast = parameters == null ? CypherAst.parse(cypher) : CypherAst.parse(cypher, parameters);
       final Translator<String, GroovyPredicate> translator = Translator.builder().gremlinGroovy().enableCypherExtensions().build();
-      final String gremlin = ast.buildTranslation(translator);
+      String gremlin = ast.buildTranslation(translator);
+
+      // REPLACE '  cypher.null' WITH NULL
+      gremlin = gremlin.replaceAll("'  cypher.null'", "null");
 
       while (totalCachedStatements.get() >= CACHE_SIZE) {
         int leastUsedValue = 0;
