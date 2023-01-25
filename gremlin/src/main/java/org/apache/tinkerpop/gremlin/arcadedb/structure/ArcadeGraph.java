@@ -75,12 +75,11 @@ public class ArcadeGraph implements Graph, Closeable {
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final        ArcadeGraphTransaction transaction;
   protected final      Database               database;
-  protected final      BaseConfiguration      configuration           = new BaseConfiguration();
-  private final static Iterator<Vertex>       EMPTY_VERTICES          = Collections.emptyIterator();
-  private final static Iterator<Edge>         EMPTY_EDGES             = Collections.emptyIterator();
-  protected            Features               features                = new ArcadeGraphFeatures();
+  protected final      BaseConfiguration      configuration  = new BaseConfiguration();
+  private final static Iterator<Vertex>       EMPTY_VERTICES = Collections.emptyIterator();
+  private final static Iterator<Edge>         EMPTY_EDGES    = Collections.emptyIterator();
+  protected            Features               features       = new ArcadeGraphFeatures();
   private              GremlinExecutor        gremlinExecutor;
-  private              boolean                cypherEngineInitialized = false;
 
   static {
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class, TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
@@ -149,17 +148,6 @@ public class ArcadeGraph implements Graph, Closeable {
 
   public ArcadeCypher cypher(final String query, final Map<String, Object> parameters) {
     try {
-      synchronized (this) {
-        if (!cypherEngineInitialized) {
-          // REGISTER CYPHER CUSTOM FUNCTIONS
-          final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
-          importPlugin.classImports(new Class[] { Math.class, CustomFunctions.class,
-              CustomPredicate.class });
-          importPlugin.methodImports(List.of("java.lang.Math#*", "org.opencypher.gremlin.traversal.CustomFunctions#*"));
-          gremlinExecutor.getScriptEngineManager().addPlugin(importPlugin.create());
-          cypherEngineInitialized = true;
-        }
-      }
       return new ArcadeCypher(this, query, parameters);
     } catch (final SyntaxException e) {
       throw new QueryParsingException(e);
@@ -436,6 +424,7 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   private void init() {
+    // INITIALIZE GREMLIN
     final ConcurrentBindings globalBindings = new ConcurrentBindings();
     globalBindings.putIfAbsent("g", traversal());
 
@@ -447,5 +436,11 @@ public class ArcadeGraph implements Graph, Closeable {
       builder.evaluationTimeout(configuration.getLong(CONFIG_EVALUATION_TIMEOUT));
 
     gremlinExecutor = builder.create();
+
+    // INITIALIZE CYPHER
+    final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
+    importPlugin.classImports(Math.class, CustomFunctions.class, CustomPredicate.class);
+    importPlugin.methodImports(List.of("java.lang.Math#*", "org.opencypher.gremlin.traversal.CustomFunctions#*"));
+    gremlinExecutor.getScriptEngineManager().addPlugin(importPlugin.create());
   }
 }

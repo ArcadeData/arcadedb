@@ -62,7 +62,7 @@ public class GremlinServerPlugin implements ServerPlugin {
       // DEFAULT CONFIGURATION
       settings = new Settings();
 
-    // OVEWRITE AUTHENTICATION USING THE SERVER SECURITY
+    // OVERWRITE AUTHENTICATION USING THE SERVER SECURITY
     settings.authentication = new Settings.AuthenticationSettings();
     settings.authentication.authenticator = GremlinServerAuthenticator.class.getName();
     settings.authentication.config = new HashMap<>(1);
