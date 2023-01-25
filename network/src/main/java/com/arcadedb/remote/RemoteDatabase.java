@@ -191,8 +191,10 @@ public class RemoteDatabase extends RWLockContext {
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("begin", databaseName));
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new TransactionException("Error on transaction begin");
+      if (connection.getResponseCode() != 204) {
+        final Exception detail = manageException(connection, "begin transaction");
+        throw new TransactionException("Error on transaction begin", detail);
+      }
       sessionId = connection.getHeaderField(ARCADEDB_SESSION_ID);
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
@@ -205,8 +207,10 @@ public class RemoteDatabase extends RWLockContext {
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("commit", databaseName));
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new TransactionException("Error on transaction commit");
+      if (connection.getResponseCode() != 204) {
+        final Exception detail = manageException(connection, "commit transaction");
+        throw new TransactionException("Error on transaction commit", detail);
+      }
       sessionId = null;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
@@ -220,9 +224,10 @@ public class RemoteDatabase extends RWLockContext {
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("rollback", databaseName));
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new TransactionException("Error on transaction rollback");
-
+      if (connection.getResponseCode() != 204) {
+        final Exception detail = manageException(connection, "rollback transaction");
+        throw new TransactionException("Error on transaction rollback", detail);
+      }
       sessionId = null;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
