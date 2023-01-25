@@ -69,9 +69,7 @@ public class UpdateSetStep extends AbstractExecutionStep {
     result.append("+ UPDATE SET");
     for (int i = 0; i < items.size(); i++) {
       final UpdateItem item = items.get(i);
-      if (i < items.size()) {
-        result.append("\n");
-      }
+      result.append("\n");
       result.append(spaces);
       result.append("  ");
       result.append(item.toString());

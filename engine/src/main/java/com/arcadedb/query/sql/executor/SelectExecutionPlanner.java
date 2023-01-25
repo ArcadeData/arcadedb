@@ -2281,6 +2281,18 @@ public class SelectExecutionPlanner {
     final Set<String> result = new HashSet<>();
     final Database db = context.getDatabase();
     final FromItem item = info.target.getItem();
+
+    if (item.getIdentifier() != null) {
+      if (item.getIdentifier().getStringValue().startsWith("$")) {
+        // RESOLVE VARIABLE
+        final Object value = context.getVariable(item.getIdentifier().getStringValue());
+        if (value != null) {
+          item.setValue(value);
+          item.setIdentifier(null);
+        }
+      }
+    }
+
     if (item.getRids() != null && item.getRids().size() > 0) {
       if (item.getRids().size() == 1) {
         final PInteger bucket = item.getRids().get(0).getBucket();
@@ -2335,16 +2347,23 @@ public class SelectExecutionPlanner {
     } else if (item.getInputParam() != null) {
       return null;
     } else if (item.getIdentifier() != null) {
-      final String className = item.getIdentifier().getStringValue();
-      final DocumentType typez = db.getSchema().getType(className);
-      if (typez == null) {
-        return null;
-      }
-      final int[] bucketIds = typez.getBuckets(true).stream().mapToInt(x -> x.getId()).toArray();
-      for (final int bucketId : bucketIds) {
-        final String bucketName = db.getSchema().getBucketById(bucketId).getName();
-        if (bucketName != null) {
-          result.add(bucketName);
+
+      if (item.getIdentifier().getStringValue().startsWith("$")) {
+        // RESOLVE VARIABLE
+        final Object value = context.getVariable(item.getIdentifier().getStringValue());
+        if (value != null) {
+          if (value instanceof RID)
+            item.getRids().add(new Rid((RID) value));
+        }
+      } else {
+        final String className = item.getIdentifier().getStringValue();
+        final DocumentType typez = db.getSchema().getType(className);
+        final int[] bucketIds = typez.getBuckets(true).stream().mapToInt(com.arcadedb.engine.Bucket::getId).toArray();
+        for (final int bucketId : bucketIds) {
+          final String bucketName = db.getSchema().getBucketById(bucketId).getName();
+          if (bucketName != null) {
+            result.add(bucketName);
+          }
         }
       }
       return result;

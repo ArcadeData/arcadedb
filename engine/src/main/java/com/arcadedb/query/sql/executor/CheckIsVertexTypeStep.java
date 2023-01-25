@@ -31,22 +31,17 @@ import com.arcadedb.schema.VertexType;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CheckIsVertexTypeStep extends AbstractExecutionStep {
-
   private final String targetClass;
-
-
-
   boolean found = false;
 
   /**
    * @param targetClass      a type to be checked
-   * @param context              execution context
+   * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
   public CheckIsVertexTypeStep(final String targetClass, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.targetClass = targetClass;
-
   }
 
   @Override
@@ -93,6 +88,4 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
     }
     return result.toString();
   }
-
-
 }

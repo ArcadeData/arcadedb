@@ -34,9 +34,6 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
-
-
-
   ResultSet prevResult = null;
 
   public ConvertToUpdatableResultStep(final CommandContext context, final boolean profilingEnabled) {
@@ -45,9 +42,9 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
+    if (prev.isEmpty())
       throw new IllegalStateException("filter step requires a previous step");
-    }
+
     final ExecutionStepInternal prevStep = prev.get();
 
     return new ResultSet() {
@@ -132,12 +129,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
       public void close() {
         ConvertToUpdatableResultStep.this.close();
       }
-
-
-
-
     };
-
   }
 
   @Override
@@ -148,6 +140,4 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
     }
     return result;
   }
-
-
 }

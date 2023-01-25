@@ -20,6 +20,10 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+
 import java.util.*;
 import java.util.stream.*;
 
@@ -292,6 +296,23 @@ public class FromItem extends SimpleNode {
       return true;
     }
     return functionCall != null && functionCall.refersToParent();
+  }
+
+  public void setValue(final Object value) {
+    if (value instanceof Identifiable)
+      rids.add(new Rid(((Identifiable) value).getIdentity()));
+    else if (value instanceof ResultSet) {
+      final ResultSet rs = (ResultSet) value;
+      while (rs.hasNext()) {
+        setValue(rs.next());
+      }
+    } else if (value instanceof Result) {
+      final Result r = (Result) value;
+      if (r.isElement())
+        setValue(((Result) value).toElement());
+      else
+        setValue(r.toMap());
+    }
   }
 }
 /* JavaCC - OriginalChecksum=f64e3b4d2a2627a1b5d04a7dcb95fa94 (do not edit this line) */

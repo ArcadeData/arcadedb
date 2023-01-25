@@ -812,4 +812,28 @@ public class UpdateStatementExecutionTest extends TestHelper {
       });
     }
   }
+
+  //@Test
+  public void testUpdateVariable() throws ClassNotFoundException {
+    database.transaction(() -> {
+      if (!database.getSchema().existsType("Account")) {
+        database.getSchema().createVertexType("Account");
+      }
+    });
+
+    for (int i = 0; i < 10; i++) {
+      database.transaction(() -> {
+        database.execute("sql", "let account = create vertex Account set name = 'Luke';\n" +//
+            "let e = Update [ #9:9 ] set name = 'bob';\n" +//
+            "commit retry 100;\n" +//
+            "return $e;");
+
+        ResultSet resultSet = database.query("sql", "SELECT from Account where name = 'bob'");
+        Assertions.assertTrue(resultSet.hasNext());
+        while (resultSet.hasNext())
+          Assertions.assertEquals("bob", resultSet.next().getProperty("name"));
+      });
+    }
+  }
+
 }

@@ -35,7 +35,6 @@ import java.util.*;
  * Created by luigidellaquila on 08/08/16.
  */
 public class DeleteExecutionPlanner {
-
   private final FromClause  fromClause;
   private final WhereClause whereClause;
   private final boolean     returnBefore;

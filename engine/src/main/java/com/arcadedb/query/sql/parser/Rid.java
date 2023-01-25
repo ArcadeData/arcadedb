@@ -39,6 +39,13 @@ public class Rid extends SimpleNode {
     super(id);
   }
 
+  public Rid(final RID rid) {
+    super(-1);
+    bucket = new PInteger(-1).setValue(rid.getBucketId());
+    position = new PInteger(-1).setValue(rid.getBucketId());
+    legacy = true;
+  }
+
   @Override
   public String toString(final String prefix) {
     return "#" + bucket.getValue() + ":" + position.getValue();
