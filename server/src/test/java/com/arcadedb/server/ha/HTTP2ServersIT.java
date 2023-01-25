@@ -19,8 +19,10 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -103,6 +105,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
   @Test
   public void checkDeleteGraphElements() throws Exception {
+
+    Thread.sleep(3000);
+
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "TESTS SERVER " + serverIndex);
 
@@ -113,7 +118,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(),
+              "executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V1 on server " + checkServer);
           throw e;
@@ -127,49 +133,56 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty(),
+              "executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V2 on server " + checkServer);
           throw e;
         }
       });
 
-      final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0).getString("@rid");
+      final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0)
+          .getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(),
+              "executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking on E1 on server " + checkServer);
           throw e;
         }
       });
 
-      final String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString("result");
+      final String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString(
+          "result");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty(),
+              "executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V3 on server " + checkServer);
           throw e;
         }
       });
 
-      final String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0).getString("@rid");
+      final String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0)
+          .getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty(),
+              "executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for E2 on server " + checkServer);
           throw e;
@@ -183,13 +196,24 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(),
+              "executed on server " + serverIndex + " checking on server " + serverIndex);
+          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(),
+              "executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for right deletion on server " + checkServer);
           throw e;
         }
       });
     });
+  }
+
+  @Test
+  public void testHAConfiguration() {
+    for (ArcadeDBServer server : getServers()) {
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+      Assertions.assertNotNull(database.getLeaderAddress());
+      Assertions.assertFalse(database.getReplicaAddresses().isEmpty());
+    }
   }
 }

@@ -117,7 +117,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
-    Assertions.assertEquals(1 + getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + 0);
+    Assertions.assertEquals(1 + (long) getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + 0);
 
     try {
       Thread.sleep(1000);
@@ -129,13 +129,6 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     for (final int s : getServerToCheck()) {
       checkEntriesOnServer(s);
     }
-
-// TEMPORARY DISABLED
-//    for (ArcadeDBServer server : getServers()) {
-//      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-//      Assertions.assertNotNull(database.getLeaderAddress());
-//      Assertions.assertFalse(database.getReplicaAddresses().isEmpty());
-//    }
 
     onAfterTest();
   }

@@ -46,25 +46,27 @@ public class SelectOrderRIDTest {
   public void testRIDOrdering() {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
     GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(1);
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
-      if (!databaseFactory.exists()) {
-        try (Database db = databaseFactory.create()) {
-          db.transaction(() -> {
-            DocumentType dtOrders = db.getSchema().createDocumentType("Order");
-            dtOrders.createProperty("processor", Type.STRING);
-            dtOrders.createProperty("vstart", Type.STRING);
-            dtOrders.createProperty("vstop", Type.STRING);
-            dtOrders.createProperty("pstart", Type.STRING);
-            dtOrders.createProperty("pstop", Type.STRING);
-            dtOrders.createProperty("status", Type.STRING);
-            dtOrders.createProperty("node", Type.STRING);
-            dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status");
-          });
-        }
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/SelectOrderRIDTest")) {
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
+
+      try (Database db = databaseFactory.create()) {
+        db.transaction(() -> {
+          DocumentType dtOrders = db.getSchema().createDocumentType("Order");
+          dtOrders.createProperty("processor", Type.STRING);
+          dtOrders.createProperty("vstart", Type.STRING);
+          dtOrders.createProperty("vstop", Type.STRING);
+          dtOrders.createProperty("pstart", Type.STRING);
+          dtOrders.createProperty("pstop", Type.STRING);
+          dtOrders.createProperty("status", Type.STRING);
+          dtOrders.createProperty("node", Type.STRING);
+          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status");
+        });
       }
+
       ArcadeDBServer arcadeDBServer = new ArcadeDBServer(new ContextConfiguration());
       arcadeDBServer.start();
-      Database database = arcadeDBServer.getDatabase("test");
+      Database database = arcadeDBServer.getDatabase("SelectOrderRIDTest");
       String customBucketName = "O202203";
       Bucket customBucket;
 
@@ -158,6 +160,8 @@ public class SelectOrderRIDTest {
       database.commit();
 
       arcadeDBServer.stop();
+
+      databaseFactory.open().drop();
     }
   }
 }
