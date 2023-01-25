@@ -67,7 +67,6 @@ public class GetServerHandler extends AbstractHandler {
       exportCluster(exchange, response);
     }
     exchange.getResponseSender().send(response.toString());
-    exchange.endExchange();
   }
 
   private void exportCluster(final HttpServerExchange exchange, final JSONObject response) {
