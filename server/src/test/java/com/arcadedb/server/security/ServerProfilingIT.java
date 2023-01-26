@@ -29,6 +29,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.server.ArcadeDBServer;
@@ -76,6 +77,19 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(validRID, true));
 
+      expectedSecurityException(() -> {
+        executeRemoteCommand("INSERT INTO Vertex1 set name = 'invalid'", "elon", "musk");
+      });
+      expectedSecurityException(() -> {
+        executeRemoteCommand("INSERT INTO Document1 set name = 'invalid'", "elon", "musk");
+      });
+      expectedSecurityException(() -> {
+        executeRemoteCommand("SELECT FROM Document1", "elon", "musk");
+      });
+      expectedSecurityException(() -> {
+        executeRemoteCommand("SELECT FROM " + validRID, "elon", "musk");
+      });
+
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);
       dropSchema(database);
@@ -83,6 +97,12 @@ public class ServerProfilingIT {
     } finally {
       SECURITY.dropUser("elon");
     }
+  }
+
+  private static void executeRemoteCommand(final String command, final String userName, final String userPassword) {
+    final String[] address = SERVER.getHttpServer().getListeningAddress().split(":");
+    final RemoteDatabase remoteDatabase = new RemoteDatabase(address[0], Integer.parseInt(address[1]), DATABASE_NAME, userName, userPassword);
+    remoteDatabase.command("sql", command);
   }
 
   @Test

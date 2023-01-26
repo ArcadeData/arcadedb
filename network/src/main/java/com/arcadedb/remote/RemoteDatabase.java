@@ -417,7 +417,7 @@ public class RemoteDatabase extends RWLockContext {
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d...", null, currentConnectToServer.getFirst(),
                   currentConnectToServer.getSecond(), connectToServer.getFirst(), connectToServer.getSecond());
 
-      } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException e) {
+      } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException | SecurityException e) {
         throw e;
       } catch (final Exception e) {
         throw new RemoteException("Error on executing remote operation " + operation + " (cause: " + e.getMessage() + ")", e);
@@ -670,6 +670,8 @@ public class RemoteDatabase extends RWLockContext {
         throw new SchemaException(detail);
       } else if (exception.equals(NoSuchElementException.class.getName())) {
         throw new NoSuchElementException(detail);
+      } else if (exception.equals(SecurityException.class.getName())) {
+        throw new SecurityException(detail);
       } else
         // ELSE
         throw new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
