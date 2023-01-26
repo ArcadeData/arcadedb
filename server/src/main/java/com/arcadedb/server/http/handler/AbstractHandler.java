@@ -56,8 +56,13 @@ public abstract class AbstractHandler implements HttpHandler {
   protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) {
+    if (!e.isInIoThread() && !e.isBlocking())
+      e.startBlocking();
+
+    if (!mustExecuteOnWorkerThread())
+      LogManager.instance().log(this, Level.SEVERE, "Error: handler must return true at mustExecuteOnWorkerThread() to read payload from request");
+
     final StringBuilder result = new StringBuilder();
-    //e.startBlocking();
     e.getRequestReceiver().receiveFullBytes(
         // OK
         (exchange, data) -> result.append(new String(data, DatabaseFactory.getDefaultCharset())),
@@ -72,10 +77,10 @@ public abstract class AbstractHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
-//    if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
-//      exchange.dispatch(this);
-//      return;
-//    }
+    if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
+      exchange.dispatch(this);
+      return;
+    }
 
     LogManager.instance().setContext(httpServer.getServer().getServerName());
 
