@@ -82,9 +82,9 @@ public abstract class AbstractHandler implements HttpHandler {
       return;
     }
 
-    LogManager.instance().setContext(httpServer.getServer().getServerName());
-
     try {
+      LogManager.instance().setContext(httpServer.getServer().getServerName());
+
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
@@ -163,7 +163,7 @@ public abstract class AbstractHandler implements HttpHandler {
 
       LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
-    } catch (final Exception e) {
+    } catch (final Throwable e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
