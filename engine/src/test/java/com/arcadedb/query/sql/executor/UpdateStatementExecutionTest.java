@@ -374,7 +374,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
       Assertions.assertNotNull(item);
-      Assertions.assertNull(item.getProperty("surname"));
+      Assertions.assertFalse(item.toElement().has("surname"));
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -814,7 +814,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   //@Test
-  public void testUpdateVariable() throws ClassNotFoundException {
+  // STILL NOT SUPPORTED
+  // ISSUE REPORTED ON DISCORD CHANNEL
+  public void testUpdateVariable() {
     database.transaction(() -> {
       if (!database.getSchema().existsType("Account")) {
         database.getSchema().createVertexType("Account");

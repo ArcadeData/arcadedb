@@ -332,11 +332,14 @@ public class SuffixIdentifier extends SimpleNode {
     }
   }
 
-  public void applyRemove(final Object currentValue, final CommandContext context) {
+  public void applyRemove(Object currentValue, final CommandContext context) {
     if (currentValue == null)
       return;
 
     if (identifier != null) {
+      if (currentValue instanceof Result && ((Result) currentValue).isElement())
+        currentValue = ((Result) currentValue).toElement();
+
       if (currentValue instanceof ResultInternal) {
         ((ResultInternal) currentValue).removeProperty(identifier.getStringValue());
       } else if (currentValue instanceof Document) {
