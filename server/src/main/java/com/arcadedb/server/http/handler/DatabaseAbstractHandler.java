@@ -65,6 +65,8 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
       }
 
       activeSession = setTransactionInThreadLocal(exchange, database, user, false);
+
+      current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
       if (current == null)
         // INITIALIZE THE DATABASE CONTEXT
         current = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
