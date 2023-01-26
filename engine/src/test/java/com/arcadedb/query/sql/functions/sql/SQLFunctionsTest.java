@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
-import com.arcadedb.query.sql.function.text.SQLMethodHash;
+import com.arcadedb.query.sql.method.SQLMethodHash;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;

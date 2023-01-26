@@ -108,11 +108,11 @@ public class JSONObject {
       object.add(name, new JSONArray((String[]) value).getInternal());
     else if (value instanceof Iterable) {
       final JSONArray array = new JSONArray();
-      for (Object o : (Iterable) value)
+      for (Object o : (Iterable<?>) value)
         array.put(o);
       object.add(name, array.getInternal());
     } else if (value instanceof Enum) {
-      object.addProperty(name, ((Enum) value).name());
+      object.addProperty(name, ((Enum<?>) value).name());
     } else if (value instanceof Date) {
       if (dateFormat == null)
         // SAVE AS TIMESTAMP
@@ -127,15 +127,18 @@ public class JSONObject {
       else
         // SAVE AS STRING
         object.addProperty(name, DateTimeFormatter.ofPattern(dateFormat.toPattern()).format((TemporalAccessor) value));
+    } else if (value instanceof Duration) {
+      object.addProperty(name, Double.valueOf(String.format("%d.%d", ((Duration) value).toSeconds(), ((Duration) value).toNanosPart())));
     } else if (value instanceof RID) {
       object.addProperty(name, value.toString());
     } else if (value instanceof Map) {
       final JSONObject embedded = new JSONObject((Map<String, Object>) value);
       object.add(name, embedded.getInternal());
     } else if (value instanceof Class) {
-      object.addProperty(name, value.toString());
+      object.addProperty(name, ((Class<?>) value).getName());
     } else
-      throw new JSONException("Type '" + value.getClass() + "' not supported for JSONObject");
+      // GENERIC CASE: TRANSFORM IT TO STRING
+      object.addProperty(name, value.toString());
     return this;
   }
 
