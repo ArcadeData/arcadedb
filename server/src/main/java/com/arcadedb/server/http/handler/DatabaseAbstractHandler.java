@@ -74,6 +74,9 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     } else
       database = null;
 
+    final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+    current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
+
     try {
       if (activeSession != null)
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
@@ -152,7 +155,6 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     if (session != null) {
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
-      current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
       exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
     }
 

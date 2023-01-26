@@ -29,13 +29,15 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.*;
 
 public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
-  private final String      databaseName;
-  private final String      userName;
-  private       String[]    groups;
-  private       boolean[][] fileAccessMap     = null;
-  private       long        resultSetLimit    = -1;
-  private       long        readTimeout       = -1;
-  private final boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+  private static final JSONObject  NO_ACCESS_GROUP   = new JSONObject().put("types",
+      new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access", new JSONArray())));
+  private final        String      databaseName;
+  private final        String      userName;
+  private              String[]    groups;
+  private              boolean[][] fileAccessMap     = null;
+  private              long        resultSetLimit    = -1;
+  private              long        readTimeout       = -1;
+  private final        boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
     this.databaseName = databaseName;
@@ -115,7 +117,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       }
     }
 
-    if (access == null) {
+    if (access == null && configuredGroups.has(SecurityManager.ANY)) {
       // NOT FOUND, GET DEFAULT GROUP ACCESS
       final JSONObject defaultGroup = configuredGroups.getJSONObject(SecurityManager.ANY);
       if (defaultGroup.has("access"))
@@ -151,7 +153,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
     fileAccessMap = new boolean[files.size()][];
 
-    final JSONObject defaultGroup = configuredGroups.getJSONObject(SecurityManager.ANY);
+    final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY) ? configuredGroups.getJSONObject(SecurityManager.ANY) : NO_ACCESS_GROUP;
+
     final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
 
     for (int i = 0; i < files.size(); ++i) {

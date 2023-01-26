@@ -540,6 +540,15 @@ public class ServerProfilingIT {
     SERVER.getOrCreateDatabase(DATABASE_NAME);
   }
 
+  @AfterAll
+  public static void afterAll() {
+    SERVER.stop();
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
+  }
+
   private static void createSecurity() {
     SECURITY = SERVER.getSecurity();
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("reader",//
@@ -568,14 +577,5 @@ public class ServerProfilingIT {
         new JSONObject().put("readTimeout", 1)
             .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
     SECURITY.saveGroups();
-  }
-
-  @AfterAll
-  public static void afterAll() {
-    SERVER.stop();
-    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
-
-    FileUtils.deleteRecursively(new File("./target/config"));
-    FileUtils.deleteRecursively(new File("./target/databases"));
   }
 }
