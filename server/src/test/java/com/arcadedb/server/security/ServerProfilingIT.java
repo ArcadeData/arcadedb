@@ -33,6 +33,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.serializer.json.JSONArray;
@@ -567,6 +568,9 @@ public class ServerProfilingIT {
 
     FileUtils.deleteRecursively(new File("./target/config"));
     FileUtils.deleteRecursively(new File("./target/databases"));
+
+    TestServerHelper.checkActiveDatabases();
+    GlobalConfiguration.resetAll();
   }
 
   private static void createSecurity() {

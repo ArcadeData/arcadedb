@@ -20,6 +20,7 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
@@ -183,5 +184,8 @@ public class ServerSecurityIT {
 
     FileUtils.deleteRecursively(new File("./target/config"));
     FileUtils.deleteRecursively(new File("./target/databases"));
+
+    TestServerHelper.checkActiveDatabases();
+    GlobalConfiguration.resetAll();
   }
 }

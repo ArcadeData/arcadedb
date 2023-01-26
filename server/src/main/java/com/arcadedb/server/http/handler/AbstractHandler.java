@@ -57,7 +57,7 @@ public abstract class AbstractHandler implements HttpHandler {
 
   protected String parseRequestPayload(final HttpServerExchange e) {
     final StringBuilder result = new StringBuilder();
-    e.startBlocking();
+    //e.startBlocking();
     e.getRequestReceiver().receiveFullBytes(
         // OK
         (exchange, data) -> result.append(new String(data, DatabaseFactory.getDefaultCharset())),
@@ -72,10 +72,10 @@ public abstract class AbstractHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
-    if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
-      exchange.dispatch(this);
-      return;
-    }
+//    if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
+//      exchange.dispatch(this);
+//      return;
+//    }
 
     LogManager.instance().setContext(httpServer.getServer().getServerName());
 

@@ -27,11 +27,13 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -44,9 +46,12 @@ public class SelectOrderRIDTest {
 
   @Test
   public void testRIDOrdering() {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
     GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(1);
-    try (DatabaseFactory databaseFactory = new DatabaseFactory(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/databases/SelectOrderRIDTest")) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/SelectOrderRIDTest")) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
 
@@ -64,7 +69,7 @@ public class SelectOrderRIDTest {
         });
       }
 
-      ArcadeDBServer arcadeDBServer = new ArcadeDBServer(new ContextConfiguration());
+      ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
       arcadeDBServer.start();
       Database database = arcadeDBServer.getDatabase("SelectOrderRIDTest");
       String customBucketName = "O202203";
@@ -163,5 +168,11 @@ public class SelectOrderRIDTest {
 
       databaseFactory.open().drop();
     }
+  }
+
+  @AfterAll
+  public static void endTests() {
+    TestServerHelper.checkActiveDatabases();
+    GlobalConfiguration.resetAll();
   }
 }

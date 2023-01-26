@@ -25,6 +25,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -50,7 +51,10 @@ public class RemoteDateIT {
   public void testDateTimeMicros1() {
     dropDatabase();
 
-    try (DatabaseFactory databaseFactory = new DatabaseFactory(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/databases/test")) {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/test")) {
       if (!databaseFactory.exists()) {
         try (Database db = databaseFactory.create()) {
           db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
@@ -63,7 +67,6 @@ public class RemoteDateIT {
       }
     }
 
-    final ContextConfiguration serverConfiguration = new ContextConfiguration();
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
