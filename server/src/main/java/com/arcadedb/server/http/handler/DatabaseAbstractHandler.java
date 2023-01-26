@@ -58,7 +58,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
       database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
 
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+      DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
       if (current != null && !current.transactions.isEmpty() && current.transactions.get(0).isActive()) {
         LogManager.instance().log(this, Level.WARNING, "Found a pending transaction from a previous operation. Rolling it back...");
         cleanTL(database, current);
@@ -71,11 +71,11 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         database.begin();
       }
 
+      current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+      current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
+
     } else
       database = null;
-
-    final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
-    current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
 
     try {
       if (activeSession != null)
