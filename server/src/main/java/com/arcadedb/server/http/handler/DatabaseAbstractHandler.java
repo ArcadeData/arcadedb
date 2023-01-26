@@ -65,14 +65,16 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
       }
 
       activeSession = setTransactionInThreadLocal(exchange, database, user, false);
+      if (current == null)
+        // INITIALIZE THE DATABASE CONTEXT
+        current = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
+
+      current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
 
       if (requiresTransaction() && activeSession == null) {
         atomicTransaction = true;
         database.begin();
       }
-
-      current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
-      current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
 
     } else
       database = null;

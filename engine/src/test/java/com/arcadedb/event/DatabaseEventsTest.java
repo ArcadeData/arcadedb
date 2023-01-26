@@ -20,6 +20,8 @@ package com.arcadedb.event;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -238,6 +240,42 @@ public class DatabaseEventsTest extends TestHelper {
       });
 
       Assertions.assertEquals(0, database.countType("Vertex", true));
+
+    } finally {
+      database.getEvents().unregisterListener(listener);
+    }
+  }
+
+  @Test
+  public void testBeforeCreateEmulateIncrement() {
+    final BeforeRecordCreateListener listener = record -> {
+      int maxId = database.query("SQL", "select max(counter) from `IndexedVertex`").nextIfAvailable().getProperty("max(counter)", 0);
+      record.asVertex().modify().set("counter", maxId + 1);
+      return true;
+    };
+
+    database.getEvents().registerListener(listener);
+    try {
+      database.getSchema().createVertexType("IndexedVertex").createProperty("counter", Type.INTEGER).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+      database.transaction(() -> {
+        final MutableVertex v1 = database.newVertex("IndexedVertex").set("id", "test");
+        Assertions.assertFalse(v1.has("counter"));
+        v1.save();
+        Assertions.assertEquals(1, v1.get("counter"));
+        Assertions.assertEquals(1, database.countType("IndexedVertex", true));
+
+        // SHOULD OVERWRITE THIS
+        database.newVertex("IndexedVertex").set("id", "test2").set("counter", 1).save();
+
+        final MutableVertex v2 = database.newVertex("IndexedVertex").set("id", "test3");
+        Assertions.assertFalse(v2.has("counter"));
+        v2.save();
+        Assertions.assertEquals(3, v2.get("counter"));
+        Assertions.assertEquals(3, database.countType("IndexedVertex", true));
+
+        Assertions.assertEquals("test2", database.query("SQL", "select from `IndexedVertex` where counter= 2").nextIfAvailable().getProperty("id"));
+      });
 
     } finally {
       database.getEvents().unregisterListener(listener);
