@@ -46,7 +46,7 @@ public class SelectOrderRIDTest {
   public void testRIDOrdering() {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
     GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(1);
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/SelectOrderRIDTest")) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/databases/SelectOrderRIDTest")) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
 

@@ -50,7 +50,7 @@ public class RemoteDateIT {
   public void testDateTimeMicros1() {
     dropDatabase();
 
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/databases/test")) {
       if (!databaseFactory.exists()) {
         try (Database db = databaseFactory.create()) {
           db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
