@@ -26,8 +26,10 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
+import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -138,5 +140,13 @@ public abstract class TestServerHelper {
       db.close();
 
     Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
+  }
+
+  public static void deleteDatabaseFolders(final int totalServers) {
+    FileUtils.deleteRecursively(new File("./target/databases/"));
+    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + File.separator));
+    for (int i = 0; i < totalServers; ++i)
+      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.separator));
+    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.separator + "replication"));
   }
 }

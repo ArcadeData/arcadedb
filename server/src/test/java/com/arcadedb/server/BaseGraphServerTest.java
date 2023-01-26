@@ -443,9 +443,7 @@ public abstract class BaseGraphServerTest {
 
     TestServerHelper.checkActiveDatabases();
 
-    for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.separator));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.separator + "replication"));
+    TestServerHelper.deleteDatabaseFolders( getServerCount() );
   }
 
   protected void checkDatabasesAreIdentical() {

@@ -66,6 +66,8 @@ import java.security.*;
 import java.security.cert.*;
 import java.util.logging.*;
 
+import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
+
 public class HttpServer implements ServerPlugin {
   private final ArcadeDBServer     server;
   private final HttpSessionManager sessionManager;
@@ -155,7 +157,7 @@ public class HttpServer implements ServerPlugin {
             .addHttpListener(httpPortListening, host)//
             .setHandler(routes)//
             .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
-            ;//.setServerOption(SHUTDOWN_TIMEOUT, 5000);
+            .setServerOption(SHUTDOWN_TIMEOUT, 5000);
 
         if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
           final SSLContext sslContext = createSSLContext();

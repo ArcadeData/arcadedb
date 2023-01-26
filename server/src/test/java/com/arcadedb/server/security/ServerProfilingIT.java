@@ -567,7 +567,7 @@ public class ServerProfilingIT {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
 
     FileUtils.deleteRecursively(new File("./target/config"));
-    FileUtils.deleteRecursively(new File("./target/databases"));
+    TestServerHelper.deleteDatabaseFolders(1);
 
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();

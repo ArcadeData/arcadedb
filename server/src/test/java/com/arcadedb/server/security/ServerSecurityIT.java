@@ -186,6 +186,7 @@ public class ServerSecurityIT {
     FileUtils.deleteRecursively(new File("./target/databases"));
 
     TestServerHelper.checkActiveDatabases();
+    TestServerHelper.deleteDatabaseFolders(1);
     GlobalConfiguration.resetAll();
   }
 }
