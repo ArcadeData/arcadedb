@@ -157,7 +157,7 @@ public class HttpServer implements ServerPlugin {
             .addHttpListener(httpPortListening, host)//
             .setHandler(routes)//
             .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
-            .setServerOption(SHUTDOWN_TIMEOUT, 1000);
+            .setServerOption(SHUTDOWN_TIMEOUT, 5000);
 
         if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
           final SSLContext sslContext = createSSLContext();
