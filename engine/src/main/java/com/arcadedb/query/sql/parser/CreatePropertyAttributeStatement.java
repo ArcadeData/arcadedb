@@ -70,7 +70,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
           throw new CommandExecutionException("Default value not set");
         internalProp.setDefaultValue("" + attrValue);
       } else if (attrName.equalsIgnoreCase("regexp")) {
-        internalProp.setRegexp("" + attrName);
+        internalProp.setRegexp("" + attrValue);
       } else {
         throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
       }

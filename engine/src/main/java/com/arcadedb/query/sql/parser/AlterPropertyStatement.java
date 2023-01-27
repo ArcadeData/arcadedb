@@ -75,9 +75,28 @@ public class AlterPropertyStatement extends DDLStatement {
       final Object finalValue = settingValue.execute((Identifiable) null, context);
 
       final Object oldValue;
-      if ("default".equals(setting)) {
+
+      if (setting.equalsIgnoreCase("readonly")) {
+        oldValue = property.isReadonly();
+        property.setReadonly((boolean) finalValue);
+      } else if (setting.equalsIgnoreCase("mandatory")) {
+        oldValue = property.isMandatory();
+        property.setMandatory((boolean) finalValue);
+      } else if (setting.equalsIgnoreCase("notnull")) {
+        oldValue = property.isNotNull();
+        property.setNotNull((boolean) finalValue);
+      } else if (setting.equalsIgnoreCase("max")) {
+        oldValue = property.getMax();
+        property.setMax("" + finalValue);
+      } else if (setting.equalsIgnoreCase("min")) {
+        oldValue = property.getMin();
+        property.setMin("" + finalValue);
+      } else if (setting.equalsIgnoreCase("default")) {
         oldValue = property.getDefaultValue();
         property.setDefaultValue(finalValue);
+      } else if (setting.equalsIgnoreCase("regexp")) {
+        oldValue = property.getRegexp();
+        property.setRegexp("" + finalValue);
       } else {
         throw new CommandExecutionException("Setting '" + setting + "' not supported");
       }

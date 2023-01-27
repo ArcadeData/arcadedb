@@ -523,14 +523,32 @@ public class DocumentValidationTest extends TestHelper {
 
   @Test
   public void testRegExpValidation() {
-    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
-    clazz.createProperty("string", Type.STRING).setRegexp("[^Z]*");
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
+    clazz.getOrCreateProperty("string", Type.STRING).setRegexp("[^Z]*");
 
     final MutableDocument d = database.newDocument(clazz.getName());
     d.set("string", "yeah");
     d.validate();
 
     checkFieldValue(d, "string", "yaZah");
+  }
+
+  @Test
+  public void testRegExpValidationFromSQL() {
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
+
+    database.command("sql", "create property Validation.anychars string (regexp '.*')");
+
+    final MutableDocument d = database.newDocument(clazz.getName());
+    d.set("anychars", "yeah");
+    d.validate();
+
+    // CHECK ALTER PROPERTY
+    database.command("sql", "alter property Validation.anychars regexp '[^Z]*'");
+    d.set("anychars", "yeah");
+    d.validate();
+
+    checkFieldValue(d, "anychars", "yaZah");
   }
 
   @Test
