@@ -441,17 +441,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
               if (toKeys != null) {
                 final int cmp = LSMTreeIndexMutable.compareKeys(comparator, keyTypes, tmpKeys, toKeys);
 
-                if (ascendingOrder) {
-                  if (toKeysInclusive && cmp > 0)
-                    continue;
-                  else if (!toKeysInclusive && cmp >= 0)
-                    continue;
-                } else {
-                  if (toKeysInclusive && cmp < 0)
-                    continue;
-                  else if (!toKeysInclusive && cmp <= 0)
-                    continue;
-                }
+                if (cmp > 0)
+                  continue;
+                else if (!toKeysInclusive && cmp == 0)
+                  continue;
               }
 
               if (txChanges == null)

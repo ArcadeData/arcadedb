@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
+import java.time.format.*;
 import java.util.*;
 
 /**
@@ -811,6 +812,59 @@ public class UpdateStatementExecutionTest extends TestHelper {
         }
       });
     }
+  }
+
+  @Test
+  public void testLocalDateTimeUpsertWithIndexMicros() throws ClassNotFoundException {
+    database.transaction(() -> {
+      if (database.getSchema().existsType("Product"))
+        database.getSchema().dropType("Product");
+
+      DocumentType dtProduct = database.getSchema().createDocumentType("Product");
+      dtProduct.createProperty("start", Type.DATETIME_MICROS);
+      dtProduct.createProperty("stop", Type.DATETIME_MICROS);
+      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
+    });
+
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(java.time.LocalDateTime.class);
+
+    DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
+
+    database.transaction(() -> {
+      LocalDateTime start = LocalDateTime.parse("20220318T215523", FILENAME_TIME_FORMAT);
+      LocalDateTime stop = LocalDateTime.parse("20221129T002322", FILENAME_TIME_FORMAT);
+      database.command("sql", "INSERT INTO Product SET start = ?, stop = ?", start, stop);
+    });
+
+    database.transaction(() -> {
+      LocalDateTime start = LocalDateTime.parse("20220318T215523", FILENAME_TIME_FORMAT);
+      LocalDateTime stop = LocalDateTime.parse("20220320T002321", FILENAME_TIME_FORMAT);
+      database.command("sql", "INSERT INTO Product SET start = ?, stop = ?", start, stop);
+    });
+
+    database.transaction(() -> {
+      Result result;
+
+      /** ENTRIES:
+       2022-03-18T21:55:23 - 2022-11-29T00:23:22
+       2022-03-18T21:55:23 - 2022-03-20T00:23:21
+       *     */
+      LocalDateTime start = LocalDateTime.parse("2022-03-19T00:26:24.404379", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+      LocalDateTime stop = LocalDateTime.parse("2022-03-19T00:28:26.525650", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+      try (ResultSet resultSet = database.query("sql", "SELECT start, stop FROM Product WHERE start <= ? AND stop >= ? ORDER BY start DESC, stop DESC LIMIT 1",
+          start, stop)) {
+
+        Assertions.assertTrue(resultSet.hasNext());
+
+        while (resultSet.hasNext()) {
+          result = resultSet.next();
+          System.out.print("start = " + result.getProperty("start"));
+          System.out.println(", stop = " + result.getProperty("stop"));
+        }
+      }
+    });
   }
 
   //@Test
