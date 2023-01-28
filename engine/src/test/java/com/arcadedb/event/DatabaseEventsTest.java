@@ -246,6 +246,7 @@ public class DatabaseEventsTest extends TestHelper {
     }
   }
 
+  // Issue https://github.com/ArcadeData/arcadedb/issues/807
   @Test
   public void testBeforeCreateEmulateIncrement() {
     final BeforeRecordCreateListener listener = record -> {

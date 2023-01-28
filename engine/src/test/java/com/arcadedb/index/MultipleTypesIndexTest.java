@@ -23,7 +23,10 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
@@ -110,6 +113,24 @@ public class MultipleTypesIndexTest extends TestHelper {
 
       database.commit();
       database.begin();
+    });
+  }
+
+  // Issue https://github.com/ArcadeData/arcadedb/issues/812
+  @Test
+  public void testUpdateCompositeKeyIndex() {
+    VertexType type = database.getSchema().createVertexType("IndexedVertex");
+    type.createProperty("counter", Type.INTEGER);
+    type.createProperty("status", Type.STRING);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "counter");
+
+    database.transaction(() -> {
+      database.newVertex("IndexedVertex").set("id", "test1").set("status", "on").set("counter", 1).save();
+      database.newVertex("IndexedVertex").set("id", "test2").set("status", "on").set("counter", 2).save();
+      database.newVertex("IndexedVertex").set("id", "test3").set("status", "on").set("counter", 3).save();
+
+      database.command("SQL", "update IndexedVertex set status = 'off' where counter = 2");
+      database.command("SQL", "update IndexedVertex set status = 'off' where counter = 3");
     });
   }
 }
