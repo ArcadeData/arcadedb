@@ -92,9 +92,9 @@ public class DocumentIndexer {
         oldKeyValues[i] = getPropertyValue(originalRecord, keyNames.get(i));
         newKeyValues[i] = getPropertyValue(modifiedRecord, keyNames.get(i));
 
-        if ((newKeyValues[i] == null && oldKeyValues[i] != null) || (newKeyValues[i] != null && !newKeyValues[i].equals(oldKeyValues[i]))) {
+        if (!keyValuesAreModified &&//
+            ((newKeyValues[i] == null && oldKeyValues[i] != null) || (newKeyValues[i] != null && !newKeyValues[i].equals(oldKeyValues[i])))) {
           keyValuesAreModified = true;
-          break;
         }
       }
 
