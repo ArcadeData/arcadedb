@@ -94,4 +94,22 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
       }
     }
   }
+
+  @Test
+  void createVertexCypherQuery() throws Exception {
+    try (final Statement st = conn.createStatement()) {
+
+      try (final ResultSet rs = st.executeQuery("{cypher} CREATE (n:City {id:'C1'}) RETURN n")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("id")).isEqualTo("C1");
+        assertThat(rs.next()).isFalse();
+      }
+
+      try (final ResultSet rs = st.executeQuery("{cypher} MATCH (n:City) WHERE n.id = 'C1' RETURN n")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("id")).isEqualTo("C1");
+        assertThat(rs.next()).isFalse();
+      }
+    }
+  }
 }
