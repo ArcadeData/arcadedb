@@ -149,6 +149,21 @@ public class Property {
   public Property setMax(final String max) {
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {
+      switch (type) {
+      case LINK:
+      case BOOLEAN:
+      case EMBEDDED:
+        throw new IllegalArgumentException("Maximum value not applicable for type " + type);
+
+      case STRING:
+      case BINARY:
+      case LIST:
+      case MAP:
+        if (Integer.parseInt(max) < 0)
+          throw new IllegalArgumentException("Maximum value for type " + type + " is 0");
+        break;
+      }
+
       this.max = max;
       owner.getSchema().getEmbedded().saveConfiguration();
     }
@@ -162,6 +177,21 @@ public class Property {
   public Property setMin(final String min) {
     final boolean changed = !Objects.equals(this.min, min);
     if (changed) {
+      switch (type) {
+      case LINK:
+      case BOOLEAN:
+      case EMBEDDED:
+        throw new IllegalArgumentException("Minimum value not applicable for type " + type);
+
+      case STRING:
+      case BINARY:
+      case LIST:
+      case MAP:
+        if (Integer.parseInt(min) < 0)
+          throw new IllegalArgumentException("Minimum value for type " + type + " is 0");
+        break;
+      }
+
       this.min = min;
       owner.getSchema().getEmbedded().saveConfiguration();
     }

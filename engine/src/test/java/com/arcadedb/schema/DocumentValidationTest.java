@@ -580,6 +580,24 @@ public class DocumentValidationTest extends TestHelper {
     Assertions.assertTrue(property.isNotNull());
   }
 
+  @Test
+  public void testMinMaxNotApplicable() {
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
+    try {
+      clazz.createProperty("invString", Type.STRING).setMin("-1");
+      Assertions.fail();
+    } catch (IllegalArgumentException e) {
+      // EXPECTED
+    }
+
+    try {
+      clazz.createProperty("invBinary", Type.LIST).setMax("-1");
+      Assertions.fail();
+    } catch (IllegalArgumentException e) {
+      // EXPECTED
+    }
+  }
+
   private void checkFieldValue(final Document toCheck, final String field, final Object newValue) {
     try {
       final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
