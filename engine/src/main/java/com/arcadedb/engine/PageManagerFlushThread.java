@@ -82,7 +82,7 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
-  private void flushPagesFromQueueToDisk() throws InterruptedException, IOException {
+  protected void flushPagesFromQueueToDisk() throws InterruptedException, IOException {
     final List<MutablePage> pages = queue.poll(300L, TimeUnit.MILLISECONDS);
 
     if (pages != null) {

@@ -211,8 +211,9 @@ public class PageManager extends LockContext {
     final PageId pageId = page.getPageId();
 
     if (!fileManager.existsFile(pageId.getFileId()))
-      throw new ConcurrentModificationException("Concurrent modification on page " + pageId + " file with id " + pageId.getFileId()
-          + " does not exist anymore. Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
+      throw new ConcurrentModificationException(
+          "Concurrent modification on page " + pageId + " file with id " + pageId.getFileId() + " does not exist anymore. Please retry the operation (threadId="
+              + Thread.currentThread().getId() + ")");
 
     final BasePage mostRecentPage = getPage(pageId, page.getPhysicalSize(), isNew, false);
 
@@ -342,6 +343,18 @@ public class PageManager extends LockContext {
       // SYNCHRONOUS FLUSH
       for (final MutablePage page : updatedPages)
         flushPage(page);
+    }
+  }
+
+  public void flushNow() throws IOException, InterruptedException {
+    if (flushThread == null)
+      return;
+
+    suspendPageFlushing(true);
+    try {
+      flushThread.flushPagesFromQueueToDisk();
+    } finally {
+      suspendPageFlushing(false);
     }
   }
 

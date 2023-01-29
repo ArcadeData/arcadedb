@@ -70,6 +70,9 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
       // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
       database.executeInReadLock(() -> {
+        // FORCE FLUSHING BEFORE THE BACKUP
+        database.getPageManager().flushNow();
+
         // AVOID FLUSHING OF DATA PAGES TO DISK
         database.getPageManager().suspendPageFlushing(true);
         try {
