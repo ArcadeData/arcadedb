@@ -754,8 +754,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
     executeInReadLock(() -> {
       // AVOID FLUSHING OF DATA PAGES TO DISK
-      proxied.getPageManager().suspendPageFlushing(true);
-      try {
+      proxied.getPageManager().suspendFlushAndExecute(() -> {
         final List<PaginatedFile> files = proxied.getFileManager().getFiles();
 
         for (final PaginatedFile paginatedFile : files)
@@ -774,10 +773,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
             result.put(response.getRemoteServerName(), response.getAlignedPages());
           }
         }
+      });
 
-      } finally {
-        proxied.getPageManager().suspendPageFlushing(false);
-      }
       return null;
     });
 

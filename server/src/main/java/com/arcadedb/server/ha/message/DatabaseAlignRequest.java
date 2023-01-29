@@ -91,9 +91,8 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
     // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
     database.executeInReadLock(() -> {
       // AVOID FLUSHING OF DATA PAGES TO DISK
-      database.getPageManager().suspendPageFlushing(true);
+      database.getPageManager().suspendFlushAndExecute(() -> {
 
-      try {
         for (final Map.Entry<Integer, Long> entry : fileSizes.entrySet()) {
           final Integer fileId = entry.getKey();
           final PaginatedFile file = database.getFileManager().getFile(fileId);
@@ -129,10 +128,7 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
           final FileContentRequest fileAlign = new FileContentRequest(databaseName, entry[0], entry[1], entry[2]);
           server.getLeader().sendCommandToLeader(buffer, fileAlign, -1);
         }
-
-      } finally {
-        database.getPageManager().suspendPageFlushing(false);
-      }
+      });
       return null;
     });
 

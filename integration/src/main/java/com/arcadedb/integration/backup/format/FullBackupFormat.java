@@ -70,12 +70,9 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
       // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
       database.executeInReadLock(() -> {
-        // FORCE FLUSHING BEFORE THE BACKUP
-        database.getPageManager().flushNow();
+        // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
+        database.getPageManager().suspendFlushAndExecute(() -> {
 
-        // AVOID FLUSHING OF DATA PAGES TO DISK
-        database.getPageManager().suspendPageFlushing(true);
-        try {
           final long beginTime = System.currentTimeMillis();
 
           long databaseOrigSize = 0L;
@@ -97,10 +94,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
           logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs, FileUtils.getSizeAsString(databaseOrigSize),
               FileUtils.getSizeAsString((databaseCompressedSize)),
               databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
-
-        } finally {
-          database.getPageManager().suspendPageFlushing(false);
-        }
+        });
         return null;
       });
     }

@@ -24,6 +24,8 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.CallableNoReturn;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
@@ -129,8 +131,14 @@ public class PageManager extends LockContext {
     flushOnlyAtClose = flushOnlyAtCloseOld;
   }
 
-  public void suspendPageFlushing(final boolean value) {
-    flushThread.setSuspended(value);
+  public void suspendFlushAndExecute(final CallableNoReturn callback) throws IOException, InterruptedException {
+    flushThread.flushPagesFromQueueToDisk();
+    flushThread.setSuspended(true);
+    try {
+      CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush");
+    } finally {
+      flushThread.setSuspended(false);
+    }
   }
 
   public boolean isPageFlushingSuspended() {
@@ -343,18 +351,6 @@ public class PageManager extends LockContext {
       // SYNCHRONOUS FLUSH
       for (final MutablePage page : updatedPages)
         flushPage(page);
-    }
-  }
-
-  public void flushNow() throws IOException, InterruptedException {
-    if (flushThread == null)
-      return;
-
-    suspendPageFlushing(true);
-    try {
-      flushThread.flushPagesFromQueueToDisk();
-    } finally {
-      suspendPageFlushing(false);
     }
   }
 
