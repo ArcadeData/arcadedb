@@ -39,13 +39,10 @@ public class GetDocumentHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     final Deque<String> rid = exchange.getQueryParameters().get("rid");
-    if (rid == null || rid.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Record id is null\"}");
-      return;
-    }
+    if (rid == null || rid.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Record id is null\"}");
 
     httpServer.getServer().getServerMetrics().meter("http.get-record").mark();
 
@@ -55,8 +52,7 @@ public class GetDocumentHandler extends DatabaseAbstractHandler {
 
     final String response = "{ \"result\" : " + httpServer.getJsonSerializer().serializeDocument(record).toString() + "}";
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send(response);
+    return new ExecutionResponse(200, response);
   }
 
   @Override

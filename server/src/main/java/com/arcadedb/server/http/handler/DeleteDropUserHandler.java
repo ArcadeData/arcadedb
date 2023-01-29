@@ -37,7 +37,7 @@ public class DeleteDropUserHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     checkRootUser(user);
 
     final Deque<String> userNamePar = exchange.getQueryParameters().get("userName");
@@ -45,11 +45,8 @@ public class DeleteDropUserHandler extends AbstractHandler {
     if (userName.isEmpty())
       userName = null;
 
-    if (userName == null) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"User name parameter is null\"}");
-      return;
-    }
+    if (userName == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"User name parameter is null\"}");
 
     httpServer.getServer().getServerMetrics().meter("http.drop-user").mark();
 
@@ -57,7 +54,6 @@ public class DeleteDropUserHandler extends AbstractHandler {
     if (!result)
       throw new RuntimeException("User '" + userName + "' not found on server");
 
-    exchange.setStatusCode(204);
-    exchange.getResponseSender().send("");
+    return new ExecutionResponse(204, "");
   }
 }

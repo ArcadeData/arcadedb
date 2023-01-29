@@ -48,17 +48,14 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     final String payload = parseRequestPayload(exchange);
 
     final JSONObject json = new JSONObject(payload);
 
     final String typeName = (String) json.remove("@type");
-    if (typeName == null) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"@type attribute not found in the record payload\"}");
-      return;
-    }
+    if (typeName == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"@type attribute not found in the record payload\"}");
 
     httpServer.getServer().getServerMetrics().meter("http.create-record").mark();
 
@@ -75,7 +72,6 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
     document.fromJSON(json);
     document.save();
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"" + document.getIdentity() + "\"}");
+    return new ExecutionResponse(200, "{ \"result\" : \"" + document.getIdentity() + "\"}");
   }
 }

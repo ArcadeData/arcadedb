@@ -43,7 +43,7 @@ public class PostCreateDatabaseHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     checkRootUser(user);
 
     final Deque<String> databaseNamePar = exchange.getQueryParameters().get("database");
@@ -51,11 +51,8 @@ public class PostCreateDatabaseHandler extends AbstractHandler {
     if (databaseName.isEmpty())
       databaseName = null;
 
-    if (databaseName == null) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Database parameter is null\"}");
-      return;
-    }
+    if (databaseName == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
     final ArcadeDBServer server = httpServer.getServer();
     if (!server.getHA().isLeader())
@@ -69,7 +66,6 @@ public class PostCreateDatabaseHandler extends AbstractHandler {
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       ((ReplicatedDatabase) db).createInReplicas();
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+    return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
   }
 }

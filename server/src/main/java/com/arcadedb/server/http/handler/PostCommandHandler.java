@@ -42,13 +42,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     final String payload = parseRequestPayload(exchange);
-    if (payload == null || payload.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Command text is null\"}");
-      return;
-    }
+    if (payload == null || payload.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
     final JSONObject json = new JSONObject(payload);
 
@@ -60,11 +57,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final String serializer = (String) requestMap.getOrDefault("serializer", "record");
     final String profileExecution = (String) requestMap.getOrDefault("profileExecution", null);
 
-    if (command == null || command.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Command text is null\"}");
-      return;
-    }
+    if (command == null || command.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
     Map<String, Object> paramMap = (Map<String, Object>) requestMap.get("params");
     if (paramMap == null)
@@ -105,8 +99,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
       final String responseAsString = response.toString();
 
-      exchange.setStatusCode(200);
-      exchange.getResponseSender().send(responseAsString);
+      return new ExecutionResponse(200, responseAsString);
 
     } finally {
       timer.stop();

@@ -51,7 +51,7 @@ public class GetServerHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     exchange.setStatusCode(200);
 
     final JSONObject response = createResult(user, null);
@@ -66,7 +66,7 @@ public class GetServerHandler extends AbstractHandler {
     } else if ("cluster".equals(mode)) {
       exportCluster(exchange, response);
     }
-    exchange.getResponseSender().send(response.toString());
+    return new ExecutionResponse(200, response.toString());
   }
 
   private void exportCluster(final HttpServerExchange exchange, final JSONObject response) {

@@ -42,23 +42,17 @@ public class PostCreateUserHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     checkRootUser(user);
 
     final String payload = parseRequestPayload(exchange);
-    if (payload == null || payload.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Payload requested\"}");
-      return;
-    }
+    if (payload == null || payload.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Payload requested\"}");
 
     final JSONObject json = new JSONObject(payload);
 
-    if (!json.has("name")) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"User name is null\"}");
-      return;
-    }
+    if (!json.has("name"))
+      return new ExecutionResponse(400, "{ \"error\" : \"User name is null\"}");
 
     final String userPassword = json.getString("password");
     if (userPassword.length() < 4)
@@ -72,7 +66,6 @@ public class PostCreateUserHandler extends AbstractHandler {
 
     httpServer.getServer().getSecurity().createUser(json);
 
-    exchange.setStatusCode(204);
-    exchange.getResponseSender().send("");
+    return new ExecutionResponse(204, "");
   }
 }

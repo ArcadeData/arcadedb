@@ -53,7 +53,7 @@ public abstract class AbstractHandler implements HttpHandler {
     this.httpServer = httpServer;
   }
 
-  protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
+  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
@@ -125,7 +125,9 @@ public abstract class AbstractHandler implements HttpHandler {
 
       final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.request");
       try {
-        execute(exchange, user);
+        final ExecutionResponse response = execute(exchange, user);
+        if (response != null)
+          response.send(exchange);
 
       } finally {
         timer.stop();

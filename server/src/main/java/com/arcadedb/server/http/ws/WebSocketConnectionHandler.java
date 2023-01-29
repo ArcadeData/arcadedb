@@ -20,6 +20,7 @@ package com.arcadedb.server.http.ws;
 
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractHandler;
+import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.websockets.WebSocketConnectionCallback;
@@ -36,12 +37,13 @@ public class WebSocketConnectionHandler extends AbstractHandler {
   }
 
   @Override
-  protected void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+  protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
     final var handler = new WebSocketProtocolHandshakeHandler((WebSocketConnectionCallback) (webSocketHttpExchange, channel) -> {
       channel.getReceiveSetter().set(new WebSocketReceiveListener(this.httpServer, webSocketEventBus));
       channel.setAttribute(WebSocketEventBus.CHANNEL_ID, UUID.randomUUID());
       channel.resumeReceives();
     });
     handler.handleRequest(exchange);
+    return null;
   }
 }

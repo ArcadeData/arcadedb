@@ -37,7 +37,7 @@ public class PostCloseDatabaseHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     checkRootUser(user);
 
     ((DatabaseInternal) database).getEmbedded().close();
@@ -46,8 +46,7 @@ public class PostCloseDatabaseHandler extends DatabaseAbstractHandler {
 
     httpServer.getServer().removeDatabase(database.getName());
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+    return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
   }
 
   @Override

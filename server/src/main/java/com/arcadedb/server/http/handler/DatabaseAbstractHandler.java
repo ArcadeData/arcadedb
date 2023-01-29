@@ -32,6 +32,7 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public abstract class DatabaseAbstractHandler extends AbstractHandler {
@@ -41,20 +42,17 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     super(httpServer);
   }
 
-  protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user, Database database) throws Exception;
+  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, Database database) throws Exception;
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
     final Database database;
     HttpSession activeSession = null;
     boolean atomicTransaction = false;
     if (requiresDatabase()) {
       final Deque<String> databaseName = exchange.getQueryParameters().get("database");
-      if (databaseName.isEmpty()) {
-        exchange.setStatusCode(400);
-        exchange.getResponseSender().send("{ \"error\" : \"Database parameter is null\"}");
-        return;
-      }
+      if (databaseName.isEmpty())
+        return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
       database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
 
@@ -81,15 +79,21 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     } else
       database = null;
 
+    final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
       if (activeSession != null)
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
-          execute(exchange, user, database);
+          response.set(execute(exchange, user, database));
           return null;
         });
       else
-        execute(exchange, user, database);
+        response.set(execute(exchange, user, database));
+
+      if (database != null && atomicTransaction && database.isTransactionActive())
+        // STARTED ATOMIC TRANSACTION, COMMIT
+        database.commit();
+
     } finally {
 
       if (activeSession != null)
@@ -97,11 +101,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
       else if (database != null) {
         try {
-          if (atomicTransaction) {
-            if (database.isTransactionActive())
-              // STARTED ATOMIC TRANSACTION, COMMIT
-              database.commit();
-          } else
+          if (!atomicTransaction)
             // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
             database.rollbackAllNested();
         } finally {
@@ -109,6 +109,8 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         }
       }
     }
+
+    return response.get();
   }
 
   private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {

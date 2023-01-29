@@ -18,29 +18,34 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.http.HttpSessionManager;
-import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.Headers;
 
-import java.io.*;
+import java.nio.*;
 
-public class PostRollbackHandler extends DatabaseAbstractHandler {
+public class ExecutionResponse {
+  public final  int    code;
+  public final  String response;
+  private final byte[] binary;
 
-  public PostRollbackHandler(final HttpServer httpServer) {
-    super(httpServer);
+  public ExecutionResponse(final int code, final String response) {
+    this.code = code;
+    this.response = response;
+    this.binary = null;
   }
 
-  @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
-    database.rollback();
-    exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
-    return new ExecutionResponse(204, "");
+  public ExecutionResponse(final int code, final byte[] bytes) {
+    this.code = code;
+    this.response = null;
+    this.binary = bytes;
   }
 
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
+  public void send(final HttpServerExchange exchange) {
+    exchange.setStatusCode(code);
+    if (binary != null) {
+      exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, binary.length);
+      exchange.getResponseSender().send(ByteBuffer.wrap(binary));
+    } else
+      exchange.getResponseSender().send(response);
   }
 }

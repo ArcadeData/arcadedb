@@ -34,20 +34,15 @@ public class GetQueryHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws UnsupportedEncodingException {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database)
+      throws UnsupportedEncodingException {
     final String text = getQueryParameter(exchange, "command");
-    if (text == null) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Command text is null\"}");
-      return;
-    }
+    if (text == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
     final String language = getQueryParameter(exchange, "language");
-    if (language == null) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Language is null\"}");
-      return;
-    }
+    if (language == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Language is null\"}");
 
     String serializer = getQueryParameter(exchange, "serializer");
     if (serializer == null)
@@ -73,8 +68,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
       timer.stop();
     }
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send(response.toString());
+    return new ExecutionResponse(200, response.toString());
   }
 
   @Override

@@ -37,7 +37,7 @@ public class PostOpenDatabaseHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     checkRootUser(user);
 
     httpServer.getServer().getServerMetrics().meter("http.open-database").mark();
@@ -46,8 +46,7 @@ public class PostOpenDatabaseHandler extends DatabaseAbstractHandler {
 
     httpServer.getServer().getDatabase(databaseName.getFirst());
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+    return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
   }
 
   @Override

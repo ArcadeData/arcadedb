@@ -51,17 +51,14 @@ public class PostServerCommandHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws IOException {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws IOException {
     checkRootUser(user);
 
     final JSONObject payload = new JSONObject(parseRequestPayload(exchange));
 
     final String command = payload.has("command") ? payload.getString("command") : null;
-    if (command == null) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Server command is null\"}");
-      return;
-    }
+    if (command == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Server command is null\"}");
 
     if (command.startsWith("shutdown"))
       shutdownServer(command);
@@ -79,7 +76,7 @@ public class PostServerCommandHandler extends AbstractHandler {
       dropUser(command);
     else if (command.startsWith("connect cluster ")) {
       if (!connectCluster(command, exchange))
-        return;
+        return null;
     } else if (command.equals("disconnect cluster"))
       disconnectCluster();
     else if (command.startsWith("set database setting "))
@@ -90,13 +87,10 @@ public class PostServerCommandHandler extends AbstractHandler {
       alignDatabase(command);
     else {
       httpServer.getServer().getServerMetrics().meter("http.server-command.invalid").mark();
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Server command not valid\"}");
-      return;
+      return new ExecutionResponse(400, "{ \"error\" : \"Server command not valid\"}");
     }
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+    return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
   }
 
   private void setDatabaseSetting(final String command) throws IOException {
@@ -158,7 +152,6 @@ public class PostServerCommandHandler extends AbstractHandler {
     return ha.connectToLeader(serverAddress, exception -> {
       exchange.setStatusCode(500);
       exchange.getResponseSender().send("{ \"error\" : \"" + exception.getMessage() + "\"}");
-
       return null;
     });
   }
