@@ -26,6 +26,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -35,6 +36,8 @@ import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.util.*;
+
+import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -48,7 +51,11 @@ public class RemoteQueriesIT {
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
     GlobalConfiguration.TX_RETRIES.setValue(0);
     final TypeIndex[] typeIndex = new TypeIndex[1];
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
+
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/test")) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
 
@@ -63,8 +70,10 @@ public class RemoteQueriesIT {
       }
     }
 
-    ArcadeDBServer arcadeDBServer = new ArcadeDBServer(new ContextConfiguration());
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
+
     Database database = arcadeDBServer.getDatabase("test");
     System.out.println();
     // insert 2 records

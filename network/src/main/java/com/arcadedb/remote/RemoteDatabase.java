@@ -117,8 +117,8 @@ public class RemoteDatabase extends RWLockContext {
     databaseCommand("create", "SQL", null, null, true, null);
   }
 
-  public List databases() {
-    return (List) serverCommand("GET", "databases", "SQL", null, null, true, true, (connection, response) -> response.getJSONArray("result").toList());
+  public List<String> databases() {
+    return (List<String>) serverCommand("GET", "databases", "SQL", null, null, true, true, (connection, response) -> response.getJSONArray("result").toList());
   }
 
   public boolean exists() {
@@ -138,8 +138,8 @@ public class RemoteDatabase extends RWLockContext {
       setRequestPayload(connection, new JSONObject().put("command", "drop database " + databaseName));
       connection.connect();
       if (connection.getResponseCode() != 200) {
-        manageException(connection, "drop database");
-        throw new RuntimeException("Error on deleting database: " + connection.getResponseMessage());
+        final Exception detail = manageException(connection, "drop database");
+        throw new RuntimeException("Error on deleting database: " + connection.getResponseMessage(), detail);
       }
 
     } catch (final Exception e) {
@@ -305,8 +305,8 @@ public class RemoteDatabase extends RWLockContext {
 
       connection.connect();
       if (connection.getResponseCode() != 200) {
-        manageException(connection, "create user");
-        throw new SecurityException("Error on creating user: " + connection.getResponseMessage());
+        final Exception detail = manageException(connection, "create user");
+        throw new SecurityException("Error on creating user: " + connection.getResponseMessage(), detail);
       }
 
     } catch (final Exception e) {
@@ -320,8 +320,8 @@ public class RemoteDatabase extends RWLockContext {
       setRequestPayload(connection, new JSONObject().put("command", "drop user " + userName));
       connection.connect();
       if (connection.getResponseCode() != 200) {
-        manageException(connection, "drop user");
-        throw new RuntimeException("Error on deleting user: " + connection.getResponseMessage());
+        final Exception detail = manageException(connection, "drop user");
+        throw new RuntimeException("Error on deleting user: " + connection.getResponseMessage(), detail);
       }
 
     } catch (final Exception e) {

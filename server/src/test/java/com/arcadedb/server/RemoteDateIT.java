@@ -54,7 +54,7 @@ public class RemoteDateIT {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
-    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/test")) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate")) {
       if (!databaseFactory.exists()) {
         try (Database db = databaseFactory.create()) {
           db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
@@ -71,7 +71,7 @@ public class RemoteDateIT {
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
-    Database database = arcadeDBServer.getDatabase("test");
+    Database database = arcadeDBServer.getDatabase("remotedate");
     try {
       String sqlString;
       LocalDateTime vstart = LocalDateTime.now();
@@ -109,7 +109,7 @@ public class RemoteDateIT {
   }
 
   private static void dropDatabase() {
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/remotedate")) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
     }

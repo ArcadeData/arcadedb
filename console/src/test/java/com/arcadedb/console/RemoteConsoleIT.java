@@ -95,6 +95,12 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void testListDatabases() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + URL));
+    Assertions.assertTrue(console.parse("list databases;"));
+  }
+
+  @Test
   public void testInsertAndRollback() throws IOException {
     Assertions.assertTrue(console.parse("connect " + URL));
     Assertions.assertTrue(console.parse("begin"));

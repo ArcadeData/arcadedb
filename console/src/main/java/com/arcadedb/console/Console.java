@@ -343,14 +343,18 @@ public class Console {
 
       connectToRemoteServer(url, false);
       for (final Object f : remoteDatabase.databases()) {
-        outputLine(f.toString());
+        outputLine("- " + f.toString());
       }
 
       remoteDatabase = holdRemoteDatabase;
 
+    } else if (remoteDatabase != null) {
+      for (final Object f : remoteDatabase.databases()) {
+        outputLine("- " + f.toString());
+      }
     } else {
       for (final String f : new File(databaseDirectory).list()) {
-        outputLine(f);
+        outputLine("- " + f);
       }
     }
 
@@ -746,7 +750,7 @@ public class Console {
   }
 
   private String parseLocalUrl(final String url) {
-    if(url.startsWith(LOCAL_PREFIX + "//")) {
+    if (url.startsWith(LOCAL_PREFIX + "//")) {
       return url.replaceFirst(LOCAL_PREFIX + "//", "/");
     } else {
       return databaseDirectory + url.replaceFirst("file://", "");
