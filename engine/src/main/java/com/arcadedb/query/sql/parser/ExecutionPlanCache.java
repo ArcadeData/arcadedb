@@ -32,7 +32,6 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ExecutionPlanCache {
-
   private final DatabaseInternal                   db;
   private final Map<String, InternalExecutionPlan> map;
   private final int                                mapSize;
@@ -109,12 +108,10 @@ public class ExecutionPlanCache {
   }
 
   public static ExecutionPlanCache instance(final DatabaseInternal db) {
-    if (db == null) {
+    if (db == null)
       throw new IllegalArgumentException("DB cannot be null");
-    }
 
-    final ExecutionPlanCache resource = db.getExecutionPlanCache();
-    return resource;
+    return db.getExecutionPlanCache();
   }
 
 }

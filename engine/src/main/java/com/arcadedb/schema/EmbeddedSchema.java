@@ -1452,6 +1452,10 @@ public class EmbeddedSchema implements Schema {
       final RET result = database.getWrappedDatabaseInstance().recordFileChanges(callback);
       executed = true;
       saveConfiguration();
+
+      // INVALIDATE EXECUTION PLAN IN CASE TYPE OR INDEX CONCUR IN THE GENERATED PLANS
+      database.getExecutionPlanCache().invalidate();
+
       return result;
 
     } finally {

@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -807,8 +808,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
         resultSet = database.query("sql", "SELECT from Product");
         while (resultSet.hasNext()) {
           result = resultSet.next();
-          System.out.print(", start = " + result.getProperty("start"));
-          System.out.print(", stop = " + result.getProperty("stop"));
+          Assertions.assertNotNull(result.getProperty("start"));
+          Assertions.assertNotNull(result.getProperty("stop"));
         }
       });
     }
@@ -860,9 +861,66 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
         while (resultSet.hasNext()) {
           result = resultSet.next();
-          System.out.print("start = " + result.getProperty("start"));
-          System.out.println(", stop = " + result.getProperty("stop"));
+          Assertions.assertNotNull(result.getProperty("start"));
+          Assertions.assertNotNull(result.getProperty("stop"));
         }
+      }
+    });
+  }
+
+  @Test
+  public void testCompositeIndexLookup() {
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+    GlobalConfiguration.TX_RETRIES.setValue(0);
+    final TypeIndex[] typeIndex = new TypeIndex[1];
+
+    database.rollbackAllNested();
+
+    database.transaction(() -> {
+      DocumentType dtOrders = database.getSchema().createDocumentType("Order");
+      dtOrders.createProperty("id", Type.STRING);
+      dtOrders.createProperty("processor", Type.STRING);
+      dtOrders.createProperty("status", Type.STRING);
+      typeIndex[0] = dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+    });
+
+    String processor = "SIR1LRM-7.1";
+    String status = "PENDING";
+    for (int i = 0; i < 2; i++) {
+      int id = i + 1;
+      database.transaction(() -> {
+        String sqlString = "INSERT INTO Order SET id = ?, status = ?, processor = ?";
+        try (ResultSet resultSet1 = database.command("sql", sqlString, id, status, processor)) {
+        }
+      });
+    }
+    // update first record
+    database.transaction(() -> {
+      Object[] parameters2 = { "ERROR", 1 };
+      String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
+      try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
+      }
+    });
+    // select records with status = 'PENDING'
+    database.transaction(() -> {
+      Object[] parameters2 = { "PENDING" };
+      String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
+      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+        final Result record = resultSet1.next();
+        Assertions.assertEquals("PENDING", record.getProperty("status"));
+        Assertions.assertEquals("2", record.getProperty("id"));
+      }
+    });
+    // drop index
+    database.getSchema().dropIndex(typeIndex[0].getName());
+
+    // repeat select records with status = 'PENDING'
+    database.transaction(() -> {
+      Object[] parameters2 = { "PENDING" };
+      String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
+      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+        Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
       }
     });
   }

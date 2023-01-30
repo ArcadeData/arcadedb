@@ -59,7 +59,15 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
     final Database database = new DatabaseFactory("./target/databases/" + getDatabaseName()).create();
 
     database.getSchema().createDocumentType("testDoc");
-    database.transaction(() -> database.newDocument("testDoc").set("prop", "value").save());
+    database.transaction(() -> {
+      database.newDocument("testDoc").set("prop", "value").save();
+
+      // COUNT INSIDE TX
+      Assertions.assertEquals(1, database.countType("testDoc", true));
+    });
+
+    // COUNT OUTSIDE TX
+    Assertions.assertEquals(1, database.countType("testDoc", true));
 
     Assertions.assertFalse(database.isTransactionActive());
 

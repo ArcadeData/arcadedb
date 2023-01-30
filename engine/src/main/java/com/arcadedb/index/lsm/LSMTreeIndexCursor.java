@@ -195,13 +195,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
         if (pageCursors[i] != null) {
           final RID[] rids = pageCursors[i].getValue();
-          if (rids != null && rids.length > 0) {
-            for (final RID r : rids) {
+          if (rids != null) {
+            for (int j = rids.length - 1; j > -1; --j) {
+              final RID r = rids[j];
               if (r.getBucketId() < 0) {
                 final RID originalRID = index.getOriginalRID(r);
-                if (!validRIDs.contains(originalRID))
+                if (!validRIDs.remove(originalRID))
                   removedRIDs.add(originalRID);
-                break;
+                continue;
               } else if (removedRIDs.contains(r))
                 // HAS BEEN DELETED
                 continue;

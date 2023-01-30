@@ -169,14 +169,34 @@ public class TransactionIndexContext {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
 
         if (values.size() > 1) {
+          for (final IndexKey key : values) {
+            if (!key.addOperation)
+              index.remove(key.keyValues, key.rid);
+          }
+
+        } else {
+          for (final IndexKey key : values) {
+            if (!key.addOperation)
+              index.remove(key.keyValues, key.rid);
+          }
+        }
+      }
+    }
+
+    for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
+      final Index index = database.getSchema().getIndexByName(entry.getKey());
+      final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
+
+      for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
+        final Collection<IndexKey> values = keyValueEntries.getValue().values();
+
+        if (values.size() > 1) {
           // BATCH MODE. USE SET TO SKIP DUPLICATES
           final Set<RID> rids2Insert = new LinkedHashSet<>(values.size());
 
           for (final IndexKey key : values) {
             if (key.addOperation)
               rids2Insert.add(key.rid);
-            else
-              index.remove(key.keyValues, key.rid);
           }
 
           if (!rids2Insert.isEmpty()) {
@@ -189,8 +209,6 @@ public class TransactionIndexContext {
           for (final IndexKey key : values) {
             if (key.addOperation)
               index.put(key.keyValues, new RID[] { key.rid });
-            else
-              index.remove(key.keyValues, key.rid);
           }
         }
       }
