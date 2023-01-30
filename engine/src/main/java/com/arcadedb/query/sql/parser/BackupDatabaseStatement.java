@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -29,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.lang.reflect.*;
 import java.util.*;
+import java.util.logging.*;
 
 public class BackupDatabaseStatement extends SimpleExecStatement {
   protected Url url;
@@ -45,8 +47,10 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
     if (targetUrl != null)
       result.setProperty("target", targetUrl);
 
-    if (context.getDatabase().isTransactionActive())
+    if (context.getDatabase().isTransactionActive()) {
+      LogManager.instance().log(this, Level.SEVERE, "Found pending transaction. Rolling it back before the backup...");
       context.getDatabase().rollback();
+    }
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");

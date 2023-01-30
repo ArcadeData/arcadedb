@@ -61,6 +61,8 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
     database.getSchema().createDocumentType("testDoc");
     database.transaction(() -> database.newDocument("testDoc").set("prop", "value").save());
 
+    Assertions.assertFalse(database.isTransactionActive());
+
     final ResultSet result = database.command("sql", "backup database file://" + backupFile.getName());
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals("OK", result.next().getProperty("result"));
