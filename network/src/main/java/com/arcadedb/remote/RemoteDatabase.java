@@ -20,7 +20,7 @@ package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -40,11 +40,11 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.net.*;
@@ -53,7 +53,7 @@ import java.util.*;
 import java.util.logging.*;
 import java.util.stream.*;
 
-public class RemoteDatabase extends RWLockContext {
+public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
   public static final  int                         DEFAULT_PORT              = 2480;
@@ -109,29 +109,29 @@ public class RemoteDatabase extends RWLockContext {
     requestClusterConfiguration();
   }
 
+  @Override
   public String getName() {
     return databaseName;
   }
 
   public void create() {
-    databaseCommand("create", "SQL", null, null, true, null);
+    serverCommand("POST", "create database " + databaseName, true, true, null);
   }
 
   public List<String> databases() {
-    return (List<String>) serverCommand("GET", "databases", "SQL", null, null, true, true, (connection, response) -> response.getJSONArray("result").toList());
+    return (List<String>) serverCommand("GET", "databases", true, true, (connection, response) -> response.getJSONArray("result").toList());
   }
 
   public boolean exists() {
-    return (boolean) databaseCommand("exists", "SQL", null, null, true, (connection, response) -> {
-      final boolean exists = response.getBoolean("result");
-      return exists;
-    });
+    return (boolean) databaseCommand("exists", "SQL", null, null, true, (connection, response) -> response.getBoolean("result"));
   }
 
+  @Override
   public void close() {
     sessionId = null;
   }
 
+  @Override
   public void drop() {
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("server"));
@@ -148,11 +148,18 @@ public class RemoteDatabase extends RWLockContext {
     close();
   }
 
-  public void transaction(final Database.TransactionScope txBlock) {
-    transaction(txBlock, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+  @Override
+  public void transaction(final BasicDatabase.TransactionScope txBlock) {
+    transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
   }
 
-  public void transaction(final Database.TransactionScope txBlock, int attempts) {
+  @Override
+  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction) {
+    return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+  }
+
+  @Override
+  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts) {
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
 
@@ -162,12 +169,20 @@ public class RemoteDatabase extends RWLockContext {
       attempts = 1;
 
     for (int retry = 0; retry < attempts; ++retry) {
+      boolean createdNewTx = true;
       try {
-        begin();
-        txBlock.execute();
-        commit();
+        if (joinCurrentTransaction && isTransactionActive())
+          createdNewTx = false;
+        else
+          begin();
 
-        return;
+        txBlock.execute();
+
+        if (createdNewTx)
+          commit();
+
+        return createdNewTx;
+
       } catch (final NeedRetryException | DuplicatedKeyException e) {
         // RETRY
         lastException = e;
@@ -182,6 +197,10 @@ public class RemoteDatabase extends RWLockContext {
     }
 
     throw lastException;
+  }
+
+  public boolean isTransactionActive() {
+    return sessionId != null;
   }
 
   public void begin() {
@@ -235,6 +254,11 @@ public class RemoteDatabase extends RWLockContext {
   }
 
   public Record lookupByRID(final RID rid) {
+    return lookupByRID(rid, true);
+  }
+
+  @Override
+  public Record lookupByRID(final RID rid, final boolean loadContent) {
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
@@ -256,14 +280,30 @@ public class RemoteDatabase extends RWLockContext {
     }
   }
 
+  @Override
+  public void deleteRecord(final Record record) {
+    if (record.getIdentity() == null)
+      throw new IllegalArgumentException("Cannot delete a non persistent record");
+
+    command("SQL", "delete from " + record.getIdentity());
+  }
+
+  @Override
   public ResultSet command(final String language, final String command, final Object... args) {
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, true, (connection, response) -> createResultSet(response));
   }
 
+  @Override
   public ResultSet query(final String language, final String command, final Object... args) {
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> createResultSet(response));
+  }
+
+  @Override
+  public ResultSet execute(final String language, final String command, final Object... args) {
+    final Map<String, Object> params = mapArgs(args);
+    return (ResultSet) databaseCommand("execute", language, command, params, false, (connection, response) -> createResultSet(response));
   }
 
   public CONNECTION_STRATEGY getConnectionStrategy() {
@@ -329,9 +369,9 @@ public class RemoteDatabase extends RWLockContext {
     }
   }
 
-  private Object serverCommand(final String method, final String operation, final String language, final String payloadCommand,
-      final Map<String, Object> params, final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
-    return httpCommand(method, null, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect, callback);
+  private Object serverCommand(final String method, final String command, final boolean leaderIsPreferable, final boolean autoReconnect,
+      final Callback callback) {
+    return httpCommand(method, null, "server", null, command, null, leaderIsPreferable, autoReconnect, callback);
   }
 
   private Object databaseCommand(final String operation, final String language, final String payloadCommand, final Map<String, Object> params,
@@ -346,7 +386,7 @@ public class RemoteDatabase extends RWLockContext {
 
     final int maxRetry = leaderIsPreferable ? 3 : replicaServerList.size() + 1;
 
-    Pair<String, Integer> connectToServer = leaderIsPreferable ? leaderServer : new Pair<>(currentServer, currentPort);
+    Pair<String, Integer> connectToServer = leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
     String server = null;
 
@@ -364,8 +404,10 @@ public class RemoteDatabase extends RWLockContext {
 
           if (payloadCommand != null) {
             final JSONObject jsonRequest = new JSONObject();
-            jsonRequest.put("language", language);
-            jsonRequest.put("command", payloadCommand);
+            if (language != null)
+              jsonRequest.put("language", language);
+            if (payloadCommand != null)
+              jsonRequest.put("command", payloadCommand);
             jsonRequest.put("serializer", "record");
 
             if (params != null)
@@ -461,7 +503,7 @@ public class RemoteDatabase extends RWLockContext {
 
   private void requestClusterConfiguration() {
     try {
-      serverCommand("GET", "server?mode=cluster", "SQL", null, null, false, false, new Callback() {
+      serverCommand("GET", "server?mode=cluster", false, false, new Callback() {
         @Override
         public Object call(final HttpURLConnection connection, final JSONObject response) {
           LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
@@ -659,7 +701,7 @@ public class RemoteDatabase extends RWLockContext {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
         final String[] exceptionArgsParts = exceptionArgs.split("\\|");
-        throw new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(null, exceptionArgsParts[2]));
+        throw new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(this, exceptionArgsParts[2]));
       } else if (exception.equals(ConcurrentModificationException.class.getName())) {
         throw new ConcurrentModificationException(detail);
       } else if (exception.equals(TransactionException.class.getName())) {

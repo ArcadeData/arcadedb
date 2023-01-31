@@ -41,7 +41,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
     final String ridAsString = (String) map.remove("@rid");
     if (ridAsString != null)
-      this.rid = new RID(null, ridAsString);
+      this.rid = new RID(remoteDatabase, ridAsString);
     else
       this.rid = null;
 

@@ -30,16 +30,24 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
 public class RemoteDatabaseIT extends BaseGraphServerTest {
 
+  @Override
+  protected boolean isCreateDatabases() {
+    return false;
+  }
+
   @Test
   public void simpleTxDocuments() throws Exception {
     testEachServer((serverIndex) -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      database.command("sql", "create vertex type Person");
 
       // BEGIN
       database.transaction(() -> {
@@ -76,6 +84,14 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   public void simpleTxGraph() throws Exception {
     testEachServer((serverIndex) -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      database.command("sql", "create vertex type " + VERTEX1_TYPE_NAME);
+      database.command("sql", "create property " + VERTEX1_TYPE_NAME + ".id long");
+      database.command("sql", "create index on " + VERTEX1_TYPE_NAME + "(id) unique");
+
+      database.command("sql", "create vertex type " + VERTEX2_TYPE_NAME);
+      database.command("sql", "create edge type " + EDGE1_TYPE_NAME);
+      database.command("sql", "create edge type " + EDGE2_TYPE_NAME);
 
       // BEGIN
       database.transaction(() -> {
@@ -214,4 +230,12 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       }
     });
   }
+
+  @BeforeEach
+  public void beginTest() {
+    super.beginTest();
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    database.create();
+  }
+
 }

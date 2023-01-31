@@ -33,11 +33,11 @@ import java.util.*;
  * Immutable class.
  */
 public class RID implements Identifiable, Comparable<Object>, Serializable {
-  private transient final Database database;
-  protected final         int      bucketId;
-  protected final         long     offset;
+  private transient final BasicDatabase database;
+  protected final         int           bucketId;
+  protected final         long          offset;
 
-  public RID(final Database database, final int bucketId, final long offset) {
+  public RID(final BasicDatabase database, final int bucketId, final long offset) {
     if (database == null)
       // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
       this.database = DatabaseContext.INSTANCE.getActiveDatabase();
@@ -48,7 +48,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     this.offset = offset;
   }
 
-  public RID(final Database database, String value) {
+  public RID(final BasicDatabase database, String value) {
     if (database == null)
       // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
       this.database = DatabaseContext.INSTANCE.getActiveDatabase();
@@ -168,7 +168,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     else
       return -1;
 
-    final Database otherDb = otherRID.getDatabase();
+    final BasicDatabase otherDb = otherRID.getDatabase();
     if (database != null) {
       if (otherDb != null) {
         final int res = database.getName().compareTo(otherDb.getName());
@@ -192,7 +192,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     return 0;
   }
 
-  public Database getDatabase() {
+  public BasicDatabase getDatabase() {
     return database;
   }
 

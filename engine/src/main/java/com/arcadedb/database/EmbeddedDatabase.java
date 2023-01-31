@@ -971,8 +971,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int retries) {
-    return transaction(txBlock, joinCurrentTx, retries, null, null);
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int attempts) {
+    return transaction(txBlock, joinCurrentTx, attempts, null, null);
   }
 
   @Override
