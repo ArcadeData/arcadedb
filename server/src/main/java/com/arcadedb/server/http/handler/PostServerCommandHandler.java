@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
@@ -64,7 +65,9 @@ public class PostServerCommandHandler extends AbstractHandler {
       shutdownServer(command);
     else if (command.startsWith("create database "))
       createDatabase(command);
-    else if (command.startsWith("drop database "))
+    else if (command.startsWith("list databases")) {
+      return listDatabases();
+    } else if (command.startsWith("drop database "))
       dropDatabase(command);
     else if (command.startsWith("close database "))
       closeDatabase(command);
@@ -170,6 +173,12 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       ((ReplicatedDatabase) db).createInReplicas();
+  }
+
+  private ExecutionResponse listDatabases() {
+    final ArcadeDBServer server = httpServer.getServer();
+    server.getServerMetrics().meter("http.list-databases").mark();
+    return new ExecutionResponse(200, "{ \"result\" : " + new JSONArray(server.getDatabaseNames()) + "}");
   }
 
   private void alignDatabase(final String command) {
