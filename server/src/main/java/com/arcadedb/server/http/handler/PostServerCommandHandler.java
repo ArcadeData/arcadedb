@@ -40,6 +40,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
 import java.rmi.*;
+import java.util.*;
 
 public class PostServerCommandHandler extends AbstractHandler {
   public PostServerCommandHandler(final HttpServer httpServer) {
@@ -66,7 +67,7 @@ public class PostServerCommandHandler extends AbstractHandler {
     else if (command.startsWith("create database "))
       createDatabase(command);
     else if (command.startsWith("list databases")) {
-      return listDatabases();
+      return listDatabases(user);
     } else if (command.startsWith("drop database "))
       dropDatabase(command);
     else if (command.startsWith("close database "))
@@ -175,10 +176,17 @@ public class PostServerCommandHandler extends AbstractHandler {
       ((ReplicatedDatabase) db).createInReplicas();
   }
 
-  private ExecutionResponse listDatabases() {
+  private ExecutionResponse listDatabases(final ServerSecurityUser user) {
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.list-databases").mark();
-    return new ExecutionResponse(200, "{ \"result\" : " + new JSONArray(server.getDatabaseNames()) + "}");
+
+    final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
+    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
+
+    if (!allowedDatabases.contains("*"))
+      installedDatabases.retainAll(allowedDatabases);
+
+    return new ExecutionResponse(200, "{ \"result\" : " + new JSONArray(installedDatabases) + "}");
   }
 
   private void alignDatabase(final String command) {
