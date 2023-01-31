@@ -54,19 +54,20 @@ public class PostServerCommandHandler extends AbstractHandler {
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws IOException {
-    checkRootUser(user);
-
     final JSONObject payload = new JSONObject(parseRequestPayload(exchange));
 
     final String command = payload.has("command") ? payload.getString("command") : null;
     if (command == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Server command is null\"}");
 
+    if (!command.equals("list databases"))
+      checkRootUser(user);
+
     if (command.startsWith("shutdown"))
       shutdownServer(command);
     else if (command.startsWith("create database "))
       createDatabase(command);
-    else if (command.startsWith("list databases")) {
+    else if (command.equals("list databases")) {
       return listDatabases(user);
     } else if (command.startsWith("drop database "))
       dropDatabase(command);
