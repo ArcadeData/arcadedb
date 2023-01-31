@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -51,7 +52,23 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       // BEGIN
       database.transaction(() -> {
-        // CREATE DOCUMENT
+        // CREATE DOCUMENT VIA API
+        final MutableDocument jay = database.newDocument("Person").set("name", "Jay").save();
+        Assertions.assertNotNull(jay);
+        Assertions.assertEquals("Jay", jay.getString("name"));
+        Assertions.assertNotNull(jay.getIdentity());
+        jay.save();
+
+        // TEST DELETION AND LOOKUP
+        jay.delete();
+        try {
+          jay.reload();
+          Assertions.fail();
+        } catch (RecordNotFoundException e) {
+          // EXPECTED
+        }
+
+        // CREATE DOCUMENT VIA SQP
         ResultSet result = database.command("SQL", "insert into Person set name = 'Elon'");
         Assertions.assertNotNull(result);
         Assertions.assertTrue(result.hasNext());
@@ -99,6 +116,22 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         ResultSet result = database.command("SQL", "create vertex type Character");
         Assertions.assertNotNull(result);
         Assertions.assertTrue(result.hasNext());
+
+        // CREATE DOCUMENT VIA API
+        final MutableVertex jay = database.newVertex("Character").set("name", "Jay").save();
+        Assertions.assertNotNull(jay);
+        Assertions.assertEquals("Jay", jay.getString("name"));
+        Assertions.assertNotNull(jay.getIdentity());
+        jay.save();
+
+        // TEST DELETION AND LOOKUP
+        jay.delete();
+        try {
+          jay.reload();
+          Assertions.fail();
+        } catch (RecordNotFoundException e) {
+          // EXPECTED
+        }
 
         // CREATE VERTEX 1
         result = database.command("SQL", "insert into Character set name = 'Elon'");

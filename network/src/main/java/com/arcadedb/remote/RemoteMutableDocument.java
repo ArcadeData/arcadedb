@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
@@ -32,6 +33,12 @@ import java.util.*;
 public class RemoteMutableDocument extends MutableDocument {
   protected final RemoteDatabase remoteDatabase;
   protected final String         typeName;
+
+  protected RemoteMutableDocument(final RemoteDatabase database, final String typeName) {
+    super(null, null, null);
+    this.remoteDatabase = database;
+    this.typeName = typeName;
+  }
 
   protected RemoteMutableDocument(final RemoteImmutableDocument source) {
     super(null, null, source.getIdentity());
@@ -52,8 +59,10 @@ public class RemoteMutableDocument extends MutableDocument {
     dirty = true;
     if (rid != null)
       remoteDatabase.command("sql", "update " + rid + " content " + toJSON());
-    else
-      remoteDatabase.command("sql", "insert into " + typeName + " content " + toJSON());
+    else {
+      final ResultSet result = remoteDatabase.command("sql", "insert into " + typeName + " content " + toJSON());
+      rid = result.next().getIdentity().get();
+    }
     return this;
   }
 
@@ -68,7 +77,7 @@ public class RemoteMutableDocument extends MutableDocument {
 
   @Override
   public void delete() {
-    remoteDatabase.command("sql", "delete from " + rid);
+    remoteDatabase.deleteRecord(this);
   }
 
   @Override
@@ -80,7 +89,8 @@ public class RemoteMutableDocument extends MutableDocument {
       map.clear();
       map.putAll(document.propertiesAsMap());
       dirty = false;
-    }
+    } else
+      throw new RecordNotFoundException("Record " + rid + " not found", rid);
   }
 
   @Override

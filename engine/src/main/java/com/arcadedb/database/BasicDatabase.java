@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 public interface BasicDatabase extends AutoCloseable {
@@ -28,6 +29,26 @@ public interface BasicDatabase extends AutoCloseable {
   void close();
 
   void drop();
+
+  /**
+   * Creates a new document of type typeName. The type must be defined beforehand in the schema. The returned document only lives in memory until the method
+   * {@link MutableDocument#save()} is executed.
+   *
+   * @param typeName Type name defined in the schema
+   *
+   * @return The new document as a MutableDocument object.
+   */
+  MutableDocument newDocument(String typeName);
+
+  /**
+   * Creates a new vertex of type typeName. The type must be defined beforehand in the schema. The returned vertex only lives in memory until the method
+   * {@link MutableVertex#save()} is executed.
+   *
+   * @param typeName Type name defined in the schema
+   *
+   * @return The new vertex as a MutableVertex object.
+   */
+  MutableVertex newVertex(String typeName);
 
   /**
    * Returns true if there is a transaction active. A transaction is active if it is in the following states: `{BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}`.

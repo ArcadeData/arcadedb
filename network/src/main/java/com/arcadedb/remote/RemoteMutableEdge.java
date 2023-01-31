@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.JSONSerializer;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -65,9 +66,10 @@ public class RemoteMutableEdge extends MutableEdge {
     dirty = false;
     return this;
   }
+
   @Override
   public void delete() {
-    remoteDatabase.command("sql", "delete from " + rid);
+    remoteDatabase.deleteRecord(this);
   }
 
   @Override
@@ -79,7 +81,8 @@ public class RemoteMutableEdge extends MutableEdge {
       map.clear();
       map.putAll(document.propertiesAsMap());
       dirty = false;
-    }
+    } else
+      throw new RecordNotFoundException("Record " + rid + " not found", rid);
   }
 
   @Override

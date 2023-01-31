@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.ArcadeDBException;
@@ -33,6 +34,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -146,6 +148,22 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
       throw new RuntimeException("Error on deleting database", e);
     }
     close();
+  }
+
+  @Override
+  public MutableDocument newDocument(final String typeName) {
+    if (typeName == null)
+      throw new IllegalArgumentException("Type is null");
+
+    return new RemoteMutableDocument(this, typeName);
+  }
+
+  @Override
+  public MutableVertex newVertex(final String typeName) {
+    if (typeName == null)
+      throw new IllegalArgumentException("Type is null");
+
+    return new RemoteMutableVertex(this, typeName);
   }
 
   @Override

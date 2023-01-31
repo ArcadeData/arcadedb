@@ -27,7 +27,6 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
@@ -217,26 +216,6 @@ public interface Database extends BasicDatabase {
    * @return The number of records found
    */
   long countBucket(String bucketName);
-
-  /**
-   * Creates a new document of type typeName. The type must be defined beforehand in the schema. The returned document only lives in memory until the method
-   * {@link MutableDocument#save()} is executed.
-   *
-   * @param typeName Type name defined in the schema
-   *
-   * @return The new document as a MutableDocument object.
-   */
-  MutableDocument newDocument(String typeName);
-
-  /**
-   * Creates a new vertex of type typeName. The type must be defined beforehand in the schema. The returned vertex only lives in memory until the method
-   * {@link MutableVertex#save()} is executed.
-   *
-   * @param typeName Type name defined in the schema
-   *
-   * @return The new vertex as a MutableVertex object.
-   */
-  MutableVertex newVertex(String typeName);
 
   /**
    * Creates a new edge between two vertices specifying the key/value pairs to lookup for both source and destination vertices. The direction of the edge is from source
