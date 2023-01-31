@@ -122,21 +122,21 @@ public class HttpServer implements ServerPlugin {
     routes.addPrefixPath("/api/v1",//
         basicRoutes//
             .post("/begin/{database}", new PostBeginHandler(this))//
-            .post("/close/{database}", new PostCloseDatabaseHandler(this))//
+            .post("/close/{database}", new PostCloseDatabaseHandler(this))// DEPRECATED
             .post("/command/{database}", new PostCommandHandler(this))//
             .post("/commit/{database}", new PostCommitHandler(this))//
             .post("/create/{database}", new PostCreateDatabaseHandler(this))//
-            .get("/databases", new GetDatabasesHandler(this))//
-            .get("/document/{database}/{rid}", new GetDocumentHandler(this))//
-            .post("/document/{database}", new PostCreateDocumentHandler(this))//
-            .post("/drop/{database}", new PostDropDatabaseHandler(this))//
+            .get("/databases", new GetDatabasesHandler(this))// DEPRECATED
+            .get("/document/{database}/{rid}", new GetDocumentHandler(this))// DEPRECATED
+            .post("/document/{database}", new PostCreateDocumentHandler(this))// DEPRECATED
+            .post("/drop/{database}", new PostDropDatabaseHandler(this))// DEPRECATED
             .get("/exists/{database}", new GetExistsDatabaseHandler(this))//
-            .post("/open/{database}", new PostOpenDatabaseHandler(this))//
+            .post("/open/{database}", new PostOpenDatabaseHandler(this))// DEPRECATED
             .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
             .post("/query/{database}", new PostQueryHandler(this))//
             .post("/rollback/{database}", new PostRollbackHandler(this))//
-            .post("/user", new PostCreateUserHandler(this))//
-            .delete("/user/{userName}", new DeleteDropUserHandler(this))//
+            .post("/user", new PostCreateUserHandler(this))// DEPRECATED
+            .delete("/user/{userName}", new DeleteDropUserHandler(this))// DEPRECATED
             .get("/server", new GetServerHandler(this))//
             .post("/server", new PostServerCommandHandler(this))//
             .get("/ready", new GetReadyHandler(this))//

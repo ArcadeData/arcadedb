@@ -121,7 +121,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   public List<String> databases() {
-    return (List<String>) serverCommand("GET", "list databases", true, true, (connection, response) -> response.getJSONArray("result").toList());
+    return (List<String>) serverCommand("POST", "list databases", true, true, (connection, response) -> response.getJSONArray("result").toList());
   }
 
   public boolean exists() {

@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
+@Deprecated
 public class GetDatabasesHandler extends AbstractHandler {
   public GetDatabasesHandler(final HttpServer httpServer) {
     super(httpServer);
