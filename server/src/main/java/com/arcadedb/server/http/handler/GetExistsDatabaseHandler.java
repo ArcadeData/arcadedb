@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -26,18 +25,13 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
 
-public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
+public class GetExistsDatabaseHandler extends AbstractHandler {
   public GetExistsDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  protected boolean requiresDatabase() {
-    return false;
-  }
-
-  @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
     if (databaseName.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
@@ -45,14 +39,14 @@ public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.exists-database").mark();
 
-    final boolean existsDatabase = server.existsDatabase(databaseName.getFirst());
+    final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
+    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
+
+    if (!allowedDatabases.contains("*"))
+      installedDatabases.retainAll(allowedDatabases);
+
+    final boolean existsDatabase = installedDatabases.contains(databaseName.getFirst());
 
     return new ExecutionResponse(200, "{ \"result\" : " + existsDatabase + "}");
   }
-
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
-  }
-
 }
