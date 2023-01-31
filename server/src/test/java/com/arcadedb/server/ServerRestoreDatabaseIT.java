@@ -71,12 +71,15 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
 
     Assertions.assertFalse(database.isTransactionActive());
 
-    final ResultSet result = database.command("sql", "backup database file://" + backupFile.getName());
+    database.close();
+    final Database database2 = new DatabaseFactory("./target/databases/" + getDatabaseName()).open();
+
+    final ResultSet result = database2.command("sql", "backup database file://" + backupFile.getName());
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals("OK", result.next().getProperty("result"));
 
     Assertions.assertTrue(backupFile.exists());
-    database.drop();
+    database2.drop();
 
     config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "graph[elon:musk:admin]{restore:file://backups/graph/backup-test.zip}");
   }
