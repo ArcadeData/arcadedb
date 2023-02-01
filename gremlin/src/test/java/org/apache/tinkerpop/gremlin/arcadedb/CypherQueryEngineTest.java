@@ -178,6 +178,30 @@ public class CypherQueryEngineTest {
     }
   }
 
+  /**
+   * Cypher columns are returned in the wrong order. Issue https://github.com/ArcadeData/arcadedb/issues/818.
+   */
+  @Test
+  public void testReturnOrder() {
+    final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
+    try (final Database database = graph.getDatabase()) {
+      database.transaction(() -> {
+        database.command("cypher", "CREATE (foo:Order {name: \"hi\", field1: \"value1\", field2: \"value2\"}) RETURN foo;\n");
+        try (final ResultSet query = database.command("cypher", "MATCH (foo:Order) RETURN foo.name, foo.field2, foo.field1;")) {
+          Assertions.assertTrue(query.hasNext());
+          final Result r1 = query.next();
+
+          final List<String> columns = new ArrayList<>(r1.toMap().keySet());
+          Assertions.assertEquals("foo.name", columns.get(0));
+          Assertions.assertEquals("foo.field2", columns.get(1));
+          Assertions.assertEquals("foo.field1", columns.get(2));
+        }
+      });
+    } finally {
+      graph.drop();
+    }
+  }
+
   @BeforeEach
   @AfterEach
   public void clean() {
