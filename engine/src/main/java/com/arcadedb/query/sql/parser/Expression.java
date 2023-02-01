@@ -21,7 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.AggregationContext;
@@ -40,6 +39,7 @@ public class Expression extends SimpleNode {
   protected ArrayConcatExpression arrayConcatExpression;
   protected Json                  json;
   protected Boolean               booleanValue;
+  protected WhereClause           whereCondition;
 
   public Expression(final int id) {
     super(id);
@@ -58,85 +58,43 @@ public class Expression extends SimpleNode {
   }
 
   public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
-    if (isNull) {
+    if (isNull)
       return null;
-    }
-    if (rid != null) {
+    else if (rid != null)
       return rid.toRecordId(iCurrentRecord, context);
-    }
-    if (mathExpression != null) {
+    else if (mathExpression != null)
       return mathExpression.execute(iCurrentRecord, context);
-    }
-    if (arrayConcatExpression != null) {
+    else if (whereCondition != null)
+      return whereCondition.matchesFilters(iCurrentRecord, context);
+    else if (arrayConcatExpression != null)
       return arrayConcatExpression.execute(iCurrentRecord, context);
-    }
-    if (json != null) {
+    else if (json != null)
       return json.toMap(iCurrentRecord, context);
-    }
-    if (booleanValue != null) {
+    else if (booleanValue != null)
       return booleanValue;
-    }
-    if (value instanceof PNumber) {
+    else if (value instanceof PNumber)
       return ((PNumber) value).getValue();//only for old executor (manually replaced params)
-    }
-
-    //from here it's old stuff, only for the old executor
-    if (value instanceof Rid) {
-      final Rid v = (Rid) value;
-      return new RID(context.getDatabase(), v.bucket.getValue().intValue(), v.position.getValue().longValue());
-    } else if (value instanceof MathExpression) {
-      return ((MathExpression) value).execute(iCurrentRecord, context);
-    } else if (value instanceof ArrayConcatExpression) {
-      return ((ArrayConcatExpression) value).execute(iCurrentRecord, context);
-    } else if (value instanceof Json) {
-      return ((Json) value).toMap(iCurrentRecord, context);
-    } else if (value instanceof String) {
-      return value;
-    } else if (value instanceof Number) {
-      return value;
-    }
 
     return value;
   }
 
   public Object execute(final Result iCurrentRecord, final CommandContext context) {
-    if (isNull) {
+    if (isNull)
       return null;
-    }
-    if (rid != null) {
+    else if (rid != null)
       return rid.toRecordId(iCurrentRecord, context);
-    }
-    if (mathExpression != null) {
+    else if (mathExpression != null)
       return mathExpression.execute(iCurrentRecord, context);
-    }
-    if (arrayConcatExpression != null) {
+    else if (whereCondition != null)
+      return whereCondition.matchesFilters(iCurrentRecord, context);
+    else if (arrayConcatExpression != null)
       return arrayConcatExpression.execute(iCurrentRecord, context);
-    }
-    if (json != null) {
+    else if (json != null)
       return json.toMap(iCurrentRecord, context);
-    }
-    if (booleanValue != null) {
+    else if (booleanValue != null)
       return booleanValue;
-    }
-    if (value instanceof PNumber) {
+    else if (value instanceof PNumber)
       return ((PNumber) value).getValue();//only for old executor (manually replaced params)
-    }
-
-    //from here it's old stuff, only for the old executor
-    if (value instanceof Rid) {
-      final Rid v = (Rid) value;
-      return new RID(context.getDatabase(), v.bucket.getValue().intValue(), v.position.getValue().longValue());
-    } else if (value instanceof MathExpression) {
-      return ((MathExpression) value).execute(iCurrentRecord, context);
-    } else if (value instanceof ArrayConcatExpression) {
-      return ((ArrayConcatExpression) value).execute(iCurrentRecord, context);
-    } else if (value instanceof Json) {
-      return ((Json) value).toMap(iCurrentRecord, context);
-    } else if (value instanceof String) {
-      return value;
-    } else if (value instanceof Number) {
-      return value;
-    }
 
     return value;
   }
@@ -155,20 +113,17 @@ public class Expression extends SimpleNode {
   public boolean isEarlyCalculated(final CommandContext context) {
     if (this.mathExpression != null)
       return this.mathExpression.isEarlyCalculated(context);
-
-    if (this.arrayConcatExpression != null)
+    else if (this.whereCondition != null)
+      return false;
+    else if (this.arrayConcatExpression != null)
       return this.arrayConcatExpression.isEarlyCalculated(context);
-
-    if (booleanValue != null)
+    else if (booleanValue != null)
       return true;
-
-    if (value instanceof Number)
+    else if (value instanceof Number)
       return true;
-
-    if (value instanceof String)
+    else if (value instanceof String)
       return true;
-
-    if (value instanceof MathExpression)
+    else if (value instanceof MathExpression)
       return ((MathExpression) value).isEarlyCalculated(context);
 
     return false;
@@ -199,21 +154,23 @@ public class Expression extends SimpleNode {
     //      builder.append("" + value);
     //    }
 
-    if (isNull) {
+    if (isNull)
       builder.append("null");
-    } else if (rid != null) {
+    else if (rid != null)
       rid.toString(params, builder);
-    } else if (mathExpression != null) {
+    else if (mathExpression != null)
       mathExpression.toString(params, builder);
-    } else if (arrayConcatExpression != null) {
+    else if (whereCondition != null)
+      whereCondition.toString(params, builder);
+    else if (arrayConcatExpression != null)
       arrayConcatExpression.toString(params, builder);
-    } else if (json != null) {
+    else if (json != null)
       json.toString(params, builder);
-    } else if (booleanValue != null) {
+    else if (booleanValue != null)
       builder.append(booleanValue);
-    } else if (value instanceof SimpleNode) {
+    else if (value instanceof SimpleNode)
       ((SimpleNode) value).toString(params, builder);//only for translated input params, will disappear with new executor
-    } else if (value instanceof String) {
+    else if (value instanceof String) {
       if (singleQuotes) {
         builder.append("'" + value + "'");
       } else {
@@ -411,6 +368,7 @@ public class Expression extends SimpleNode {
     result.isNull = isNull;
     result.rid = rid == null ? null : rid.copy();
     result.mathExpression = mathExpression == null ? null : mathExpression.copy();
+    result.whereCondition = whereCondition == null ? null : whereCondition.copy();
     result.arrayConcatExpression = arrayConcatExpression == null ? null : arrayConcatExpression.copy();
     result.json = json == null ? null : json.copy();
     result.booleanValue = booleanValue;

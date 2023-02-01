@@ -667,6 +667,13 @@ Statement Parse() :
   { return result; }
 }
 
+WhereClause ParseExpression() :
+{WhereClause result;}
+{
+  result = WhereClause() <EOF>
+  { return result; }
+}
+
 List<Statement> ParseScript() :
 {
   List<Statement> result = new ArrayList<Statement>();
@@ -2036,11 +2043,15 @@ Expression Expression():
     LOOKAHEAD( Rid() )
     jjtThis.rid = Rid() { jjtThis.value = jjtThis.rid; }
     |
+    LOOKAHEAD( 5 )
+    <LPAREN>
+      jjtThis.whereCondition = WhereClause() {jjtThis.value = jjtThis.whereCondition; }
+    <RPAREN>
+    |
     LOOKAHEAD( MathExpression() )
     jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
     |
     jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
-
   )
   { return jjtThis; }
 }

@@ -69,6 +69,46 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
+  public void testIfEvalFunction() {
+    database.transaction(() -> {
+      final ResultSet rs = database.command("SQL", "SELECT id, if( eval( 'id > 3' ), 'high', 'low') as value FROM V");
+
+      Assertions.assertTrue(rs.hasNext());
+      while (rs.hasNext()) {
+        final Result record = rs.next();
+        Assertions.assertNotNull(record);
+        Assertions.assertFalse(record.getIdentity().isPresent());
+
+        final Object value = record.getProperty("value");
+        if ((Integer) record.getProperty("id") > 3)
+          Assertions.assertEquals("high", value);
+        else
+          Assertions.assertEquals("low", value);
+      }
+    });
+  }
+
+  @Test
+  public void testIfFunction() {
+    database.transaction(() -> {
+      final ResultSet rs = database.command("SQL", "SELECT id, if( ( id > 3 ), 'high', 'low') as value FROM V");
+
+      Assertions.assertTrue(rs.hasNext());
+      while (rs.hasNext()) {
+        final Result record = rs.next();
+        Assertions.assertNotNull(record);
+        Assertions.assertFalse(record.getIdentity().isPresent());
+
+        final Object value = record.getProperty("value");
+        if ((Integer) record.getProperty("id") > 3)
+          Assertions.assertEquals("high", value);
+        else
+          Assertions.assertEquals("low", value);
+      }
+    });
+  }
+
+  @Test
   public void testAvgFunction() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();

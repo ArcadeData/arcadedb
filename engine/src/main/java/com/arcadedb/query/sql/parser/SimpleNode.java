@@ -166,8 +166,6 @@ public abstract class SimpleNode implements Node {
       if (!Objects.equals(ownElements[i], otherElements[i]))
         return false;
 
-    Objects.equals(1, 2);
-
     return true;
   }
 
@@ -190,22 +188,14 @@ public abstract class SimpleNode implements Node {
   }
 
   public boolean isCacheable() {
-    final SimpleNode[] elements = getCacheableElements();
-    if (elements.length == 0)
-      return false;
-
-    for (SimpleNode e : elements)
+    for (SimpleNode e : getCacheableElements())
       if (e != null && !e.isCacheable())
         return false;
     return true;
   }
 
   public boolean refersToParent() {
-    final SimpleNode[] elements = getCacheableElements();
-    if (elements.length == 0)
-      return false;
-
-    for (SimpleNode e : elements)
+    for (SimpleNode e : getCacheableElements())
       if (e != null && e.refersToParent())
         return true;
     return false;

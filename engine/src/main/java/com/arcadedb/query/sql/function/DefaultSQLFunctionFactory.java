@@ -47,6 +47,7 @@ import com.arcadedb.query.sql.function.graph.SQLFunctionOutV;
 import com.arcadedb.query.sql.function.graph.SQLFunctionShortestPath;
 import com.arcadedb.query.sql.function.math.SQLFunctionAbsoluteValue;
 import com.arcadedb.query.sql.function.math.SQLFunctionAverage;
+import com.arcadedb.query.sql.function.math.SQLFunctionEval;
 import com.arcadedb.query.sql.function.math.SQLFunctionMax;
 import com.arcadedb.query.sql.function.math.SQLFunctionMin;
 import com.arcadedb.query.sql.function.math.SQLFunctionSum;
@@ -86,6 +87,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
     register(SQLFunctionDuration.NAME, new SQLFunctionDuration());
     register(SQLFunctionEncode.NAME, new SQLFunctionEncode());
+    register(SQLFunctionEval.NAME, SQLFunctionEval.class);
     register(SQLFunctionFirst.NAME, new SQLFunctionFirst());
     register(SQLFunctionFormat.NAME, new SQLFunctionFormat());
     register(SQLFunctionIf.NAME, new SQLFunctionIf());
