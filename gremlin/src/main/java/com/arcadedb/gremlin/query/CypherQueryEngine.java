@@ -96,7 +96,7 @@ public class CypherQueryEngine implements QueryEngine {
 
     final List<ResultInternal> result = new ArrayList<>();
 
-    final Map<String, Object> mapStringObject = new HashMap<>(map.size());
+    final Map<String, Object> mapStringObject = new LinkedHashMap<>(map.size());
     if (map.containsKey("  cypher.element")) {
       final Object in = map.get("  cypher.inv");
       if (in != null)
@@ -112,10 +112,10 @@ public class CypherQueryEngine implements QueryEngine {
       else if (element instanceof List) {
         final List<Map> list = (List<Map>) element;
         for (final Map mapEntry : list)
-          result.add(cypherObjectToResult(new HashMap<>(), mapEntry));
+          result.add(cypherObjectToResult(new LinkedHashMap<>(), mapEntry));
       }
     } else
-      result.add(cypherObjectToResult(mapStringObject, new HashMap<>(map)));
+      result.add(cypherObjectToResult(mapStringObject, new LinkedHashMap<>(map)));
 
     return result;
   }
@@ -149,7 +149,7 @@ public class CypherQueryEngine implements QueryEngine {
     if (parameters.length % 2 != 0)
       throw new IllegalArgumentException("Command parameters must be as pairs `<key>, <value>`");
 
-    final Map<String, Object> map = new HashMap<>(parameters.length / 2);
+    final Map<String, Object> map = new LinkedHashMap<>(parameters.length / 2);
     for (int i = 0; i < parameters.length; i += 2)
       map.put((String) parameters[i], parameters[i + 1]);
     return command(query, map);
