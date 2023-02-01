@@ -521,53 +521,56 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   private void requestClusterConfiguration() {
     try {
-      serverCommand("GET", "server?mode=cluster", false, false, new Callback() {
-        @Override
-        public Object call(final HttpURLConnection connection, final JSONObject response) {
-          LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
+      final HttpURLConnection connection = createConnection("GET", getUrl("server?mode=cluster"));
+      connection.connect();
+      if (connection.getResponseCode() != 200) {
+        final Exception detail = manageException(connection, "cluster configuration");
+        throw new SecurityException("Error on requesting cluster configuration: " + connection.getResponseMessage(), detail);
+      }
 
-          if (!response.has("ha")) {
-            leaderServer = new Pair<>(originalServer, originalPort);
-            replicaServerList.clear();
-            return null;
+      final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
+
+      LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
+
+      if (!response.has("ha")) {
+        leaderServer = new Pair<>(originalServer, originalPort);
+        replicaServerList.clear();
+        return;
+      }
+
+      final JSONObject ha = response.getJSONObject("ha");
+
+      final String cfgLeaderServer = (String) ha.get("leaderAddress");
+      final String[] leaderServerParts = cfgLeaderServer.split(":");
+      leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
+
+      final String cfgReplicaServers = (String) ha.get("replicaAddresses");
+
+      // PARSE SERVER LISTS
+      replicaServerList.clear();
+
+      if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
+        final String[] serverEntries = cfgReplicaServers.split(",");
+        for (final String serverEntry : serverEntries) {
+          try {
+            final String[] serverParts = serverEntry.split(":");
+            if (serverParts.length != 2)
+              LogManager.instance().log(this, Level.WARNING, "No port specified on remote server URL '%s'", null, serverEntry);
+
+            final String sHost = serverParts[0];
+            final int sPort = Integer.parseInt(serverParts[1]);
+
+            replicaServerList.add(new Pair(sHost, sPort));
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", null, serverEntry);
           }
-
-          final JSONObject ha = response.getJSONObject("ha");
-
-          final String cfgLeaderServer = (String) ha.get("leaderAddress");
-          final String[] leaderServerParts = cfgLeaderServer.split(":");
-          leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
-
-          final String cfgReplicaServers = (String) ha.get("replicaAddresses");
-
-          // PARSE SERVER LISTS
-          replicaServerList.clear();
-
-          if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
-            final String[] serverEntries = cfgReplicaServers.split(",");
-            for (final String serverEntry : serverEntries) {
-              try {
-                final String[] serverParts = serverEntry.split(":");
-                if (serverParts.length != 2)
-                  LogManager.instance().log(this, Level.WARNING, "No port specified on remote server URL '%s'", null, serverEntry);
-
-                final String sHost = serverParts[0];
-                final int sPort = Integer.parseInt(serverParts[1]);
-
-                replicaServerList.add(new Pair(sHost, sPort));
-              } catch (Exception e) {
-                LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", null, serverEntry);
-              }
-            }
-          }
-
-          LogManager.instance().log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s", null, leaderServer, replicaServerList);
-
-          return null;
         }
-      });
-    } catch (Exception e) {
-      LogManager.instance().log(this, Level.INFO, "Error on retrieving cluster configuration from the server (error=%s)", e.getMessage());
+      }
+
+      LogManager.instance().log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s", null, leaderServer, replicaServerList);
+
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error on requesting cluster configuration", e);
     }
   }
 

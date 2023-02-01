@@ -52,8 +52,6 @@ public class GetServerHandler extends AbstractHandler {
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
-    exchange.setStatusCode(200);
-
     final JSONObject response = createResult(user, null);
 
     final String mode = getQueryParameter(exchange, "mode", "default");
