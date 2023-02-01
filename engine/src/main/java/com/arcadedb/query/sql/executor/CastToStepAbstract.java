@@ -77,7 +77,6 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
     };
   }
 

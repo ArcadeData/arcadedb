@@ -65,10 +65,6 @@ public class UpdateMergeStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 

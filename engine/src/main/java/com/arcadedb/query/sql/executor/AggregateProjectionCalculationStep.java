@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
@@ -78,10 +77,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   private void executeAggregation(final CommandContext context, final int nRecords) {
     final long timeoutBegin = System.currentTimeMillis();
-    if (prev.isEmpty()) {
-      throw new CommandExecutionException("Cannot execute an aggregation or a GROUP BY without a previous result");
-    }
-    final ExecutionStepInternal prevStep = prev.get();
+
+    final ExecutionStepInternal prevStep = checkForPrevious("Cannot execute an aggregation or a GROUP BY without a previous result");
     ResultSet lastRs = prevStep.syncPull(context, nRecords);
     while (lastRs.hasNext()) {
       if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {

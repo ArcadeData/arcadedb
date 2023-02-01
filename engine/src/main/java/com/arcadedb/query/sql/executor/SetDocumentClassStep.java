@@ -65,10 +65,6 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 

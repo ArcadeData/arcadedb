@@ -55,7 +55,7 @@ public class TrackableBinary extends Binary implements TrackableContent {
 
   public Binary slice(final int position) {
     // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-    synchronized (buffer) {
+    synchronized (this) {
       buffer.position(position);
       return new TrackableBinary(this, buffer.slice());
     }
@@ -64,7 +64,7 @@ public class TrackableBinary extends Binary implements TrackableContent {
   public Binary slice(final int position, final int length) {
     // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
     final ByteBuffer result;
-    synchronized (buffer) {
+    synchronized (this) {
       buffer.position(position);
       result = buffer.slice();
     }

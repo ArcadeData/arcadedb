@@ -34,7 +34,6 @@ import java.util.*;
  */
 public class ConvertToResultInternalStep extends AbstractExecutionStep {
 
-
   ResultSet prevResult = null;
 
   public ConvertToResultInternalStep(final CommandContext context, final boolean profilingEnabled) {
@@ -43,10 +42,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
-      throw new IllegalStateException("filter step requires a previous step");
-    }
-    final ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = checkForPrevious();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -129,9 +125,6 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
         ConvertToResultInternalStep.this.close();
       }
 
-
-
-
     };
 
   }
@@ -144,6 +137,5 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
     }
     return result;
   }
-
 
 }

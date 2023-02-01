@@ -33,7 +33,6 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
 
-
   public CopyRecordContentBeforeUpdateStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
   }
@@ -79,10 +78,6 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
       public void close() {
         lastFetched.close();
       }
-
-
-
-
     };
   }
 
@@ -97,7 +92,5 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
     }
     return result.toString();
   }
-
-
 
 }

@@ -38,12 +38,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
   // runtime
 
-
-
   private ResultSet prevResult = null;
 
   /**
-   * @param context              the execution context
+   * @param context          the execution context
    * @param filterClusterIds only extract values from these clusters. Pass null if no filtering is needed
    * @param profilingEnabled enable profiling
    */
@@ -54,11 +52,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-
-    if (prev.isEmpty()) {
-      throw new IllegalStateException("filter step requires a previous step");
-    }
-    final ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = checkForPrevious();
 
     return new ResultSet() {
 
@@ -165,11 +159,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
         }
       }
 
-
-
-
-
-
     };
   }
 
@@ -189,8 +178,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     }
     return result;
   }
-
-
 
   @Override
   public boolean canBeCached() {

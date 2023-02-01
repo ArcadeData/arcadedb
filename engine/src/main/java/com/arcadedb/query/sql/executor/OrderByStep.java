@@ -33,8 +33,6 @@ public class OrderByStep extends AbstractExecutionStep {
   private       Integer maxResults;
   private final long    timeoutMillis;
 
-
-
   List<Result> cachedResult = null;
   int          nextElement  = 0;
 
@@ -56,7 +54,8 @@ public class OrderByStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (cachedResult == null) {
       cachedResult = new ArrayList<>();
-      prev.ifPresent(p -> init(p, context));
+      if (prev != null)
+        init(prev, context);
     }
 
     return new ResultSet() {
@@ -94,10 +93,9 @@ public class OrderByStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        prev.ifPresent(p -> p.close());
+        if (prev != null)
+          prev.close();
       }
-
-
 
       @Override
       public Map<String, Long> getQueryStats() {
@@ -112,17 +110,16 @@ public class OrderByStep extends AbstractExecutionStep {
     boolean sorted = true;
     do {
       final ResultSet lastBatch = p.syncPull(context, 100);
-      if (!lastBatch.hasNext()) {
+      if (!lastBatch.hasNext())
         break;
-      }
-      while (lastBatch.hasNext()) {
-        if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
-          sendTimeout();
-        }
 
-        if (this.timedOut) {
+      while (lastBatch.hasNext()) {
+        if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis())
+          sendTimeout();
+
+        if (this.timedOut)
           break;
-        }
+
         final Result item = lastBatch.next();
         final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
@@ -187,6 +184,5 @@ public class OrderByStep extends AbstractExecutionStep {
     result += (maxResults != null ? "\n  (buffer size: " + maxResults + ")" : "");
     return result;
   }
-
 
 }

@@ -106,7 +106,7 @@ public interface BasicDatabase extends AutoCloseable {
   void rollback();
 
   /**
-   * Lookups for a record by its @{@link RID} (record id). If #loadContent is true, the content is immediately loaded, otherwise the content will be loaded at
+   * Looks up for a record by its @{@link RID} (record id). If #loadContent is true, the content is immediately loaded, otherwise the content will be loaded at
    * the first attempt to access to its content.
    *
    * @param rid         @{@link RID} record id

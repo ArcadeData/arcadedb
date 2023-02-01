@@ -50,7 +50,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   protected final boolean       reusable;
 
   public interface FetchCallback {
-    void fetch(Binary newBuffer) throws IOException;
+    void fetch(Binary newBuffer);
   }
 
   public Binary() {
@@ -499,7 +499,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    */
   public Binary slice() {
     // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-    synchronized (buffer) {
+    synchronized (this) {
       buffer.rewind();
       return new Binary(buffer.slice());
     }
@@ -514,7 +514,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    */
   public Binary slice(final int position) {
     // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-    synchronized (buffer) {
+    synchronized (this) {
       buffer.position(position);
       return new Binary(buffer.slice());
     }
@@ -531,7 +531,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   public Binary slice(final int position, final int length) {
     // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
     final ByteBuffer result;
-    synchronized (buffer) {
+    synchronized (this) {
       buffer.position(position);
       result = buffer.slice();
     }

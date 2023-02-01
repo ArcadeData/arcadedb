@@ -57,7 +57,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
    *
    * @param className the class name
    * @param clusters  if present (it can be null), filter by only these clusters
-   * @param context       the query context
+   * @param context   the query context
    * @param ridOrder  true to sort by RID asc, false to sort by RID desc, null for no sort.
    */
   public FetchFromClassExecutionStep(final String className, final Set<String> clusters, final QueryPlanningInfo planningInfo, final CommandContext context,
@@ -205,10 +205,11 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void sendTimeout() {
-    for (final ExecutionStep step : getSubSteps()) {
+    for (final ExecutionStep step : getSubSteps())
       ((AbstractExecutionStep) step).sendTimeout();
-    }
-    prev.ifPresent(p -> p.sendTimeout());
+
+    if (prev != null)
+      prev.sendTimeout();
   }
 
   @Override
@@ -216,7 +217,9 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     for (final ExecutionStep step : getSubSteps()) {
       ((AbstractExecutionStep) step).close();
     }
-    prev.ifPresent(p -> p.close());
+
+    if (prev != null)
+      prev.close();
   }
 
   @Override
@@ -241,7 +244,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public long getCost() {
-    return subSteps.stream().map(x -> x.getCost()).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L).orElse(-1L);
+    return subSteps.stream().map(ExecutionStep::getCost).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L).orElse(-1L);
   }
 
   @Override

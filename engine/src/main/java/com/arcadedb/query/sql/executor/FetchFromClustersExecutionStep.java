@@ -37,7 +37,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
    * iterates over a class and its subTypes
    *
    * @param bucketIds the clusters
-   * @param context       the query context
+   * @param context   the query context
    * @param ridOrder  true to sort by RID asc, false to sort by RID desc, null for no sort.
    */
   public FetchFromClustersExecutionStep(final int[] bucketIds, final CommandContext context, final Boolean ridOrder, final boolean profilingEnabled) {
@@ -142,18 +142,20 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void sendTimeout() {
-    for (final ExecutionStep step : subSteps) {
+    for (final ExecutionStep step : subSteps)
       ((AbstractExecutionStep) step).sendTimeout();
-    }
-    prev.ifPresent(p -> p.sendTimeout());
+
+    if (prev != null)
+      prev.sendTimeout();
   }
 
   @Override
   public void close() {
-    for (final ExecutionStep step : subSteps) {
+    for (final ExecutionStep step : subSteps)
       ((AbstractExecutionStep) step).close();
-    }
-    prev.ifPresent(p -> p.close());
+
+    if (prev != null)
+      prev.close();
   }
 
   @Override
@@ -183,7 +185,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
   @Override
   public long getCost() {
-    return subSteps.stream().map(x -> x.getCost()).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L).orElse(-1L);
+    return subSteps.stream().map(ExecutionStep::getCost).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L).orElse(-1L);
   }
 
 }

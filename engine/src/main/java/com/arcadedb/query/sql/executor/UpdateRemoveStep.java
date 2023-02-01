@@ -58,10 +58,6 @@ public class UpdateRemoveStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 

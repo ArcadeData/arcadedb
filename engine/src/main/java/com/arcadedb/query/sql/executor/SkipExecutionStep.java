@@ -35,13 +35,15 @@ public class SkipExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) {
-    if (finished) {
+    if (finished)
       return new InternalResultSet();//empty
-    }
+
+    checkForPrevious();
+
     final int skipValue = skip.getValue(context);
     while (skipped < skipValue) {
       //fetch and discard
-      final ResultSet rs = prev.get().syncPull(context, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
+      final ResultSet rs = prev.syncPull(context, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
       if (!rs.hasNext()) {
         finished = true;
         return new InternalResultSet();//empty
@@ -52,7 +54,7 @@ public class SkipExecutionStep extends AbstractExecutionStep {
       }
     }
 
-    return prev.get().syncPull(context, nRecords);
+    return prev.syncPull(context, nRecords);
   }
 
   @Override
@@ -62,7 +64,8 @@ public class SkipExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    prev.ifPresent(x -> x.close());
+    if (prev != null)
+      prev.close();
   }
 
   @Override

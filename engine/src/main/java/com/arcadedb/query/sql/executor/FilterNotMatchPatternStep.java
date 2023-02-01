@@ -28,7 +28,6 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   private ResultSet prevResult = null;
 
-
   public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext context, final boolean enableProfiling) {
     super(context, enableProfiling);
     this.subSteps = steps;
@@ -36,10 +35,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
-      throw new IllegalStateException("filter step requires a previous step");
-    }
-    final ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = checkForPrevious();
 
     return new ResultSet() {
       public boolean finished = false;

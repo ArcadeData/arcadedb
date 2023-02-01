@@ -25,77 +25,74 @@ import java.util.*;
 
 public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
-    private final ProjectionItem item;
-    private boolean executed = false;
+  private final ProjectionItem item;
+  private       boolean        executed = false;
 
-    public GuaranteeEmptyCountStep(
-            final ProjectionItem oProjectionItem, final CommandContext context, final boolean enableProfiling) {
-        super(context, enableProfiling);
-        this.item = oProjectionItem;
-    }
+  public GuaranteeEmptyCountStep(final ProjectionItem oProjectionItem, final CommandContext context, final boolean enableProfiling) {
+    super(context, enableProfiling);
+    this.item = oProjectionItem;
+  }
 
-    @Override
-    public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-        if (prev.isEmpty()) {
-            throw new IllegalStateException("filter step requires a previous step");
+  @Override
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    checkForPrevious();
+    final ResultSet upstream = prev.syncPull(context, nRecords);
+    return new ResultSet() {
+      @Override
+      public boolean hasNext() {
+        if (!executed) {
+          return true;
         }
-        final ResultSet upstream = prev.get().syncPull(context, nRecords);
-        return new ResultSet() {
-            @Override
-            public boolean hasNext() {
-                if (!executed) {
-                    return true;
-                }
 
-                return upstream.hasNext();
-            }
+        return upstream.hasNext();
+      }
 
-            @Override
-            public Result next() {
-                if (!hasNext()) {
-                    throw new NoSuchElementException();
-                }
+      @Override
+      public Result next() {
+        if (!hasNext()) {
+          throw new NoSuchElementException();
+        }
 
-                try {
-                    if (upstream.hasNext()) {
-                        return upstream.next();
-                    }
-                    final ResultInternal result = new ResultInternal();
-                    result.setProperty(item.getProjectionAliasAsString(), 0L);
-                    return result;
-                } finally {
-                    executed = true;
-                }
-            }
+        try {
+          if (upstream.hasNext()) {
+            return upstream.next();
+          }
+          final ResultInternal result = new ResultInternal();
+          result.setProperty(item.getProjectionAliasAsString(), 0L);
+          return result;
+        } finally {
+          executed = true;
+        }
+      }
 
-            @Override
-            public void close() {
-                prev.get().close();
-            }
+      @Override
+      public void close() {
+        prev.close();
+      }
 
-            @Override
-            public Optional<ExecutionPlan> getExecutionPlan() {
-                return Optional.empty();
-            }
+      @Override
+      public Optional<ExecutionPlan> getExecutionPlan() {
+        return Optional.empty();
+      }
 
-            @Override
-            public Map<String, Long> getQueryStats() {
-                return null;
-            }
-        };
-    }
+      @Override
+      public Map<String, Long> getQueryStats() {
+        return null;
+      }
+    };
+  }
 
-    @Override
-    public ExecutionStep copy(final CommandContext context) {
-        return new GuaranteeEmptyCountStep(item.copy(), context, profilingEnabled);
-    }
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new GuaranteeEmptyCountStep(item.copy(), context, profilingEnabled);
+  }
 
-    public boolean canBeCached() {
-        return true;
-    }
+  public boolean canBeCached() {
+    return true;
+  }
 
-    @Override
-    public String prettyPrint(final int depth, final int indent) {
-        return ExecutionStepInternal.getIndent(depth, indent) + "+ GUARANTEE FOR ZERO COUNT ";
-    }
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
+    return ExecutionStepInternal.getIndent(depth, indent) + "+ GUARANTEE FOR ZERO COUNT ";
+  }
 }

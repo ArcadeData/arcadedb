@@ -125,12 +125,11 @@ public class TransactionContext implements Transaction {
   }
 
   public Record getRecordFromCache(final RID rid) {
-    Record rec = null;
-    rec = modifiedRecordsCache.get(rid);
+    Record rec = modifiedRecordsCache.get(rid);
     if (rec == null)
       rec = immutableRecordsCache.get(rid);
     if (rec == null && updatedRecords != null)
-      // IN CASE READYOURWRITE IS FALSE, THE MODIFIED RECORD IS NT IN CACHE AND MUST BE READ FROM UPDATEDRECORDS
+      // IN CASE `READ-YOUR-WRITE` IS FALSE, THE MODIFIED RECORD IS NOT IN CACHE AND MUST BE READ FROM THE UPDATE RECORDS
       rec = updatedRecords.get(rid);
     return rec;
   }
@@ -168,7 +167,7 @@ public class TransactionContext implements Transaction {
 
     if (database.isReadYourWrites()) {
       if (rid == null)
-        throw new IllegalArgumentException("Cannot remove record in TX cache because it is not persistent: " + rid);
+        throw new IllegalArgumentException("Cannot remove record in TX cache because it is not persistent");
       modifiedRecordsCache.remove(rid);
       immutableRecordsCache.remove(rid);
     }

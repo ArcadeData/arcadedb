@@ -32,9 +32,11 @@ public class RoundRobinBucketSelectionStrategy extends ThreadBucketSelectionStra
   @Override
   public void setType(final DocumentType type) {
     this.total = type.getBuckets(false).size();
-    if (current >= total)
-      // RESET IT
-      current = -1;
+    synchronized (this) {
+      if (current >= total)
+        // RESET IT
+        current = -1;
+    }
   }
 
   @Override
@@ -42,13 +44,15 @@ public class RoundRobinBucketSelectionStrategy extends ThreadBucketSelectionStra
     if (async)
       return super.getBucketIdByRecord(record, async);
 
-    // COPY THE VALUE ON THE HEAP FOR MULTI-THREAD ACCESS
-    int bucketIndex = ++current;
-    if (bucketIndex >= total) {
-      current = 0;
-      bucketIndex = 0;
+    synchronized (this) {
+      // COPY THE VALUE ON THE HEAP FOR MULTI-THREAD ACCESS
+      int bucketIndex = ++current;
+      if (bucketIndex >= total) {
+        current = 0;
+        bucketIndex = 0;
+      }
+      return bucketIndex;
     }
-    return bucketIndex;
   }
 
   @Override

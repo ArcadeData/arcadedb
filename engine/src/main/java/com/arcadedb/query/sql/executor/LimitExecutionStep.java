@@ -36,14 +36,16 @@ public class LimitExecutionStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final int limitVal = limit.getValue(context);
-    if (limitVal == -1) {
+    if (limitVal == -1)
       return getPrev().get().syncPull(context, nRecords);
-    }
-    if (limitVal <= loaded) {
+
+    if (limitVal <= loaded)
       return new InternalResultSet();
-    }
+
+    checkForPrevious();
+
     final int nextBlockSize = Math.min(nRecords, limitVal - loaded);
-    final ResultSet result = prev.get().syncPull(context, nextBlockSize);
+    final ResultSet result = prev.syncPull(context, nextBlockSize);
     loaded += nextBlockSize;
     return result;
   }
@@ -55,12 +57,12 @@ public class LimitExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    prev.ifPresent(x -> x.close());
+    if (prev != null)
+      prev.close();
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ LIMIT (" + limit.toString() + ")";
   }
-
 }

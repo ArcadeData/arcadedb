@@ -41,9 +41,9 @@ public class ExpandStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (prev == null || prev.isEmpty()) {
+    if (prev == null)
       throw new CommandExecutionException("Cannot expand without a target");
-    }
+
     return new ResultSet() {
       long localCount = 0;
 

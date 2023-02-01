@@ -167,12 +167,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkForLazyLoadingProperties();
     dirty = true;
 
-    if (properties.length > 0) {
-      for (int p = 0; p < properties.length; p += 2) {
-        final String propertyName = (String) properties[p];
-        final Object value = setTransformValue(properties[p + 1], propertyName);
-        map.put(propertyName, convertValueToSchemaType(propertyName, value, type));
-      }
+    for (int p = 0; p < properties.length; p += 2) {
+      final String propertyName = (String) properties[p];
+      final Object value = setTransformValue(properties[p + 1], propertyName);
+      map.put(propertyName, convertValueToSchemaType(propertyName, value, type));
     }
 
     return this;

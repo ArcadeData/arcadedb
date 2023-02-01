@@ -29,8 +29,6 @@ import com.arcadedb.exception.TimeoutException;
 public class CheckRecordTypeStep extends AbstractExecutionStep {
   private final String typez;
 
-
-
   public CheckRecordTypeStep(final CommandContext context, final String className, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.typez = className;
@@ -38,7 +36,9 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = prev.get().syncPull(context, nRecords);
+    checkForPrevious();
+
+    final ResultSet upstream = prev.syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -74,10 +74,6 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 
@@ -90,6 +86,5 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
     result += (ExecutionStepInternal.getIndent(depth, indent) + "  " + typez);
     return result;
   }
-
 
 }

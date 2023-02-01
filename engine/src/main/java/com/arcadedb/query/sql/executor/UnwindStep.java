@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Unwind;
 
@@ -32,7 +31,6 @@ import java.util.stream.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class UnwindStep extends AbstractExecutionStep {
-
   private final Unwind       unwind;
   private final List<String> unwindFields;
 
@@ -48,9 +46,8 @@ public class UnwindStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (prev == null || prev.isEmpty()) {
-      throw new CommandExecutionException("Cannot expand without a target");
-    }
+    checkForPrevious("Cannot expand without a target");
+
     return new ResultSet() {
       long localCount = 0;
 
@@ -83,11 +80,6 @@ public class UnwindStep extends AbstractExecutionStep {
         fetchNext(context, nRecords);
         return result;
       }
-
-
-
-
-
 
     };
   }

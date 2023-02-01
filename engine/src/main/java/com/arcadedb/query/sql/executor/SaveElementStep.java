@@ -67,10 +67,6 @@ public class SaveElementStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 

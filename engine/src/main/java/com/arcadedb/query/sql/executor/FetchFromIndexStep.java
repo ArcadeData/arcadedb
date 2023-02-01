@@ -124,11 +124,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
-        // NO ACTIONS
-      }
-
     };
   }
 

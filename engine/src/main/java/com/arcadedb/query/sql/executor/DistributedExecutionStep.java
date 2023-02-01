@@ -58,10 +58,6 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
       public void close() {
         DistributedExecutionStep.this.close();
       }
-
-
-
-
     };
   }
 

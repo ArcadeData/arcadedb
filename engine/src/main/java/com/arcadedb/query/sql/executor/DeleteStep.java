@@ -27,7 +27,6 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class DeleteStep extends AbstractExecutionStep {
 
-
   public DeleteStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
   }
@@ -61,10 +60,6 @@ public class DeleteStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 
@@ -79,6 +74,5 @@ public class DeleteStep extends AbstractExecutionStep {
     }
     return result.toString();
   }
-
 
 }

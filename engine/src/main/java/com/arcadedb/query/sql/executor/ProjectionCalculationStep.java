@@ -34,11 +34,9 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
-      throw new IllegalStateException("Cannot calculate projections without a previous source");
-    }
+    checkForPrevious();
 
-    final ResultSet parentRs = prev.get().syncPull(context, nRecords);
+    final ResultSet parentRs = prev.syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {

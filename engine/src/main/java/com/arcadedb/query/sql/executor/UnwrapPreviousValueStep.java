@@ -28,15 +28,15 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
-
-
   public UnwrapPreviousValueStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = prev.get().syncPull(context, nRecords);
+    checkForPrevious();
+
+    final ResultSet upstream = prev.syncPull(context, nRecords);
     return new ResultSet() {
 
       @Override
@@ -69,10 +69,6 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 
@@ -84,6 +80,5 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
     }
     return result;
   }
-
 
 }

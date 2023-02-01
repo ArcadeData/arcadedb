@@ -152,7 +152,7 @@ public interface Database extends BasicDatabase {
   void scanBucket(String bucketName, RecordCallback callback, ErrorRecordCallback errorRecordCallback);
 
   /**
-   * Lookups for records of a specific type by a key and value. This operation requires an index to be created against the property used in the key.
+   * Looks up for records of a specific type by a key and value. This operation requires an index to be created against the property used in the key.
    *
    * @param type     Type name
    * @param keyName  Name of the property defined in the index to use
@@ -165,7 +165,7 @@ public interface Database extends BasicDatabase {
   IndexCursor lookupByKey(String type, String keyName, Object keyValue);
 
   /**
-   * Lookups for records of a specific type by a set of keys and values. This operation requires an index to be created against the properties used in the key.
+   * Looks up for records of a specific type by a set of keys and values. This operation requires an index to be created against the properties used in the key.
    *
    * @param type      Type name
    * @param keyNames  Names of the property defined in the index to use
@@ -296,14 +296,14 @@ public interface Database extends BasicDatabase {
   <RET> RET executeInWriteLock(Callable<RET> callable);
 
   /**
-   * If enabled, writes the writes to the database are immediately available in queries and lookups.
+   * If enabled, writes the writes to the database are immediately available in queries and lookup.
    *
    * @return true if "ready your write" setting is enabled, otherwise false.
    */
   boolean isReadYourWrites();
 
   /**
-   * Tells to the database writes must be immediately available for following reads and lookups. Disable this setting to speedup massive insertion workloads.
+   * Tells to the database writes must be immediately available for following reads and lookup. Disable this setting to speedup massive insertion workloads.
    *
    * @param value set to true to enable the "ready your write" setting, otherwise false.
    *
@@ -338,7 +338,7 @@ public interface Database extends BasicDatabase {
   /**
    * Sets the WAL (Write Ahead Log - Transaction Journal) flush strategy.
    *
-   * @param flush The new value contained in the enum: NO (no flush), YES_NOMETADATA (flush only data, no metadata), YES_FULL (full flush)
+   * @param flush The new value contained in the enum: `NO` (no flush), `YES_NOMETADATA` (flush only data, no metadata), `YES_FULL` (full flush)
    *
    * @return Current Database instance to execute setter methods in chain.
    *

@@ -156,7 +156,7 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
   }
 
   @Override
-  public void readExternal(final ObjectInput in) throws IOException, ClassNotFoundException {
+  public void readExternal(final ObjectInput in) throws IOException {
     JavaBinarySerializer.readExternal(this, in);
   }
 }

@@ -27,13 +27,9 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class SingleOpExecutionPlan implements InternalExecutionPlan {
-
   protected final SimpleExecStatement statement;
-
-  final CommandContext context;
-
+  final           CommandContext      context;
   boolean executed = false;
-
   private ResultSet result;
 
   public SingleOpExecutionPlan(final CommandContext context, final SimpleExecStatement stm) {
@@ -43,9 +39,9 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public ResultSet fetchNext(final int n) {
-    if (executed && result == null) {
+    if (executed && result == null)
       return new InternalResultSet();
-    }
+
     if (!executed) {
       executed = true;
       result = statement.executeSimple(this.context);
@@ -107,8 +103,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    final String result = spaces + "+ " + statement.toString();
-    return result;
+    return spaces + "+ " + statement.toString();
   }
 
   @Override

@@ -239,9 +239,9 @@ public class TransactionIndexContext {
         for (final Bucket b : buckets)
           modifiedFiles.add(b.getId());
 
-        for (final Index typeIndex : type.getAllIndexes(true))
-          for (final Index idx : ((TypeIndex) typeIndex).getIndexesOnBuckets())
-            modifiedFiles.add(((IndexInternal) idx).getFileId());
+        for (final TypeIndex typeIndex : type.getAllIndexes(true))
+          for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
+            modifiedFiles.add(idx.getFileId());
       } else
         modifiedFiles.add(index.getAssociatedBucketId());
     }
@@ -410,12 +410,7 @@ public class TransactionIndexContext {
           for (final IndexKey entry : valuesPerKey.values()) {
             if (!entry.addOperation) {
               final TypeIndex typeIndex = index.getTypeIndex();
-              Map<ComparableKey, RID> entries = deletedKeys.get(typeIndex);
-              if (entries == null) {
-                entries = new HashMap<>();
-                deletedKeys.put(typeIndex, entries);
-              }
-
+              final Map<ComparableKey, RID> entries = deletedKeys.computeIfAbsent(typeIndex, k -> new HashMap<>());
               entries.put(new ComparableKey(entry.keyValues), entry.rid);
             }
           }

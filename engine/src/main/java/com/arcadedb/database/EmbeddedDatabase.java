@@ -384,7 +384,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         current.popIfNotLastTransaction().rollback();
 
       } catch (final TransactionException e) {
-        // ALREADY ROLLBACKED
+        // ALREADY ROLLED BACK
       }
       return null;
     });

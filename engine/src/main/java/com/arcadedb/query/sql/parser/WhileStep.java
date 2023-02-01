@@ -44,10 +44,12 @@ public class WhileStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    prev.ifPresent(x -> x.syncPull(context, nRecords));
-    if (finalResult != null) {
+    if (prev != null)
+      prev.syncPull(context, nRecords);
+
+    if (finalResult != null)
       return finalResult.syncPull(context, nRecords);
-    }
+
 
     while (condition.evaluate(new ResultInternal(), context)) {
       final ScriptExecutionPlan plan = initPlan(context);

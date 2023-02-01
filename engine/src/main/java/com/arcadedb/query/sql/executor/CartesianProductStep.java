@@ -39,8 +39,6 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   ResultInternal nextRecord;
 
-
-
   public CartesianProductStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
   }
@@ -71,27 +69,17 @@ public class CartesianProductStep extends AbstractExecutionStep {
         currentCount++;
         return result;
       }
-
-      @Override
-      public void close() {
-        // EMPTY METHOD
-      }
-
-
-
-
     };
     //    throw new UnsupportedOperationException("cartesian product is not yet implemented in MATCH statement");
     //TODO
   }
 
   private void init() {
-    if (subPlans.isEmpty()) {
+    if (subPlans.isEmpty())
       return;
-    }
-    if (inited) {
+
+    if (inited)
       return;
-    }
 
     for (final InternalExecutionPlan plan : subPlans) {
       resultSets.add(new LocalResultSet(plan));
@@ -269,6 +257,5 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private String appendPipe(final String p) {
     return "| " + p;
   }
-
 
 }

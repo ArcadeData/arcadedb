@@ -365,9 +365,7 @@ public interface DatabaseAsyncExecutor {
   /**
    * Sets the WAL (Write Ahead Log - Transaction Journal) flush strategy for asynchronous operations.
    *
-   * @param transactionSync The new value contained in the enum: NO (no flush), YES_NOMETADATA (flush only data, no metadata), YES_FULL (full flush)
-   *
-   * @return Current Database instance to execute setter methods in chain.
+   * @param transactionSync The new value contained in the enum: `NO` (no flush), `YES_NOMETADATA` (flush only data, no metadata), `YES_FULL` (full flush)
    *
    * @see Database#setWALFlush(WALFile.FLUSH_TYPE)
    */

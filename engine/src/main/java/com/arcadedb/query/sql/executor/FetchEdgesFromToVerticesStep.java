@@ -90,7 +90,6 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
           ((ResultSet) fromIter).close();
         }
       }
-
     };
   }
 

@@ -59,10 +59,6 @@ public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 

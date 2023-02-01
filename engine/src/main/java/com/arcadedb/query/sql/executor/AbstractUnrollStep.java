@@ -46,9 +46,9 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) {
-    if (prev == null || prev.isEmpty()) {
+    if (prev == null)
       throw new CommandExecutionException("Cannot expand without a target");
-    }
+
     return new ResultSet() {
       long localCount = 0;
 
@@ -91,13 +91,11 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
         break;
       }
 
-      if (nextSubsequence == null || !nextSubsequence.hasNext()) {
-        if (lastResult == null || !lastResult.hasNext()) {
-          lastResult = getPrev().get().syncPull(context, n);
-        }
-        if (!lastResult.hasNext()) {
-          return;
-        }
+      if (lastResult == null || !lastResult.hasNext()) {
+        lastResult = getPrev().get().syncPull(context, n);
+      }
+      if (!lastResult.hasNext()) {
+        return;
       }
 
       final Result nextAggregateItem = lastResult.next();

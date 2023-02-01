@@ -147,7 +147,8 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    prev.ifPresent(x -> x.close());
+    if (prev != null)
+      prev.close();
   }
 
   @Override

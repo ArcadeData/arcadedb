@@ -25,11 +25,11 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public abstract class AbstractExecutionStep implements ExecutionStepInternal {
-  protected final CommandContext                  context;
-  protected       Optional<ExecutionStepInternal> prev     = Optional.empty();
-  protected       boolean                         timedOut = false;
-  protected       long                            cost     = -1;
-  protected final boolean                         profilingEnabled;
+  protected final CommandContext        context;
+  protected       ExecutionStepInternal prev     = null;
+  protected       boolean               timedOut = false;
+  protected       long                  cost     = -1;
+  protected final boolean               profilingEnabled;
 
   public AbstractExecutionStep(final CommandContext context, final boolean profilingEnabled) {
     this.context = context;
@@ -38,7 +38,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
 
   @Override
   public void setPrevious(final ExecutionStepInternal step) {
-    this.prev = Optional.ofNullable(step);
+    this.prev = step;
   }
 
   public CommandContext getContext() {
@@ -46,13 +46,14 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   }
 
   public Optional<ExecutionStepInternal> getPrev() {
-    return prev;
+    return Optional.ofNullable(prev);
   }
 
   @Override
   public void sendTimeout() {
     this.timedOut = true;
-    prev.ifPresent(ExecutionStepInternal::sendTimeout);
+    if (prev != null)
+      prev.sendTimeout();
   }
 
   public boolean isTimedOut() {
@@ -61,7 +62,8 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
 
   @Override
   public void close() {
-    prev.ifPresent(ExecutionStepInternal::close);
+    if (prev != null)
+      prev.close();
   }
 
   @Override
@@ -73,4 +75,15 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
     final long computedCost = getCost();
     return computedCost > -1 ? new DecimalFormat().format(computedCost / 1000) + "μs" : "";
   }
+
+  protected ExecutionStepInternal checkForPrevious() {
+    return checkForPrevious("filter step requires a previous step");
+  }
+
+  protected ExecutionStepInternal checkForPrevious(final String exceptionMessage) {
+    if (prev == null)
+      throw new IllegalStateException(exceptionMessage);
+    return prev;
+  }
+
 }

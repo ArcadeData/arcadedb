@@ -31,7 +31,6 @@ import java.util.stream.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ScriptExecutionPlan implements InternalExecutionPlan {
-
   private final CommandContext        context;
   private       boolean               executed    = false;
   protected     List<ScriptLineStep>  steps       = new ArrayList<>();
