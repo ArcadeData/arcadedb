@@ -134,7 +134,8 @@ public abstract class AbstractHandler implements HttpHandler {
       }
 
     } catch (final ServerSecurityException e) {
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s)", e, getClass().getSimpleName());
+      // PASS SecurityException TO THE CLIENT
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s)", e, SecurityException.class.getSimpleName());
       sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
       LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());

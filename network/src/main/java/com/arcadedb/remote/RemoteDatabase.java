@@ -438,11 +438,9 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
           if (connection.getResponseCode() != 200) {
             lastException = manageException(connection, payloadCommand != null ? payloadCommand : operation);
-            if (lastException != null) {
-              if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received"))
-                LogManager.instance().log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
-              continue;
-            }
+            if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received"))
+              LogManager.instance().log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
+            continue;
           }
 
           final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
@@ -525,6 +523,8 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
       connection.connect();
       if (connection.getResponseCode() != 200) {
         final Exception detail = manageException(connection, "cluster configuration");
+        if (detail instanceof SecurityException)
+          throw detail;
         throw new SecurityException("Error on requesting cluster configuration: " + connection.getResponseMessage(), detail);
       }
 
@@ -569,6 +569,8 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
       LogManager.instance().log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s", null, leaderServer, replicaServerList);
 
+    } catch (final SecurityException e) {
+      throw e;
     } catch (final Exception e) {
       throw new DatabaseOperationException("Error on requesting cluster configuration", e);
     }
@@ -717,27 +719,29 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
       if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
         final int sep = detail.lastIndexOf('.');
-        throw new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
+        return new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
         final String[] exceptionArgsParts = exceptionArgs.split("\\|");
-        throw new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(this, exceptionArgsParts[2]));
+        return new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(this, exceptionArgsParts[2]));
       } else if (exception.equals(ConcurrentModificationException.class.getName())) {
-        throw new ConcurrentModificationException(detail);
+        return new ConcurrentModificationException(detail);
       } else if (exception.equals(TransactionException.class.getName())) {
-        throw new TransactionException(detail);
+        return new TransactionException(detail);
       } else if (exception.equals(TimeoutException.class.getName())) {
-        throw new TimeoutException(detail);
+        return new TimeoutException(detail);
       } else if (exception.equals(SchemaException.class.getName())) {
-        throw new SchemaException(detail);
+        return new SchemaException(detail);
       } else if (exception.equals(NoSuchElementException.class.getName())) {
-        throw new NoSuchElementException(detail);
+        return new NoSuchElementException(detail);
       } else if (exception.equals(SecurityException.class.getName())) {
-        throw new SecurityException(detail);
+        return new SecurityException(detail);
+      } else if (exception.equals("com.arcadedb.server.security.ServerSecurityException")) {
+        return new SecurityException(detail);
       } else
         // ELSE
-        throw new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
+        return new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
     }
 
     final String httpErrorDescription = connection.getResponseMessage();
@@ -748,7 +752,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
       return new RuntimeException("Empty payload received");
     }
 
-    throw new RemoteException(
+    return new RemoteException(
         "Error on executing remote command '" + operation + "' (httpErrorCode=" + connection.getResponseCode() + " httpErrorDescription=" + httpErrorDescription
             + " reason=" + reason + " detail=" + detail + " exception=" + exception + ")");
   }

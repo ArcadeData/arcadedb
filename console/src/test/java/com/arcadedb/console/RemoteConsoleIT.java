@@ -19,7 +19,6 @@
 package com.arcadedb.console;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -57,6 +56,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
       Assertions.assertTrue(console.parse("connect " + URL_NOCREDENTIALS + ";create document type VVVV"));
       Assertions.fail("Security was bypassed!");
     } catch (final ConsoleException e) {
+      // EXPECTED
     }
   }
 
@@ -65,7 +65,8 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     try {
       Assertions.assertTrue(console.parse("connect " + URL_WRONGPASSWD + ";create document type VVVV"));
       Assertions.fail("Security was bypassed!");
-    } catch (final RemoteException e) {
+    } catch (final SecurityException e) {
+      // EXPECTED
     }
   }
 
