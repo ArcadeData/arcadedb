@@ -195,9 +195,9 @@ public class UpdateItem extends SimpleNode {
 
   private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final MathExpression.Operator explicitOperator) {
     final Expression leftEx = new Expression(left.copy());
-    if (leftModifier != null) {
+    if (leftModifier != null)
       ((BaseExpression) leftEx.mathExpression).modifier = leftModifier.copy();
-    }
+
     final MathExpression mathExp = new MathExpression(-1);
     mathExp.getChildExpressions().add(leftEx.getMathExpression());
     mathExp.getChildExpressions().add(new ParenthesisExpression(right.copy()));

@@ -29,7 +29,7 @@ import java.util.*;
 import java.util.stream.*;
 
 public class PCollection extends SimpleNode {
-  protected List<Expression> expressions = new ArrayList<Expression>();
+  protected List<Expression> expressions = new ArrayList<>();
 
   public PCollection(final int id) {
     super(id);

@@ -206,11 +206,41 @@ public class MathExpression extends SimpleNode {
           final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
 
           final Number r = apply(leftAsLong, rightAsLong);
-          return Duration.of( r.longValue(), highestPrecision );
+          return Duration.of(r.longValue(), highestPrecision);
+        } else if (left instanceof Collection) {
+          final Collection<Object> coll = (Collection<Object>) left;
+          coll.add(right);
+          return left;
+        } else if (left instanceof Map) {
+          final Map<String, Object> mapLeft = (Map<String, Object>) left;
+
+          if (right instanceof Map) {
+            final Map<String, Object> mapRight = (Map<String, Object>) right;
+            mapLeft.putAll(mapRight);
+          } else if (right instanceof Collection) {
+            final Collection<Object> arrayRight = (Collection<Object>) right;
+            if (arrayRight.size() % 2 != 0)
+              throw new IllegalArgumentException("Cannot add items to the maps because the collection contains odd entries");
+
+            for (final Iterator<Object> iter = arrayRight.iterator(); iter.hasNext(); ) {
+              final String key = iter.next().toString();
+              final Object value = iter.next();
+              mapLeft.put(key, value);
+            }
+          } else if (right.getClass().isArray()) {
+            final Object[] arrayRight = (Object[]) right;
+            if (arrayRight.length % 2 != 0)
+              throw new IllegalArgumentException("Cannot add items to the maps because the array contains odd entries");
+            for (int i = 0; i < arrayRight.length; i += 2)
+              mapLeft.put(arrayRight[i].toString(), arrayRight[i + 1]);
+          }
+          return left;
         }
         return String.valueOf(left) + right;
       }
-    }, MINUS(20) {
+    },
+
+    MINUS(20) {
       @Override
       public Number apply(final Integer left, final Integer right) {
         final int result = left - right;
@@ -256,16 +286,40 @@ public class MathExpression extends SimpleNode {
           final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
           final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
           final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
-
           final Number r = apply(leftAsLong, rightAsLong);
+          result = Duration.of(r.longValue(), highestPrecision);
+        } else if (left instanceof Collection) {
+          final Collection<Object> coll = (Collection<Object>) left;
+          coll.remove(right);
+          return left;
+        } else if (left instanceof Map) {
+          final Map<String, Object> mapLeft = (Map<String, Object>) left;
 
-          result = Duration.of( r.longValue(), highestPrecision );
+          if (right instanceof Map) {
+            final Map<String, Object> mapRight = (Map<String, Object>) right;
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) mapRight).entrySet()) {
+              if (entry.getValue().equals(mapLeft.get(entry.getKey())))
+                mapLeft.remove(entry.getKey());
+            }
+          } else if (right instanceof Collection) {
+            final Collection<Object> arrayRight = (Collection<Object>) right;
+            for (final Iterator<Object> iter = arrayRight.iterator(); iter.hasNext(); ) {
+              final String key = iter.next().toString();
+              mapLeft.remove(key);
+            }
+          } else if (right.getClass().isArray()) {
+            final Object[] arrayRight = (Object[]) right;
+            for (int i = 0; i < arrayRight.length; ++i)
+              mapLeft.remove(arrayRight[i].toString());
+          }
+          return left;
         }
 
         return result;
       }
+    },
 
-    }, LSHIFT(30) {
+    LSHIFT(30) {
       @Override
       public Number apply(final Integer left, final Integer right) {
         return left << right;
@@ -298,7 +352,9 @@ public class MathExpression extends SimpleNode {
         }
         return super.apply(left, right);
       }
-    }, RSHIFT(30) {
+    },
+
+    RSHIFT(30) {
       @Override
       public Number apply(final Integer left, final Integer right) {
         return left >> right;
@@ -332,7 +388,9 @@ public class MathExpression extends SimpleNode {
         return super.apply(left, right);
       }
 
-    }, RUNSIGNEDSHIFT(30) {
+    },
+
+    RUNSIGNEDSHIFT(30) {
       @Override
       public Number apply(final Integer left, final Integer right) {
         return left >>> right;
@@ -366,7 +424,9 @@ public class MathExpression extends SimpleNode {
         return super.apply(left, right);
       }
 
-    }, BIT_AND(40) {
+    },
+
+    BIT_AND(40) {
       @Override
       public Number apply(final Integer left, final Integer right) {
         return left & right;
@@ -398,7 +458,9 @@ public class MathExpression extends SimpleNode {
         }
         return super.apply(left, right);
       }
-    }, XOR(50) {
+    },
+
+    XOR(50) {
       @Override
       public Number apply(final Integer left, final Integer right) {
         return left ^ right;
@@ -443,7 +505,9 @@ public class MathExpression extends SimpleNode {
         return null;
       }
 
-    }, BIT_OR(60) {
+    },
+
+    BIT_OR(60) {
       @Override
       public Number apply(final Integer left, final Integer right) {
         return left | right;
@@ -476,7 +540,9 @@ public class MathExpression extends SimpleNode {
         return super.apply(left == null ? 0 : left, right == null ? 0 : right);
       }
 
-    }, NULL_COALESCING(25) {
+    },
+
+    NULL_COALESCING(25) {
       @Override
       public Number apply(final Integer left, final Integer right) {
         return left != null ? left : right;
@@ -624,12 +690,11 @@ public class MathExpression extends SimpleNode {
   }
 
   public Object execute(final Result iCurrentRecord, final CommandContext context) {
-    if (childExpressions.isEmpty()) {
+    if (childExpressions.isEmpty())
       return null;
-    }
-    if (childExpressions.size() == 1) {
+
+    if (childExpressions.size() == 1)
       return childExpressions.get(0).execute(iCurrentRecord, context);
-    }
 
     if (childExpressions.size() == 2) {
       final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, context);

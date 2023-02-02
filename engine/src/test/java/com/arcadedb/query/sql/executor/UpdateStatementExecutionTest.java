@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
@@ -264,6 +265,52 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  public void testPlusAssignCollection() {
+    ResultSet result = database.command("sql", "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
+    final RID rid = result.next().getIdentity().get();
+    result = database.command("sql", "update " + rid + " set listStrings += '!', listNumbers += 9");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    List<String> listStrings = item.getProperty("listStrings");
+    Assertions.assertEquals(5, listStrings.size());
+    Assertions.assertEquals("!", listStrings.get(4));
+
+    List<Number> listNumbers = item.getProperty("listNumbers");
+    Assertions.assertEquals(4, listNumbers.size());
+    Assertions.assertEquals(9, listNumbers.get(3));
+  }
+
+  @Test
+  public void testPlusAssignMap() {
+    ResultSet result = database.command("sql", "insert into " + className + " set map1 = {'name':'Jay'}, map2 = {'name':'Jay'}");
+    final RID rid = result.next().getIdentity().get();
+    result = database.command("sql", "update " + rid + " set map1 += { 'last': 'Miner'}, map2 += [ 'last', 'Miner']");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    Map<String, String> map1 = item.getProperty("map1");
+    Assertions.assertEquals(2, map1.size());
+    Assertions.assertEquals("Jay", map1.get("name"));
+    Assertions.assertEquals("Miner", map1.get("last"));
+
+    Map<String, String> map2 = item.getProperty("map2");
+    Assertions.assertEquals(2, map2.size());
+    Assertions.assertEquals("Jay", map2.get("name"));
+    Assertions.assertEquals("Miner", map2.get("last"));
+  }
+
+  @Test
   public void testPlusAssign() {
     ResultSet result = database.command("sql", "update " + className + " set name += 'foo', newField += 'bar', number += 5");
     Assertions.assertTrue(result.hasNext());
@@ -306,6 +353,48 @@ public class UpdateStatementExecutionTest extends TestHelper {
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
+  }
+
+  @Test
+  public void testMinusAssignCollection() {
+    ResultSet result = database.command("sql", "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
+    final RID rid = result.next().getIdentity().get();
+    result = database.command("sql", "update " + rid + " set listStrings -= 'a', listNumbers -= 2");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    List<String> listStrings = item.getProperty("listStrings");
+    Assertions.assertEquals(3, listStrings.size());
+    Assertions.assertFalse(listStrings.contains("!"));
+
+    List<Number> listNumbers = item.getProperty("listNumbers");
+    Assertions.assertEquals(2, listNumbers.size());
+    Assertions.assertFalse(listNumbers.contains(2));
+  }
+
+  @Test
+  public void testMinusAssignMap() {
+    ResultSet result = database.command("sql", "insert into " + className + " set map1 = {'name':'Jay'}, map2 = {'name':'Jay'}");
+    final RID rid = result.next().getIdentity().get();
+    result = database.command("sql", "update " + rid + " set map1 -= {'name':'Jay'}, map2 -= [ 'name' ]");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    Map<String, String> map1 = item.getProperty("map1");
+    Assertions.assertEquals(0, map1.size());
+
+    Map<String, String> map2 = item.getProperty("map2");
+    Assertions.assertEquals(0, map2.size());
   }
 
   @Test

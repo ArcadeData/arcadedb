@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 02/07/15.
@@ -204,6 +205,43 @@ public class MathExpressionTest {
     testNullCoalescingGeneric(nullExpr(), str("3"), "3");
   }
 
+  @Test
+  public void testAddListOfNumbers() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(list(1, 2, 3));
+    exp.operators.add(MathExpression.Operator.PLUS);
+    exp.childExpressions.add(integer(5));
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertTrue(result instanceof List<?>);
+    Assertions.assertEquals(5, ((List<Object>) result).get(3));
+  }
+
+  @Test
+  public void testAddListOfStrings() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(list("this", "is", "a"));
+    exp.operators.add(MathExpression.Operator.PLUS);
+    exp.childExpressions.add(str("test"));
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertTrue(result instanceof List<?>);
+    Assertions.assertEquals("test", ((List<Object>) result).get(3));
+  }
+
+  @Test
+  public void testRemoveListOfStrings() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(list("this", "is", "a", "test"));
+    exp.operators.add(MathExpression.Operator.MINUS);
+    exp.childExpressions.add(str("a"));
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertTrue(result instanceof List<?>);
+    Assertions.assertEquals(3, ((List<?>) result).size());
+    Assertions.assertFalse(((List<Object>) result).contains("a"));
+  }
+
   private void testNullCoalescingGeneric(final MathExpression left, final MathExpression right, final Object expected) {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(left);
@@ -249,6 +287,21 @@ public class MathExpressionTest {
     for (final Number val : values) {
       final Expression sub = new Expression(-1);
       sub.mathExpression = integer(val);
+      coll.expressions.add(sub);
+    }
+    return exp;
+  }
+
+  private MathExpression list(final String... values) {
+    final BaseExpression exp = new BaseExpression(-1);
+    exp.identifier = new BaseIdentifier(-1);
+    exp.identifier.levelZero = new LevelZeroIdentifier(-1);
+    final PCollection coll = new PCollection(-1);
+    exp.identifier.levelZero.collection = coll;
+
+    for (final String val : values) {
+      final Expression sub = new Expression(-1);
+      sub.mathExpression = str(val);
       coll.expressions.add(sub);
     }
     return exp;
