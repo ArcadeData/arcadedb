@@ -31,14 +31,14 @@ import java.util.*;
  */
 public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
-  public BreadthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth, final CommandContext context,
-      final boolean profilingEnabled) {
+  public BreadthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
+      final CommandContext context, final boolean profilingEnabled) {
     super(projections, whileClause, maxDepth, context, profilingEnabled);
   }
 
   @Override
   protected void fetchNextEntryPoints(final CommandContext context, final int nRecords) {
-    final ResultSet nextN = getPrev().get().syncPull(context, nRecords);
+    final ResultSet nextN = getPrev().syncPull(context, nRecords);
     while (nextN.hasNext()) {
       final Result item = toTraverseResult(nextN.next());
       if (item == null) {
@@ -112,7 +112,8 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     }
   }
 
-  private void addNextEntryPoints(final Object nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext context) {
+  private void addNextEntryPoints(final Object nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
+      final CommandContext context) {
     if (nextStep instanceof Identifiable) {
       addNextEntryPoint(((Identifiable) nextStep), depth, path, stack, context);
     } else if (nextStep instanceof Iterable) {
@@ -124,14 +125,15 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     }
   }
 
-  private void addNextEntryPoints(final Iterator nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext context) {
+  private void addNextEntryPoints(final Iterator nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
+      final CommandContext context) {
     while (nextStep.hasNext()) {
       addNextEntryPoints(nextStep.next(), depth, path, stack, context);
     }
   }
 
-  private void addNextEntryPoint(
-      final Identifiable nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext context) {
+  private void addNextEntryPoint(final Identifiable nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
+      final CommandContext context) {
     if (this.traversed.contains(nextStep.getIdentity())) {
       return;
     }

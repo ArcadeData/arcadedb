@@ -36,7 +36,7 @@ public class UpdateSetStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {

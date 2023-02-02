@@ -26,9 +26,6 @@ import java.util.*;
  * Created by luigidellaquila on 08/07/16.
  */
 public class EmptyDataGeneratorStep extends AbstractExecutionStep {
-
-
-
   final int size;
   int served = 0;
 
@@ -39,7 +36,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -81,6 +78,4 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
     }
     return result;
   }
-
-
 }

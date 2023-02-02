@@ -39,7 +39,7 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet lastFetched = getPrev().get().syncPull(context, nRecords);
+    final ResultSet lastFetched = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {

@@ -21,6 +21,5 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Identifiable;
 
 public interface SQLFunctionFiltered {
-  Object execute(Object targetObjects, Identifiable current, Object o, Object[] objects, Iterable<Identifiable> iPossibleResults,
-      CommandContext context);
+  Object execute(Object targetObjects, Identifiable current, Object o, Object[] objects, Iterable<Identifiable> iPossibleResults, CommandContext context);
 }

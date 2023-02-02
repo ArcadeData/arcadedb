@@ -81,11 +81,6 @@ public class MatchStep extends AbstractExecutionStep {
         return result;
       }
 
-
-
-
-
-
     };
   }
 
@@ -98,7 +93,7 @@ public class MatchStep extends AbstractExecutionStep {
       }
 
       if (upstream == null || !upstream.hasNext()) {
-        upstream = getPrev().get().syncPull(context, nRecords);
+        upstream = getPrev().syncPull(context, nRecords);
       }
       if (!upstream.hasNext()) {
         return;

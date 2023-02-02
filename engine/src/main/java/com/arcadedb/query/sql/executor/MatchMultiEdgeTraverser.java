@@ -81,8 +81,7 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
           iCommandContext.setVariable("current", o);
           final Object nextSteps = method.execute(o, possibleResults, iCommandContext);
           if (nextSteps instanceof Collection) {
-            ((Collection) nextSteps).stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull)
-                .forEach(i -> rightSide.add((ResultInternal) i));
+            ((Collection) nextSteps).stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull).forEach(i -> rightSide.add((ResultInternal) i));
           } else if (nextSteps instanceof Document) {
             rightSide.add(new ResultInternal((Document) nextSteps));
           } else if (nextSteps instanceof ResultInternal) {

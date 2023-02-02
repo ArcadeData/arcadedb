@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.LocalResultSet;
@@ -41,11 +40,10 @@ public class LetQueryStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (getPrev().isEmpty()) {
-      throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
-    }
+    checkForPrevious("Cannot execute a local LET on a query without a target");
+
     return new ResultSet() {
-      final ResultSet source = getPrev().get().syncPull(context, nRecords);
+      final ResultSet source = getPrev().syncPull(context, nRecords);
 
       @Override
       public boolean hasNext() {

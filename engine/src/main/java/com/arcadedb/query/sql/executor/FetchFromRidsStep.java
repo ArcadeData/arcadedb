@@ -47,7 +47,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
     return new ResultSet() {
       int internalNext = 0;
 
@@ -98,9 +98,6 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
         return result;
       }
 
-
-
-
     };
   }
 
@@ -108,5 +105,4 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM RIDs\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + rids;
   }
-
 }

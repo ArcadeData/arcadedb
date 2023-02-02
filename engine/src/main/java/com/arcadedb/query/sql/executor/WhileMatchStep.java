@@ -36,12 +36,13 @@ public class WhileMatchStep extends AbstractUnrollStep {
     this.condition = condition;
   }
 
-  @Override protected Collection<Result> unroll(final Result doc, final CommandContext iContext) {
+  @Override
+  protected Collection<Result> unroll(final Result doc, final CommandContext iContext) {
     body.reset(iContext);
     final List<Result> result = new ArrayList<>();
     ResultSet block = body.fetchNext(100);
-    while(block.hasNext()){
-      while(block.hasNext()){
+    while (block.hasNext()) {
+      while (block.hasNext()) {
         result.add(block.next());
       }
       block = body.fetchNext(100);
@@ -49,7 +50,8 @@ public class WhileMatchStep extends AbstractUnrollStep {
     return result;
   }
 
-  @Override public String prettyPrint(final int depth, final int indent) {
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
     final String indentStep = ExecutionStepInternal.getIndent(1, indent);
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
 

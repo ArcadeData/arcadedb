@@ -40,14 +40,12 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
   private final String targetClass;
   private final String parentClass;
 
-
-
   boolean found = false;
 
   /**
    * @param targetClass      a class to be checked
    * @param parentClass      a class that is supposed to be the same or a parent class of the target class
-   * @param context              execution context
+   * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
   public CheckClassTypeStep(final String targetClass, final String parentClass, final CommandContext context, final boolean profilingEnabled) {
@@ -58,7 +56,8 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
@@ -113,6 +112,5 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
     result.append("  ").append(this.parentClass);
     return result.toString();
   }
-
 
 }

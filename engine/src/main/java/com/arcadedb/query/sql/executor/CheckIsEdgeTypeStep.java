@@ -36,13 +36,11 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
 
   private final String targetClass;
 
-
-
   boolean found = false;
 
   /**
    * @param targetClass      a type to be checked
-   * @param context              execution context
+   * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
   public CheckIsEdgeTypeStep(final String targetClass, final CommandContext context, final boolean profilingEnabled) {
@@ -53,7 +51,8 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
@@ -95,6 +94,4 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
     }
     return result.toString();
   }
-
-
 }

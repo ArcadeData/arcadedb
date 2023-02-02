@@ -83,7 +83,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     init(context.getDatabase());
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+
+    pullPrevious(context, nRecords);
+
     return new ResultSet() {
       int localCount = 0;
 

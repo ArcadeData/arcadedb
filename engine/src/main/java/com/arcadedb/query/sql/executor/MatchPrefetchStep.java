@@ -49,7 +49,7 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (!executed) {
-      getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+      pullPrevious(context, nRecords);
 
       ResultSet nextBlock = prefetchExecutionPlan.fetchNext(nRecords);
       final List<Result> prefetched = new ArrayList<>();

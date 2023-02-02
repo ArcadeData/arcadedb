@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -27,22 +26,21 @@ import com.arcadedb.query.sql.parser.Identifier;
  * Created by luigidellaquila on 03/08/16.
  */
 public class LetExpressionStep extends AbstractExecutionStep {
-  private final Identifier varname;
+  private final Identifier varName;
   private final Expression expression;
 
   public LetExpressionStep(final Identifier varName, final Expression expression, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
-    this.varname = varName;
+    this.varName = varName;
     this.expression = expression;
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (!getPrev().isPresent())
-      throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
+    checkForPrevious("Cannot execute a local LET on a query without a target");
 
     return new ResultSet() {
-      final ResultSet source = getPrev().get().syncPull(context, nRecords);
+      final ResultSet source = getPrev().syncPull(context, nRecords);
 
       @Override
       public boolean hasNext() {
@@ -53,8 +51,8 @@ public class LetExpressionStep extends AbstractExecutionStep {
       public Result next() {
         final ResultInternal result = (ResultInternal) source.next();
         final Object value = expression.execute(result, context);
-        result.setMetadata(varname.getStringValue(), value);
-        context.setVariable(varname.getStringValue(), value);
+        result.setMetadata(varName.getStringValue(), value);
+        context.setVariable(varName.getStringValue(), value);
         return result;
       }
 
@@ -62,14 +60,12 @@ public class LetExpressionStep extends AbstractExecutionStep {
       public void close() {
         source.close();
       }
-
     };
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (for each record)\n" + spaces + "  " + varname + " = " + expression;
+    return spaces + "+ LET (for each record)\n" + spaces + "  " + varName + " = " + expression;
   }
-
 }

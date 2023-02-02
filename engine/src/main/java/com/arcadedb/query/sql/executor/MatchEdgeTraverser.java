@@ -115,9 +115,8 @@ public class MatchEdgeTraverser {
     }
   }
 
-  protected Iterable<ResultInternal> executeTraversal(
-      final CommandContext iCommandContext, final MatchPathItem item, final Identifiable startingPoint, final int depth,
-      final List<Identifiable> pathToHere) {
+  protected Iterable<ResultInternal> executeTraversal(final CommandContext iCommandContext, final MatchPathItem item, final Identifiable startingPoint,
+      final int depth, final List<Identifiable> pathToHere) {
 
     WhereClause filter = null;
     WhereClause whileCondition = null;

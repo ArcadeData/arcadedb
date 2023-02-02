@@ -34,14 +34,13 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class CheckSafeDeleteStep extends AbstractExecutionStep {
 
-
   public CheckSafeDeleteStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -78,11 +77,6 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
         }
       }
 
-
-
-
-
-
     };
   }
 
@@ -97,6 +91,5 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
     }
     return result.toString();
   }
-
 
 }

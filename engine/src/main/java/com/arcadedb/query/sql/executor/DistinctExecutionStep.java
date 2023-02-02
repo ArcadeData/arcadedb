@@ -88,7 +88,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         return;
       }
       if (lastResult == null || !lastResult.hasNext()) {
-        lastResult = getPrev().get().syncPull(context, nRecords);
+        lastResult = getPrev().syncPull(context, nRecords);
       }
       if (lastResult == null || !lastResult.hasNext()) {
         return;

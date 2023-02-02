@@ -92,7 +92,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
       }
 
       if (lastResult == null || !lastResult.hasNext()) {
-        lastResult = getPrev().get().syncPull(context, n);
+        lastResult = getPrev().syncPull(context, n);
       }
       if (!lastResult.hasNext()) {
         return;

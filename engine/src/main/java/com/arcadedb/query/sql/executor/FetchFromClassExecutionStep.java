@@ -140,9 +140,9 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
-    return new ResultSet() {
+    pullPrevious(context, nRecords);
 
+    return new ResultSet() {
       int totDispatched = 0;
 
       @Override

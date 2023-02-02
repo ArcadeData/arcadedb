@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import java.text.*;
-import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -45,8 +44,8 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
     return context;
   }
 
-  public Optional<ExecutionStepInternal> getPrev() {
-    return Optional.ofNullable(prev);
+  public ExecutionStepInternal getPrev() {
+    return prev;
   }
 
   @Override
@@ -86,4 +85,8 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
     return prev;
   }
 
+  protected void pullPrevious(final CommandContext context, final int nRecords) {
+    if (prev != null)
+      prev.syncPull(context, nRecords);
+  }
 }

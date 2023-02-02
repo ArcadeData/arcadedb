@@ -91,8 +91,8 @@ public class UpdateExecutionPlanner {
   /**
    * add a step that transforms a normal OResult in a specific object that under setProperty() updates the actual PIdentifiable
    *
-   * @param plan the execution plan
-   * @param context  the execution context
+   * @param plan    the execution plan
+   * @param context the execution context
    */
   private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context, final boolean profilingEnabled) {
     plan.chain(new ConvertToUpdatableResultStep(context, profilingEnabled));
@@ -153,14 +153,15 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext context, final FromClause target, final WhereClause where, final boolean upsert,
-      final boolean profilingEnabled) {
+  private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext context, final FromClause target, final WhereClause where,
+      final boolean upsert, final boolean profilingEnabled) {
     if (upsert) {
       plan.chain(new UpsertStep(target, where, context, profilingEnabled));
     }
   }
 
-  private void handleOperations(final UpdateExecutionPlan plan, final CommandContext context, final List<UpdateOperations> ops, final boolean profilingEnabled) {
+  private void handleOperations(final UpdateExecutionPlan plan, final CommandContext context, final List<UpdateOperations> ops,
+      final boolean profilingEnabled) {
     if (ops != null) {
       for (final UpdateOperations op : ops) {
         switch (op.getType()) {

@@ -234,7 +234,8 @@ public class TraverseExecutionPlanner {
     plan.chain(fetcher);
   }
 
-  private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext context, final boolean profilingEnabled) {
+  private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext context,
+      final boolean profilingEnabled) {
     final Database db = context.getDatabase();
     final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     if (clusters.size() == 1) {

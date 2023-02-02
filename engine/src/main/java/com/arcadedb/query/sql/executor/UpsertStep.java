@@ -47,10 +47,10 @@ public class UpsertStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (applied)
-      return getPrev().get().syncPull(context, nRecords);
+      return getPrev().syncPull(context, nRecords);
 
     applied = true;
-    final ResultSet upstream = getPrev().get().syncPull(context, nRecords);
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     if (upstream.hasNext())
       return upstream;
 

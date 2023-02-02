@@ -37,8 +37,10 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
     this.expression = expression;
   }
 
-  @Override public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+  @Override
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
     calculate(context);
     return new InternalResultSet();
   }
@@ -52,9 +54,9 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
     executed = true;
   }
 
-  @Override public String prettyPrint(final int depth, final int indent) {
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (once)\n" +
-        spaces + "  " + varname + " = " + expression;
+    return spaces + "+ LET (once)\n" + spaces + "  " + varname + " = " + expression;
   }
 }

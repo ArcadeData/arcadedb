@@ -39,7 +39,7 @@ public class CountFromIndexStep extends AbstractExecutionStep {
   /**
    * @param targetIndex      the index name as it is parsed by the SQL parsed
    * @param alias            the name of the property returned in the result-set
-   * @param context              the query context
+   * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
   public CountFromIndexStep(final IndexIdentifier targetIndex, final String alias, final CommandContext context, final boolean profilingEnabled) {
@@ -50,7 +50,7 @@ public class CountFromIndexStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
 
     return new ResultSet() {
       @Override
@@ -82,8 +82,6 @@ public class CountFromIndexStep extends AbstractExecutionStep {
       }
     };
   }
-
-
 
   @Override
   public void reset() {

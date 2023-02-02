@@ -39,8 +39,8 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   final Set<RID> traversed = new RidSet();
 
-  public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth, final CommandContext context,
-      final boolean profilingEnabled) {
+  public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
+      final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.whileClause = whileClause;
     this.maxDepth = maxDepth;

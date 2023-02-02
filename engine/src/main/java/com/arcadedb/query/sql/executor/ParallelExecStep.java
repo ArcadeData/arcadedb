@@ -39,7 +39,8 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     return new ResultSet() {
       int localCount = 0;
 
@@ -71,11 +72,6 @@ public class ParallelExecStep extends AbstractExecutionStep {
         localCount++;
         return currentResultSet.next();
       }
-
-
-
-
-
 
     };
   }
@@ -186,7 +182,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
     return result;
   }
 
-//  private String spaces(int num) {
+  //  private String spaces(int num) {
 //    StringBuilder result = new StringBuilder();
 //    for (int i = 0; i < num; i++) {
 //      result.append(" ");
@@ -214,7 +210,6 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(context)).collect(Collectors.toList()), context,
-        profilingEnabled);
+    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(context)).collect(Collectors.toList()), context, profilingEnabled);
   }
 }

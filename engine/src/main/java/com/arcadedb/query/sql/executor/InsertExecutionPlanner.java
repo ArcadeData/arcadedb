@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.InsertBody;
 import com.arcadedb.query.sql.parser.InsertSetExpression;
 import com.arcadedb.query.sql.parser.InsertStatement;
@@ -39,7 +38,6 @@ public class InsertExecutionPlanner {
   protected Identifier      targetType;
   protected Identifier      targetBucketName;
   protected Bucket          targetBucket;
-  protected IndexIdentifier targetIndex;
   protected InsertBody      insertBody;
   protected Projection      returnStatement;
   protected SelectStatement selectStatement;
@@ -51,7 +49,6 @@ public class InsertExecutionPlanner {
     this.targetType = statement.getTargetType() == null ? null : statement.getTargetType().copy();
     this.targetBucketName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
     this.targetBucket = statement.getTargetBucket() == null ? null : statement.getTargetBucket().copy();
-    this.targetIndex = statement.getTargetIndex() == null ? null : statement.getTargetIndex().copy();
     this.insertBody = statement.getInsertBody() == null ? null : statement.getInsertBody().copy();
     this.returnStatement = statement.getReturnStatement() == null ? null : statement.getReturnStatement().copy();
     this.selectStatement = statement.getSelectStatement() == null ? null : statement.getSelectStatement().copy();
@@ -60,27 +57,24 @@ public class InsertExecutionPlanner {
   public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final InsertExecutionPlan result = new InsertExecutionPlan(context);
 
-    if (targetIndex != null) {
-      result.chain(new InsertIntoIndexStep(targetIndex, insertBody, context, enableProfiling));
+    if (selectStatement != null) {
+      handleInsertSelect(result, this.selectStatement, context, enableProfiling);
     } else {
-      if (selectStatement != null) {
-        handleInsertSelect(result, this.selectStatement, context, enableProfiling);
-      } else {
-        handleCreateRecord(result, this.insertBody, context, enableProfiling);
-      }
-      handleTargetClass(result, targetType, context, enableProfiling);
-      handleSetFields(result, insertBody, context, enableProfiling);
-      if (targetBucket != null) {
-        String name = targetBucket.getBucketName();
-        if (name == null) {
-          name = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber()).getName();
-        }
-        handleSave(result, new Identifier(name), context, enableProfiling);
-      } else {
-        handleSave(result, targetBucketName, context, enableProfiling);
-      }
-      handleReturn(result, returnStatement, context, enableProfiling);
+      handleCreateRecord(result, this.insertBody, context, enableProfiling);
     }
+    handleTargetClass(result, targetType, context, enableProfiling);
+    handleSetFields(result, insertBody, context, enableProfiling);
+    if (targetBucket != null) {
+      String name = targetBucket.getBucketName();
+      if (name == null) {
+        name = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber()).getName();
+      }
+      handleSave(result, new Identifier(name), context, enableProfiling);
+    } else {
+      handleSave(result, targetBucketName, context, enableProfiling);
+    }
+    handleReturn(result, returnStatement, context, enableProfiling);
+
     return result;
   }
 

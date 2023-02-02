@@ -43,9 +43,9 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws CommandExecutionException {
 
-    final ResultSet internal = getPrev().get().syncPull(context, nRecords);
+    final ResultSet internal = getPrev().syncPull(context, nRecords);
 
-    if (getPrev().get().isTimedOut())
+    if (getPrev().isTimedOut())
       fail();
 
     return new ResultSet() {

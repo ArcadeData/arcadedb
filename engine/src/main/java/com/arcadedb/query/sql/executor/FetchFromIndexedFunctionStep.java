@@ -33,7 +33,6 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   private final BinaryCondition functionCondition;
   private final FromClause      queryTarget;
 
-
   //runtime0
   Iterator<Record> fullResult = null;
 
@@ -46,7 +45,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
     init(context);
 
     return new ResultSet() {
@@ -81,11 +80,6 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
         }
       }
 
-
-
-
-
-
     };
   }
 
@@ -104,8 +98,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    String result =
-        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
+    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }
@@ -116,5 +109,4 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   public void reset() {
     this.fullResult = null;
   }
-
 }

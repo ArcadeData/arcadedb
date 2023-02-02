@@ -37,7 +37,7 @@ public class LimitExecutionStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final int limitVal = limit.getValue(context);
     if (limitVal == -1)
-      return getPrev().get().syncPull(context, nRecords);
+      return getPrev().syncPull(context, nRecords);
 
     if (limitVal <= loaded)
       return new InternalResultSet();

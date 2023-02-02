@@ -28,9 +28,9 @@ public class EdgeTraversal {
   final        boolean     out;
   public final PatternEdge edge;
   private      String      leftClass;
-  private String      leftCluster;
-  private Rid         leftRid;
-  private WhereClause leftFilter;
+  private      String      leftCluster;
+  private      Rid         leftRid;
+  private      WhereClause leftFilter;
 
   public EdgeTraversal(final PatternEdge edge, final boolean out) {
     this.edge = edge;
@@ -48,6 +48,7 @@ public class EdgeTraversal {
   public String getLeftClass() {
     return leftClass;
   }
+
   public String getLeftCluster() {
     return leftCluster;
   }

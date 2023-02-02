@@ -38,8 +38,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
   private final List<ResultInternal> result = new ArrayList<>();
 
-  private int  cursor = 0;
-
+  private int cursor = 0;
 
   public FetchFromSchemaTypesStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
@@ -47,7 +46,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
 
     if (cursor == 0) {
       final long begin = profilingEnabled ? System.nanoTime() : 0;
@@ -133,10 +132,6 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
         result.clear();
       }
 
-
-
-
-
       @Override
       public void reset() {
         cursor = 0;
@@ -153,6 +148,5 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
     }
     return result;
   }
-
 
 }

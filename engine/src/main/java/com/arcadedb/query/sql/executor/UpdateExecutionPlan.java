@@ -32,7 +32,7 @@ import java.util.*;
 public class UpdateExecutionPlan extends SelectExecutionPlan {
 
   final List<Result> result = new ArrayList<>();
-  int          next   = 0;
+  int next = 0;
 
   public UpdateExecutionPlan(final CommandContext context) {
     super(context);

@@ -27,7 +27,8 @@ public class DeleteExecutionPlan extends UpdateExecutionPlan {
     super(context);
   }
 
-  @Override public Result toResult() {
+  @Override
+  public Result toResult() {
     final ResultInternal res = (ResultInternal) super.toResult();
     res.setProperty("type", "DeleteExecutionPlan");
     return res;

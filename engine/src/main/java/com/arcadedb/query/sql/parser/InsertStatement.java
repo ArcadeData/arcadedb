@@ -34,7 +34,6 @@ public class InsertStatement extends Statement {
   Identifier      targetType;
   Identifier      targetBucketName;
   Bucket          targetBucket;
-  IndexIdentifier targetIndex;
   InsertBody      insertBody;
   Projection      returnStatement;
   SelectStatement selectStatement;
@@ -57,9 +56,6 @@ public class InsertStatement extends Statement {
     }
     if (targetBucket != null) {
       targetBucket.toString(params, builder);
-    }
-    if (targetIndex != null) {
-      targetIndex.toString(params, builder);
     }
     if (insertBody != null) {
       builder.append(" ");
@@ -94,7 +90,6 @@ public class InsertStatement extends Statement {
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
     result.targetBucket = targetBucket == null ? null : targetBucket.copy();
-    result.targetIndex = targetIndex == null ? null : targetIndex.copy();
     result.insertBody = insertBody == null ? null : insertBody.copy();
     result.returnStatement = returnStatement == null ? null : returnStatement.copy();
     result.selectStatement = selectStatement == null ? null : selectStatement.copy();
@@ -156,8 +151,6 @@ public class InsertStatement extends Statement {
       return false;
     if (!Objects.equals(targetBucket, that.targetBucket))
       return false;
-    if (!Objects.equals(targetIndex, that.targetIndex))
-      return false;
     if (!Objects.equals(insertBody, that.insertBody))
       return false;
     if (!Objects.equals(returnStatement, that.returnStatement))
@@ -170,7 +163,6 @@ public class InsertStatement extends Statement {
     int result = targetType != null ? targetType.hashCode() : 0;
     result = 31 * result + (targetBucketName != null ? targetBucketName.hashCode() : 0);
     result = 31 * result + (targetBucket != null ? targetBucket.hashCode() : 0);
-    result = 31 * result + (targetIndex != null ? targetIndex.hashCode() : 0);
     result = 31 * result + (insertBody != null ? insertBody.hashCode() : 0);
     result = 31 * result + (returnStatement != null ? returnStatement.hashCode() : 0);
     result = 31 * result + (selectStatement != null ? selectStatement.hashCode() : 0);
@@ -190,10 +182,6 @@ public class InsertStatement extends Statement {
 
   public Bucket getTargetBucket() {
     return targetBucket;
-  }
-
-  public IndexIdentifier getTargetIndex() {
-    return targetIndex;
   }
 
   public InsertBody getInsertBody() {

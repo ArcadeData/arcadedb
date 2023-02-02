@@ -46,29 +46,28 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
-      if (found) {
+      if (found)
         return new InternalResultSet();
-      }
+
       final Database db = context.getDatabase();
       final com.arcadedb.engine.Bucket bucketObj;
-      if (bucketName != null) {
+
+      if (bucketName != null)
         bucketObj = db.getSchema().getBucketByName(bucketName);
-      } else if (bucket.getBucketName() != null) {
+      else if (bucket.getBucketName() != null)
         bucketObj = db.getSchema().getBucketByName(bucket.getBucketName());
-      } else {
+      else
         bucketObj = db.getSchema().getBucketById(bucket.getBucketNumber());
-      }
-      if (bucketObj == null) {
+
+      if (bucketObj == null)
         throw new CommandExecutionException("Bucket not found: " + bucketName);
-      }
 
       final DocumentType typez = db.getSchema().getType(targetType);
-      if (typez == null) {
+      if (typez == null)
         throw new CommandExecutionException("Type not found: " + targetType);
-      }
 
       for (final com.arcadedb.engine.Bucket bucket : typez.getBuckets(true)) {
         if (bucket.getId() == bucketObj.getId()) {
@@ -76,14 +75,13 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
           break;
         }
       }
-      if (!found) {
+      if (!found)
         throw new CommandExecutionException("Bucket " + bucketObj.getId() + " does not belong to the type " + targetType);
-      }
+
       return new InternalResultSet();
     } finally {
-      if (profilingEnabled) {
+      if (profilingEnabled)
         cost += (System.nanoTime() - begin);
-      }
     }
   }
 
@@ -93,9 +91,9 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK TARGET BUCKET FOR USERTYPE");
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result.append(" (").append(getCostFormatted()).append(")");
-    }
+
     result.append("\n");
     result.append(spaces);
     result.append("  ").append(this.targetType);

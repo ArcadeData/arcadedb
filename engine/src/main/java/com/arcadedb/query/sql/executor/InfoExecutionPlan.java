@@ -32,15 +32,18 @@ public class InfoExecutionPlan implements ExecutionPlan {
   Integer             cost;
   String              stmText;
 
-  @Override public List<ExecutionStep> getSteps() {
+  @Override
+  public List<ExecutionStep> getSteps() {
     return steps;
   }
 
-  @Override public String prettyPrint(final int depth, final int indent) {
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
     return prettyPrint;
   }
 
-  @Override public Result toResult() {
+  @Override
+  public Result toResult() {
     return null;
   }
 
@@ -88,7 +91,8 @@ public class InfoExecutionPlan implements ExecutionPlan {
     this.stmText = stmText;
   }
 
-  @Override public String toString() {
+  @Override
+  public String toString() {
     return prettyPrint;
   }
 }

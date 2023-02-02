@@ -42,7 +42,8 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
     this(bucketId, null, context, profilingEnabled);
   }
 
-  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final CommandContext context, final boolean profilingEnabled) {
+  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final CommandContext context,
+      final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.bucketId = bucketId;
     this.queryPlanning = queryPlanning;
@@ -50,7 +51,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (iterator == null) {

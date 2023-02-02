@@ -31,7 +31,7 @@ public class SubQueryStep extends AbstractExecutionStep {
    * executes a sub-query
    *
    * @param subExecutionPlan the execution plan of the sub-query
-   * @param context              the context of the current execution plan
+   * @param context          the context of the current execution plan
    * @param subCtx           the context of the subquery execution plan
    */
   public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext context, final CommandContext subCtx, final boolean profilingEnabled) {
@@ -42,7 +42,8 @@ public class SubQueryStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     ResultSet parentRs = subExecutionPlan.fetchNext(nRecords);
     return new ResultSet() {
       @Override

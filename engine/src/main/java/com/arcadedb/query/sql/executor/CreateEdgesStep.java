@@ -61,7 +61,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private boolean inited = false;
 
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final String uniqueIndex, final Identifier fromAlias,
-      final Identifier toAlias, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext context, final boolean profilingEnabled) {
+      final Identifier toAlias, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext context,
+      final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.targetClass = targetClass;
     this.targetCluster = targetClusterName;
@@ -75,7 +76,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     init();
     return new ResultSet() {
       private int currentBatch = 0;

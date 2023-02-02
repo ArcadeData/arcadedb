@@ -54,7 +54,8 @@ public class MatchFirstStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     init(context);
     return new ResultSet() {
 
@@ -87,11 +88,6 @@ public class MatchFirstStep extends AbstractExecutionStep {
         currentCount++;
         return result;
       }
-
-
-
-
-
 
     };
   }
@@ -150,5 +146,4 @@ public class MatchFirstStep extends AbstractExecutionStep {
   private String getAlias() {
     return this.node.alias;
   }
-
 }

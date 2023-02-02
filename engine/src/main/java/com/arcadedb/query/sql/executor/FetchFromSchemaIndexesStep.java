@@ -37,8 +37,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
 
   private final List<ResultInternal> result = new ArrayList<>();
 
-  private int  cursor = 0;
-
+  private int cursor = 0;
 
   public FetchFromSchemaIndexesStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
@@ -46,7 +45,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
 
     if (cursor == 0) {
       final long begin = profilingEnabled ? System.nanoTime() : 0;
@@ -109,10 +108,6 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
         result.clear();
       }
 
-
-
-
-
       @Override
       public void reset() {
         cursor = 0;
@@ -129,6 +124,5 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
     }
     return result;
   }
-
 
 }

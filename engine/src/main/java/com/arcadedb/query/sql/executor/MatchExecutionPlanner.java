@@ -68,10 +68,10 @@ public class MatchExecutionPlanner {
   final           boolean                returnPathElements;
   final           boolean                returnDistinct;
   protected final Skip                   skip;
-  private final   GroupBy groupBy;
-  private final   OrderBy orderBy;
-  private final   Unwind  unwind;
-  protected final Limit   limit;
+  private final   GroupBy                groupBy;
+  private final   OrderBy                orderBy;
+  private final   Unwind                 unwind;
+  protected final Limit                  limit;
 
   //post-parsing
   private Pattern                  pattern;

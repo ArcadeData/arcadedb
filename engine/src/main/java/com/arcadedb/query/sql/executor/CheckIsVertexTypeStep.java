@@ -46,7 +46,8 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {

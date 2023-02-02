@@ -38,7 +38,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
   @Override
   protected void fetchNextEntryPoints(final CommandContext context, final int nRecords) {
-    final ResultSet nextN = getPrev().get().syncPull(context, nRecords);
+    final ResultSet nextN = getPrev().syncPull(context, nRecords);
     while (nextN.hasNext()) {
       final Result item = toTraverseResult(nextN.next());
       if (item == null)
@@ -153,7 +153,8 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     tryAddEntryPoint(res, context);
   }
 
-  private void addNextEntryPoint(final Result nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext context) {
+  private void addNextEntryPoint(final Result nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
+      final CommandContext context) {
     if (!nextStep.isElement())
       return;
 

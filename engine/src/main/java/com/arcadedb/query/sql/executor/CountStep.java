@@ -28,12 +28,10 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class CountStep extends AbstractExecutionStep {
 
-
-
   boolean executed = false;
 
   /**
-   * @param context              the query context
+   * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
   public CountStep(final CommandContext context, final boolean profilingEnabled) {
@@ -49,7 +47,7 @@ public class CountStep extends AbstractExecutionStep {
     executed = true;
     long count = 0;
     while (true) {
-      final ResultSet prevResult = getPrev().get().syncPull(context, nRecords);
+      final ResultSet prevResult = getPrev().syncPull(context, nRecords);
 
       if (!prevResult.hasNext()) {
         final long begin = profilingEnabled ? System.nanoTime() : 0;
@@ -82,8 +80,6 @@ public class CountStep extends AbstractExecutionStep {
     }
     return result.toString();
   }
-
-
 
   @Override
   public ExecutionStep copy(final CommandContext context) {

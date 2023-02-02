@@ -45,7 +45,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     init();
     //    return new OInternalResultSet();
     return new ResultSet() {
@@ -257,5 +258,4 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private String appendPipe(final String p) {
     return "| " + p;
   }
-
 }

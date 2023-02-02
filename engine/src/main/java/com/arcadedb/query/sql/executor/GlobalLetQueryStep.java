@@ -45,24 +45,24 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
     calculate(context);
     return new InternalResultSet();
   }
 
   private void calculate(final CommandContext context) {
-    if (executed) {
+    if (executed)
       return;
-    }
+
     context.setVariable(varName.getStringValue(), toList(new LocalResultSet(subExecutionPlan)));
     executed = true;
   }
 
   private List<Result> toList(final LocalResultSet oLocalResultSet) {
     final List<Result> result = new ArrayList<>();
-    while (oLocalResultSet.hasNext()) {
+    while (oLocalResultSet.hasNext())
       result.add(oLocalResultSet.next());
-    }
+
     oLocalResultSet.close();
     return result;
   }

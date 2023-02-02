@@ -35,14 +35,12 @@ public class CountFromClassStep extends AbstractExecutionStep {
   private final Identifier target;
   private final String     alias;
 
-
-
   private boolean executed = false;
 
   /**
    * @param targetClass      An identifier containing the name of the class to count
    * @param alias            the name of the property returned in the result-set
-   * @param context              the query context
+   * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
   public CountFromClassStep(final Identifier targetClass, final String alias, final CommandContext context, final boolean profilingEnabled) {
@@ -53,7 +51,8 @@ public class CountFromClassStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -106,7 +105,4 @@ public class CountFromClassStep extends AbstractExecutionStep {
     }
     return result;
   }
-
-
-
 }

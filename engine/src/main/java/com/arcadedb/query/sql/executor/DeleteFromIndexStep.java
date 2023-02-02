@@ -57,15 +57,13 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   private boolean     inited = false;
   private IndexCursor cursor;
 
-
-
-  public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final BooleanExpression ridCondition,
-      final CommandContext context, final boolean profilingEnabled) {
+  public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
+      final BooleanExpression ridCondition, final CommandContext context, final boolean profilingEnabled) {
     this(index, condition, additionalRangeCondition, ridCondition, true, context, profilingEnabled);
   }
 
-  public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final BooleanExpression ridCondition,
-      final boolean orderAsc, final CommandContext context, final boolean profilingEnabled) {
+  public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
+      final BooleanExpression ridCondition, final boolean orderAsc, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.index = index;
     this.condition = condition;
@@ -76,7 +74,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(context, nRecords));
+    pullPrevious(context, nRecords);
+
     init();
 
     return new ResultSet() {
@@ -108,9 +107,6 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
           }
         }
       }
-
-
-
 
     };
   }
@@ -361,6 +357,5 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
         ("\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additional == null ? "" : " and " + additional)));
     return result;
   }
-
 
 }
