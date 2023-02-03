@@ -340,6 +340,10 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     this.timeout = timeout;
   }
 
+  List<Pair<String, Integer>> getReplicaServerList() {
+    return replicaServerList;
+  }
+
   @Override
   public String toString() {
     return databaseName;
@@ -402,7 +406,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
     Exception lastException = null;
 
-    final int maxRetry = leaderIsPreferable ? 3 : replicaServerList.size() + 1;
+    final int maxRetry = leaderIsPreferable ? 3 : getReplicaServerList().size() + 1;
 
     Pair<String, Integer> connectToServer = leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
