@@ -340,6 +340,10 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     this.timeout = timeout;
   }
 
+  List<Pair<String, Integer>> getReplicaServerList() {
+    return replicaServerList;
+  }
+
   @Override
   public String toString() {
     return databaseName;
@@ -397,12 +401,12 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true, callback);
   }
 
-  private Object httpCommand(final String method, final String extendedURL, final String operation, final String language, final String payloadCommand,
+   Object httpCommand(final String method, final String extendedURL, final String operation, final String language, final String payloadCommand,
       final Map<String, Object> params, final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
 
     Exception lastException = null;
 
-    final int maxRetry = leaderIsPreferable ? 3 : replicaServerList.size() + 1;
+    final int maxRetry = leaderIsPreferable ? 3 : getReplicaServerList().size() + 1;
 
     Pair<String, Integer> connectToServer = leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
@@ -503,7 +507,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return leaderServer.getFirst() + ":" + leaderServer.getSecond();
   }
 
-  protected HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
+  HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
     final HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
     connection.setRequestProperty("charset", "utf-8");
     connection.setRequestMethod(httpMethod);
@@ -520,7 +524,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return connection;
   }
 
-  private void requestClusterConfiguration() {
+  void requestClusterConfiguration() {
     try {
       final HttpURLConnection connection = createConnection("GET", getUrl("server?mode=cluster"));
       connection.connect();
@@ -590,7 +594,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return replicaServerList.get(currentReplicaServerIndex);
   }
 
-  private boolean reloadClusterConfiguration() {
+  boolean reloadClusterConfiguration() {
     final Pair<String, Integer> oldLeader = leaderServer;
 
     // ASK REPLICA FIRST
@@ -685,7 +689,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return null;
   }
 
-  private static void setRequestPayload(final HttpURLConnection connection, final JSONObject jsonRequest) throws IOException {
+  void setRequestPayload(final HttpURLConnection connection, final JSONObject jsonRequest) throws IOException {
     connection.setDoOutput(true);
     final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
     connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
