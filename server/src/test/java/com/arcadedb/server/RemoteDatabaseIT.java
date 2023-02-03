@@ -46,6 +46,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @Test
   public void simpleTxDocuments() throws Exception {
     testEachServer((serverIndex) -> {
+      Assertions.assertTrue(new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
+
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       database.command("sql", "create vertex type Person");
