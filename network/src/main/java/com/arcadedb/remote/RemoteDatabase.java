@@ -125,7 +125,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   public boolean exists() {
-    return (boolean) databaseCommand("exists", "SQL", null, null, true, (connection, response) -> response.getBoolean("result"));
+    return (boolean) httpCommand("GET", databaseName, "exists", "SQL", null, null, false, true, (connection, response) -> response.getBoolean("result"));
   }
 
   @Override
@@ -421,6 +421,9 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
         try {
 
           if (payloadCommand != null) {
+            if ("GET".equalsIgnoreCase(method))
+              throw new IllegalArgumentException("Cannot execute a HTTP GET request with a payload");
+
             final JSONObject jsonRequest = new JSONObject();
             if (language != null)
               jsonRequest.put("language", language);
