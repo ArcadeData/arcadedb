@@ -127,7 +127,6 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             //traversal.removeStep(i); // IF THE HAS-LABEL STEP IS REMOVED, FOR SOME REASON DOES NOT WORK
             traversal.removeStep(i - 1);
             traversal.addStep(i - 1, replaceWith);
-            break;
           }
         }
       }
