@@ -89,4 +89,8 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
   public String getName() {
     return "partitioned";
   }
+
+  public String[] getProperties() {
+    return propertyNames;
+  }
 }
