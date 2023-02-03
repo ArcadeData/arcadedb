@@ -154,4 +154,10 @@ public class CypherQueryEngine implements QueryEngine {
       map.put((String) parameters[i], parameters[i + 1]);
     return command(query, map);
   }
+
+  @Override
+  public void close() {
+    if (arcadeGraph != null)
+      arcadeGraph.close();
+  }
 }
