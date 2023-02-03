@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -67,6 +69,18 @@ public class AlterTypeExecutionTest extends TestHelper {
     Assertions.assertTrue(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv"));
     Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
     Assertions.assertTrue(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv"));
+  }
+
+  @Test
+  public void sqlAlterTypeBucketSelectionStrategy() {
+    database.command("sql", "CREATE VERTEX TYPE Account");
+    database.command("sql", "CREATE PROPERTY Account.id string");
+    database.command("sql", "CREATE INDEX ON Account(id) UNIQUE");
+    database.command("sql", "ALTER TYPE Account BucketSelectionStrategy `partitioned('id')`");
+
+    final BucketSelectionStrategy strategy = database.getSchema().getType("Account").getBucketSelectionStrategy();
+    Assertions.assertEquals("partitioned", strategy.getName());
+    Assertions.assertEquals("id", ((PartitionedBucketSelectionStrategy) strategy).getProperties()[0]);
   }
 
   @Test

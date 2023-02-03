@@ -21,12 +21,18 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.FileUtils;
 
 import java.util.*;
 import java.util.stream.*;
@@ -106,7 +112,7 @@ public class AlterTypeStatement extends DDLStatement {
       throw new CommandExecutionException("Type not found: " + name);
 
     if (property != null) {
-      switch (property) {
+      switch (property.toLowerCase()) {
       case "bucket":
         for (int i = 0; i < identifierListValue.size(); i++) {
           final Identifier identifierValue = identifierListValue.get(i);
@@ -141,6 +147,31 @@ public class AlterTypeStatement extends DDLStatement {
       case "supertype":
         doSetSuperType(context, type);
         break;
+
+      case "bucketselectionstrategy": {
+        final String implName = identifierValue.getStringValue();
+        try {
+          final BucketSelectionStrategy implementation;
+          if (implName.equalsIgnoreCase("thread"))
+            implementation = new ThreadBucketSelectionStrategy();
+          else if (implName.equalsIgnoreCase("round-robin"))
+            implementation = new RoundRobinBucketSelectionStrategy();
+          else if (implName.startsWith("partitioned(") && implName.endsWith(")")) {
+            final String[] params = implName.substring("partitioned(".length(), implName.length() - 1).split(",");
+            final String[] convertedParams = new String[params.length];
+            for (int i = 0; i < params.length; i++)
+              convertedParams[i] = FileUtils.getStringContent(params[i]);
+
+            implementation = new PartitionedBucketSelectionStrategy(convertedParams);
+          } else            // GET THE VALUE AS FULL-CLASS-NAME
+            implementation = (BucketSelectionStrategy) Class.forName(implName).getConstructor().newInstance();
+
+          type.setBucketSelectionStrategy(implementation);
+        } catch (Exception e) {
+          throw new CommandSQLParsingException("Bucket selection strategy implementation '" + implName + "' was not found", e);
+        }
+        break;
+      }
 
       default:
         throw new CommandExecutionException("Error on alter type: property '" + property + "' not valid");

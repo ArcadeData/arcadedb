@@ -255,6 +255,8 @@ TOKEN:
   |
   < BUCKETS: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")("S"|"s")>
   |
+  < BUCKETSELECTIONSTRATEGY: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")("S"|"s")("E"|"e")("L"|"l")("E"|"e")("C"|"c")("T"|"t")("I"|"i")("O"|"o")("N"|"n")("s"|"S")("t"|"T")("r"|"R")("a"|"A")("t"|"T")("e"|"E")("g"|"G")("y"|"Y")>
+  |
   < ALTER: ("a"|"A")("l"|"L")("t"|"T")("e"|"E")("r"|"R")>
   |
   < NAME: ("n"|"N")("a"|"A")("m"|"M")("e"|"E") >
@@ -778,6 +780,8 @@ Identifier Identifier():
   token = <EXTENDS>
   |
   token = <BUCKETS>
+  |
+  token = <BUCKETSELECTIONSTRATEGY>
   |
   token = <ALTER>
   |
@@ -3681,6 +3685,8 @@ AlterTypeStatement AlterTypeStatement():
         lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
       )*
     )
+    |
+    <BUCKETSELECTIONSTRATEGY> { jjtThis.property = "bucketSelectionStrategy"; } jjtThis.identifierValue = Identifier()
     |
     (
       <CUSTOM>

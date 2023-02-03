@@ -1563,6 +1563,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         LogManager.instance().log(this, Level.WARNING, "Error on clearing transaction status during closing operation for database '%s'", e, name);
       }
 
+      for (QueryEngine e : reusableQueryEngines.values())
+        e.close();
+
       try {
         schema.close();
         pageManager.close();
@@ -1570,6 +1573,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         transactionManager.close(drop);
         statementCache.clear();
         reusableQueryEngines.clear();
+
       } catch (final Throwable e) {
         LogManager.instance().log(this, Level.WARNING, "Error on closing internal components during closing operation for database '%s'", e, name);
       } finally {
