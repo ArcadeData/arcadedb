@@ -300,7 +300,7 @@ public class TransactionIndexContext {
       // CHECK FOR UNIQUE ON OTHER SUB-INDEXES
       final TypeIndex typeIndex = index.getTypeIndex();
       if (typeIndex != null) {
-        for (final IndexInternal idx : typeIndex.getIndexesOnBuckets()) {
+        for (final Index idx : typeIndex.getIndexesByKeys(keysValues)) {
           if (index.equals(idx))
             // ALREADY CHECKED ABOVE
             continue;

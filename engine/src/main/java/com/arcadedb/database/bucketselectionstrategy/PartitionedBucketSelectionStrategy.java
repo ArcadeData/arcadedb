@@ -21,6 +21,8 @@ package com.arcadedb.database.bucketselectionstrategy;
 import com.arcadedb.database.Document;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -34,10 +36,26 @@ import java.util.*;
  */
 public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectionStrategy {
   private       DocumentType type;
-  private final String[]     propertyNames;
+  private final List<String> propertyNames;
 
-  public PartitionedBucketSelectionStrategy(final String[] propertyNames) {
-    this.propertyNames = propertyNames;
+  public PartitionedBucketSelectionStrategy(final List<String> propertyNames) {
+    this.propertyNames = Collections.unmodifiableList(propertyNames);
+  }
+
+  public PartitionedBucketSelectionStrategy(final JSONObject json) {
+    final JSONArray array = json.getJSONArray("properties");
+    final List<String> pn = new ArrayList<>(array.length());
+    for (int i = 0; i < array.length(); i++)
+      pn.add(array.getString(i));
+    this.propertyNames = Collections.unmodifiableList(pn);
+  }
+
+  @Override
+  public BucketSelectionStrategy copy() {
+    final PartitionedBucketSelectionStrategy copy = new PartitionedBucketSelectionStrategy(propertyNames);
+    copy.total = total;
+    copy.type = type;
+    return copy;
   }
 
   @Override
@@ -47,7 +65,7 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
 
     final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
     if (index == null || !index.isAutomatic() || !index.isUnique())
-      throw new IllegalArgumentException("Cannot find an index on properties " + Arrays.toString(propertyNames));
+      throw new IllegalArgumentException("Cannot find an index on properties " + propertyNames);
   }
 
   @Override
@@ -59,8 +77,8 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
             "Record of type '" + documentType.getName() + "' is not supported by partitioned bucket selection strategy built on type '" + type.getName() + "'");
 
       int hash = 0;
-      for (int i = 0; i < propertyNames.length; i++) {
-        final Object value = record.get(propertyNames[i]);
+      for (int i = 0; i < propertyNames.size(); i++) {
+        final Object value = record.get(propertyNames.get(i));
         if (value != null)
           hash += value.hashCode();
       }
@@ -90,7 +108,12 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
     return "partitioned";
   }
 
-  public String[] getProperties() {
+  public List<String> getProperties() {
     return propertyNames;
+  }
+
+  @Override
+  public JSONObject toJSON() {
+    return new JSONObject().put("name", getName()).put("properties", new JSONArray(propertyNames));
   }
 }

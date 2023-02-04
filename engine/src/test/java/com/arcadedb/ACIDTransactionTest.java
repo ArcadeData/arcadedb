@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.WALException;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.TransactionException;
@@ -31,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -381,7 +383,10 @@ public class ACIDTransactionTest extends TestHelper {
 
     db.async().onError(exception -> errors.incrementAndGet());
 
-    database.getSchema().getOrCreateVertexType("Node").getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    final VertexType type = database.getSchema().getOrCreateVertexType("Node");
+    type.getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
+
     database.getSchema().getOrCreateEdgeType("Arc");
 
     for (; total.get() < TOT; total.incrementAndGet()) {

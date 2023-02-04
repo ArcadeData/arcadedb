@@ -21,7 +21,6 @@ package com.arcadedb.graph;
 import com.arcadedb.NullLogger;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.async.ErrorCallback;
-import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
@@ -40,7 +39,7 @@ public class InsertGraphIndexTest extends TestHelper {
   private static final int    PARALLEL         = 3;
 
   @Test
-  public void testGraph() {
+  public void testGraph() throws Exception {
     // PHASE 1
     {
       createSchema();
@@ -171,17 +170,24 @@ public class InsertGraphIndexTest extends TestHelper {
     }
   }
 
-  private void createSchema() {
+  private void createSchema() throws Exception {
     final VertexType vertex = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
     vertex.createProperty("id", Integer.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
 
     Assertions.assertEquals("round-robin", vertex.getBucketSelectionStrategy().getName());
 
-    vertex.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
-    Assertions.assertEquals("partitioned", vertex.getBucketSelectionStrategy().getName());
-
     database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
+
+    final VertexType vertexNotInUse = database.getSchema().createVertexType("NotInUse");
+    vertexNotInUse.createProperty("id", Integer.class);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "NotInUse", "id");
+
+    Assertions.assertEquals("round-robin", vertexNotInUse.getBucketSelectionStrategy().getName());
+
+    vertexNotInUse.setBucketSelectionStrategy("partitioned('id')");
+    Assertions.assertEquals("partitioned", vertexNotInUse.getBucketSelectionStrategy().getName());
+
   }
 
   private void checkGraph(final Vertex[] cachedVertices) {

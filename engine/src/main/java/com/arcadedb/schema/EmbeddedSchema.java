@@ -25,6 +25,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.PaginatedComponent;
@@ -414,6 +417,16 @@ public class EmbeddedSchema implements Schema {
       if (index == null)
         return null;
 
+      if (index.getTypeName() != null) {
+        final DocumentType type = getType(index.getTypeName());
+        final BucketSelectionStrategy strategy = type.getBucketSelectionStrategy();
+        if (strategy instanceof PartitionedBucketSelectionStrategy) {
+          if (List.of(((PartitionedBucketSelectionStrategy) strategy).getProperties()).equals(index.getPropertyNames()))
+            // CURRENT INDEX WAS USED FOR PARTITION, SETTING DEFAULT STRATEGY
+            type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
+        }
+      }
+
       List<Integer> lockedFiles = null;
       try {
         lockedFiles = database.getTransactionManager().tryLockFiles(index.getFileIds(), 5_000);
@@ -425,10 +438,11 @@ public class EmbeddedSchema implements Schema {
         index.drop();
 
         if (index.getTypeName() != null) {
+          final DocumentType type = getType(index.getTypeName());
           if (index instanceof TypeIndex)
-            getType(index.getTypeName()).removeTypeIndexInternal((TypeIndex) index);
+            type.removeTypeIndexInternal((TypeIndex) index);
           else
-            getType(index.getTypeName()).removeBucketIndexInternal(index);
+            type.removeBucketIndexInternal(index);
         }
 
       } catch (final Exception e) {
@@ -508,7 +522,7 @@ public class EmbeddedSchema implements Schema {
 
           for (int idx = 0; idx < buckets.size(); ++idx) {
             final Bucket bucket = buckets.get(idx);
-            indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+            indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames, null);
           }
 
           saveConfiguration();
@@ -520,6 +534,9 @@ public class EmbeddedSchema implements Schema {
               indexToRemove.drop();
           }
         });
+
+        saveConfiguration();
+
         return null;
       });
 
@@ -599,7 +616,7 @@ public class EmbeddedSchema implements Schema {
           }
         }
 
-        final Index index = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+        final Index index = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames, null);
         result.set(index);
 
         saveConfiguration();
@@ -617,7 +634,7 @@ public class EmbeddedSchema implements Schema {
 
   protected Index createBucketIndex(final DocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
       final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback,
-      final String[] propertyNames) {
+      final String[] propertyNames, final TypeIndex propIndex) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)
@@ -636,7 +653,7 @@ public class EmbeddedSchema implements Schema {
 
       indexMap.put(indexName, index);
 
-      type.addIndexInternal(index, bucket.getId(), propertyNames);
+      type.addIndexInternal(index, bucket.getId(), propertyNames, propIndex);
       index.build(callback);
 
       return index;
@@ -1155,7 +1172,7 @@ public class EmbeddedSchema implements Schema {
         final JSONArray schemaBucket = schemaType.getJSONArray("buckets");
         if (schemaBucket != null) {
           for (int i = 0; i < schemaBucket.length(); ++i) {
-            final PaginatedComponent bucket = bucketMap.get(schemaBucket.getString(i));
+            final Bucket bucket = bucketMap.get(schemaBucket.getString(i));
             if (bucket == null) {
               LogManager.instance()
                   .log(this, Level.WARNING, "Cannot find bucket '%s' for type '%s', removing it from type configuration", null, schemaBucket.getString(i),
@@ -1167,7 +1184,7 @@ public class EmbeddedSchema implements Schema {
 
               saveConfiguration = true;
             } else
-              type.addBucketInternal((Bucket) bucket);
+              type.addBucketInternal(bucket);
           }
         }
 
@@ -1213,7 +1230,7 @@ public class EmbeddedSchema implements Schema {
                 indexJSON.put("type", typeName);
                 LogManager.instance().log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName, index.getName());
               } else
-                type.addIndexInternal(index, bucket.getId(), properties);
+                type.addIndexInternal(index, bucket.getId(), properties, null);
 
             } else {
               orphanIndexes.put(indexName, indexJSON);
@@ -1221,6 +1238,16 @@ public class EmbeddedSchema implements Schema {
               LogManager.instance().log(this, Level.WARNING, "Cannot find index '%s' defined in type '%s'. Ignoring it", null, indexName, type);
             }
           }
+        }
+
+        if (schemaType.has("bucketSelectionStrategy")) {
+          final JSONObject bucketSelectionStrategy = schemaType.getJSONObject("bucketSelectionStrategy");
+
+          final Object[] properties = bucketSelectionStrategy.has("properties") ?
+              bucketSelectionStrategy.getJSONArray("properties").toList().toArray() :
+              new Object[0];
+
+          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
         }
 
         type.custom.clear();
@@ -1258,7 +1285,7 @@ public class EmbeddedSchema implements Schema {
                         LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
 
                     index.setNullStrategy(nullStrategy);
-                    type.addIndexInternal(index, bucket.getId(), properties);
+                    type.addIndexInternal(index, bucket.getId(), properties, null);
                     LogManager.instance().log(this, Level.WARNING, "Relinked orphan index '%s' to type '%s'", null, indexName, type.getName());
                     saveConfiguration = true;
                     completed = false;
@@ -1284,12 +1311,11 @@ public class EmbeddedSchema implements Schema {
           type.addSuperType(getType(p), false);
       }
 
-      loadInRamCompleted = true;
-
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
     } finally {
       readingFromFile = false;
+      loadInRamCompleted = true;
 
       if (dirtyConfiguration)
         saveConfiguration();

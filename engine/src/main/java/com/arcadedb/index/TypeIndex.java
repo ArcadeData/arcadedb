@@ -409,13 +409,30 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return indexesOnBuckets.toArray(new IndexInternal[indexesOnBuckets.size()]);
   }
 
-  private List<? extends Index> getIndexesByKeys(final Object[] keys) {
+  public List<? extends Index> getIndexesByKeys(final Object[] keys) {
     final int bucketIndex = type.getBucketIndexByKeys(keys,
         DatabaseContext.INSTANCE.getContext((type.getSchema().getEmbedded().getDatabase()).getDatabasePath()).asyncMode);
 
-    if (bucketIndex > -1)
+    if (bucketIndex > -1) {
       // USE THE SHARDED INDEX
-      return type.getPolymorphicBucketIndexByBucketId(type.getBuckets(false).get(bucketIndex).getId());
+      final List<String> propNames = getPropertyNames();
+
+      List<Index> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(type.getBuckets(false).get(bucketIndex).getId(), propNames);
+
+      final List<DocumentType> subTypes = type.getSubTypes();
+      if (!subTypes.isEmpty()) {
+        // MODIFIABLE COPY
+        polymorphicIndexesOnKeys = new ArrayList<>(polymorphicIndexesOnKeys);
+
+        for (DocumentType s : subTypes) {
+          final List<Index> subIndexes = s.getPolymorphicBucketIndexByBucketId(s.getBuckets(false).get(bucketIndex).getId(), propNames);
+          polymorphicIndexesOnKeys.addAll(subIndexes);
+
+        }
+      }
+
+      return polymorphicIndexesOnKeys;
+    }
 
     // SEARCH ON ALL THE UNDERLYING INDEXES
     return indexesOnBuckets;

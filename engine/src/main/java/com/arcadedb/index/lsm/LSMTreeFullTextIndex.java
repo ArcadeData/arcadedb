@@ -72,6 +72,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     @Override
     public IndexInternal create(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final PaginatedFile.MODE mode,
         final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final BuildIndexCallback callback) {
+      if (unique)
+        throw new IllegalArgumentException("Full text index cannot be unique");
       return new LSMTreeFullTextIndex(database, name, filePath, mode, pageSize, callback);
     }
   }
@@ -79,7 +81,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public static class PaginatedComponentFactoryHandlerNotUnique implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final PaginatedFile.MODE mode, final int pageSize, final int version) {
       final LSMTreeFullTextIndex mainIndex = new LSMTreeFullTextIndex(database, name, filePath, id, mode, pageSize, version);
       return mainIndex.underlyingIndex.mutable;
     }

@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -134,6 +135,9 @@ public class DropIndexTest extends TestHelper {
     final Index typeIndex2 = database.getSchema()
         .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
+    type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
+    type2.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
+
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME2);
@@ -245,6 +249,8 @@ public class DropIndexTest extends TestHelper {
       Assertions.assertEquals(TOT + 2, database.countType(TYPE_NAME, true));
       Assertions.assertEquals(TOT, database.countType(TYPE_NAME2, false));
       Assertions.assertEquals(2, database.countType(TYPE_NAME, false));
+
+      type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
 
       database.getSchema().dropIndex(typeIndex3.getName());
 

@@ -22,7 +22,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
@@ -32,6 +34,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -117,9 +120,8 @@ public class DocumentType {
               } else {
                 for (int i = 0; i < buckets.size(); i++) {
                   final Bucket bucket = buckets.get(i);
-                  schema.createBucketIndex(schema.getType(index.getTypeName()), index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
-                      LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
-                      index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
+                  schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(), LSMTreeIndexAbstract.DEF_PAGE_SIZE,
+                      index.getNullStrategy(), null, index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index);
                 }
               }
             }
@@ -129,6 +131,10 @@ public class DocumentType {
           throw e;
         }
       }
+
+      if (!superType.getBucketSelectionStrategy().getName().equalsIgnoreCase(getBucketSelectionStrategy().getName()))
+        // INHERIT THE BUCKET SELECTION STRATEGY FROM THE SUPER TYPE
+        setBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy());
 
       return null;
     });
@@ -471,6 +477,32 @@ public class DocumentType {
     this.bucketSelectionStrategy.setType(this);
   }
 
+  public void setBucketSelectionStrategy(final String selectionStrategyName, final Object... args) throws Exception {
+    BucketSelectionStrategy selectionStrategy;
+    if (selectionStrategyName.equalsIgnoreCase("thread"))
+      selectionStrategy = new ThreadBucketSelectionStrategy();
+    else if (selectionStrategyName.equalsIgnoreCase("round-robin"))
+      selectionStrategy = new RoundRobinBucketSelectionStrategy();
+    else if (selectionStrategyName.equalsIgnoreCase("partitioned")) {
+      final List<String> convertedParams = new ArrayList<>(args.length);
+      for (int i = 0; i < args.length; i++)
+        convertedParams.add(FileUtils.getStringContent(args[i]));
+
+      selectionStrategy = new PartitionedBucketSelectionStrategy(convertedParams);
+    } else if (selectionStrategyName.startsWith("partitioned(") && selectionStrategyName.endsWith(")")) {
+      final String[] params = selectionStrategyName.substring("partitioned(".length(), selectionStrategyName.length() - 1).split(",");
+      final List<String> convertedParams = new ArrayList<>(params.length);
+      for (int i = 0; i < params.length; i++)
+        convertedParams.add(FileUtils.getStringContent(params[i]));
+
+      selectionStrategy = new PartitionedBucketSelectionStrategy(convertedParams);
+    } else            // GET THE VALUE AS FULL-CLASS-NAME
+      selectionStrategy = (BucketSelectionStrategy) Class.forName(selectionStrategyName).getConstructor().newInstance();
+
+    this.bucketSelectionStrategy = selectionStrategy;
+    this.bucketSelectionStrategy.setType(this);
+  }
+
   public boolean existsProperty(final String propertyName) {
     return properties.containsKey(propertyName);
   }
@@ -524,8 +556,14 @@ public class DocumentType {
     return Collections.unmodifiableCollection(list);
   }
 
-  public List<Index> getPolymorphicBucketIndexByBucketId(final int bucketId) {
-    final List<IndexInternal> r = bucketIndexesByBucket.get(bucketId);
+  public List<Index> getPolymorphicBucketIndexByBucketId(final int bucketId, final List<String> filterByProperties) {
+    List<IndexInternal> r = bucketIndexesByBucket.get(bucketId);
+
+    if (r != null && filterByProperties != null) {
+      // FILTER BY PROPERTY NAMES
+      r = new ArrayList<>(r);
+      r.removeIf((idx) -> !idx.getPropertyNames().equals(filterByProperties));
+    }
 
     if (superTypes.isEmpty()) {
       // MOST COMMON CASES, OPTIMIZATION AVOIDING CREATING NEW LISTS
@@ -538,17 +576,20 @@ public class DocumentType {
 
     final List<Index> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
     for (final DocumentType t : superTypes)
-      result.addAll(t.getPolymorphicBucketIndexByBucketId(bucketId));
+      result.addAll(t.getPolymorphicBucketIndexByBucketId(bucketId, filterByProperties));
 
     return result;
   }
 
   public List<TypeIndex> getIndexesByProperties(final String property1, final String... propertiesN) {
-    final List<TypeIndex> result = new ArrayList<>();
-
     final Set<String> properties = new HashSet<>(propertiesN.length + 1);
     properties.add(property1);
     Collections.addAll(properties, propertiesN);
+    return getIndexesByProperties(properties);
+  }
+
+  public List<TypeIndex> getIndexesByProperties(final Collection<String> properties) {
+    final List<TypeIndex> result = new ArrayList<>();
 
     for (final Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
       for (final String prop : entry.getKey()) {
@@ -558,7 +599,6 @@ public class DocumentType {
         }
       }
     }
-
     return result;
   }
 
@@ -713,7 +753,7 @@ public class DocumentType {
     return Objects.hash(name);
   }
 
-  protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames) {
+  protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames, TypeIndex propIndex) {
     index.setMetadata(name, propertyNames, bucketId);
 
     List<IndexInternal> list = bucketIndexesByBucket.get(bucketId);
@@ -725,12 +765,14 @@ public class DocumentType {
 
     final List<String> propertyList = Arrays.asList(propertyNames);
 
-    TypeIndex propIndex = indexesByProperties.get(propertyList);
     if (propIndex == null) {
-      // CREATE THE TYPE-INDEX FOR THE 1ST TIME
-      propIndex = new TypeIndex(name + Arrays.toString(propertyNames).replace(" ", ""), this);
-      schema.indexMap.put(propIndex.getName(), propIndex);
-      indexesByProperties.put(propertyList, propIndex);
+      propIndex = indexesByProperties.get(propertyList);
+      if (propIndex == null) {
+        // CREATE THE TYPE-INDEX FOR THE 1ST TIME
+        propIndex = new TypeIndex(name + Arrays.toString(propertyNames).replace(" ", ""), this);
+        schema.indexMap.put(propIndex.getName(), propIndex);
+        indexesByProperties.put(propertyList, propIndex);
+      }
     }
 
     // ADD AS SUB-INDEX
@@ -867,6 +909,11 @@ public class DocumentType {
 
     final JSONObject indexes = new JSONObject();
     type.put("indexes", indexes);
+
+    final BucketSelectionStrategy strategy = getBucketSelectionStrategy();
+    if (!strategy.getName().equals(RoundRobinBucketSelectionStrategy.NAME))
+      // WRITE ONLY IF NOT DEFAULT
+      type.put("bucketSelectionStrategy", strategy.toJSON());
 
     for (final TypeIndex i : getAllIndexes(false)) {
       for (final Index entry : i.getIndexesOnBuckets())

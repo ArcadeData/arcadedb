@@ -116,7 +116,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
   private void populate(final Schema.INDEX_TYPE indexType) {
     typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot");
     typeRoot.getOrCreateProperty("name", String.class);
-    typeRoot.getOrCreateTypeIndex(indexType, true, "name");
+    typeRoot.getOrCreateTypeIndex(indexType, indexType == Schema.INDEX_TYPE.LSM_TREE, "name");
     database.command("sql", "delete from TestRoot");
 
     typeChild = database.getSchema().getOrCreateDocumentType("TestChild");

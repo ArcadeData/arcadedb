@@ -18,9 +18,12 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -43,7 +46,7 @@ public class DocumentIndexer {
 
     final int bucketId = rid.getBucketId();
 
-    return modifiedRecord.getType().getPolymorphicBucketIndexByBucketId(bucketId);
+    return modifiedRecord.getType().getPolymorphicBucketIndexByBucketId(bucketId, null);
   }
 
   public void createDocument(final Document record, final DocumentType type, final Bucket bucket) {
@@ -52,7 +55,7 @@ public class DocumentIndexer {
       throw new IllegalArgumentException("Cannot index a non persistent record");
 
     // INDEX THE RECORD
-    final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucket.getId());
+    final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucket.getId(), null);
     for (final Index entry : metadata)
       addToIndex(entry, rid, record);
   }
@@ -102,6 +105,12 @@ public class DocumentIndexer {
         // SAME VALUES, SKIP INDEX UPDATE
         continue;
 
+      final BucketSelectionStrategy bucketSelectionStrategy = modifiedRecord.getType().getBucketSelectionStrategy();
+      if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy) {
+        if (!List.of(((PartitionedBucketSelectionStrategy) bucketSelectionStrategy).getProperties()).equals(index.getPropertyNames()))
+          throw new IndexException("Cannot modify primary key when the bucket selection is partitioned");
+      }
+
       // REMOVE THE OLD ENTRY KEYS/VALUE AND INSERT THE NEW ONE
       index.remove(oldKeyValues, rid);
       index.put(newKeyValues, new RID[] { rid });
@@ -119,7 +128,7 @@ public class DocumentIndexer {
     if (type == null)
       throw new IllegalStateException("Type not found for bucket " + bucketId);
 
-    final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucketId);
+    final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucketId, null);
     if (metadata != null && !metadata.isEmpty()) {
       if (record instanceof RecordInternal)
         // FORCE RESET OF ANY PROPERTY TEMPORARY SET
