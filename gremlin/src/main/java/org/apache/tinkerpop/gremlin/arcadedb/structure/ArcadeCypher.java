@@ -30,7 +30,6 @@ import org.opencypher.gremlin.translation.translator.Translator;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
 
 /**
  * Cypher Expression builder. Transform a cypher expression into Gremlin.
@@ -39,9 +38,8 @@ import java.util.concurrent.atomic.*;
  */
 
 public class ArcadeCypher extends ArcadeGremlin {
-  private static final HashMap<String, CachedStatement> STATEMENT_CACHE       = new HashMap<>();
-  private static final int                              CACHE_SIZE            = GlobalConfiguration.CYPHER_STATEMENT_CACHE.getValueAsInteger();
-  private static final AtomicInteger                    totalCachedStatements = new AtomicInteger(0);
+  private static final Map<String, CachedStatement> STATEMENT_CACHE = new ConcurrentHashMap<>();
+  private static final int                          CACHE_SIZE      = GlobalConfiguration.CYPHER_STATEMENT_CACHE.getValueAsInteger();
 
   private static class CachedStatement {
     public final String cypher;
@@ -87,27 +85,41 @@ public class ArcadeCypher extends ArcadeGremlin {
       // NO CACHE
       return new TranslationFacade().toGremlinGroovy(cypher);
 
-    synchronized (STATEMENT_CACHE) {
-      final String db = graph.getDatabase().getDatabasePath();
+    final String db = graph.getDatabase().getDatabasePath();
 
-      final String mapKey = db + ":" + cypher;
+    final String mapKey = db + ":" + cypher;
 
-      final CachedStatement cached = STATEMENT_CACHE.get(mapKey);
-      // FOUND
-      if (cached != null) {
-        ++cached.used;
-        return cached.gremlin;
-      }
+    final CachedStatement cached = STATEMENT_CACHE.get(mapKey);
+    // FOUND
+    if (cached != null) {
+      ++cached.used;
+      return cached.gremlin;
+    }
 
-      // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
-      final CypherAst ast = parameters == null ? CypherAst.parse(cypher) : CypherAst.parse(cypher, parameters);
-      final Translator<String, GroovyPredicate> translator = Translator.builder().gremlinGroovy().enableCypherExtensions().build();
-      String gremlin = ast.buildTranslation(translator);
+    // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
+    final CypherAst ast = parameters == null ? CypherAst.parse(cypher) : CypherAst.parse(cypher, parameters);
+    final Translator<String, GroovyPredicate> translator = Translator.builder().gremlinGroovy().enableCypherExtensions().build();
+    String gremlin = ast.buildTranslation(translator);
 
-      // REPLACE '  cypher.null' WITH NULL
-      gremlin = gremlin.replaceAll("'  cypher.null'", "null");
+    // REPLACE '  cypher.null' WITH NULL
+    gremlin = gremlin.replaceAll("'  cypher.null'", "null");
 
-      while (totalCachedStatements.get() >= CACHE_SIZE) {
+    cacheLastStatement(cypher, gremlin);
+
+    return gremlin;
+  }
+
+  public static void closeDatabase(final ArcadeGraph graph) {
+    final String mapKey = graph.getDatabase().getDatabasePath() + ":";
+
+    // REMOVE ALL THE ENTRIES RELATIVE TO THE CLOSED DATABASE
+    STATEMENT_CACHE.entrySet().removeIf(stringCachedStatementEntry -> stringCachedStatementEntry.getKey().startsWith(mapKey));
+  }
+
+  private static void cacheLastStatement(String cypher, String gremlin) {
+    if (CACHE_SIZE > 0) {
+      // REMOVE THE OLDEST TO MAKE ROOM FOR THE LATEST STATEMENT
+      while (STATEMENT_CACHE.size() >= CACHE_SIZE) {
         int leastUsedValue = 0;
         String leastUsedKey = null;
 
@@ -117,21 +129,9 @@ public class ArcadeCypher extends ArcadeGremlin {
             leastUsedValue = entry.getValue().used;
           }
         }
-
         STATEMENT_CACHE.remove(leastUsedKey);
-        STATEMENT_CACHE.put(cypher, new CachedStatement(cypher, gremlin));
       }
-
-      return gremlin;
-    }
-  }
-
-  public static void closeDatabase(final ArcadeGraph graph) {
-    synchronized (STATEMENT_CACHE) {
-      final String mapKey = graph.getDatabase().getDatabasePath() + ":";
-
-      // REMOVE ALL THE ENTRIES RELATIVE TO THE CLOSED DATABASE
-      STATEMENT_CACHE.entrySet().removeIf(stringCachedStatementEntry -> stringCachedStatementEntry.getKey().startsWith(mapKey));
+      STATEMENT_CACHE.put(cypher, new CachedStatement(cypher, gremlin));
     }
   }
 }
