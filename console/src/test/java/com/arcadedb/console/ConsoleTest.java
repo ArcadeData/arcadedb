@@ -21,6 +21,8 @@ package com.arcadedb.console;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -334,5 +336,51 @@ public class ConsoleTest {
       pos = buffer.toString().indexOf("node", pos);
       Assertions.assertTrue(pos > -1);
     }
+  }
+
+  @Test
+  public void testAsyncMode() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type D"));
+    Assertions.assertTrue(console.parse("create vertex type V"));
+    Assertions.assertTrue(console.parse("create edge type E"));
+
+    Assertions.assertTrue(console.parse("insert into D set name = 'Jay', lastname='Miner'"));
+
+    int asyncOperations = (int) ((DatabaseAsyncExecutorImpl) ((DatabaseInternal) console.getDatabase()).async()).getStats().scheduledTasks;
+    Assertions.assertEquals(0, asyncOperations);
+
+    Assertions.assertTrue(console.parse("set asyncMode = true"));
+
+    Assertions.assertTrue(console.parse("insert into V set name = 'Jay', lastname='Miner'"));
+    Assertions.assertTrue(console.parse("insert into V set name = 'Elon', lastname='Musk'"));
+
+    Assertions.assertTrue(console.parse("set asyncMode = false"));
+
+    asyncOperations = (int) ((DatabaseAsyncExecutorImpl) ((DatabaseInternal) console.getDatabase()).async()).getStats().scheduledTasks;
+    Assertions.assertEquals(2, asyncOperations);
+  }
+
+  @Test
+  public void testBatchMode() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type D"));
+    Assertions.assertTrue(console.parse("create vertex type V"));
+    Assertions.assertTrue(console.parse("create edge type E"));
+
+    Assertions.assertTrue(console.parse("set transactionBatchSize = 2"));
+
+    Assertions.assertTrue(console.parse("insert into D set name = 'Jay', lastname='Miner'"));
+    Assertions.assertEquals(1, console.currentOperationsInBatch);
+
+    Assertions.assertTrue(((DatabaseInternal) console.getDatabase()).getTransaction().isActive());
+    Assertions.assertTrue(((DatabaseInternal) console.getDatabase()).getTransaction().getModifiedPages() > 0);
+
+    Assertions.assertTrue(console.parse("insert into V set name = 'Jay', lastname='Miner'"));
+    Assertions.assertEquals(2, console.currentOperationsInBatch);
+    Assertions.assertTrue(console.parse("insert into V set name = 'Elon', lastname='Musk'"));
+    Assertions.assertEquals(1, console.currentOperationsInBatch);
+
+    Assertions.assertTrue(console.parse("set transactionBatchSize = 0"));
   }
 }

@@ -70,6 +70,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   private OkCallback    onOkCallback;
   private ErrorCallback onErrorCallback;
+  private AtomicLong    counterScheduledTasks = new AtomicLong();
 
   public class AsyncThread extends Thread {
     public final    BlockingQueue<DatabaseAsyncTask> queue;
@@ -178,11 +179,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   public DBAsyncStats getStats() {
     final DBAsyncStats stats = new DBAsyncStats();
-    stats.queueSize = 0;
 
+    stats.queueSize = 0;
     if (executorThreads != null)
       for (int i = 0; i < executorThreads.length; ++i)
         stats.queueSize += executorThreads[i].queue.size();
+
+    stats.scheduledTasks = counterScheduledTasks.get();
 
     return stats;
   }
@@ -590,6 +593,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   public static class DBAsyncStats {
     public long queueSize;
+    public long scheduledTasks;
   }
 
   private void createThreads(int parallelLevel) {
@@ -688,10 +692,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             }
           }
         }
+
+        counterScheduledTasks.incrementAndGet();
+
         return true;
       }
 
-      return queue.offer(task);
+      final boolean result = queue.offer(task);
+      if (result)
+        counterScheduledTasks.incrementAndGet();
+      return result;
 
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
