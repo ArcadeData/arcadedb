@@ -31,7 +31,7 @@ import java.io.*;
 public class ConsoleBatchTest {
   @Test
   public void batchMode() throws IOException {
-    Console.main(new String[] { "-b", "create database console; create vertex type ConsoleOnlyVertex;" });
+    Console.execute(new String[] { "-b", "create database console; create vertex type ConsoleOnlyVertex;" });
     final Database db = new DatabaseFactory("./target/databases/console").open();
     Assertions.assertTrue(db.getSchema().existsType("ConsoleOnlyVertex"));
     db.drop();
@@ -39,7 +39,7 @@ public class ConsoleBatchTest {
 
   @Test
   public void interactiveMode() throws IOException {
-    Console.main(new String[] { "create database console; create vertex type ConsoleOnlyVertex;exit" });
+    Console.execute(new String[] { "create database console; create vertex type ConsoleOnlyVertex;exit" });
     final Database db = new DatabaseFactory("./target/databases/console").open();
     Assertions.assertTrue(db.getSchema().existsType("ConsoleOnlyVertex"));
     db.drop();
@@ -48,7 +48,7 @@ public class ConsoleBatchTest {
   @Test
   public void swallowSettings() throws IOException {
     FileUtils.deleteRecursively(new File("./console"));
-    Console.main(new String[] { "-Darcadedb.server.databaseDirectory=.", "create database console; create vertex type ConsoleOnlyVertex;exit;" });
+    Console.execute(new String[] { "-Darcadedb.server.databaseDirectory=.", "create database console; create vertex type ConsoleOnlyVertex;exit;" });
     final Database db = new DatabaseFactory("./console").open();
     Assertions.assertTrue(db.getSchema().existsType("ConsoleOnlyVertex"));
     db.drop();

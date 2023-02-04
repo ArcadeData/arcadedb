@@ -136,6 +136,15 @@ public class Console {
   }
 
   public static void main(final String[] args) throws IOException {
+    try {
+      execute(args);
+    } finally {
+      // FORCE EXIT IN CASE OF UNMANAGED ERROR
+      System.exit(0);
+    }
+  }
+
+  public static void execute(final String[] args) throws IOException {
     final StringBuilder commands = new StringBuilder();
     boolean batchMode = false;
     // PARSE ARGUMENT, EXTRACT SETTING AND BATCH MODE AND COMPILE THE LINES TO EXECUTE
@@ -169,9 +178,8 @@ public class Console {
       }
 
     } finally {
-      // FORCE THE CLOSING AND EXIT IN CASE OF UNMANAGED ERROR
+      // FORCE THE CLOSING
       console.close();
-      System.exit(0);
     }
   }
 
