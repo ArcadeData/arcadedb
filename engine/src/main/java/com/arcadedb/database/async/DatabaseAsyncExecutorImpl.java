@@ -94,6 +94,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         LogManager.instance().log(this, Level.WARNING, "Error on async operation queue implementation setting: %s is not supported", cfgQueueImpl);
         this.queue = new ArrayBlockingQueue<>(queueSize);
       }
+
+      backPressurePercentage = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_BACK_PRESSURE);
     }
 
     public boolean isShutdown() {
