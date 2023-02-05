@@ -21,14 +21,14 @@ serializers:
   - className: org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1
     config:
       ioRegistries:
-        - org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry
+        - com.arcadedb.gremlin.io.ArcadeIoRegistry
   - className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV3d0
     config:
       ioRegistries:
-        - org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry
+        - com.arcadedb.gremlin.io.ArcadeIoRegistry
   - className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV2d0
     config:
       ioRegistries:
-        - org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry
+        - com.arcadedb.gremlin.io.ArcadeIoRegistry
 processors:
   - { className: org.apache.tinkerpop.gremlin.server.op.session.SessionOpProcessor, config: { sessionTimeout: 28800000 }}

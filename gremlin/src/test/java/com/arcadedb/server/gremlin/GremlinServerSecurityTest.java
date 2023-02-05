@@ -22,7 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.utility.FileUtils;
-import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
+import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1;

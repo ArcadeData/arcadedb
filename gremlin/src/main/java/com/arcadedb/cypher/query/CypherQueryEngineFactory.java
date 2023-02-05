@@ -18,7 +18,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package com.arcadedb.gremlin.query;
+package com.arcadedb.cypher.query;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.QueryParsingException;
@@ -28,27 +28,26 @@ import com.arcadedb.gremlin.ArcadeGraph;
 
 import java.util.logging.*;
 
-public class GremlinQueryEngineFactory implements QueryEngine.QueryEngineFactory {
+public class CypherQueryEngineFactory implements QueryEngine.QueryEngineFactory {
   @Override
   public String getLanguage() {
-    return "gremlin";
+    return "cypher";
   }
 
   @Override
   public QueryEngine getInstance(final DatabaseInternal database) {
-    Object engine = database.getWrappers().get(GremlinQueryEngine.ENGINE_NAME);
+    Object engine = database.getWrappers().get(CypherQueryEngine.ENGINE_NAME);
     if (engine != null)
-      return (GremlinQueryEngine) engine;
+      return (CypherQueryEngine) engine;
 
     try {
-
-      engine = new GremlinQueryEngine(ArcadeGraph.open(database));
-      database.setWrapper(GremlinQueryEngine.ENGINE_NAME, engine);
-      return (GremlinQueryEngine) engine;
+      engine = new CypherQueryEngine(ArcadeGraph.open(database));
+      database.setWrapper(CypherQueryEngine.ENGINE_NAME, engine);
+      return (CypherQueryEngine) engine;
 
     } catch (final Throwable e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Gremlin query engine", e);
-      throw new QueryParsingException("Error on initializing Gremlin query engine", e);
+      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Cypher query engine", e);
+      throw new QueryParsingException("Error on initializing Cypher query engine", e);
     }
   }
 }

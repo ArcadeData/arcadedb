@@ -19,7 +19,7 @@
 package com.arcadedb.server.gremlin;
 
 import com.arcadedb.server.BaseGraphServerTest;
-import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
+import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1;
