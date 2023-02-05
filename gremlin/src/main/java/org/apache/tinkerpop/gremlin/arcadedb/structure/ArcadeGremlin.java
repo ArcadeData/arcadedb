@@ -24,10 +24,16 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
+import org.apache.tinkerpop.gremlin.jsr223.DefaultGremlinScriptEngineManager;
+import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
+import org.apache.tinkerpop.gremlin.jsr223.GremlinScriptEngine;
+import org.apache.tinkerpop.gremlin.jsr223.GremlinScriptEngineFactory;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
 
+import javax.script.ScriptException;
+import javax.script.SimpleBindings;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -38,38 +44,62 @@ import java.util.concurrent.*;
  */
 
 public class ArcadeGremlin extends ArcadeQuery {
-  private static Long timeout;
+  private static Long                timeout;
+  private final  GremlinScriptEngine engine;
 
   protected ArcadeGremlin(final ArcadeGraph graph, final String query) {
     super(graph, query);
+
+    String nativeGremlin = System.getProperty("arcadedb.native-gremlin");
+    if ("true".equals(nativeGremlin)) {
+      // USE THE NATIVE GREMLIN PARSER
+      final GremlinLangScriptEngine gremlinLangScriptEngine = new GremlinLangScriptEngine();
+      final GremlinScriptEngineFactory factory = gremlinLangScriptEngine.getFactory();
+      factory.setCustomizerManager(new DefaultGremlinScriptEngineManager());
+      engine = factory.getScriptEngine();
+    } else
+      engine = null;
   }
 
   @Override
   public ResultSet execute() throws ExecutionException, InterruptedException {
-    final GremlinExecutor ge = graph.getGremlinExecutor();
 
-    final CompletableFuture<Object> evalResult = parameters != null ? ge.eval(query, parameters) : ge.eval(query);
+    try {
+      final GraphTraversal resultSet;
+      if (engine == null) {
+        final GremlinExecutor ge = graph.getGremlinExecutor();
+        final CompletableFuture<Object> evalResult = parameters != null ? ge.eval(query, parameters) : ge.eval(query);
+        resultSet = (GraphTraversal) evalResult.get();
+      } else {
+        final SimpleBindings bindings = new SimpleBindings();
+        bindings.put("g", graph.traversal());
+        if (parameters != null)
+          bindings.putAll(parameters);
 
-    final GraphTraversal resultSet = (GraphTraversal) evalResult.get();
-
-    return new IteratorResultSet(new Iterator() {
-      @Override
-      public boolean hasNext() {
-        return resultSet.hasNext();
+        resultSet = (GraphTraversal) engine.eval(query, bindings);
       }
 
-      @Override
-      public Object next() {
-        final Object next = resultSet.next();
-        if (next instanceof Document)
-          return new ResultInternal((Document) next);
-        else if (next instanceof ArcadeElement)
-          return new ResultInternal(((ArcadeElement) next).getBaseElement());
-        else if (next instanceof Map)
-          return new ResultInternal((Map<String, Object>) next);
-        return new ResultInternal(Map.of("result", next));
-      }
-    });
+      return new IteratorResultSet(new Iterator() {
+        @Override
+        public boolean hasNext() {
+          return resultSet.hasNext();
+        }
+
+        @Override
+        public Object next() {
+          final Object next = resultSet.next();
+          if (next instanceof Document)
+            return new ResultInternal((Document) next);
+          else if (next instanceof ArcadeElement)
+            return new ResultInternal(((ArcadeElement) next).getBaseElement());
+          else if (next instanceof Map)
+            return new ResultInternal((Map<String, Object>) next);
+          return new ResultInternal(Map.of("result", next));
+        }
+      });
+    } catch (ScriptException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   public QueryEngine.AnalyzedQuery parse() throws ExecutionException, InterruptedException {
