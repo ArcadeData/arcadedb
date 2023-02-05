@@ -188,7 +188,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
       script += "commit;";
       script += "return $top;";
 
-      final ResultSet result = database.execute("sql", script);
+      final ResultSet result = database.command("sqlscript", script);
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());

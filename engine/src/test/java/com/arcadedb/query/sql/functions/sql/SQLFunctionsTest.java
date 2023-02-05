@@ -497,7 +497,7 @@ public class SQLFunctionsTest {
   @Test
   public void testFirstAndLastFunctionsWithMultipleValues() {
     database.transaction(() -> {
-      database.execute("sql",//
+      database.command("sqlscript",//
           "CREATE DOCUMENT TYPE mytype;\n" +//
               "INSERT INTO mytype SET value = 1;\n" +//
               "INSERT INTO mytype SET value = [1,2,3];\n" +//

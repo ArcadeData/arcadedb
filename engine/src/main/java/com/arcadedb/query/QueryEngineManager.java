@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.java.JavaQueryEngine;
 import com.arcadedb.query.polyglot.PolyglotQueryEngine;
 import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.query.sql.SQLScriptQueryEngine;
 
 import java.util.*;
 import java.util.logging.*;
@@ -37,6 +38,7 @@ public class QueryEngineManager {
 
     register(new JavaQueryEngine.JavaQueryEngineFactory());
     register(new SQLQueryEngine.SQLQueryEngineFactory());
+    register(new SQLScriptQueryEngine.SQLScriptQueryEngineFactory());
 
     // REGISTER QUERY ENGINES IF AVAILABLE ON CLASSPATH AT RUN-TIME
     register("com.arcadedb.gremlin.query.GremlinQueryEngineFactory");

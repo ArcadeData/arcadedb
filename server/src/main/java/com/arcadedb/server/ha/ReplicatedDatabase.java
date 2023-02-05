@@ -604,11 +604,13 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return proxied.query(language, query, args);
   }
 
+  @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
     return proxied.execute(language, script, args);
   }
 
+  @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> args) {
     return proxied.execute(language, script, args);

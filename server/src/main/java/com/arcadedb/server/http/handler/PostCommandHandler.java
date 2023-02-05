@@ -84,7 +84,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       }
 
       final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
-          executeScript(database, "sql", command, paramMap) :
+          executeScript(database, command, paramMap) :
           executeCommand(database, language, command, paramMap);
 
       if (qResult == null)
@@ -106,16 +106,16 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
   }
 
-  private ResultSet executeScript(final Database database, final String language, String command, final Map<String, Object> paramMap) {
+  private ResultSet executeScript(final Database database, String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
     if (!command.endsWith(";"))
       command += ";";
 
     if (params instanceof Object[])
-      return database.execute(language, command, (Object[]) params);
+      return database.command("sqlscript", command, (Object[]) params);
 
-    return database.execute(language, command, (Map<String, Object>) params);
+    return database.command("sqlscript", command, (Map<String, Object>) params);
   }
 
   protected ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {

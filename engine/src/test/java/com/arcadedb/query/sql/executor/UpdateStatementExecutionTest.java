@@ -1026,7 +1026,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     for (int i = 0; i < 10; i++) {
       database.transaction(() -> {
-        database.execute("sql", "let account = create vertex Account set name = 'Luke';\n" +//
+        database.command("sqlscript", "let account = create vertex Account set name = 'Luke';\n" +//
             "let e = Update [ #9:9 ] set name = 'bob';\n" +//
             "commit retry 100;\n" +//
             "return $e;");

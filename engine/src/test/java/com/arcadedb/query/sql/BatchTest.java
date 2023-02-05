@@ -26,9 +26,27 @@ import org.junit.jupiter.api.Test;
 
 public class BatchTest extends TestHelper {
   @Test
-  public void testReturnArray() {
+  public void testReturnArrayOnDeprecated() {
     database.transaction(() -> {
       final ResultSet rs = database.execute("SQL", "let a = select 1 as result;let b = select 2 as result;return [$a,$b];");
+
+      Assertions.assertTrue(rs.hasNext());
+      Result record = rs.next();
+      Assertions.assertNotNull(record);
+      Assertions.assertEquals("{\"value\": [{\"result\": 1}]}", record.toJSON());
+
+      record = rs.next();
+      Assertions.assertEquals("{\"value\": [{\"result\": 2}]}", record.toJSON());
+      Assertions.assertNotNull(record);
+
+      Assertions.assertFalse(rs.hasNext());
+    });
+  }
+
+  @Test
+  public void testReturnArray() {
+    database.transaction(() -> {
+      final ResultSet rs = database.command("SQLScript", "let a = select 1 as result;let b = select 2 as result;return [$a,$b];");
 
       Assertions.assertTrue(rs.hasNext());
       Result record = rs.next();
@@ -55,7 +73,7 @@ public class BatchTest extends TestHelper {
         "}" + //
         "COMMIT;";
 
-    database.execute("sql", script);
+    database.command("sqlscript", script);
 
     final ResultSet result = database.query("sql", "select from TestWhile order by id");
     for (int i = 0; i < 10; i++) {
@@ -78,7 +96,7 @@ public class BatchTest extends TestHelper {
           "  LET $i = $i + 1;\n" +//
           "}";
 
-      database.execute("sql", script);
+      database.command("sqlscript", script);
     });
 
     final ResultSet result = database.query("sql", "select from TestWhileWithReturn order by id");
@@ -99,7 +117,7 @@ public class BatchTest extends TestHelper {
         "}" + //
         "COMMIT;";
 
-    database.execute("sql", script);
+    database.command("sqlscript", script);
 
     final ResultSet result = database.query("sql", "select from TestForeach order by id");
     for (int i = 1; i <= 3; i++) {
@@ -120,7 +138,7 @@ public class BatchTest extends TestHelper {
           "  }" + //
           "}";
 
-      database.execute("sql", script);
+      database.command("sqlscript", script);
     });
 
     final ResultSet result = database.query("sql", "select from TestForeachWithReturn order by id");

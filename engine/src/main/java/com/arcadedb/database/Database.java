@@ -75,6 +75,7 @@ public interface Database extends BasicDatabase {
    */
   ResultSet query(String language, String query, Map<String, Object> args);
 
+  @Deprecated
   ResultSet execute(String language, String script, Map<String, Object> args);
 
   /**

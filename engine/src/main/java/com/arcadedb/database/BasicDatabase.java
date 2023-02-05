@@ -147,6 +147,7 @@ public interface BasicDatabase extends AutoCloseable {
    */
   ResultSet query(String language, String query, Object... args);
 
+  @Deprecated
   ResultSet execute(String language, String script, Object... args);
 
   /**

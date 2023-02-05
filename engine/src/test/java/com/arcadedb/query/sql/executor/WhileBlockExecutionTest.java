@@ -45,7 +45,7 @@ public class WhileBlockExecutionTest extends TestHelper {
     script += "}";
     script += "SELECT FROM " + className + ";";
 
-    final ResultSet results = database.execute("sql", script);
+    final ResultSet results = database.command("sqlscript", script);
 
     int tot = 0;
     int sum = 0;
@@ -75,7 +75,7 @@ public class WhileBlockExecutionTest extends TestHelper {
     script += "  LET $i = $i + 1;";
     script += "}";
 
-    ResultSet results = database.execute("sql", script);
+    ResultSet results = database.command("sqlscript", script);
     results.close();
     results = database.query("sql", "SELECT FROM " + className);
 

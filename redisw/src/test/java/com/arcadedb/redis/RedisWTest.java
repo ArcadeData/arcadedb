@@ -124,7 +124,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
     final Database database = getServerDatabase(0, getDatabaseName());
 
-    database.execute("sql", "CREATE DOCUMENT TYPE Account;" +//
+    database.command("sqlscript", "CREATE DOCUMENT TYPE Account;" +//
         "CREATE PROPERTY Account.id LONG;" +//
         "CREATE INDEX ON Account (id) UNIQUE;" +//
         "CREATE PROPERTY Account.email STRING;" +//

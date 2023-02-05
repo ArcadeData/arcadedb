@@ -59,18 +59,8 @@ import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
-import com.arcadedb.query.sql.SQLQueryEngine;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
-import com.arcadedb.query.sql.parser.BeginStatement;
-import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
-import com.arcadedb.query.sql.parser.LetStatement;
-import com.arcadedb.query.sql.parser.LocalResultSet;
-import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
@@ -1235,49 +1225,31 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
-
     stats.commands.incrementAndGet();
-
     return getQueryEngine(language).command(query, parameters);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
-
     stats.commands.incrementAndGet();
-
     return getQueryEngine(language).command(query, parameters);
   }
 
+  @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> params) {
     if (!language.equalsIgnoreCase("sql"))
       throw new CommandExecutionException("Language '" + language + "' does not support script");
-
-    checkDatabaseIsOpen();
-
-    final BasicCommandContext context = new BasicCommandContext();
-    context.setDatabase(getWrappedDatabaseInstance());
-    context.setInputParameters(params);
-
-    final List<Statement> statements = SQLQueryEngine.parseScript(script, wrappedDatabaseInstance);
-    return executeInternal(statements, context);
+    return command("sqlscript", script, params);
   }
 
+  @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
     if (!language.equalsIgnoreCase("sql"))
       throw new CommandExecutionException("Language '" + language + "' does not support script");
-
-    checkDatabaseIsOpen();
-
-    final BasicCommandContext context = new BasicCommandContext();
-    context.setDatabase(getWrappedDatabaseInstance());
-    context.setInputParameters(args);
-
-    final List<Statement> statements = SQLQueryEngine.parseScript(script, wrappedDatabaseInstance);
-    return executeInternal(statements, context);
+    return command("sqlscript", script, args);
   }
 
   @Override
@@ -1705,44 +1677,5 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         }
       }
     }
-  }
-
-  private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
-    final ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
-
-    plan.setStatements(statements);
-
-    List<Statement> lastRetryBlock = new ArrayList<>();
-    int nestedTxLevel = 0;
-
-    for (final Statement stm : statements) {
-      stm.setOriginalStatement(stm);
-
-      if (stm instanceof BeginStatement)
-        nestedTxLevel++;
-
-      if (nestedTxLevel <= 0) {
-        final InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
-        plan.chain(sub, false);
-      } else
-        lastRetryBlock.add(stm);
-
-      if (stm instanceof CommitStatement && nestedTxLevel > 0) {
-        nestedTxLevel--;
-        if (nestedTxLevel == 0) {
-
-          for (final Statement statement : lastRetryBlock) {
-            final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
-            plan.chain(sub, false);
-          }
-          lastRetryBlock = new ArrayList<>();
-        }
-      }
-
-      if (stm instanceof LetStatement)
-        scriptContext.declareScriptVariable(((LetStatement) stm).getName().getStringValue());
-    }
-
-    return new LocalResultSet(plan);
   }
 }
