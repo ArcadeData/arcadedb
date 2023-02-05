@@ -18,12 +18,14 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.utility.ResettableIterator;
+
 import java.util.*;
 
 /**
  * Created by luigidellaquila on 07/07/16.
  */
-public class InternalResultSet implements ResultSet {
+public class InternalResultSet implements ResultSet, ResettableIterator<Result> {
   private   List<Result>  content = new ArrayList<>();
   private   int           next    = 0;
   protected ExecutionPlan plan;
@@ -75,8 +77,19 @@ public class InternalResultSet implements ResultSet {
     content.addAll(list);
   }
 
+  @Override
   public void reset() {
     this.next = 0;
+  }
+
+  @Override
+  public long countEntries() {
+    return content.size();
+  }
+
+  @Override
+  public long getBrowsed() {
+    return next;
   }
 
   @Override

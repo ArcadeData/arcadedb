@@ -237,11 +237,18 @@ public class MultiValue {
       else if (iObject instanceof Iterator<?> || iObject instanceof Iterable<?>) {
 
         final Iterator<Object> it = (iObject instanceof Iterable<?>) ? ((Iterable<Object>) iObject).iterator() : (Iterator<Object>) iObject;
-        for (int i = 0; it.hasNext(); ++i) {
-          final Object o = it.next();
-          if (i == iIndex) {
-            return o;
+        if (it.hasNext()) {
+          for (int i = 0; it.hasNext(); ++i) {
+            final Object o = it.next();
+            if (i == iIndex) {
+              if (it instanceof ResettableIterator)
+                ((ResettableIterator<Object>) it).reset();
+              return o;
+            }
           }
+
+          if (it instanceof ResettableIterator)
+            ((ResettableIterator<Object>) it).reset();
         }
       }
     } catch (final RuntimeException e) {
