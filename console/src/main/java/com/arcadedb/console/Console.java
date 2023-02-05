@@ -558,10 +558,10 @@ public class Console {
 
     final long beginTime = System.currentTimeMillis();
 
-    if (transactionBatchSize > 0) {
-      if (!databaseProxy.isTransactionActive())
-        databaseProxy.begin();
-    }
+    resultSet = null;
+
+    if (transactionBatchSize > 0 && !databaseProxy.isTransactionActive())
+      databaseProxy.begin();
 
     if (asyncMode && !isRemoteDatabase()) {
       ((DatabaseInternal) databaseProxy).async().command(language, line, new AsyncResultsetCallback() {
@@ -571,7 +571,12 @@ public class Console {
         }
       });
     } else
-      resultSet = databaseProxy.command(language, line);
+      try {
+        resultSet = databaseProxy.command(language, line);
+      } catch (Exception e) {
+        outputError(e);
+        return;
+      }
 
     if (transactionBatchSize > 0) {
       ++currentOperationsInBatch;
@@ -673,7 +678,7 @@ public class Console {
           elapsed = System.currentTimeMillis() - startedOn;
           final float commandsPerSec = (executedLines - lastLapExecutedLines) * 1000F / lapElapsed;
           final float statusPerc = byteReadFromFile * 100F / fileSize;
-          final float etaInMinutes = (elapsed * fileSize / (float) byteReadFromFile) / 60_000F;
+          final float etaInMinutes = (elapsed * (fileSize - byteReadFromFile) / (float) byteReadFromFile) / 60_000F;
 
           output(2, "\n- executed %d commands (%.2f%% of file processed - %.1f commands/sec - eta %.1f more minutes)", executedLines, statusPerc,
               commandsPerSec, etaInMinutes);
