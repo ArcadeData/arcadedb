@@ -318,10 +318,14 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> createResultSet(response));
   }
 
+  /**
+   * @deprecated use {@link #command() command} instead
+   */
+  @Deprecated
   @Override
   public ResultSet execute(final String language, final String command, final Object... args) {
     final Map<String, Object> params = mapArgs(args);
-    return (ResultSet) databaseCommand("execute", language, command, params, false, (connection, response) -> createResultSet(response));
+    return (ResultSet) databaseCommand("command", language, command, params, false, (connection, response) -> createResultSet(response));
   }
 
   public CONNECTION_STRATEGY getConnectionStrategy() {
