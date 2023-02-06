@@ -598,9 +598,13 @@ function displaySelectedNode(){
 
     let table = "<thead><tr><th scope='col'>Name</th><th scope='col'>Value</th></tr>";
     table += "<tbody>";
-    for( let p in data.properties )
-      table += "<tr><td>"+p+"</td><td>" + data.properties[p]+ "</td>";
-    table += "</tbody>";
+
+    for( let p in data.properties ){
+      let value = data.properties[p];
+      if( Array.isArray( value ) || typeof(value) === 'object' )
+        value = JSON.stringify(value);
+      table += "<tr><td>"+p+"</td><td>" + value + "</td>";
+    }
 
     $("#graphPropertiesTable").html(table);
   }
@@ -827,8 +831,13 @@ function displaySelectedEdge(){
 
     let table = "<thead><tr><th scope='col'>Name</th><th scope='col'>Value</th></tr>";
     table += "<tbody>";
-    for( let p in data.properties )
-      table += "<tr><td>"+p+"</td><td>" + data.properties[p]+ "</td>";
+
+    for( let p in data.properties ){
+      let value = data.properties[p];
+      if( Array.isArray( value ) || typeof(value) === 'object' )
+        value = JSON.stringify(value);
+      table += "<tr><td>"+p+"</td><td>" + value + "</td>";
+    }
     table += "</tbody>";
 
     $("#graphPropertiesTable").html(table);
