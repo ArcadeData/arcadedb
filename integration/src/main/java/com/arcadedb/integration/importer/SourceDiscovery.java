@@ -110,9 +110,10 @@ public class SourceDiscovery {
 
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-        else if (source.inputStream instanceof ZipInputStream)
+        else if (source.inputStream instanceof ZipInputStream) {
           source.inputStream = new ZipInputStream(connection1.getInputStream());
-        else
+          ((ZipInputStream) source.inputStream).getNextEntry();
+        } else
           source.inputStream = new BufferedInputStream(connection1.getInputStream());
       } catch (final Exception e) {
         throw new ImportException("Error on reset remote resource", e);
@@ -152,9 +153,10 @@ public class SourceDiscovery {
         source.inputStream.close();
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-        else if (source.inputStream instanceof ZipInputStream)
+        else if (source.inputStream instanceof ZipInputStream) {
           source.inputStream = new ZipInputStream(new FileInputStream(file));
-        else
+          ((ZipInputStream) source.inputStream).getNextEntry();
+        } else
           source.inputStream = new BufferedInputStream(new FileInputStream(file));
       } catch (final IOException e) {
         throw new ImportException("Error on reset local resource", e);
@@ -413,7 +415,6 @@ public class SourceDiscovery {
     in.mark(0);
 
     final ZipInputStream zip = new ZipInputStream(in);
-
     ZipEntry entry = zip.getNextEntry();
     if (entry != null) {
       // ZIPPED FILE

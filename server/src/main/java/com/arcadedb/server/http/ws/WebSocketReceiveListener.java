@@ -50,7 +50,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   protected void onFullTextMessage(final WebSocketChannel channel, final BufferedTextMessage textMessage) throws IOException {
     try {
       final var message = new JSONObject(textMessage.getData());
-      final var rawAction = message.optString("action");
+      final var rawAction = message.optString("action", "");
       var action = ACTION.UNKNOWN;
       try {
         action = ACTION.valueOf(rawAction.toUpperCase());

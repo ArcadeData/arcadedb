@@ -67,6 +67,7 @@ public class ImporterSettings {
   public long    parsingLimitBytes;
   public long    parsingLimitEntries;
   public int     commitEvery            = 5000;
+  public String  mapping                = null;
 
   public final Map<String, String> options = new HashMap<>();
 
@@ -115,6 +116,8 @@ public class ImporterSettings {
       parsingLimitBytes = FileUtils.getSizeAsNumber(value);
     else if ("parsingLimitEntries".equals(name))
       parsingLimitEntries = Long.parseLong(value);
+    else if ("mapping".equals(name))
+      mapping = value;
 
       // DOCUMENT SETTINGS
 

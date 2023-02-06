@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.*;
 public class Parser {
   private final Source            source;
   private       InputStream       is;
-  private final InputStreamReader reader;
+  private       InputStreamReader reader;
   private final long              limit;
   private final AtomicLong        position = new AtomicLong();
   private final long              total;
@@ -40,9 +40,6 @@ public class Parser {
 
     this.compressed = source.compressed;
     this.total = source.totalSize;
-
-    this.reader = new InputStreamReader(this.is, DatabaseFactory.getDefaultCharset());
-    this.is.mark(0);
   }
 
   public char getCurrentChar() {
@@ -69,13 +66,17 @@ public class Parser {
   public boolean isAvailable() throws IOException {
     if (limit > 0)
       return position.get() < limit && is.available() > 0;
-    if( reader.ready() )
+    if (reader.ready())
       return true;
     return is.available() > 0;
   }
 
   public InputStream getInputStream() {
     return is;
+  }
+
+  public InputStreamReader getReader() {
+    return reader;
   }
 
   public long getPosition() {
@@ -136,5 +137,7 @@ public class Parser {
         position.set(0);
       }
     };
+    this.reader = new InputStreamReader(this.is, DatabaseFactory.getDefaultCharset());
+    this.is.mark(0);
   }
 }
