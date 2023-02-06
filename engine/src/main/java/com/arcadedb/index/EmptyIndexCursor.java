@@ -56,7 +56,7 @@ public class EmptyIndexCursor implements IndexCursor {
   }
 
   @Override
-  public byte[] getKeyTypes() {
+  public byte[] getBinaryKeyTypes() {
     return new byte[0];
   }
 

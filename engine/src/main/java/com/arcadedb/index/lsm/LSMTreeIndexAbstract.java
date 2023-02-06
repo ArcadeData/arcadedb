@@ -116,13 +116,14 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Called at cloning time.
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final String ext, final byte[] keyTypes, final int pageSize, final int version) throws IOException {
+      final String ext, final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, TEMP_EXT + ext, PaginatedFile.MODE.READ_WRITE, pageSize, version);
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
-    this.binaryKeyTypes = keyTypes;
+    this.keyTypes = keyTypes;
+    this.binaryKeyTypes = binaryKeyTypes;
     REMOVED_ENTRY_RID = new RID(database, -1, -1L);
   }
 
@@ -166,7 +167,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return name + "(" + getFileId() + ")";
   }
 
-  public byte[] getKeyTypes() {
+  public Type[] getKeyTypes() {
+    return keyTypes;
+  }
+
+  public byte[] getBinaryKeyTypes() {
     return binaryKeyTypes;
   }
 

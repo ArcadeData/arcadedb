@@ -176,6 +176,17 @@ public enum Type {
     return null;
   }
 
+  /**
+   * Return the type by binary type as byte.
+   */
+  public static Type getByBinaryType(final byte binaryType) {
+    for (int i = 0; i < TYPES_BY_ID.length; i++) {
+      if (TYPES_BY_ID[i].binaryType == binaryType)
+        return TYPES_BY_ID[i];
+    }
+    return null;
+  }
+
   public static void validateValue(final Object value) {
     if (value != null) {
       if (value instanceof String || value instanceof Number || value instanceof Map || value instanceof Collection)

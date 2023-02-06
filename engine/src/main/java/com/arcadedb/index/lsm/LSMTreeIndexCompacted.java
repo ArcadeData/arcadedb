@@ -29,6 +29,7 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.Type;
 
 import java.io.*;
 import java.util.*;
@@ -48,8 +49,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    * Called at cloning time.
    */
   public LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final byte[] keyTypes, final int pageSize) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize,
+      final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize) throws IOException {
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, binaryKeyTypes, pageSize,
         LSMTreeIndexMutable.CURRENT_VERSION);
   }
 

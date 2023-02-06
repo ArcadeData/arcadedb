@@ -65,7 +65,7 @@ public class TempIndexCursor implements IndexCursor {
   }
 
   @Override
-  public byte[] getKeyTypes() {
+  public byte[] getBinaryKeyTypes() {
     return new byte[0];
   }
 

@@ -71,8 +71,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at cloning time.
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final byte[] keyTypes, final int pageSize, final int version, final LSMTreeIndexCompacted subIndex) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize, version);
+      final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize, final int version, final LSMTreeIndexCompacted subIndex) throws IOException {
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, binaryKeyTypes, pageSize, version);
     this.subIndex = subIndex;
     minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
   }
@@ -112,6 +112,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       this.binaryKeyTypes = new byte[len];
       for (int i = 0; i < len; ++i)
         this.binaryKeyTypes[i] = currentPage.readByte(pos++);
+
+      this.keyTypes = new Type[len];
+      for (int i = 0; i < len; ++i)
+        this.keyTypes[i] = Type.getByBinaryType(binaryKeyTypes[i]);
 
       minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
 
@@ -157,7 +161,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final int last_ = name.lastIndexOf('_');
     final String newName = name.substring(0, last_) + "_" + System.nanoTime();
 
-    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + File.separator + newName, binaryKeyTypes, pageSize);
+    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + File.separator + newName, keyTypes, binaryKeyTypes,
+        pageSize);
   }
 
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) throws IOException {

@@ -41,8 +41,8 @@ public abstract class PaginatedComponent {
     this(database, name, filePath, ext, database.getFileManager().newFileId(), mode, pageSize, version);
   }
 
-  private PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext, final int id, final PaginatedFile.MODE mode,
-      final int pageSize, final int version) throws IOException {
+  private PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext, final int id,
+      final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
     this(database, name, filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, id, mode, pageSize, version);
   }
 

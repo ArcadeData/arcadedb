@@ -44,5 +44,5 @@ public interface IndexCursor extends Cursor {
 
   BinaryComparator getComparator();
 
-  byte[] getKeyTypes();
+  byte[] getBinaryKeyTypes();
 }

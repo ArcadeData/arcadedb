@@ -62,7 +62,7 @@ public class LSMTreeIndexCompactor {
       LogManager.instance().log(mainIndex, Level.FINE, "- Creating sub-index '%s' (threadId=%d)...", null, compactedIndex, Thread.currentThread().getId());
     }
 
-    final byte[] keyTypes = mutableIndex.getKeyTypes();
+    final byte[] keyTypes = mutableIndex.getBinaryKeyTypes();
 
     long indexCompactionRAM = database.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_COMPACTION_RAM_MB) * 1024 * 1024;
 
