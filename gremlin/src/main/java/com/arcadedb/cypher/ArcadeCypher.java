@@ -87,7 +87,7 @@ public class ArcadeCypher extends ArcadeGremlin {
   public static String compileToGremlin(final ArcadeGraph graph, final String cypher, final Map<String, Object> parameters) {
     if (CACHE_SIZE == 0)
       // NO CACHE
-      return new TranslationFacade().toGremlinGroovy(cypher);
+      return parameters != null ? new TranslationFacade().toGremlinGroovy(cypher, parameters) : new TranslationFacade().toGremlinGroovy(cypher);
 
     final String db = graph.getDatabase().getDatabasePath();
 

@@ -20,7 +20,9 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Document;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -38,6 +40,7 @@ import javax.script.ScriptException;
 import javax.script.SimpleBindings;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * Gremlin Expression builder.
@@ -46,40 +49,16 @@ import java.util.concurrent.*;
  */
 
 public class ArcadeGremlin extends ArcadeQuery {
-  private static Long                timeout;
-  private final  GremlinScriptEngine engine;
+  private static Long timeout;
 
   protected ArcadeGremlin(final ArcadeGraph graph, final String query) {
     super(graph, query);
-
-    String nativeGremlin = System.getProperty("arcadedb.native-gremlin");
-    if ("true".equals(nativeGremlin)) {
-      // USE THE NATIVE GREMLIN PARSER
-      final GremlinLangScriptEngine gremlinLangScriptEngine = new GremlinLangScriptEngine();
-      final GremlinScriptEngineFactory factory = gremlinLangScriptEngine.getFactory();
-      factory.setCustomizerManager(new DefaultGremlinScriptEngineManager());
-      engine = factory.getScriptEngine();
-    } else
-      engine = null;
   }
 
   @Override
   public ResultSet execute() throws ExecutionException, InterruptedException {
-
     try {
-      final GraphTraversal resultSet;
-      if (engine == null) {
-        final GremlinExecutor ge = graph.getGremlinExecutor();
-        final CompletableFuture<Object> evalResult = parameters != null ? ge.eval(query, parameters) : ge.eval(query);
-        resultSet = (GraphTraversal) evalResult.get();
-      } else {
-        final SimpleBindings bindings = new SimpleBindings();
-        bindings.put("g", graph.traversal());
-        if (parameters != null)
-          bindings.putAll(parameters);
-
-        resultSet = (GraphTraversal) engine.eval(query, bindings);
-      }
+      final GraphTraversal resultSet = executeStatement();
 
       return new IteratorResultSet(new Iterator() {
         @Override
@@ -105,33 +84,33 @@ public class ArcadeGremlin extends ArcadeQuery {
   }
 
   public QueryEngine.AnalyzedQuery parse() throws ExecutionException, InterruptedException {
-    final GremlinExecutor ge = graph.getGremlinExecutor();
+    try {
+      final DefaultGraphTraversal resultSet = (DefaultGraphTraversal) executeStatement();
 
-    final CompletableFuture<Object> evalResult = parameters != null ? ge.eval(query, parameters) : ge.eval(query);
-
-    final DefaultGraphTraversal resultSet = (DefaultGraphTraversal) evalResult.get();
-
-    boolean idempotent = true;
-    for (final Object step : resultSet.getSteps()) {
-      if (step instanceof Mutating) {
-        idempotent = false;
-        break;
+      boolean idempotent = true;
+      for (final Object step : resultSet.getSteps()) {
+        if (step instanceof Mutating) {
+          idempotent = false;
+          break;
+        }
       }
+
+      final boolean isIdempotent = idempotent;
+
+      return new QueryEngine.AnalyzedQuery() {
+        @Override
+        public boolean isIdempotent() {
+          return isIdempotent;
+        }
+
+        @Override
+        public boolean isDDL() {
+          return false;
+        }
+      };
+    } catch (ScriptException e) {
+      throw new RuntimeException(e);
     }
-
-    final boolean isIdempotent = idempotent;
-
-    return new QueryEngine.AnalyzedQuery() {
-      @Override
-      public boolean isIdempotent() {
-        return isIdempotent;
-      }
-
-      @Override
-      public boolean isDDL() {
-        return false;
-      }
-    };
   }
 
   public Long getTimeout() {
@@ -143,4 +122,44 @@ public class ArcadeGremlin extends ArcadeQuery {
     return this;
   }
 
+  private GraphTraversal executeStatement() throws ExecutionException, InterruptedException, ScriptException {
+    String gremlinEngine = graph.getDatabase().getConfiguration().getValueAsString(GlobalConfiguration.GREMLIN_ENGINE);
+    if ("auto".equals(gremlinEngine)) {
+      if (parameters == null || parameters.isEmpty()) {
+        // NO PARAMETERS, USES THE NEW ENGINE
+        try {
+          return executeStatement("java");
+        } catch (ScriptException e) {
+          // EXCEPTION PARSING, TRYING WITH OLD GROOVY PARSER
+          LogManager.instance().log(this, Level.FINE, "The gremlin query '%s' could not be parsed, using the legacy `groovy` parser", e, query);
+        }
+      }
+      gremlinEngine = "groovy";
+    }
+
+    return executeStatement(gremlinEngine);
+  }
+
+  private GraphTraversal executeStatement(final String gremlinEngine) throws ExecutionException, InterruptedException, ScriptException {
+    if ("java".equals(gremlinEngine)) {
+      // USE THE NATIVE GREMLIN PARSER
+      final GremlinLangScriptEngine gremlinLangScriptEngine = new GremlinLangScriptEngine();
+      final GremlinScriptEngineFactory factory = gremlinLangScriptEngine.getFactory();
+      factory.setCustomizerManager(new DefaultGremlinScriptEngineManager());
+      final GremlinScriptEngine engine = factory.getScriptEngine();
+
+      final SimpleBindings bindings = new SimpleBindings();
+      bindings.put("g", graph.traversal());
+      if (parameters != null)
+        bindings.putAll(parameters);
+      return (GraphTraversal) engine.eval(query, bindings);
+
+    } else if ("groovy".equals(gremlinEngine)) {
+      final GremlinExecutor ge = graph.getGremlinExecutor();
+      final CompletableFuture<Object> evalResult = parameters != null ? ge.eval(query, parameters) : ge.eval(query);
+      return (GraphTraversal) evalResult.get();
+
+    } else
+      throw new IllegalArgumentException("Gremlin engine '" + gremlinEngine + "' not supported");
+  }
 }

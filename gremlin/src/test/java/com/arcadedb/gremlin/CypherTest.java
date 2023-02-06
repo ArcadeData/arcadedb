@@ -212,6 +212,7 @@ public class CypherTest {
   }
 
   /**
+   * Cypher: "delete" query causes "groovy.lang.MissingMethodException" error
    * https://github.com/ArcadeData/arcadedb/issues/734
    */
   @Test
@@ -223,7 +224,7 @@ public class CypherTest {
       Assertions.assertTrue(p1.hasNext());
       p1.next().getIdentity().get();
 
-      final ResultSet p2 = graph.cypher("MATCH (p) DELETE p").execute();
+      graph.cypher("MATCH (p) DELETE p").execute();
 
     } finally {
       graph.drop();
