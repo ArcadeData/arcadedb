@@ -538,6 +538,7 @@ function displaySchema(){
       panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select from `"+row.name+"` limit 30\")'>Display the first 30 records of "+row.name+"</a>";
       if( row.type == "vertex" )
         panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select *, bothE() as `@edges` from `"+row.name+"` limit 30\")'>Display the first 30 records of "+row.name+" together with all the vertices that are directly connected</a>";
+      panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select count(*) from `"+row.name+"`\")'>Count the records of type "+row.name+"</a>";
       panelHtml += "</ul>";
 
       panelHtml += "</div>";
