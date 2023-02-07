@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -284,6 +285,16 @@ public class Console {
       outputLine(3, "Set new limit to %d", limit);
     } else if ("asyncMode".equalsIgnoreCase(key)) {
       asyncMode = Boolean.parseBoolean(value);
+      if (asyncMode) {
+        // ENABLE ASYNCHRONOUS PARALLEL MODE
+        GlobalConfiguration.ASYNC_WORKER_THREADS.reset();
+        // AVOID BATCH IN ASYNC MODE BECAUSE IT IS NOT POSSIBLE TO RETRY THE OPERATION
+        GlobalConfiguration.ASYNC_TX_BATCH_SIZE.setValue(1);
+        if (!isRemoteDatabase())
+          ((Database) databaseProxy).async().onError((e) -> {
+            outputError(e);
+          });
+      }
       outputLine(3, "Set asyncMode to %s", asyncMode);
     } else if ("transactionBatchSize".equalsIgnoreCase(key)) {
       transactionBatchSize = Integer.parseInt(value);
@@ -680,8 +691,8 @@ public class Console {
           final float statusPerc = byteReadFromFile * 100F / fileSize;
           final float etaInMinutes = (elapsed * (fileSize - byteReadFromFile) / (float) byteReadFromFile) / 60_000F;
 
-          output(2, "\n- executed %d commands (%.2f%% of file processed - %d commands/sec - eta %.1f more minutes)", executedLines, statusPerc,
-              commandsPerSec, etaInMinutes);
+          output(2, "\n- executed %d commands (%.2f%% of file processed - %d commands/sec - eta %.1f more minutes)", executedLines, statusPerc, commandsPerSec,
+              etaInMinutes);
           flushOutput();
 
           lastLapTime = System.currentTimeMillis();
@@ -866,7 +877,7 @@ public class Console {
     terminal.writer().flush();
   }
 
-  private void outputError(final Exception e) {
+  private void outputError(final Throwable e) {
     if (verboseLevel > 1) {
       try (final ByteArrayOutputStream out = new ByteArrayOutputStream(); final PrintWriter writer = new PrintWriter(out)) {
         e.printStackTrace(writer);
