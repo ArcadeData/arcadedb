@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.integration.importer.graph.GraphImporter;
 
+import java.util.*;
 import java.util.concurrent.atomic.*;
 
 public class ImporterContext {
@@ -30,6 +31,7 @@ public class ImporterContext {
   public final AtomicLong    createdEmbeddedDocuments = new AtomicLong();
   public final AtomicLong    linkedEdges              = new AtomicLong();
   public final AtomicLong    skippedEdges             = new AtomicLong();
+  public final AtomicLong    errors                   = new AtomicLong();
   public       GraphImporter graphImporter;
   public       long          startedOn;
   public       long          lastLapOn;
@@ -38,4 +40,21 @@ public class ImporterContext {
   public       long          lastVertices;
   public       long          lastEdges;
   public       long          lastLinkedEdges;
+
+  public Map<String, Object> toMap() {
+    final LinkedHashMap<String, Object> map = new LinkedHashMap<>();
+
+    if (parsed.get() > 0)
+      map.put("parsedRecords", parsed.get());
+    if (errors.get() > 0)
+      map.put("errors", errors.get());
+    if (createdDocuments.get() > 0)
+      map.put("createdDocuments", createdDocuments.get());
+    if (createdVertices.get() > 0)
+      map.put("createdVertices", createdVertices.get());
+    if (createdEdges.get() > 0)
+      map.put("createdEdges", createdEdges.get());
+
+    return map;
+  }
 }

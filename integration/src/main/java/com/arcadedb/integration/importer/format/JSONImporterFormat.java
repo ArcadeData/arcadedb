@@ -55,8 +55,6 @@ import static com.google.gson.stream.JsonToken.END_ARRAY;
 import static com.google.gson.stream.JsonToken.END_OBJECT;
 
 public class JSONImporterFormat implements FormatImporter {
-  private long errors = 0L;
-
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
@@ -120,7 +118,7 @@ public class JSONImporterFormat implements FormatImporter {
       } else
         mappingObject = null;
 
-      parseRecord(reader, settings, database, mappingObject, ignore);
+      parseRecord(reader, settings, context, database, mappingObject, ignore);
 
       database.commit();
       database.begin();
@@ -131,9 +129,11 @@ public class JSONImporterFormat implements FormatImporter {
     reader.endArray();
   }
 
-  private Object parseRecord(final JsonReader reader, final ImporterSettings settings, final Database database, final JSONObject mapping, final boolean ignore)
-      throws IOException {
+  private Object parseRecord(final JsonReader reader, final ImporterSettings settings, final ImporterContext context, final Database database,
+      final JSONObject mapping, final boolean ignore) throws IOException {
     final Map<String, Object> attributes = ignore ? null : new LinkedHashMap<>();
+
+    context.parsed.incrementAndGet();
 
     reader.beginObject();
     while (reader.peek() != END_OBJECT) {
@@ -166,17 +166,17 @@ public class JSONImporterFormat implements FormatImporter {
           else if (mappingValue instanceof String && mappingValue.toString().equals("@ignore"))
             ignoreObject = true;
         }
-        attributeValue = parseRecord(reader, settings, database, mappingObject, ignoreObject);
+        attributeValue = parseRecord(reader, settings, context, database, mappingObject, ignoreObject);
         break;
 
       case BEGIN_ARRAY: {
         final JSONArray mappingArray = mapping != null && mapping.has(attributeName) ? mapping.getJSONArray(attributeName) : null;
-        attributeValue = parseArray(reader, settings, database, mappingArray, ignore);
+        attributeValue = parseArray(reader, settings, context, database, mappingArray, ignore);
       }
       break;
       default:
         LogManager.instance().log(this, Level.WARNING, "Skipping property '%s' of type '%s'", attributeName, propertyType);
-        ++errors;
+        context.errors.incrementAndGet();
         continue;
       }
 
@@ -189,7 +189,7 @@ public class JSONImporterFormat implements FormatImporter {
     if (ignore)
       return null;
 
-    final Document record = createRecord(database, attributes, mapping);
+    final Document record = createRecord(database, context, attributes, mapping);
     if (record instanceof MutableDocument) {
       ((MutableDocument) record).save();
       return record;
@@ -198,17 +198,19 @@ public class JSONImporterFormat implements FormatImporter {
     return attributes;
   }
 
-  private Document createRecord(final Database database, final Map<String, Object> attributes, final JSONObject mapping) {
+  private Document createRecord(final Database database, final ImporterContext context, final Map<String, Object> attributes, final JSONObject mapping) {
     if (mapping == null)
       return null;
 
     if (!mapping.has("@cat")) {
       LogManager.instance().log(this, Level.WARNING, "No @cat tag defined in mapping object. The following object will be skipped %s", attributes);
+      context.errors.incrementAndGet();
       return null;
     }
 
     if (!mapping.has("@type")) {
       LogManager.instance().log(this, Level.WARNING, "No @type tag defined in mapping object. The following object will be skipped %s", attributes);
+      context.errors.incrementAndGet();
       return null;
     }
 
@@ -227,6 +229,7 @@ public class JSONImporterFormat implements FormatImporter {
 
     if (typeName == null) {
       LogManager.instance().log(this, Level.WARNING, "Type is null, skipping object %s", attributes);
+      context.errors.incrementAndGet();
       return null;
     }
 
@@ -243,6 +246,7 @@ public class JSONImporterFormat implements FormatImporter {
       return null;
     default:
       LogManager.instance().log(this, Level.WARNING, "Record category '%s' not supported", category);
+      context.errors.incrementAndGet();
       return null;
     }
 
@@ -257,6 +261,7 @@ public class JSONImporterFormat implements FormatImporter {
         if (idValue == null) {
           // NO ID FOUND, SKIP THE RECORD
           LogManager.instance().log(this, Level.WARNING, "@id property not found on current record, skipping record: %s", attributes);
+          context.errors.incrementAndGet();
           return null;
         }
 
@@ -284,14 +289,16 @@ public class JSONImporterFormat implements FormatImporter {
       switch (category) {
       case "v":
         record = database.newVertex(typeName);
+        context.createdVertices.incrementAndGet();
         break;
       case "d":
         record = database.newDocument(typeName);
+        context.createdDocuments.incrementAndGet();
         break;
       }
     }
 
-    applyMappingRules(database, record, attributes, mapping);
+    applyMappingRules(database, context, record, attributes, mapping);
 
     final LinkedHashMap<String, Object> recordProperties = new LinkedHashMap<>(attributes);
     recordProperties.keySet().removeIf(name -> name.startsWith("@"));
@@ -301,7 +308,8 @@ public class JSONImporterFormat implements FormatImporter {
     return record;
   }
 
-  private void applyMappingRules(final Database database, final MutableDocument record, final Map<String, Object> attributes, final JSONObject mapping) {
+  private void applyMappingRules(final Database database, final ImporterContext context, final MutableDocument record, final Map<String, Object> attributes,
+      final JSONObject mapping) {
     // CHECK FOR SPECIAL MAPPING
     for (String mappingName : mapping.keySet()) {
       final Object mappingValue = mapping.get(mappingName);
@@ -315,9 +323,10 @@ public class JSONImporterFormat implements FormatImporter {
           LogManager.instance()
               .log(this, Level.WARNING, "Defined an object on mapping for property '%s' but found the object of class %s as attribute", mappingName,
                   attributeValue.getClass());
+          context.errors.incrementAndGet();
           continue;
         }
-        Object result = convertMap(database, record, attributeValue, mappingValue);
+        Object result = convertMap(database, context, record, attributeValue, mappingValue);
         if (result instanceof Edge)
           // CONVERTED TO EDGE, REMOVE THE PROPERTY ENTIRELY
           attributes.remove(mappingName);
@@ -327,13 +336,14 @@ public class JSONImporterFormat implements FormatImporter {
           LogManager.instance()
               .log(this, Level.WARNING, "Defined an array on mapping for property '%s' but found the object of class %s as attribute", mappingName,
                   attributeValue.getClass());
+          context.errors.incrementAndGet();
           continue;
         }
 
         final Object subMapping = ((JSONArray) mappingValue).get(0);
         for (Iterator<?> it = ((Collection<?>) attributeValue).iterator(); it.hasNext(); ) {
           final Object attributeArrayItem = it.next();
-          Object result = convertMap(database, record, attributeArrayItem, subMapping);
+          Object result = convertMap(database, context, record, attributeArrayItem, subMapping);
           if (result instanceof Edge)
             // CONVERTED TO EDGE, REMOVE THE PROPERTY ENTIRELY
             attributes.remove(mappingName);
@@ -342,8 +352,8 @@ public class JSONImporterFormat implements FormatImporter {
     }
   }
 
-  private List<Object> parseArray(final JsonReader reader, final ImporterSettings settings, final Database database, final JSONArray mapping, boolean ignore)
-      throws IOException {
+  private List<Object> parseArray(final JsonReader reader, final ImporterSettings settings, final ImporterContext context, final Database database,
+      final JSONArray mapping, boolean ignore) throws IOException {
     final List<Object> list = ignore ? null : new ArrayList<>();
     reader.beginArray();
     while (reader.peek() != END_ARRAY) {
@@ -366,15 +376,15 @@ public class JSONImporterFormat implements FormatImporter {
         break;
       case BEGIN_OBJECT:
         final JSONObject mappingObject = mapping != null && !mapping.isEmpty() ? mapping.getJSONObject(0) : null;
-        entryValue = parseRecord(reader, settings, database, mappingObject, ignore);
+        entryValue = parseRecord(reader, settings, context, database, mappingObject, ignore);
         break;
       case BEGIN_ARRAY:
         final JSONArray mappingArray = mapping != null && !mapping.isEmpty() ? mapping.getJSONArray(0) : null;
-        entryValue = parseArray(reader, settings, database, mappingArray, ignore);
+        entryValue = parseArray(reader, settings, context, database, mappingArray, ignore);
         break;
       default:
-        ++errors;
         LogManager.instance().log(this, Level.WARNING, "Skipping entry of type '%s'", entryType);
+        context.errors.incrementAndGet();
         continue;
       }
 
@@ -386,7 +396,7 @@ public class JSONImporterFormat implements FormatImporter {
     return list;
   }
 
-  private Object convertMap(final Database database, final MutableDocument record, final Object value, final Object mapping) {
+  private Object convertMap(final Database database, final ImporterContext context, final MutableDocument record, final Object value, final Object mapping) {
     if (mapping instanceof JSONObject) {
       final JSONObject mappingObject = (JSONObject) mapping;
       if (value instanceof Map) {
@@ -400,11 +410,13 @@ public class JSONImporterFormat implements FormatImporter {
           // TRANSFORM INTO AN EDGE
           if (subTypeName == null) {
             LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the edge @type is not defined");
+            context.errors.incrementAndGet();
             return null;
           }
 
           if (!(record instanceof Vertex)) {
             LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the root record is not a vertex");
+            context.errors.incrementAndGet();
             return null;
           }
 
@@ -423,10 +435,12 @@ public class JSONImporterFormat implements FormatImporter {
             } else {
               LogManager.instance()
                   .log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in type is not supported: " + inValue);
+              context.errors.incrementAndGet();
               return null;
             }
           } else {
             LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in is not defined");
+            context.errors.incrementAndGet();
             return null;
           }
 
@@ -434,13 +448,15 @@ public class JSONImporterFormat implements FormatImporter {
           if (destVertexItem instanceof Document)
             destVertex = (MutableVertex) destVertexItem;
           else if (destVertexItem instanceof Map) {
-            destVertex = (MutableVertex) createRecord(record.getDatabase(), (Map<String, Object>) destVertexItem, destVertexMappingObject);
+            destVertex = (MutableVertex) createRecord(record.getDatabase(), context, (Map<String, Object>) destVertexItem, destVertexMappingObject);
             if (destVertex == null) {
               LogManager.instance().log(this, Level.WARNING, "Cannot convert inner map into destination vertex: %s", destVertexItem);
+              context.errors.incrementAndGet();
               return null;
             }
           } else {
-            LogManager.instance().log(this, Level.WARNING, "Cannot convert object %s into a record", destVertexItem);
+            LogManager.instance().log(this, Level.WARNING, "Cannot convert object " + destVertexItem + " into a record");
+            context.errors.incrementAndGet();
             return null;
           }
 
@@ -461,8 +477,10 @@ public class JSONImporterFormat implements FormatImporter {
               }
             }
 
-            if (duplicates)
+            if (duplicates) {
+              context.skippedEdges.incrementAndGet();
               return null;
+            }
           }
 
           final MutableEdge edge = ((Vertex) record).newEdge(subTypeName, destVertex, true);
@@ -470,6 +488,8 @@ public class JSONImporterFormat implements FormatImporter {
           attributeMap.keySet().removeIf(name -> name.startsWith("@"));
           edge.set(attributeMap);
           edge.save();
+
+          context.createdEdges.incrementAndGet();
 
           return edge;
         }

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.io.*;
+import java.util.*;
 
 public class Importer extends AbstractImporter {
   public Importer(final String[] args) {
@@ -38,7 +39,7 @@ public class Importer extends AbstractImporter {
     System.exit(0);
   }
 
-  public void load() {
+  public Map<String, Object> load() {
     source = null;
 
     try {
@@ -67,6 +68,8 @@ public class Importer extends AbstractImporter {
       }
       closeInputFile();
     }
+
+    return context.toMap();
   }
 
   protected void loadFromSource(final String url, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema) throws IOException {

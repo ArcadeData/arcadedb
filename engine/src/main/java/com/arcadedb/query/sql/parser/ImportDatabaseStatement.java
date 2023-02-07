@@ -58,7 +58,10 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
         settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
 
       clazz.getMethod("setSettings", Map.class).invoke(importer, settingsToString);
-      clazz.getMethod("load").invoke(importer);
+      final Map<String, Object> statistics = (Map<String, Object>) clazz.getMethod("load").invoke(importer);
+
+      if (statistics != null)
+        result.setPropertiesFromMap(statistics);
 
     } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on importing database, importer libs not found in classpath", e);
