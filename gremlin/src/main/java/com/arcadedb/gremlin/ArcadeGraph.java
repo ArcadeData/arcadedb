@@ -20,7 +20,6 @@
  */
 package com.arcadedb.gremlin;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -30,7 +29,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.log.LogManager;
+import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -38,9 +37,9 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.apache.commons.configuration2.BaseConfiguration;
 import org.apache.commons.configuration2.Configuration;
-import com.arcadedb.gremlin.io.ArcadeIoRegistry;
-import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
-import org.apache.tinkerpop.gremlin.jsr223.ConcurrentBindings;
+import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
+import org.apache.tinkerpop.gremlin.jsr223.DefaultGremlinScriptEngineManager;
+import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
@@ -58,7 +57,6 @@ import org.opencypher.v9_0.util.SyntaxException;
 
 import java.io.*;
 import java.util.*;
-import java.util.logging.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -72,17 +70,17 @@ import java.util.logging.*;
 @Graph.OptIn("com.arcadedb.gremlin.structure.DebugStructureSuite")
 public class ArcadeGraph implements Graph, Closeable {
 
-  public static final String CONFIG_DIRECTORY          = "gremlin.arcadedb.directory";
-  public static final String CONFIG_EVALUATION_TIMEOUT = "gremlin.evaluationTimeout";
+  public static final String CONFIG_DIRECTORY = "gremlin.arcadedb.directory";
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
-  private final        ArcadeGraphTransaction transaction;
-  protected final      Database               database;
-  protected final      BaseConfiguration      configuration  = new BaseConfiguration();
-  private final static Iterator<Vertex>       EMPTY_VERTICES = Collections.emptyIterator();
-  private final static Iterator<Edge>         EMPTY_EDGES    = Collections.emptyIterator();
-  protected            Features               features       = new ArcadeGraphFeatures();
-  private              GremlinExecutor        gremlinExecutor;
+  private final        ArcadeGraphTransaction    transaction;
+  protected final      Database                  database;
+  protected final      BaseConfiguration         configuration  = new BaseConfiguration();
+  private final static Iterator<Vertex>          EMPTY_VERTICES = Collections.emptyIterator();
+  private final static Iterator<Edge>            EMPTY_EDGES    = Collections.emptyIterator();
+  protected            Features                  features       = new ArcadeGraphFeatures();
+  private              GremlinLangScriptEngine   gremlinJavaEngine;
+  private              GremlinGroovyScriptEngine gremlinGroovyEngine;
 
   static {
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class, TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
@@ -114,11 +112,6 @@ public class ArcadeGraph implements Graph, Closeable {
   protected ArcadeGraph(final Database database) {
     this.database = database;
     this.transaction = new ArcadeGraphTransaction(this);
-
-    if (database.getConfiguration().hasValue(GlobalConfiguration.GREMLIN_COMMAND_TIMEOUT.getKey()))
-      // SET CUSTOM TIMEOUT
-      configuration.setProperty(CONFIG_EVALUATION_TIMEOUT, database.getConfiguration().getValueAsLong(GlobalConfiguration.GREMLIN_COMMAND_TIMEOUT));
-
     init();
   }
 
@@ -329,13 +322,10 @@ public class ArcadeGraph implements Graph, Closeable {
 
   @Override
   public void close() {
-    if (gremlinExecutor != null) {
-      try {
-        gremlinExecutor.close();
-        gremlinExecutor = null;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.INFO, "Error on closing gremlin executor", e);
-      }
+    gremlinJavaEngine = null;
+    if (gremlinGroovyEngine != null) {
+      gremlinGroovyEngine.reset();
+      gremlinGroovyEngine = null;
     }
 
     if (this.database != null) {
@@ -349,13 +339,10 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   public void drop() {
-    if (gremlinExecutor != null) {
-      try {
-        gremlinExecutor.close();
-        gremlinExecutor = null;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.INFO, "Error on closing gremlin executor", e);
-      }
+    gremlinJavaEngine = null;
+    if (gremlinGroovyEngine != null) {
+      gremlinGroovyEngine.reset();
+      gremlinGroovyEngine = null;
     }
 
     if (this.database != null) {
@@ -419,31 +406,26 @@ public class ArcadeGraph implements Graph, Closeable {
     throw new IllegalArgumentException(String.format("Cannot get direction for argument %s", direction));
   }
 
-  /**
-   * Callback to register additional functions or plugin to the Gremlin executor.
-   */
-  public GremlinExecutor getGremlinExecutor() {
-    return gremlinExecutor;
+  public GremlinLangScriptEngine getGremlinJavaEngine() {
+    return gremlinJavaEngine;
+  }
+
+  public GremlinGroovyScriptEngine getGremlinGroovyEngine() {
+    return gremlinGroovyEngine;
   }
 
   private void init() {
-    // INITIALIZE GREMLIN
-    final ConcurrentBindings globalBindings = new ConcurrentBindings();
-    globalBindings.putIfAbsent("g", traversal());
-
-    final GremlinExecutor.Builder builder = GremlinExecutor.build();
-    builder.globalBindings(globalBindings);
-
-    if (configuration.containsKey(CONFIG_EVALUATION_TIMEOUT))
-      // SET CUSTOM TIMEOUT
-      builder.evaluationTimeout(configuration.getLong(CONFIG_EVALUATION_TIMEOUT));
-
-    gremlinExecutor = builder.create();
-
     // INITIALIZE CYPHER
     final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
     importPlugin.classImports(Math.class, CustomFunctions.class, CustomPredicate.class);
     importPlugin.methodImports(List.of("java.lang.Math#*", "org.opencypher.gremlin.traversal.CustomFunctions#*"));
-    gremlinExecutor.getScriptEngineManager().addPlugin(importPlugin.create());
+
+    // INITIALIZE JAVA ENGINE
+    gremlinJavaEngine = new GremlinLangScriptEngine(importPlugin.create().getCustomizers().get());
+    gremlinJavaEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
+
+    // INITIALIZE GROOVY ENGINE
+    gremlinGroovyEngine = new GremlinGroovyScriptEngine(importPlugin.create().getCustomizers().get());
+    gremlinGroovyEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
   }
 }

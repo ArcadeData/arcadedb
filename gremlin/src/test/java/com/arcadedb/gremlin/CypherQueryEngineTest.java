@@ -53,7 +53,6 @@ public class CypherQueryEngineTest {
   public void verifyProjectionWithCollectFunction() {
     final Configuration config = new BaseConfiguration();
     config.setProperty(ArcadeGraph.CONFIG_DIRECTORY, DB_PATH);
-    config.setProperty(ArcadeGraph.CONFIG_EVALUATION_TIMEOUT, 180000);
 
     final ArcadeGraph graph = ArcadeGraph.open(config);
     try (final Database database = graph.getDatabase()) {

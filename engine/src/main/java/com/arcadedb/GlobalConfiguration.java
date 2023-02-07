@@ -191,7 +191,10 @@ public enum GlobalConfiguration {
       "Gremlin engine to use. By default the `auto` setting uses the legacy `groovy` engine in case parameters are set, otherwise, the new native `java` is preferred. If you have compatibility issues with gremlin statements that use lambdas or in general, switch to the `groovy` one",
       String.class, "auto", Set.of("auto", "groovy", "java")),
 
-  GREMLIN_COMMAND_TIMEOUT("arcadedb.gremlin.timeout", SCOPE.DATABASE, "Default timeout for gremlin commands (in ms)", Long.class, 30_000),
+  /**
+   * Not in use anymore after removing Gremlin Executor
+   */
+  @Deprecated GREMLIN_COMMAND_TIMEOUT("arcadedb.gremlin.timeout", SCOPE.DATABASE, "Default timeout for gremlin commands (in ms)", Long.class, 30_000),
 
   // USER CODE
   POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", SCOPE.DATABASE, "Default timeout for polyglot commands (in ms)", Long.class, 10_000),
@@ -409,7 +412,7 @@ public enum GlobalConfiguration {
    * Reset the configuration to the default value.
    */
   public void reset() {
-    value = nullValue;
+    value = defValue;
   }
 
   public static void dumpConfiguration(final PrintStream out) {
@@ -528,7 +531,7 @@ public enum GlobalConfiguration {
    * @return {@literal true} if configuration was changed from default value and {@literal false} otherwise.
    */
   public boolean isChanged() {
-    return value != nullValue;
+    return value != defValue;
   }
 
   /**

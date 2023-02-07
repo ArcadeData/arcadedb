@@ -27,11 +27,8 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
-import org.apache.tinkerpop.gremlin.jsr223.DefaultGremlinScriptEngineManager;
+import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
-import org.apache.tinkerpop.gremlin.jsr223.GremlinScriptEngine;
-import org.apache.tinkerpop.gremlin.jsr223.GremlinScriptEngineFactory;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
@@ -143,21 +140,23 @@ public class ArcadeGremlin extends ArcadeQuery {
   private GraphTraversal executeStatement(final String gremlinEngine) throws ExecutionException, InterruptedException, ScriptException {
     if ("java".equals(gremlinEngine)) {
       // USE THE NATIVE GREMLIN PARSER
-      final GremlinLangScriptEngine gremlinLangScriptEngine = new GremlinLangScriptEngine();
-      final GremlinScriptEngineFactory factory = gremlinLangScriptEngine.getFactory();
-      factory.setCustomizerManager(new DefaultGremlinScriptEngineManager());
-      final GremlinScriptEngine engine = factory.getScriptEngine();
+      final GremlinLangScriptEngine gremlinEngineImpl = graph.getGremlinJavaEngine();
 
       final SimpleBindings bindings = new SimpleBindings();
       bindings.put("g", graph.traversal());
       if (parameters != null)
         bindings.putAll(parameters);
-      return (GraphTraversal) engine.eval(query, bindings);
+      return (GraphTraversal) gremlinEngineImpl.eval(query, bindings);
 
     } else if ("groovy".equals(gremlinEngine)) {
-      final GremlinExecutor ge = graph.getGremlinExecutor();
-      final CompletableFuture<Object> evalResult = parameters != null ? ge.eval(query, parameters) : ge.eval(query);
-      return (GraphTraversal) evalResult.get();
+      // GROOVY ENGINE
+      final GremlinGroovyScriptEngine gremlinEngineImpl = graph.getGremlinGroovyEngine();
+
+      final SimpleBindings bindings = new SimpleBindings();
+      bindings.put("g", graph.traversal());
+      if (parameters != null)
+        bindings.putAll(parameters);
+      return (GraphTraversal) gremlinEngineImpl.eval(query, bindings);
 
     } else
       throw new IllegalArgumentException("Gremlin engine '" + gremlinEngine + "' not supported");

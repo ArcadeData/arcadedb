@@ -72,7 +72,8 @@ public class CypherTest {
 
     } finally {
       graph.drop();
-      Assertions.assertNull(graph.getGremlinExecutor());
+      Assertions.assertNull(graph.getGremlinJavaEngine());
+      Assertions.assertNull(graph.getGremlinGroovyEngine());
     }
   }
 
@@ -93,7 +94,8 @@ public class CypherTest {
 
     } finally {
       graph.drop();
-      Assertions.assertNull(graph.getGremlinExecutor());
+      Assertions.assertNull(graph.getGremlinJavaEngine());
+      Assertions.assertNull(graph.getGremlinGroovyEngine());
     }
   }
 
@@ -151,7 +153,8 @@ public class CypherTest {
 
     } finally {
       graph.drop();
-      Assertions.assertNull(graph.getGremlinExecutor());
+      Assertions.assertNull(graph.getGremlinJavaEngine());
+      Assertions.assertNull(graph.getGremlinGroovyEngine());
     }
   }
 
@@ -173,7 +176,8 @@ public class CypherTest {
 
     } finally {
       graph.drop();
-      Assertions.assertNull(graph.getGremlinExecutor());
+      Assertions.assertNull(graph.getGremlinJavaEngine());
+      Assertions.assertNull(graph.getGremlinGroovyEngine());
     }
   }
 
@@ -207,7 +211,8 @@ public class CypherTest {
 
     } finally {
       graph.drop();
-      Assertions.assertNull(graph.getGremlinExecutor());
+      Assertions.assertNull(graph.getGremlinJavaEngine());
+      Assertions.assertNull(graph.getGremlinGroovyEngine());
     }
   }
 
@@ -228,7 +233,8 @@ public class CypherTest {
 
     } finally {
       graph.drop();
-      Assertions.assertNull(graph.getGremlinExecutor());
+      Assertions.assertNull(graph.getGremlinJavaEngine());
+      Assertions.assertNull(graph.getGremlinGroovyEngine());
     }
   }
 
