@@ -170,7 +170,7 @@ public class TransactionIndexContext {
         for (final IndexKey key : values) {
           if (!key.addOperation)
             index.remove(key.keyValues, key.rid);
-        }+
+        }
       }
     }
 
