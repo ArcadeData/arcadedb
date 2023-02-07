@@ -35,12 +35,10 @@ public class LockManager<RESOURCE, REQUESTER> {
   private class ODistributedLock {
     final REQUESTER      owner;
     final CountDownLatch lock;
-    final long           acquiredOn;
 
     private ODistributedLock(final REQUESTER owner) {
       this.owner = owner;
       this.lock = new CountDownLatch(1);
-      this.acquiredOn = System.currentTimeMillis();
     }
   }
 

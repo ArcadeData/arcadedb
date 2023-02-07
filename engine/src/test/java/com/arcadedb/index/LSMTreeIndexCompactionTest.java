@@ -54,7 +54,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(COMPACTION_RAM_MB);
       GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
 
-      // INSERT DATA AND CHECK WITH LOOKUPS (EVERY 100)
+      // INSERT DATA AND CHECK WITH LOOKUP (EVERY 100)
       LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA AND CHECK WITH LOKUPS (EVERY 100)");
       insertData();
       checkLookups(100, 1);

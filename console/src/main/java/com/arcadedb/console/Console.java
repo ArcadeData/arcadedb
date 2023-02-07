@@ -284,7 +284,7 @@ public class Console {
       outputLine(3, "Set new limit to %d", limit);
     } else if ("asyncMode".equalsIgnoreCase(key)) {
       asyncMode = Boolean.parseBoolean(value);
-      outputLine(3, "Set new asyncMode to %s", asyncMode);
+      outputLine(3, "Set asyncMode to %s", asyncMode);
     } else if ("transactionBatchSize".equalsIgnoreCase(key)) {
       transactionBatchSize = Integer.parseInt(value);
       outputLine(3, "Set new transactionBatch to %d", transactionBatchSize);
@@ -676,11 +676,11 @@ public class Console {
         final long lapElapsed = System.currentTimeMillis() - lastLapTime;
         if (lapElapsed > 10_000) {
           elapsed = System.currentTimeMillis() - startedOn;
-          final float commandsPerSec = (executedLines - lastLapExecutedLines) * 1000F / lapElapsed;
+          final int commandsPerSec = (int) ((executedLines - lastLapExecutedLines) * 1000 / lapElapsed);
           final float statusPerc = byteReadFromFile * 100F / fileSize;
           final float etaInMinutes = (elapsed * (fileSize - byteReadFromFile) / (float) byteReadFromFile) / 60_000F;
 
-          output(2, "\n- executed %d commands (%.2f%% of file processed - %.1f commands/sec - eta %.1f more minutes)", executedLines, statusPerc,
+          output(2, "\n- executed %d commands (%.2f%% of file processed - %d commands/sec - eta %.1f more minutes)", executedLines, statusPerc,
               commandsPerSec, etaInMinutes);
           flushOutput();
 
@@ -692,7 +692,7 @@ public class Console {
 
     elapsed = System.currentTimeMillis() - startedOn;
 
-    output(2, "\nFile executed in " + (elapsed / 1000) + " seconds");
+    output(2, "\nFile processed in " + (elapsed / 1000) + " seconds");
     flushOutput();
   }
 

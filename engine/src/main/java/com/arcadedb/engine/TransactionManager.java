@@ -351,7 +351,7 @@ public class TransactionManager {
       try {
         database.getSchema().getDictionary().reload();
       } catch (final IOException e) {
-        throw new SchemaException("Unable to update dictionary after transaction commit");
+        throw new SchemaException("Unable to update dictionary after transaction commit", e);
       }
     }
 
