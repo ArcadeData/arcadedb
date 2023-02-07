@@ -473,10 +473,9 @@ public class TransactionContext implements Transaction {
       lockedFiles = new ArrayList<>();
 
     try {
-      if (isLeader) {
+      if (isLeader)
         // COMMIT INDEX CHANGES (IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION)
         indexChanges.commit();
-      }
 
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
@@ -524,20 +523,20 @@ public class TransactionContext implements Transaction {
   }
 
   public void commit2ndPhase(final TransactionContext.TransactionPhase1 changes) {
-    if (changes == null)
-      return;
-
-    if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
-      throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
-
-    if (status != STATUS.COMMIT_1ST_PHASE)
-      throw new TransactionException("Cannot execute 2nd phase commit without having started the 1st phase");
-
-    status = STATUS.COMMIT_2ND_PHASE;
-
-    final PageManager pageManager = database.getPageManager();
-
     try {
+      if (changes == null)
+        return;
+
+      if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
+        throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
+
+      if (status != STATUS.COMMIT_1ST_PHASE)
+        throw new TransactionException("Cannot execute 2nd phase commit without having started the 1st phase");
+
+      status = STATUS.COMMIT_2ND_PHASE;
+
+      final PageManager pageManager = database.getPageManager();
+
       if (changes.result != null)
         // WRITE TO THE WAL FIRST
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);

@@ -47,6 +47,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.RWLockContext;
 
 import java.io.*;
@@ -478,7 +479,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       throw new IllegalStateException("Cannot replace compacted index because a transaction is active");
 
     final int fileId = mutable.getFileId();
-    database.getTransactionManager().tryLockFile(fileId, 0);
+
+    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId, 0);
+    if (locked == LockManager.LOCK_STATUS.NO)
+      throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
     try {
       final LSMTreeIndexMutable prevMutable = mutable;

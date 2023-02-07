@@ -167,19 +167,10 @@ public class TransactionIndexContext {
 
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
-
-        if (values.size() > 1) {
-          for (final IndexKey key : values) {
-            if (!key.addOperation)
-              index.remove(key.keyValues, key.rid);
-          }
-
-        } else {
-          for (final IndexKey key : values) {
-            if (!key.addOperation)
-              index.remove(key.keyValues, key.rid);
-          }
-        }
+        for (final IndexKey key : values) {
+          if (!key.addOperation)
+            index.remove(key.keyValues, key.rid);
+        }+
       }
     }
 
@@ -220,20 +211,20 @@ public class TransactionIndexContext {
   public void addFilesToLock(final Set<Integer> modifiedFiles) {
     final Schema schema = database.getSchema();
 
-    final Set<Index> lockedIndexes = new HashSet<>();
+    final Set<Index> lockedIndexes = new HashSet<>(indexEntries.size());
 
     for (final String indexName : indexEntries.keySet()) {
       final IndexInternal index = (IndexInternal) schema.getIndexByName(indexName);
 
-      if (lockedIndexes.contains(index))
+      if (!lockedIndexes.add(index))
+        // ALREADY IN THE SET
         continue;
-
-      lockedIndexes.add(index);
 
       modifiedFiles.add(index.getFileId());
 
       if (index.isUnique()) {
         // LOCK ALL THE FILES IMPACTED BY THE INDEX KEYS TO CHECK FOR UNIQUE CONSTRAINT
+        // TODO: OPTIMIZE LOCKING IF STRATEGY IS PARTITIONED: LOCK ONLY THE RELEVANT INDEX
         final DocumentType type = schema.getType(index.getTypeName());
         final List<Bucket> buckets = type.getBuckets(false);
         for (final Bucket b : buckets)
