@@ -106,6 +106,8 @@ public class AlterTypeStatement extends DDLStatement {
     if (type == null)
       throw new CommandExecutionException("Type not found: " + name);
 
+    final ResultInternal result = new ResultInternal();
+
     if (property != null) {
       switch (property.toLowerCase()) {
       case "bucket":
@@ -120,33 +122,38 @@ public class AlterTypeStatement extends DDLStatement {
                 context.getDatabase().getSchema().createBucket(identifierValue.getStringValue());
 
               type.addBucket(context.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
+              result.setProperty("addBucket", identifierValue.getStringValue());
 
-            } else if (numberValue != null)
+            } else if (numberValue != null) {
               type.addBucket(context.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
-            else
+              result.setProperty("addBucket", numberValue.getValue().intValue());
+            } else
               throw new CommandExecutionException("Invalid bucket value: " + this);
 
           } else if (Boolean.FALSE.equals(add)) {
 
-            if (identifierValue != null)
+            if (identifierValue != null) {
               type.removeBucket(context.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
-            else if (numberValue != null)
+              result.setProperty("removeBucket", identifierValue.getStringValue());
+            } else if (numberValue != null) {
               type.removeBucket(context.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
-            else
+              result.setProperty("removeBucket", numberValue.getValue().intValue());
+            } else
               throw new CommandExecutionException("Invalid bucket value: " + this);
-
           }
         }
         break;
 
       case "supertype":
         doSetSuperType(context, type);
+        result.setProperty("supertype", type);
         break;
 
       case "bucketselectionstrategy": {
         final String implName = identifierValue.getStringValue();
         try {
           type.setBucketSelectionStrategy(implName);
+          result.setProperty("bucketSelectionStrategy", implName);
         } catch (Exception e) {
           throw new CommandSQLParsingException("Bucket selection strategy implementation '" + implName + "' was not found", e);
         }
@@ -160,17 +167,21 @@ public class AlterTypeStatement extends DDLStatement {
 
     if (customKey != null) {
       Object value = null;
-      if (customValue != null)
+      if (customValue != null) {
         value = customValue.execute((Identifiable) null, context);
+      }
 
       type.setCustomValue(customKey.getStringValue(), value);
+      result.setProperty("custom", customKey.getStringValue() + "=" + value);
     }
 
-    final InternalResultSet resultSet = new InternalResultSet();
-    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "ALTER TYPE");
     result.setProperty("typeName", name.getStringValue());
     result.setProperty("result", "OK");
+
+    final InternalResultSet resultSet = new InternalResultSet();
+    resultSet.add(result);
+
     return resultSet;
   }
 

@@ -52,20 +52,6 @@ public class CreateIndexStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext context) {
-    final Long totalIndexed = (Long) execute(context);
-
-    final InternalResultSet rs = new InternalResultSet();
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("operation", "create index");
-    result.setProperty("name", name.getValue());
-    result.setProperty("totalIndexed", totalIndexed);
-
-    rs.add(result);
-    return rs;
-  }
-
-  @Override
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue();
     if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
@@ -78,7 +64,8 @@ public class CreateIndexStatement extends DDLStatement {
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
   }
 
-  Object execute(final CommandContext context) {
+  @Override
+  public ResultSet executeDDL(final CommandContext context) {
     final Database database = context.getDatabase();
 
     if (name == null)
@@ -122,7 +109,15 @@ public class CreateIndexStatement extends DDLStatement {
           }
         });
 
-    return total.get();
+    final InternalResultSet rs = new InternalResultSet();
+    final ResultInternal result = new ResultInternal();
+    result.setProperty("operation", "create index");
+    result.setProperty("name", name.getValue());
+    result.setProperty("type", indexType);
+    result.setProperty("totalIndexed", total.get());
+
+    rs.add(result);
+    return rs;
   }
 
   /**
