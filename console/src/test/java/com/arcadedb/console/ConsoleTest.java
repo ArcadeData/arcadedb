@@ -383,4 +383,20 @@ public class ConsoleTest {
 
     Assertions.assertTrue(console.parse("set transactionBatchSize = 0"));
   }
+
+  @Test
+  public void testLoad() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("load " + new File("src/test/resources/console-batch.sql")));
+
+    final String[] urls = new String[] { "http://arcadedb.com", "https://www.arcadedb.com", "file://this/is/myfile.txt" };
+
+    // VALIDATE WITH PLAIN JAVA REGEXP FIRST
+    for (String url : urls)
+      Assertions.assertTrue(url.matches("^([a-zA-Z]{1,15}:)(\\/\\/)?[^\\s\\/$.?#].[^\\s]*$"), "Cannot validate URL: " + url);
+
+    // VALIDATE WITH DATABASE SCHEMA
+    for (String url : urls)
+      console.getDatabase().newDocument("doc").set("uri1", url).validate();
+  }
 }

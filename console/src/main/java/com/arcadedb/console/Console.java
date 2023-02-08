@@ -39,6 +39,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.AnsiCode;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
 import org.jline.reader.Completer;
@@ -678,7 +679,8 @@ public class Console {
 
     try (final BufferedReader bufferedReader = new BufferedReader(new FileReader(file, DatabaseFactory.getDefaultCharset()))) {
       while (bufferedReader.ready()) {
-        final String line = bufferedReader.readLine();
+        final String line = FileUtils.decodeFromFile(bufferedReader.readLine());
+
         parse(line, true);
 
         ++executedLines;

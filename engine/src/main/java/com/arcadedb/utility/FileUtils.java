@@ -458,4 +458,22 @@ public class FileUtils {
 
     return result.toString();
   }
+
+  public static String decodeFromFile(final String line) {
+    final StringBuilder decodedLine = new StringBuilder();
+    boolean backslash = false;
+    for (int i = 0; i < line.length(); i++) {
+      char c = line.charAt(i);
+      if (c == '\\') {
+        if (backslash) {
+          backslash = false;
+          decodedLine.append("\\\\\\");
+          continue;
+        } else
+          backslash = true;
+      }
+      decodedLine.append(c);
+    }
+    return decodedLine.toString();
+  }
 }
