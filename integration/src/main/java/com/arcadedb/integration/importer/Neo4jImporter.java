@@ -19,6 +19,7 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
@@ -58,6 +59,7 @@ public class Neo4jImporter {
   protected            Database                       database;
   protected            Callable<Void, JSONObject>     parsingCallback;
   protected            int                            indexPageSize         = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
+  protected            int                            bucketsPerType        = -1;
   private              InputStream                    inputStream;
   private              String                         databasePath;
   private              String                         inputFile;
@@ -86,6 +88,7 @@ public class Neo4jImporter {
     this.context = new ImporterContext();
     if (inputStream == null)
       syntaxError("Input Stream is null");
+    this.bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
   }
 
   public Neo4jImporter(final String... args) {
@@ -93,11 +96,13 @@ public class Neo4jImporter {
     this.context = new ImporterContext();
     if (inputFile == null)
       syntaxError("Missing input file. Use -f <file-path>");
+    this.bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
   }
 
   public Neo4jImporter(final Database database, final ImporterContext context) {
     this.database = database;
     this.context = context;
+    this.bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
   }
 
   public static void main(final String[] args) throws IOException {
@@ -191,7 +196,7 @@ public class Neo4jImporter {
         final Pair<String, List<String>> labels = typeNameFromLabels(json);
 
         if (!database.getSchema().existsType(labels.getFirst())) {
-          final VertexType type = database.getSchema().getOrCreateVertexType(labels.getFirst());
+          final VertexType type = database.getSchema().getOrCreateVertexType(labels.getFirst(), bucketsPerType);
           if (labels.getSecond() != null)
             for (final String parent : labels.getSecond())
               type.addSuperType(parent);
@@ -209,7 +214,7 @@ public class Neo4jImporter {
       case "relationship":
         final String edgeLabel = json.has("label") && !json.isNull("label") ? json.getString("label") : null;
         if (edgeLabel != null)
-          database.getSchema().getOrCreateEdgeType(edgeLabel);
+          database.getSchema().getOrCreateEdgeType(edgeLabel, bucketsPerType);
 
         inferPropertyType(json, edgeLabel);
         break;
@@ -480,6 +485,8 @@ public class Neo4jImporter {
             // RETRY THE TRANSACTION
             for (int retry = 0; retry < MAX_RETRIES; retry++) {
               try {
+                if (database.isTransactionActive())
+                  database.rollback();
                 database.begin();
 
                 for (int i = 0; i < transactionBuffer.size(); i++) {

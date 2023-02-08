@@ -451,7 +451,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       final boolean mutablePage = isMutable(currentPage);
 
-      if (!mutablePage || keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE) < keyValueContent.size()) {
+      final int availableSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE));
+      if (!mutablePage || keyValueContent.size() >= availableSpaceInPage - INT_SERIALIZED_SIZE) {
 
         if (mutablePage)
           setMutable(currentPage, false);

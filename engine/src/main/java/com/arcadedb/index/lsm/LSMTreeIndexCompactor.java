@@ -38,8 +38,9 @@ import java.util.logging.*;
 public class LSMTreeIndexCompactor {
   private boolean debug = false;
 
-  public void setDebug(final boolean debug) {
+  public LSMTreeIndexCompactor setDebug(final boolean debug) {
     this.debug = debug;
+    return this;
   }
 
   public boolean compact(final LSMTreeIndex mainIndex) throws IOException, InterruptedException {
@@ -90,8 +91,10 @@ public class LSMTreeIndexCompactor {
     int pagesToCompact;
     int compactedPages = 0;
 
-    if (debug)
-      LSMTreeIndexDebugger.printMutableIndex(mutableIndex);
+    if (debug) {
+      System.out.println("BEFORE COMPACTING:");
+      LSMTreeIndexDebugger.printIndex(mainIndex);
+    }
 
     // FIND LAST IMMUTABLE PAGE TO COMPACT
     int lastImmutablePage = totalPages - 1;
@@ -314,6 +317,11 @@ public class LSMTreeIndexCompactor {
         mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(), compactedIndex.getTotalPages(),
         iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(), mainIndex.getMutableIndex().getFileId(),
         compactedIndex.getName(), compactedIndex.getFileId(), Thread.currentThread().getId()));
+
+    if (debug) {
+      System.out.println("AFTER COMPACTING:");
+      LSMTreeIndexDebugger.printIndex(mainIndex);
+    }
 
     return true;
   }

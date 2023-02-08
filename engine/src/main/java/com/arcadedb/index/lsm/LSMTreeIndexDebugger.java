@@ -24,9 +24,16 @@ import com.arcadedb.engine.PageId;
 import java.io.*;
 import java.util.*;
 
+import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
+
 public class LSMTreeIndexDebugger {
   public static void out(final int indent, final String text) {
     System.out.println(" ".repeat(indent) + text);
+  }
+
+  public static void printIndex(final LSMTreeIndex index) {
+    printMutableIndex(index.getMutableIndex());
+    printCompactedIndex(index.getMutableIndex().getSubIndex());
   }
 
   public static void printMutableIndex(final LSMTreeIndexAbstract index) {
@@ -46,7 +53,41 @@ public class LSMTreeIndexDebugger {
       }
     }
 
-    out(0, "MUTABLE INDEX " + index.getName() + " lastImmutablePage=" + lastImmutablePage + "/" + totalPages);
+    out(0, "MUTABLE INDEX " + index.getName() + " fileId=" + index.getFileId() + " lastImmutablePage = " + lastImmutablePage + "/" + totalPages);
+    for (int pageIndex = 0; pageIndex < totalPages; ++pageIndex) {
+      final BasePage page;
+      try {
+        page = index.getDatabase().getPageManager().getPage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        LSMTreeIndexDebugger.out(1, LSMTreeIndexDebugger.printMutableIndexPage(index, page));
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    }
+  }
+
+  public static void printCompactedIndex(final LSMTreeIndexCompacted index) {
+    if (index == null) {
+      out(0, "COMPACT INDEX not found");
+      return;
+    }
+
+    final int totalPages = index.getTotalPages();
+
+    int lastImmutablePage = totalPages - 1;
+    for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
+      final BasePage page;
+      try {
+        page = index.getDatabase().getPageManager().getPage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        if (!index.isMutable(page)) {
+          lastImmutablePage = pageIndex;
+          break;
+        }
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    }
+
+    out(0, "COMPACTED INDEX " + index.getName() + " fileId=" + index.getFileId() + " lastImmutablePage=" + lastImmutablePage + "/" + totalPages);
     for (int pageIndex = 0; pageIndex < totalPages; ++pageIndex) {
       final BasePage page;
       try {
@@ -61,11 +102,16 @@ public class LSMTreeIndexDebugger {
   public static String printMutableIndexPage(final LSMTreeIndexAbstract index, final BasePage page) {
     String buffer = "";
     buffer +=
-        "MUTABLE INDEX - PAGE " + page.getPageId() + " mutable=" + index.isMutable(page) + " size=" + page.getPhysicalSize() + " v" + page.getVersion() + " "
+        "MUTABLE INDEX - PAGE " + page.getPageId() + " v" + page.getVersion() + " mutable=" + index.isMutable(page) + " size=" + page.getPhysicalSize() + " "
             + Arrays.toString(index.getKeyTypes());
     final Object[] pageKeyRange = index.getPageKeyRange(page);
-    buffer += " Keys: " + index.getCount(page) + Arrays.toString((Object[]) pageKeyRange[0]) + "-" + Arrays.toString((Object[]) pageKeyRange[1]) + " - header: "
-        + index.getHeaderSize(page.getPageId().getPageNumber()) + " - valuesFreePosition: " + index.getValuesFreePosition(page);
+    final int headerSize = index.getHeaderSize(page.getPageId().getPageNumber());
+    final int totalEntries = index.getCount(page);
+    int availableSpace = index.getValuesFreePosition(page) - (headerSize + (totalEntries * INT_SERIALIZED_SIZE));
+
+    buffer +=
+        " Keys: " + totalEntries + Arrays.toString((Object[]) pageKeyRange[0]) + "-" + Arrays.toString((Object[]) pageKeyRange[1]) + " - header: " + headerSize
+            + " - availableSpace: " + availableSpace;
     return buffer;
   }
 }

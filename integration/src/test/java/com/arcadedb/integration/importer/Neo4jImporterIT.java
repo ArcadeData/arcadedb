@@ -106,7 +106,7 @@ public class Neo4jImporterIT {
   }
 
   @Test
-  public void testConcurrentCompact() throws IOException {
+  public void testConcurrentCompact() throws IOException, InterruptedException {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     final int TOTAL = 100_000;
@@ -130,7 +130,10 @@ public class Neo4jImporterIT {
       final ByteArrayInputStream is = new ByteArrayInputStream(content.toString().getBytes());
 
       final Neo4jImporter importer = new Neo4jImporter(is, (" -d " + DATABASE_PATH + " -o -decimalType double").split(" "));
+      importer.bucketsPerType = 1;
       importer.indexPageSize = INDEX_PAGE_SIZE;
+
+      final AtomicReference<Thread> t = new AtomicReference<>();
 
       final AtomicInteger parsed = new AtomicInteger();
       importer.parsingCallback = iArgument -> {
@@ -139,7 +142,7 @@ public class Neo4jImporterIT {
         if (parsed.get() == 70000) {
           LogManager.instance().log(this, Level.SEVERE, "STARTED REQUEST FOR COMPACTION...");
 
-          Thread t = new Thread(() -> {
+          t.set(new Thread(() -> {
             for (Index idx : importer.database.getSchema().getIndexes()) {
               try {
                 idx.scheduleCompaction();
@@ -148,20 +151,22 @@ public class Neo4jImporterIT {
                 LogManager.instance().log(this, Level.SEVERE, "Error during compaction", e);
               }
             }
-          });
-          t.start();
+          }));
+          t.get().start();
 
-          try {
-            Thread.sleep(10);
-          } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-          }
+//          try {
+//            Thread.sleep(10);
+//          } catch (InterruptedException e) {
+//            throw new RuntimeException(e);
+//          }
         }
 
         return null;
       };
 
       importer.run();
+
+      t.get().join();
 
       Assertions.assertFalse(importer.isError());
 
