@@ -1,22 +1,36 @@
 package com.arcadedb.remote;
 
-import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.MockedConstruction;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
 import java.net.HttpURLConnection;
-import java.util.ArrayList;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.serializer.json.JSONObject;
 
 @ExtendWith(MockitoExtension.class)
 class RemoteDatabaseTest {
+    class MockRemoteDatabase extends RemoteDatabase {
+        MockRemoteDatabase() {
+            super("localhost", 1234, "testdb", "user", "password",
+                    new ContextConfiguration());
+        }
+
+        void requestClusterConfiguration() {
+        }
+    }
 
     @Test
     void testCreate() throws Exception {
@@ -25,15 +39,15 @@ class RemoteDatabaseTest {
         when(connection.getResponseCode()).thenReturn(200);
         when(connection.getInputStream()).thenReturn(new ByteArrayInputStream("{}".getBytes()));
 
-        RemoteDatabase database = mock(RemoteDatabase.class, CALLS_REAL_METHODS);
-        database.setApiVersion(1);
+        RemoteDatabase database = spy(new MockRemoteDatabase());
         doNothing().when(database).setRequestPayload(any(), any());
         doReturn(connection).when(database).createConnection(any(), any());
+
         database.create();
         verify(database).httpCommand("POST", null, "server", null,
-                "create database null", null, true, true, null);
-        verify(database).createConnection("POST", "http://null:0/api/v1/server");
-        JSONObject payload = new JSONObject("{\"command\":\"create database null\",\"serializer\":\"record\"}");
+                "create database testdb", null, true, true, null);
+        verify(database).createConnection("POST", "http://localhost:1234/api/v1/server");
+        JSONObject payload = new JSONObject("{\"command\":\"create database testdb\",\"serializer\":\"record\"}");
         verify(database).setRequestPayload(connection, payload);
     }
 
@@ -44,23 +58,13 @@ class RemoteDatabaseTest {
         when(connection.getResponseCode()).thenReturn(200);
         when(connection.getInputStream()).thenReturn(new ByteArrayInputStream("{\"result\": true}".getBytes()));
 
-        try (MockedConstruction<RemoteDatabase> ignored = mockConstruction(RemoteDatabase.class,
-                withSettings()
-                        .useConstructor("localhost", 1234, "testdb", "user", "password")
-                        .defaultAnswer(CALLS_REAL_METHODS),
-                (mock, context) -> {
-                    doNothing().when(mock).setRequestPayload(any(), any());
-                    doReturn(connection).when(mock).createConnection(any(), any());
-                    doReturn(new ArrayList<>()).when(mock).getReplicaServerList();
-                })) {
-            RemoteDatabase database = new RemoteDatabase("localhost", 1234, "testdb", "user", "password");
-            assertEquals(1, ignored.constructed().size());
-            database.setApiVersion(1);
-            database.exists();
-            verify(database).httpCommand(eq("GET"), eq(null), eq("exists"), eq("SQL"),
-                    eq(null), eq(null), eq(false), eq(true), any());
-            verify(database).createConnection("GET", "http://null:0/api/v1/exists");
-            verify(database, never()).setRequestPayload(any(), any());
-        }
+        RemoteDatabase database = spy(new MockRemoteDatabase());
+        doReturn(connection).when(database).createConnection(any(), any());
+
+        database.exists();
+        verify(database).httpCommand(eq("GET"), eq("testdb"), eq("exists"), eq("SQL"),
+                eq(null), eq(null), eq(false), eq(true), any());
+        verify(database).createConnection("GET", "http://localhost:1234/api/v1/exists/testdb");
+        verify(database, never()).setRequestPayload(any(), any());
     }
 }
