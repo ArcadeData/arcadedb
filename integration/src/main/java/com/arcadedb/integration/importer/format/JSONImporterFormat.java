@@ -59,7 +59,7 @@ public class JSONImporterFormat implements FormatImporter {
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
 
-    final JSONObject mapping = new JSONObject(settings.mapping);
+    final JSONObject mapping = settings.mapping != null ? new JSONObject(settings.mapping) : null;
 
     JsonToken waitFor = null;
     Object tagValue = null;
@@ -67,6 +67,13 @@ public class JSONImporterFormat implements FormatImporter {
     try (final JsonReader reader = new Gson().newJsonReader(parser.getReader())) {
       while (reader.hasNext()) {
         JsonToken token = reader.peek();
+
+        if (mapping == null) {
+          final Object record = parseRecord(reader, settings, context, database, mapping, false);
+          if (record instanceof Map)
+            saveAnonymousRecord(database, settings, (Map<String, Object>) record);
+          return;
+        }
 
         switch (token) {
         case BEGIN_OBJECT:
@@ -79,8 +86,8 @@ public class JSONImporterFormat implements FormatImporter {
           break;
         case NAME:
           final String tag = reader.nextName();
-          if (mapping.has(tag)) {
-            tagValue = mapping.get(tag);
+          if ((mapping.has(tag) || mapping.has("*"))) {
+            tagValue = mapping.has(tag) ? mapping.get(tag) : mapping.get("*");
             if (tagValue instanceof JSONArray)
               waitFor = BEGIN_ARRAY;
             else if (tagValue instanceof JSONObject)
@@ -108,7 +115,7 @@ public class JSONImporterFormat implements FormatImporter {
 
     database.begin();
 
-    final Object mappingValue = mapping.get(0);
+    final Object mappingValue = mapping != null && !mapping.isEmpty() ? mapping.get(0) : null;
     JSONObject mappingObject;
 
     while (reader.peek() == BEGIN_OBJECT) {
@@ -118,7 +125,9 @@ public class JSONImporterFormat implements FormatImporter {
       } else
         mappingObject = null;
 
-      parseRecord(reader, settings, context, database, mappingObject, ignore);
+      final Object record = parseRecord(reader, settings, context, database, mappingObject, ignore);
+      if (record instanceof Map)
+        saveAnonymousRecord(database, settings, (Map<String, Object>) record);
 
       database.commit();
       database.begin();
@@ -127,6 +136,12 @@ public class JSONImporterFormat implements FormatImporter {
     database.commit();
 
     reader.endArray();
+  }
+
+  private static void saveAnonymousRecord(Database database, ImporterSettings settings, final Map<String, Object> map) {
+    // NO MAPPING, SAVE THE RECORD AS A DOCUMENT
+    database.getSchema().getOrCreateDocumentType(settings.documentTypeName);
+    database.newDocument(settings.documentTypeName).set(map).save();
   }
 
   private Object parseRecord(final JsonReader reader, final ImporterSettings settings, final ImporterContext context, final Database database,
