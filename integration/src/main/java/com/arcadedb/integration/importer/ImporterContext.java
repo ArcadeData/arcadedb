@@ -32,6 +32,7 @@ public class ImporterContext {
   public final AtomicLong    linkedEdges              = new AtomicLong();
   public final AtomicLong    skippedEdges             = new AtomicLong();
   public final AtomicLong    errors                   = new AtomicLong();
+  public final AtomicLong    warnings                 = new AtomicLong();
   public       GraphImporter graphImporter;
   public       long          startedOn;
   public       long          lastLapOn;
@@ -48,6 +49,8 @@ public class ImporterContext {
       map.put("parsedRecords", parsed.get());
     if (errors.get() > 0)
       map.put("errors", errors.get());
+    if (warnings.get() > 0)
+      map.put("warnings", warnings.get());
     if (createdDocuments.get() > 0)
       map.put("createdDocuments", createdDocuments.get());
     if (createdVertices.get() > 0)

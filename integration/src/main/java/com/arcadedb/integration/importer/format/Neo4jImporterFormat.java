@@ -38,7 +38,7 @@ public class Neo4jImporterFormat extends AbstractImporterFormat {
     context.parsed.set(0);
 
     try {
-      new Neo4jImporter(database) {
+      new Neo4jImporter(database, context) {
         @Override
         public InputStream openInputStream() throws IOException {
           sourceSchema.getSource().reset();
