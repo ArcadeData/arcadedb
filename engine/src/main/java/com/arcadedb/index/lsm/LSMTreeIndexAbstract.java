@@ -51,6 +51,9 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
  * HEADER ROOT PAGE (1st) = [offsetFreeKeyValueContent(int:4),numberOfEntries(int:4),mutable(boolean:1),compactedPageNumberOfSeries(int:4),subIndexFileId(int:4),numberOfKeys(byte:1),keyType(byte:1)*]
  * <br>
  * HEADER Nst PAGE        = [offsetFreeKeyValueContent(int:4),numberOfEntries(int:4),mutable(boolean:1),compactedPageNumberOfSeries(int:4)]
+ * <p>
+ * <p>
+ * The page content size and available space API are not valid in the index pages, because the whole page is used from start to end.
  */
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   public enum NULL_STRATEGY {ERROR, SKIP}
@@ -347,7 +350,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return convertedKeys;
   }
 
-  protected Object[] getPageBound(final BasePage currentPage, final Binary currentPageBuffer) {
+  protected Object[] getPageKeyRange(final BasePage currentPage) {
+    final Binary currentPageBuffer = new Binary(currentPage.slice());
     final Object[] min = getKeyInPagePosition(currentPage.getPageId().getPageNumber(), currentPageBuffer, 0);
 
     final int count = getCount(currentPage);

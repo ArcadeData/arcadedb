@@ -475,7 +475,7 @@ public class Neo4jImporter {
             }
 
           } catch (final NeedRetryException | DuplicatedKeyException e) {
-            log("Transaction commit in error (duplicates?), retrying the last transaction batch max %d times", MAX_RETRIES);
+            log("Transaction commit in error (%s), retrying the last transaction batch max %d times", e.getMessage(), MAX_RETRIES);
 
             // RETRY THE TRANSACTION
             for (int retry = 0; retry < MAX_RETRIES; retry++) {

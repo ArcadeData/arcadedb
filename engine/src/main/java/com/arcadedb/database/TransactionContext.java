@@ -659,6 +659,16 @@ public class TransactionContext implements Transaction {
 
     final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 
-    return database.getTransactionManager().tryLockFiles(modifiedFiles, timeout);
+    final List<Integer> locked = database.getTransactionManager().tryLockFiles(modifiedFiles, timeout);
+
+    // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX
+    for (Integer f : locked)
+      if (!database.getFileManager().existsFile(f)) {
+        // ONE FILE HAS BEEN REMOVED
+        database.getTransactionManager().unlockFilesInOrder(locked);
+        throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
+      }
+
+    return locked;
   }
 }

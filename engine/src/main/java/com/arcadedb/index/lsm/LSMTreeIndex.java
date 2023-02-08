@@ -227,7 +227,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return false;
 
     try {
-      return LSMTreeIndexCompactor.compact(this);
+      return new LSMTreeIndexCompactor().compact(this);
     } catch (final TimeoutException e) {
       // IGNORE IT, WILL RETRY LATER
       return false;
@@ -527,6 +527,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         database.getPageManager().flushPages(modifiedPages, false);
 
         newMutableIndex.setCurrentMutablePages(newMutableIndex.getTotalPages() - 1);
+        if (compactedIndex.getTotalPages() < 1)
+          compactedIndex.setPageCount(1);
 
         // SWAP OLD WITH NEW INDEX IN EXCLUSIVE LOCK (NO READ/WRITE ARE POSSIBLE IN THE MEANTIME)
         newMutableIndex.removeTempSuffix();
@@ -536,6 +538,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         database.getSchema().getEmbedded().saveConfiguration();
         return newMutableIndex;
       });
+
       if (prevMutable != null) {
         try {
           prevMutable.drop();
@@ -547,6 +550,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return result;
 
     } finally {
+      // RELEASE THE DELETED FILE
       database.getTransactionManager().unlockFile(fileId);
     }
   }
