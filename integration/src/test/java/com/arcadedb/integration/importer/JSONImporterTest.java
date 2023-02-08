@@ -20,7 +20,10 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +40,12 @@ public class JSONImporterTest {
 
     try (final Database db = new DatabaseFactory(databasePath).open()) {
       Assertions.assertEquals(1, db.countType("Food", true));
+
+      final Document food = db.iterateType("Food", true).next().asDocument(true);
+      JSONObject json = new JSONObject(FileUtils.readFileAsString(new File("src/test/resources/importer-one-object.json"), "utf8"));
+
+      for (Object name : json.names())
+        Assertions.assertTrue(food.has(name.toString()));
     }
 
     TestHelper.checkActiveDatabases();
