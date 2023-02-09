@@ -243,4 +243,34 @@ class RemoteDatabaseTest {
         byte[] payloadAsByteArray = payload.toString().getBytes(StandardCharsets.UTF_8);
         verify(outputStream).write(payloadAsByteArray, 0, payloadAsByteArray.length);
     }
+
+    @Test
+    void testQuery() throws Exception {
+        OutputStream outputStream = mock(OutputStream.class);
+        HttpURLConnection connection = mock(HttpURLConnection.class);
+        doNothing().when(connection).connect();
+        when(connection.getResponseCode()).thenReturn(200);
+        when(connection.getInputStream()).thenReturn(new ByteArrayInputStream("{\"result\": []}".getBytes()));
+        when(connection.getOutputStream()).thenReturn(outputStream);
+        doNothing().when(connection).setDoOutput(anyBoolean());
+        doNothing().when(connection).disconnect();
+
+        RemoteDatabase database = spy(new MockRemoteDatabase());
+        doReturn(connection).when(database).createConnection(any(), any());
+
+        String query = "select from Customer where name = :name";
+        Map<String, Object> paramsMap = new HashMap<>();
+        paramsMap.put("name", "Jay");
+        database.command("SQL", query, paramsMap);
+        verify(database).httpCommand(eq("POST"), eq("testdb"), eq("command"), eq("SQL"),
+                eq(query), eq(paramsMap), eq(true), eq(true), any());
+        verify(database).createConnection("POST", "http://localhost:1234/api/v1/command/testdb");
+        JSONObject payload = new JSONObject(
+                "{\"language\":\"SQL\",\"command\":\""
+                        + query + "\",\"serializer\":\"record\",\"params\":"
+                        + (new JSONObject(paramsMap)).toString() + "}");
+        verify(database).setRequestPayload(connection, payload);
+        byte[] payloadAsByteArray = payload.toString().getBytes(StandardCharsets.UTF_8);
+        verify(outputStream).write(payloadAsByteArray, 0, payloadAsByteArray.length);
+    }
 }
