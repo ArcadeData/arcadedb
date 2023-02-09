@@ -87,7 +87,9 @@ public class ImporterSettings {
       }
   }
 
-  public void parseParameter(final String name, final String value) {
+  public void parseParameter(final String name, String value) {
+    value = FileUtils.getStringContent(value);
+
     if ("database".equals(name))
       database = value;
     else if ("url".equals(name))
