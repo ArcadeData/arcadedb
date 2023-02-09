@@ -153,9 +153,12 @@ public class DateUtils {
         timestamp = 0;
     } else if (value instanceof Number)
       timestamp = ((Number) value).longValue();
-    else if (value instanceof String)
-      timestamp = Long.parseLong(value.toString());
-    else
+    else if (value instanceof String) {
+      if (FileUtils.isLong((String) value))
+        timestamp = Long.parseLong(value.toString());
+      else
+        return dateTimeToTimestamp(LocalDateTime.parse((String) value), precisionToUse);
+    } else
       // UNSUPPORTED
       return null;
 

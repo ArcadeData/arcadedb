@@ -477,9 +477,13 @@ public enum Type {
           if (!FileUtils.isLong(valueAsString)) {
             if (database != null)
               try {
-                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
-              } catch (final DateTimeParseException ignore) {
-                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+                return LocalDateTime.parse(valueAsString);
+              } catch (Exception e) {
+                try {
+                  return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+                } catch (final DateTimeParseException ignore) {
+                  return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+                }
               }
             else {
               // GUESS FORMAT BY STRING LENGTH
