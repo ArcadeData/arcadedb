@@ -68,4 +68,3 @@ The build should take less than a minute.
 You will find a fresh built distribution under the directory `package/target/arcadedb-<version>.dir/arcadedb-<version>/`.
 
 For example, if the latest release is the `23.2.1-SNAPSHOT`, then the release will be available under the directory `package/target/arcadedb-23.2.1-SNAPSHOT.dir/arcadedb-23.2.1-SNAPSHOT/`
-
