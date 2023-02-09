@@ -110,7 +110,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       waitForAMessage();
 
-      readMessage("password", (type, length) -> userPassword = readString(), 'p');
+      if (!readMessage("password", (type, length) -> userPassword = readString(), 'p'))
+        return;
 
       if (!openDatabase())
         return;
@@ -948,7 +949,7 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-  private void readMessage(final String messageName, final ReadMessageCallback callback, final char... expectedMessageCodes) {
+  private boolean readMessage(final String messageName, final ReadMessageCallback callback, final char... expectedMessageCodes) {
     try {
       final char type = (char) readNextByte();
       final long length = channel.readUnsignedInt();
@@ -974,10 +975,12 @@ public class PostgresNetworkExecutor extends Thread {
       //if (length > 4)
       callback.read(type, length - 4);
 
+      return true;
+
     } catch (final EOFException e) {
       // CLIENT CLOSES THE CONNECTION
       setErrorInTx();
-      return;
+      return false;
     } catch (final IOException e) {
       setErrorInTx();
       throw new PostgresProtocolException("Error on reading " + messageName + " message: " + e.getMessage(), e);
