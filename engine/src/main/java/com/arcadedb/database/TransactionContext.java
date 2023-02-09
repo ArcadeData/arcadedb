@@ -666,6 +666,7 @@ public class TransactionContext implements Transaction {
       if (!database.getFileManager().existsFile(f)) {
         // ONE FILE HAS BEEN REMOVED
         database.getTransactionManager().unlockFilesInOrder(locked);
+        rollback();
         throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
       }
 
