@@ -151,7 +151,7 @@ public class SecurityGroupFileRepository {
     final JSONObject defaultDatabase = new JSONObject()//
         .put("groups", new JSONObject()//
             .put("admin", new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L)//
-                .put("access", new JSONArray(new String[] { "updateSecurity", "updateSchema" }))//
+                .put("access", new JSONArray(new String[] { "updateSecurity", "updateSchema", "updateDatabaseSettings" }))//
                 .put("types", new JSONObject().put(SecurityManager.ANY,
                     new JSONObject().put("access", new JSONArray(new String[] { "createRecord", "readRecord", "updateRecord", "deleteRecord" })))))//
             .put(SecurityManager.ANY, new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L)//
