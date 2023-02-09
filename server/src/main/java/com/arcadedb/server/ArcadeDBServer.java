@@ -31,7 +31,10 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ChannelBinary;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
@@ -40,12 +43,9 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.lang.reflect.*;
-import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
@@ -584,8 +584,8 @@ public class ArcadeDBServer {
       hostAddress = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
       if (hostAddress.equals("0.0.0.0")) {
         try {
-          hostAddress = InetAddress.getLocalHost().getHostAddress();
-        } catch (UnknownHostException e) {
+          hostAddress = ChannelBinary.getLocalIpAddress(true);
+        } catch (Exception e) {
           // IGNORE IT
           hostAddress = "localhost";
         }

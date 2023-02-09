@@ -43,9 +43,8 @@ public class LogFormatter extends Formatter {
 
   @Override
   public String format(final LogRecord record) {
-    if (record.getThrown() == null) {
+    if (record.getThrown() == null)
       return customFormatMessage(record);
-    }
 
     // FORMAT THE STACK TRACE
     final StringBuilder buffer = new StringBuilder(512);

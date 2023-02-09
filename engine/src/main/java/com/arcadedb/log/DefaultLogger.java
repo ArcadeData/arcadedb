@@ -223,7 +223,6 @@ public class DefaultLogger implements Logger {
         if (context != null)
           message = "<" + context + "> " + message;
 
-        // USE SYSERR
         try {
           String msg = message;
           if (args.length > 0)
@@ -231,9 +230,9 @@ public class DefaultLogger implements Logger {
           System.err.println(msg);
 
         } catch (final Exception e) {
-          System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
+          System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
         }
-      } else if (log.isLoggable(level)) {
+      } else {
         // USE THE LOG
         try {
           if (context != null)
@@ -243,12 +242,20 @@ public class DefaultLogger implements Logger {
           if (args.length > 0)
             msg = String.format(message, args);
 
-          if (exception != null)
-            log.log(level, msg, exception);
-          else
-            log.log(level, msg);
+          if (log.isLoggable(level)) {
+            if (exception != null)
+              log.log(level, msg, exception);
+            else
+              log.log(level, msg);
+          } else if (com.arcadedb.log.LogManager.instance().isDebugEnabled()) {
+            if (exception != null) {
+              System.out.print(new LogFormatter().format(new LogRecord(level, msg)));
+              exception.printStackTrace();
+            } else
+              System.out.println(msg);
+          }
         } catch (final Exception e) {
-          System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
+          System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
         }
       }
     }

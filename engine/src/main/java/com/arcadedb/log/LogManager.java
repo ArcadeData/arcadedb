@@ -142,36 +142,6 @@ public class LogManager {
         null, null, null);
   }
 
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
-      final Object arg5, final Object arg6, final Object arg7) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, null, null, null, null, null, null, null,
-        null, null, null);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Throwable throwable, final Object arg1, final Object arg2,
-      final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, null, null, null, null, null, null,
-        null, null, null);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
-      final Object arg5, final Object arg6, final Object arg7, final Object arg8) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, null, null, null, null, null, null,
-        null, null, null);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Throwable throwable, final Object arg1, final Object arg2,
-      final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, null, null, null, null, null,
-        null, null, null);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
-      final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, null, null, null, null, null,
-        null, null, null);
-  }
-
   public boolean isDebugEnabled() {
     return debug;
   }
