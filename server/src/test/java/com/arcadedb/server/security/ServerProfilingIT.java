@@ -207,10 +207,50 @@ public class ServerProfilingIT {
 
       final RID validRID = createSomeRecords(database, false);
 
-      database.newVertex("Vertex1").save();
+      MutableVertex v1 = database.newVertex("Vertex1").save();
+      MutableVertex v2 = database.newVertex("Vertex1").save();
+
+      // NEW EDGE IS TECHNICALLY A 2-STEP OPERATION: CREATE THE EDGE AND UPDATE THE VERTICES
+      expectedSecurityException(() -> v1.newEdge("Edge1", v2, true).save());
+
       database.newDocument("Document1").save();
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(validRID, true));
+
+      // SWITCH TO ROOT TO DROP THE SCHEMA
+      setCurrentUser("root", database);
+      dropSchema(database);
+
+    } finally {
+      SECURITY.dropUser("elon");
+    }
+  }
+
+  @Test
+  void createEdgeAccess() throws Throwable {
+    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+        .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "createOnlyGraph" }))));
+
+    try {
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
+      checkElonUser(setCurrentUser("elon", database));
+
+      createSchemaNotAllowed(database);
+
+      // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
+      setCurrentUser("root", database);
+
+      createSchema(database);
+
+      // SWITCH BACK TO ELON
+      checkElonUser(setCurrentUser("elon", database));
+
+      MutableVertex v1 = database.newVertex("Vertex1").save();
+      MutableVertex v2 = database.newVertex("Vertex1").save();
+
+      // NEW EDGE IS TECHNICALLY A 2-STEP OPERATION: CREATE THE EDGE AND UPDATE THE VERTICES
+      v1.newEdge("Edge1", v2, true);
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);
@@ -592,6 +632,12 @@ public class ServerProfilingIT {
         new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "updateRecord" })))));
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleterOfDocuments",
         new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
+
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("createOnlyGraph",//
+        new JSONObject().put("types", new JSONObject()//
+            .put("Vertex1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord", "updateRecord" })))//
+            .put("Edge1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))//
+        ));
 
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsCapped",//
         new JSONObject().put("resultSetLimit", 10)//
