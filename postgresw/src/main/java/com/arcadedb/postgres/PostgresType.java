@@ -114,8 +114,10 @@ public enum PostgresType {
     if (value == null) {
       if (code == BOOLEAN.code)
         value = "0";
-      else
-        value = "null";
+      else {
+        typeBuffer.putInt(-1);
+        return;
+      }
     }
 
     final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());

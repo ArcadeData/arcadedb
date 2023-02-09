@@ -182,6 +182,42 @@ public class PostgresWTest extends BaseGraphServerTest {
   }
 
   @Test
+  void testCypher() throws Exception {
+    try (final Connection conn = getConnection()) {
+      conn.setAutoCommit(false);
+
+      try (final Statement st = conn.createStatement()) {
+        st.execute("CREATE VERTEX TYPE PersonVertex;");
+
+        for (int i = 0; i < 100; i++) {
+          st.execute("{cypher} MATCH (n) DETACH DELETE n;");
+          st.execute("{cypher} CREATE (james:PersonVertex {name: \"James\", height: 1.9});");
+          st.execute("{cypher} CREATE (henry:PersonVertex {name: \"Henry\"});");
+
+          final ResultSet rs = st.executeQuery("{cypher} MATCH (person:PersonVertex) RETURN person.name, person.height;");
+
+          int numberOfPeople = 0;
+          while (rs.next()) {
+            Assertions.assertNotNull(rs.getString(1));
+
+            if (rs.getString(1).equals("James"))
+              Assertions.assertEquals(1.9F, rs.getFloat(2));
+            else if (rs.getString(1).equals("Henry"))
+              Assertions.assertNull(rs.getString(2));
+            else
+              Assertions.fail();
+
+            ++numberOfPeople;
+          }
+
+          Assertions.assertEquals(2, numberOfPeople);
+          st.execute("commit");
+        }
+      }
+    }
+  }
+
+  @Test
   @Disabled
   public void testWaitForConnectionFromExternal() throws InterruptedException {
     Thread.sleep(1000000);
