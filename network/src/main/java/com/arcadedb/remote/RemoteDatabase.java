@@ -81,6 +81,14 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
   }
 
+  String getSessionId() {
+    return sessionId;
+  }
+
+  void setSessionId(String sessionId) {
+    this.sessionId = sessionId;
+  }
+
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN
   }
@@ -130,7 +138,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public void close() {
-    sessionId = null;
+    setSessionId(null);
   }
 
   @Override
@@ -218,11 +226,11 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   public boolean isTransactionActive() {
-    return sessionId != null;
+    return getSessionId() != null;
   }
 
   public void begin() {
-    if (sessionId != null)
+    if (getSessionId() != null)
       throw new TransactionException("Transaction already begun");
 
     try {
@@ -232,14 +240,14 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
         final Exception detail = manageException(connection, "begin transaction");
         throw new TransactionException("Error on transaction begin", detail);
       }
-      sessionId = connection.getHeaderField(ARCADEDB_SESSION_ID);
+      setSessionId(connection.getHeaderField(ARCADEDB_SESSION_ID));
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     }
   }
 
   public void commit() {
-    if (sessionId == null)
+    if (getSessionId() == null)
       throw new TransactionException("Transaction not begun");
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("commit", databaseName));
@@ -248,14 +256,14 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
         final Exception detail = manageException(connection, "commit transaction");
         throw new TransactionException("Error on transaction commit", detail);
       }
-      sessionId = null;
+      setSessionId(null);
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
     }
   }
 
   public void rollback() {
-    if (sessionId == null)
+    if (getSessionId() == null)
       throw new TransactionException("Transaction not begun");
 
     try {
@@ -265,7 +273,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
         final Exception detail = manageException(connection, "rollback transaction");
         throw new TransactionException("Error on transaction rollback", detail);
       }
-      sessionId = null;
+      setSessionId(null);
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
     }
@@ -522,8 +530,8 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     connection.setConnectTimeout(timeout);
     connection.setReadTimeout(timeout);
 
-    if (sessionId != null)
-      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+    if (getSessionId() != null)
+      connection.setRequestProperty(ARCADEDB_SESSION_ID, getSessionId());
 
     return connection;
   }
