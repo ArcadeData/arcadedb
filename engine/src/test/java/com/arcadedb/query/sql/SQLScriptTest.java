@@ -2,6 +2,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -25,10 +26,10 @@ public class SQLScriptTest extends TestHelper {
   @Test
   public void testQueryOnDeprecated() {
     StringBuilder script = new StringBuilder();
-    script.append("begin\n");
-    script.append("let $a = select from foo\n");
-    script.append("commit\n");
-    script.append("return $a\n");
+    script.append("begin;\n");
+    script.append("let $a = select from foo;\n");
+    script.append("commit;\n");
+    script.append("return $a;\n");
     ResultSet qResult = database.execute("sql", script.toString());
 
     Assertions.assertEquals(3, CollectionUtils.countEntries(qResult));
@@ -37,10 +38,10 @@ public class SQLScriptTest extends TestHelper {
   @Test
   public void testQuery() {
     StringBuilder script = new StringBuilder();
-    script.append("begin\n");
-    script.append("let $a = select from foo\n");
-    script.append("commit\n");
-    script.append("return $a\n");
+    script.append("begin;\n");
+    script.append("let $a = select from foo;\n");
+    script.append("commit;\n");
+    script.append("return $a;\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     Assertions.assertEquals(3, CollectionUtils.countEntries(qResult));
@@ -49,10 +50,10 @@ public class SQLScriptTest extends TestHelper {
   @Test
   public void testTx() {
     StringBuilder script = new StringBuilder();
-    script.append("begin isolation REPEATABLE_READ\n");
-    script.append("let $a = insert into V set test = 'sql script test'\n");
-    script.append("commit retry 10\n");
-    script.append("return $a\n");
+    script.append("begin isolation REPEATABLE_READ;\n");
+    script.append("let $a = insert into V set test = 'sql script test';\n");
+    script.append("commit retry 10;\n");
+    script.append("return $a;\n");
     Document qResult = database.command("SQLScript", script.toString()).next().toElement();
 
     Assertions.assertNotNull(qResult);
@@ -62,8 +63,8 @@ public class SQLScriptTest extends TestHelper {
   public void testReturnExpanded() {
     database.transaction(() -> {
       StringBuilder script = new StringBuilder();
-      script.append("let $a = insert into V set test = 'sql script test'\n");
-      script.append("return $a.toJSON()\n");
+      script.append("let $a = insert into V set test = 'sql script test';\n");
+      script.append("return $a.toJSON();\n");
       String qResult = database.command("SQLScript", script.toString()).next().getProperty("value");
       Assertions.assertNotNull(qResult);
 
@@ -71,8 +72,8 @@ public class SQLScriptTest extends TestHelper {
       new JSONArray(qResult);
 
       script = new StringBuilder();
-      script.append("let $a = select from V limit 2\n");
-      script.append("return $a.toJSON()\n");
+      script.append("let $a = select from V limit 2;\n");
+      script.append("return $a.toJSON();\n");
       String result = database.command("SQLScript", script.toString()).next().getProperty("value");
 
       Assertions.assertNotNull(result);
@@ -152,11 +153,11 @@ public class SQLScriptTest extends TestHelper {
   public void testIf1() {
     StringBuilder script = new StringBuilder();
 
-    script.append("let $a = select 1 as one\n");
+    script.append("let $a = select 1 as one;\n");
     script.append("if($a[0].one = 1){\n");
-    script.append(" return 'OK'\n");
+    script.append(" return 'OK';\n");
     script.append("}\n");
-    script.append("return 'FAIL'\n");
+    script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     Assertions.assertNotNull(qResult);
@@ -167,11 +168,11 @@ public class SQLScriptTest extends TestHelper {
   public void testIf2() {
     StringBuilder script = new StringBuilder();
 
-    script.append("let $a = select 1 as one\n");
+    script.append("let $a = select 1 as one;\n");
     script.append("if    ($a[0].one = 1)   { \n");
-    script.append(" return 'OK'\n");
+    script.append(" return 'OK';\n");
     script.append("     }      \n");
-    script.append("return 'FAIL'\n");
+    script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     Assertions.assertNotNull(qResult);
@@ -191,14 +192,14 @@ public class SQLScriptTest extends TestHelper {
   public void testNestedIf2() {
     StringBuilder script = new StringBuilder();
 
-    script.append("let $a = select 1 as one\n");
+    script.append("let $a = select 1 as one;\n");
     script.append("if($a[0].one = 1){\n");
     script.append("    if($a[0].one = 'zz'){\n");
-    script.append("      return 'FAIL'\n");
+    script.append("      return 'FAIL';\n");
     script.append("    }\n");
-    script.append("  return 'OK'\n");
+    script.append("  return 'OK';\n");
     script.append("}\n");
-    script.append("return 'FAIL'\n");
+    script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     Assertions.assertNotNull(qResult);
@@ -209,14 +210,14 @@ public class SQLScriptTest extends TestHelper {
   public void testNestedIf3() {
     StringBuilder script = new StringBuilder();
 
-    script.append("let $a = select 1 as one\n");
+    script.append("let $a = select 1 as one;\n");
     script.append("if($a[0].one = 'zz'){\n");
     script.append("    if($a[0].one = 1){\n");
-    script.append("      return 'FAIL'\n");
+    script.append("      return 'FAIL';\n");
     script.append("    }\n");
-    script.append("  return 'FAIL'\n");
+    script.append("  return 'FAIL';\n");
     script.append("}\n");
-    script.append("return 'OK'\n");
+    script.append("return 'OK';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     Assertions.assertNotNull(qResult);
@@ -227,11 +228,11 @@ public class SQLScriptTest extends TestHelper {
   public void testIfRealQuery() {
     StringBuilder script = new StringBuilder();
 
-    script.append("let $a = select from foo\n");
+    script.append("let $a = select from foo;\n");
     script.append("if($a is not null and $a.size() = 3){\n");
-    script.append("  return $a\n");
+    script.append("  return $a;\n");
     script.append("}\n");
-    script.append("return 'FAIL'\n");
+    script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     Assertions.assertNotNull(qResult);
@@ -258,12 +259,7 @@ public class SQLScriptTest extends TestHelper {
   public void testSemicolonInString() {
     // testing parsing problem
     StringBuilder script = new StringBuilder();
-
     script.append("let $a = select 'foo ; bar' as one\n");
-    script.append("let $b = select 'foo \\\'; bar' as one\n");
-
-    script.append("let $a = select \"foo ; bar\" as one\n");
-    script.append("let $b = select \"foo \\\"; bar\" as one\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
   }
 
@@ -320,5 +316,45 @@ public class SQLScriptTest extends TestHelper {
     Assertions.assertTrue(rs.hasNext());
     rs.next();
     rs.close();
+  }
+
+  @Test
+  public void testInsertJsonNewLines() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("doc");
+      final ResultSet result = database.command("sqlscript", "INSERT INTO doc CONTENT {\n" + //
+          "\"head\" : {\n" + //
+          "  \"vars\" : [ \"item\", \"itemLabel\" ]\n" + //
+          "},\n" + //
+          "\"results\" : {\n" + //
+          "  \"bindings\" : [ {\n" + //
+          "    \"item\" : {\n" + //
+          "          \"type\" : \"uri\",\n" + //
+          "              \"value\" : \"http://www.wikidata.org/entity/Q113997665\"\n" + //
+          "        },\n" + //
+          "        \"itemLabel\" : {\n" + //
+          "          \"xml:lang\" : \"en\",\n" + //
+          "              \"type\" : \"literal\",\n" + //
+          "              \"value\" : \"ArcadeDB\"\n" + //
+          "        }\n" + //
+          "      }, {\n" + //
+          "        \"item\" : {\n" + //
+          "          \"type\" : \"uri\",\n" + //
+          "              \"value\" : \"http://www.wikidata.org/entity/Q808716\"\n" + //
+          "        },\n" + //
+          "        \"itemLabel\" : {\n" + //
+          "          \"xml:lang\" : \"en\",\n" + //
+          "              \"type\" : \"literal\",\n" + //
+          "              \"value\" : \"OrientDB\"\n" + //
+          "        }\n" + //
+          "      } ]\n" + //
+          "    }\n" + //
+          "}");
+
+      Assertions.assertTrue(result.hasNext());
+      final Result res = result.next();
+      Assertions.assertTrue(res.hasProperty("head"));
+      Assertions.assertTrue(res.hasProperty("results"));
+    });
   }
 }

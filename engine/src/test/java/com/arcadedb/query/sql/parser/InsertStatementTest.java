@@ -111,9 +111,40 @@ public class InsertStatementTest {
     checkRightSyntax("insert into Bookmark from (select expand($foo))");
   }
 
+  @Test
+  public void testInsertJsonNewLines() {
+    checkRightSyntax("INSERT INTO doc CONTENT {\n" + //
+        "\"head\" : {\n" + //
+        "  \"vars\" : [ \"item\", \"itemLabel\" ]\n" + //
+        "},\n" + //
+        "\"results\" : {\n" + //
+        "  \"bindings\" : [ {\n" + //
+        "    \"item\" : {\n" + //
+        "          \"type\" : \"uri\",\n" + //
+        "              \"value\" : \"http://www.wikidata.org/entity/Q113997665\"\n" + //
+        "        },\n" + //
+        "        \"itemLabel\" : {\n" + //
+        "          \"xml:lang\" : \"en\",\n" + //
+        "              \"type\" : \"literal\",\n" + //
+        "              \"value\" : \"ArcadeDB\"\n" + //
+        "        }\n" + //
+        "      }, {\n" + //
+        "        \"item\" : {\n" + //
+        "          \"type\" : \"uri\",\n" + //
+        "              \"value\" : \"http://www.wikidata.org/entity/Q808716\"\n" + //
+        "        },\n" + //
+        "        \"itemLabel\" : {\n" + //
+        "          \"xml:lang\" : \"en\",\n" + //
+        "              \"type\" : \"literal\",\n" + //
+        "              \"value\" : \"OrientDB\"\n" + //
+        "        }\n" + //
+        "      } ]\n" + //
+        "    }\n" + //
+        "}");
+  }
+
   protected SqlParser getParserFor(final String string) {
     final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
+    return new SqlParser(null, is);
   }
 }

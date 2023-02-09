@@ -117,7 +117,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
-    final InputStream is = new ByteArrayInputStream(addSemicolons(script).getBytes(DatabaseFactory.getDefaultCharset()));
+    final InputStream is = new ByteArrayInputStream(addSemicolon(script).getBytes(DatabaseFactory.getDefaultCharset()));
     return parseScript(is, database);
   }
 
@@ -130,18 +130,10 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     }
   }
 
-  private static String addSemicolons(final String parserText) {
-    String[] rows = parserText.split("\n");
-    StringBuilder builder = new StringBuilder();
-    for (String row : rows) {
-      row = row.trim();
-      builder.append(row);
-      if (!(row.endsWith(";") || row.endsWith("{"))) {
-        builder.append(";");
-      }
-      builder.append("\n");
-    }
-    return builder.toString();
+  private static String addSemicolon(final String parserText) {
+    if (!parserText.endsWith(";"))
+      return parserText + ";";
+    return parserText;
   }
 
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {

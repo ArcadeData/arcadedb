@@ -468,4 +468,43 @@ public class InsertStatementExecutionTest extends TestHelper {
       // EXPECTED
     }
   }
+
+  @Test
+  public void testInsertJsonNewLines() {
+    database.getSchema().createDocumentType("doc");
+    final ResultSet result = database.command("sql", "INSERT INTO doc CONTENT {\n" + //
+        "\"head\" : {\n" + //
+        "  \"vars\" : [ \"item\", \"itemLabel\" ]\n" + //
+        "},\n" + //
+        "\"results\" : {\n" + //
+        "  \"bindings\" : [ {\n" + //
+        "    \"item\" : {\n" + //
+        "          \"type\" : \"uri\",\n" + //
+        "              \"value\" : \"http://www.wikidata.org/entity/Q113997665\"\n" + //
+        "        },\n" + //
+        "        \"itemLabel\" : {\n" + //
+        "          \"xml:lang\" : \"en\",\n" + //
+        "              \"type\" : \"literal\",\n" + //
+        "              \"value\" : \"ArcadeDB\"\n" + //
+        "        }\n" + //
+        "      }, {\n" + //
+        "        \"item\" : {\n" + //
+        "          \"type\" : \"uri\",\n" + //
+        "              \"value\" : \"http://www.wikidata.org/entity/Q808716\"\n" + //
+        "        },\n" + //
+        "        \"itemLabel\" : {\n" + //
+        "          \"xml:lang\" : \"en\",\n" + //
+        "              \"type\" : \"literal\",\n" + //
+        "              \"value\" : \"OrientDB\"\n" + //
+        "        }\n" + //
+        "      } ]\n" + //
+        "    }\n" + //
+        "}");
+
+    Assertions.assertTrue(result.hasNext());
+    final Result res = result.next();
+    Assertions.assertTrue(res.hasProperty("head"));
+    Assertions.assertTrue(res.hasProperty("results"));
+  }
+
 }
