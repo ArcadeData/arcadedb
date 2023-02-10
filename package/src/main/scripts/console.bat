@@ -79,7 +79,7 @@ goto setArgs
 :doneSetArgs
 set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8 -Dpolyglot.engine.WarnInterpreterOnly=false
 
-%JAVACMD% ^
+"%JAVACMD%" ^
   -client ^
   %JAVA_OPTS% ^
   %JAVA_OPTS_SCRIPT% ^
