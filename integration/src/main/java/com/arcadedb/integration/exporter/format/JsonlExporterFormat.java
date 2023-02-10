@@ -59,7 +59,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     }
 
     if (database.isTransactionActive())
-      throw new ExportException("Transaction in progress found");
+      database.getTransaction().rollback();
 
     logger.logLine(0, "Exporting database to '%s'...", settings.file);
 

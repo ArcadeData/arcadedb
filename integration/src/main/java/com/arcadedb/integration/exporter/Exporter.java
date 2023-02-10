@@ -31,12 +31,13 @@ import java.util.*;
 import java.util.logging.*;
 
 public class Exporter {
-  protected ExporterSettings       settings = new ExporterSettings();
-  protected ExporterContext        context  = new ExporterContext();
+  protected ExporterSettings       settings           = new ExporterSettings();
+  protected ExporterContext        context            = new ExporterContext();
   protected DatabaseInternal       database;
   protected Timer                  timer;
   protected ConsoleLogger          logger;
   protected AbstractExporterFormat formatImplementation;
+  protected boolean                closeDatabaseAtEnd = true;
 
   public Exporter(final String[] args) {
     settings.parseParameters(args);
@@ -44,7 +45,8 @@ public class Exporter {
 
   public Exporter(final Database database, final String file) {
     this.database = (DatabaseInternal) database;
-    settings.file = file;
+    this.settings.file = file;
+    this.closeDatabaseAtEnd = false;
   }
 
   public static void main(final String[] args) {
@@ -172,7 +174,8 @@ public class Exporter {
     if (database != null) {
       if (database.isTransactionActive())
         database.commit();
-      database.close();
+      if (closeDatabaseAtEnd)
+        database.close();
     }
   }
 
