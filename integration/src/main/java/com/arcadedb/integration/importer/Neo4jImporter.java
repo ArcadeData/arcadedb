@@ -58,27 +58,28 @@ import java.util.zip.*;
 public class Neo4jImporter {
   protected            Database                       database;
   protected            Callable<Void, JSONObject>     parsingCallback;
-  protected            int                            indexPageSize         = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
-  protected            int                            bucketsPerType        = -1;
+  protected            int                            indexPageSize            = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
+  protected            int                            bucketsPerType           = -1;
+  private              boolean                        closeDatabaseAfterImport = true;
   private              InputStream                    inputStream;
   private              String                         databasePath;
   private              String                         inputFile;
-  private              boolean                        overwriteDatabase     = false;
-  private              Type                           typeForDecimals       = Type.DECIMAL;
-  private final        Map<String, Long>              totalVerticesByType   = new HashMap<>();
-  private              long                           totalVerticesParsed   = 0L;
-  private final        Map<String, Long>              totalEdgesByType      = new HashMap<>();
-  private              long                           totalEdgesParsed      = 0L;
-  private              long                           totalAttributesParsed = 0L;
+  private              boolean                        overwriteDatabase        = false;
+  private              Type                           typeForDecimals          = Type.DECIMAL;
+  private final        Map<String, Long>              totalVerticesByType      = new HashMap<>();
+  private              long                           totalVerticesParsed      = 0L;
+  private final        Map<String, Long>              totalEdgesByType         = new HashMap<>();
+  private              long                           totalEdgesParsed         = 0L;
+  private              long                           totalAttributesParsed    = 0L;
   private              DatabaseFactory                factory;
-  private              int                            batchSize             = 10_000;
+  private              int                            batchSize                = 10_000;
   private              long                           beginTimeVerticesCreation;
   private              long                           beginTimeEdgesCreation;
-  private              boolean                        error                 = false;
+  private              boolean                        error                    = false;
   private final        ImporterContext                context;
-  private final        Map<String, Map<String, Type>> schemaProperties      = new HashMap<>();
-  private final static SimpleDateFormat               dateTimeISO8601Format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
-  private static final int                            MAX_RETRIES           = 3;
+  private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
+  private final static SimpleDateFormat               dateTimeISO8601Format    = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+  private static final int                            MAX_RETRIES              = 3;
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_VERTICES, CREATE_EDGES}
 
@@ -103,6 +104,7 @@ public class Neo4jImporter {
     this.database = database;
     this.context = context;
     this.bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
+    this.closeDatabaseAfterImport = false;
   }
 
   public static void main(final String[] args) throws IOException {
@@ -180,7 +182,7 @@ public class Neo4jImporter {
         log("- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
 
     } finally {
-      if (database != null)
+      if (database != null && closeDatabaseAfterImport)
         database.close();
     }
   }
@@ -224,6 +226,9 @@ public class Neo4jImporter {
   }
 
   private void inferPropertyType(final JSONObject json, final String label) {
+    if (!json.has("properties"))
+      return;
+
     // TRY TO INFER PROPERTY TYPES
     final Map<String, Type> typeProperties = schemaProperties.computeIfAbsent(label, k -> new HashMap<>());
 
@@ -289,7 +294,8 @@ public class Neo4jImporter {
         try {
           final MutableVertex vertex = database.newVertex(typeName);
 
-          vertex.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName)));
+          if (json.has("properties"))
+            vertex.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName)));
           vertex.set("id", id);
           vertex.save();
           context.createdVertices.incrementAndGet();
@@ -376,7 +382,8 @@ public class Neo4jImporter {
         try {
           final MutableEdge edge = fromVertex.newEdge(type, toVertex, true);
 
-          edge.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(type)));
+          if (json.has("properties"))
+            edge.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(type)));
           edge.save();
           context.createdEdges.incrementAndGet();
 
