@@ -35,6 +35,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class RemoteDatabaseIT extends BaseGraphServerTest {
 
@@ -263,6 +264,85 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       } catch (final RecordNotFoundException e) {
         // EXPECTED
       }
+    });
+  }
+
+  @Test
+  public void testTransactionIsolation() throws Exception {
+    testEachServer((serverIndex) -> {
+      final int TOTAL_TRANSACTIONS = 100;
+      final int BATCH_SIZE = 100;
+
+      Assertions.assertTrue(new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
+
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      final RemoteDatabase database2 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      database.command("sql", "create vertex type Person");
+
+      // CREATE A PARALLEL THREAD THAT EXECUTE QUERIES AND BROWSE ALL THE RECORDS
+      final AtomicBoolean checkThreadRunning = new AtomicBoolean(true);
+      final Thread checkThread = new Thread(() -> {
+        try {
+          while (checkThreadRunning.get()) {
+            Thread.sleep(1000);
+            ResultSet result = database.query("SQL", "select from Person");
+            Assertions.assertTrue(result.hasNext());
+            int total = 0;
+            while (result.hasNext()) {
+              Assertions.assertNotNull(result.next().getProperty("name"));
+              ++total;
+            }
+            System.out.println("Parallel thread browsed " + total + " records (limit 20,000)");
+          }
+        } catch (InterruptedException e) {
+          throw new RuntimeException(e);
+        }
+      });
+      checkThread.start();
+
+      for (int i = 0; i < TOTAL_TRANSACTIONS; i++) {
+        try {
+          final int executedBatches = i + 1;
+
+          database.transaction(() -> {
+            for (int j = 0; j < BATCH_SIZE; j++) {
+              final MutableDocument jay = database.newDocument("Person").set("name", "Jay").save();
+              Assertions.assertNotNull(jay);
+              Assertions.assertEquals("Jay", jay.getString("name"));
+              Assertions.assertNotNull(jay.getIdentity());
+              jay.save();
+            }
+
+            // TEST ISOLATION: COUNT SHOULD SEE THE MOST RECENT CHANGES BEFORE THE COMMIT
+            ResultSet result = database.query("SQL", "select count(*) as total from Person");
+            Assertions.assertTrue(result.hasNext());
+            Assertions.assertEquals(executedBatches * BATCH_SIZE, (int) result.next().getProperty("total"));
+
+            // CHECK ON A PARALLEL CONNECTION THE TX ISOLATION (RECORDS LESS THEN INSERTED)
+            result = database2.query("SQL", "select count(*) as total from Person");
+            Assertions.assertTrue(result.hasNext());
+            final int totalRecord = result.next().getProperty("total");
+            Assertions.assertTrue(totalRecord < executedBatches * BATCH_SIZE,
+                "Found total " + totalRecord + " records but should be less than " + (executedBatches * BATCH_SIZE));
+
+            System.out.println("BATCH " + executedBatches + "/" + TOTAL_TRANSACTIONS);
+          });
+        } catch (Throwable e) {
+          System.err.println("Exception at transaction " + i + "/" + TOTAL_TRANSACTIONS);
+          e.printStackTrace();
+          break;
+        }
+      }
+
+      checkThreadRunning.set(false);
+      checkThread.join(5000);
+
+      // RETRIEVE DOCUMENT WITH QUERY AFTER COMMIT
+      final ResultSet result = database.query("SQL", "select count(*) as total from Person");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertEquals(TOTAL_TRANSACTIONS * BATCH_SIZE, (int) result.next().getProperty("total"));
     });
   }
 
