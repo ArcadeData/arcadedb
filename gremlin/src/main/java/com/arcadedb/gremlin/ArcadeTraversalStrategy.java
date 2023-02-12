@@ -48,6 +48,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
+    boolean replacedWithFilterByType = false;
     final List<Step> steps = traversal.getSteps();
     for (int i = 1; i < steps.size(); i++) {
       final Step step = steps.get(i);
@@ -119,16 +120,20 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             }
 
             final Step replaceWith;
-            if (indexCursors.isEmpty())
+            if (indexCursors.isEmpty()) {
               replaceWith = new ArcadeFilterByTypeStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(), prevStepGraph.isStartStep(),
                   typeNameToMatch);
-            else
+              replacedWithFilterByType = true;
+            } else
               replaceWith = new ArcadeFilterByIndexStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(), prevStepGraph.isStartStep(),
                   indexCursors);
 
             //traversal.removeStep(i); // IF THE HAS-LABEL STEP IS REMOVED, FOR SOME REASON DOES NOT WORK
             traversal.removeStep(i - 1);
             traversal.addStep(i - 1, replaceWith);
+
+            if (replacedWithFilterByType)
+              break;
           }
         }
       }
