@@ -41,12 +41,6 @@ public class Type extends SimpleNode {
     return bang;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 
   public String treeToString(final String prefix) {
     return prefix + "Type{" + (typeName != null ? typeName.getName() : listType.getType().getTypeName().getName()) + "}";

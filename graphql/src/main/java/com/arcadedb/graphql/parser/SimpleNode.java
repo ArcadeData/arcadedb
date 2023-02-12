@@ -20,8 +20,6 @@
 /* ParserGeneratorCCOptions:MULTI=false,NODE_USES_PARSER=false,VISITOR=false,TRACK_TOKENS=false,NODE_PREFIX=AST,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import com.arcadedb.query.sql.parser.SqlParserVisitor;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -91,20 +89,20 @@ public class SimpleNode implements Node {
   }
 
   public String treeToString(final String prefix, final Class... excludes) {
-    String buffer = prefix + this;
+    StringBuilder buffer = new StringBuilder(prefix + this);
     if (children != null) {
       final Set<Class> set = Arrays.stream(excludes).collect(Collectors.toSet());
 
       for (int i = 0; i < children.length; ++i) {
         final SimpleNode n = (SimpleNode) children[i];
-        if (set.contains(n.getClass()))
-          continue;
-
-        if (n != null)
-          buffer += "\n" + n.treeToString(prefix + " ");
+        if (n != null) {
+          if (set.contains(n.getClass()))
+            continue;
+          buffer.append("\n").append(n.treeToString(prefix + " "));
+        }
       }
     }
-    return buffer;
+    return buffer.toString();
   }
 
   public int getId() {
@@ -117,15 +115,6 @@ public class SimpleNode implements Node {
 
   public void jjtSetLastToken(final Token token) {
     this.lastToken = token;
-  }
-
-  public Object childrenAccept(final SqlParserVisitor visitor, final Object data) {
-    if (children != null) {
-      for (int i = 0; i < children.length; ++i) {
-//        children[i].jjtAccept(visitor, data);//TODO fix
-      }
-    }
-    return data;
   }
 
   public Node[] getChildren() {

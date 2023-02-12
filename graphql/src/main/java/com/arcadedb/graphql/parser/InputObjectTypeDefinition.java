@@ -34,12 +34,5 @@ public class InputObjectTypeDefinition extends TypeDefinition {
   public String getName() {
     return name != null ? name.value : null;
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=395d43b299254ecb99e16bccb871997c (do not edit this line) */

@@ -32,12 +32,6 @@ public class Selection extends SimpleNode {
     super(id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 
   public String getName() {
     return name != null ? name.value : null;

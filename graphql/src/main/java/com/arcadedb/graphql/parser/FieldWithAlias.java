@@ -39,12 +39,5 @@ public class FieldWithAlias extends SimpleNode {
   public String getName() {
     return name != null ? name.value : null;
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=46c98ffd2c99423a541cd9d46c3fc779 (do not edit this line) */

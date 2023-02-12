@@ -29,13 +29,6 @@ public abstract class AbstractValue extends SimpleNode {
 
   public abstract Object getValue();
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
-
   public String getName() {
     return name != null ? name.value : null;
   }

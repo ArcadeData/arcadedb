@@ -25,11 +25,5 @@ public class Definition extends SimpleNode {
     super(id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=e08f7a082c359f9df4c56e489e349548 (do not edit this line) */

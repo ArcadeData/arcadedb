@@ -28,12 +28,5 @@ public class EnumValueDefinition extends SimpleNode {
   public EnumValueDefinition(final int id) {
     super(id);
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=d501ea804071d45439cffe6e78b75781 (do not edit this line) */

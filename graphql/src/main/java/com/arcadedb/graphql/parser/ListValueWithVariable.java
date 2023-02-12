@@ -34,12 +34,6 @@ public class ListValueWithVariable extends AbstractValue {
     return values;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 
   @Override
   public String toString() {

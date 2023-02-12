@@ -36,11 +36,5 @@ public class ListType extends SimpleNode {
     return bang;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=24dd7322ed97d5b7b795158bfb5a0b17 (do not edit this line) */

@@ -29,12 +29,5 @@ public class EnumValue extends AbstractValue {
   public Object getValue() {
     return children.length > 0 ? ((Name) children[0]).value : null;
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=30feac3e906da5a960df63eb165a4a50 (do not edit this line) */

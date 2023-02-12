@@ -34,13 +34,6 @@ public class Field extends AbstractField {
     super(id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
-
   public Arguments getArguments() {
     return arguments;
   }

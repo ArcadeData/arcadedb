@@ -29,12 +29,5 @@ public class FragmentDefinition extends Definition {
   public FragmentDefinition(final int id) {
     super(id);
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=588294b34a10e410fa87ff81f52b5be4 (do not edit this line) */

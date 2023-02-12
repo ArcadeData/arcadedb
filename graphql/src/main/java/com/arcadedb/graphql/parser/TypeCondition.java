@@ -28,11 +28,5 @@ public class TypeCondition extends SimpleNode {
     super(id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=29df67b79bac10f7c2d7db706ec651dc (do not edit this line) */

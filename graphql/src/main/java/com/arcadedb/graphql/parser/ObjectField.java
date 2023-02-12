@@ -32,11 +32,5 @@ public class ObjectField extends SimpleNode {
     return name != null ? name.value : null;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=9d5773c7ec0ad7d266c683e3b2a33f31 (do not edit this line) */

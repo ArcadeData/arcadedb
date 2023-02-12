@@ -29,12 +29,5 @@ public class DirectiveLocations extends SimpleNode {
   public DirectiveLocations(final int id) {
     super(id);
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=f3ec1634dd11be6c17584efdd94bfbeb (do not edit this line) */

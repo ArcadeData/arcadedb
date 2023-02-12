@@ -28,12 +28,5 @@ public class FragmentSpread extends SimpleNode {
   public FragmentSpread(final int id) {
     super(id);
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=d963ff13f71ad79b35665827792399de (do not edit this line) */

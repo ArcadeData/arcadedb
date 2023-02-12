@@ -33,11 +33,5 @@ public class ScalarTypeDefinition extends TypeDefinition {
     return name != null ? name.value : null;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=6e8b3a7ca60f3dcd59d75d4e9935e618 (do not edit this line) */

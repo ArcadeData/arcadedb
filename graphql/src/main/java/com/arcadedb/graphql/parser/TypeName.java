@@ -31,11 +31,5 @@ public class TypeName extends SimpleNode {
     return name != null ? name.value : null;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=d93c0e2c84e43cfe8e5dd3b12a3acd40 (do not edit this line) */

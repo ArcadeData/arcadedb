@@ -30,12 +30,5 @@ public class FragmentName extends SimpleNode {
   public String getName() {
     return name != null ? name.value : null;
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=0cfaea8d7a4f254967c4a295b1af21a3 (do not edit this line) */

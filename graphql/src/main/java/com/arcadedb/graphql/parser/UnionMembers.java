@@ -29,11 +29,5 @@ public class UnionMembers extends SimpleNode {
     super(id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=f97c07f2fcabe34be203e80b7dda6297 (do not edit this line) */

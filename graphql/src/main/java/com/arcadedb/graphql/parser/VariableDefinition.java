@@ -30,11 +30,5 @@ public class VariableDefinition extends SimpleNode {
     super(id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=d27742fee491b437eadc17b1257844df (do not edit this line) */

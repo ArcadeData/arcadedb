@@ -94,31 +94,11 @@ public abstract class SimpleNode implements Node {
     //this.lastToken = token;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public final Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object childrenAccept(final SqlParserVisitor visitor, final Object data) {
-    if (children != null) {
-      for (int i = 0; i < children.length; ++i) {
-        children[i].jjtAccept(visitor, data);
-      }
-    }
-    return data;
-  }
-
   /*
    * You can override these two methods in subTypes of SimpleNode to customize the way the node appears when the tree is dumped.
    * If your output uses more than one line you should override toString(String), otherwise overriding toString() is probably all
    * you need to do.
    */
-
   public String toString() {
     if (cachedStringForm == null) {
       final StringBuilder result = new StringBuilder();

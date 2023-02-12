@@ -29,11 +29,5 @@ public class ObjectValue extends SimpleNode {
     super(id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=43f093da6ca25f39a972b74ac9c2f063 (do not edit this line) */

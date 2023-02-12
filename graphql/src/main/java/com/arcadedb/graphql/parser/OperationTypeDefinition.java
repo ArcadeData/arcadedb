@@ -29,11 +29,5 @@ public class OperationTypeDefinition extends SimpleNode {
     super(id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=fd8564df2af33b83b138cd0ee5078447 (do not edit this line) */

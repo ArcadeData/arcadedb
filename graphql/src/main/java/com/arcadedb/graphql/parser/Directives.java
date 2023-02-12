@@ -33,22 +33,15 @@ public class Directives extends SimpleNode {
     return directives;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
-
   public String toString() {
-    String buffer = "Directives{";
+    StringBuilder buffer = new StringBuilder("Directives{");
     for (int i = 0; i < directives.size(); i++) {
       if (i > 0)
-        buffer += ",";
-      buffer += directives.get(i).treeToString("");
+        buffer.append(",");
+      buffer.append(directives.get(i).treeToString(""));
     }
-    buffer += "}";
-    return buffer;
+    buffer.append("}");
+    return buffer.toString();
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=f93ba7b3c8a0e407e3d07fabf22ecdf2 (do not edit this line) */
