@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
@@ -62,7 +63,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         cleanTL(database, current);
       }
 
-      activeSession = setTransactionInThreadLocal(exchange, database, user, false);
+      activeSession = setTransactionInThreadLocal(exchange, database, user);
 
       current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
       if (current == null)
@@ -138,32 +139,22 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     return true;
   }
 
-  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, final ServerSecurityUser user,
-      final boolean mandatory) {
+  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, final ServerSecurityUser user) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
-    if (sessionId == null || sessionId.isEmpty()) {
-      if (mandatory) {
+    if (sessionId != null && !sessionId.isEmpty()) {
+      // LOOK UP FOR THE SESSION ID
+      final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
+      if (session == null) {
         exchange.setStatusCode(401);
-        exchange.getResponseSender().send("{ \"error\" : \"Transaction id not found in request headers\" }");
+        throw new TransactionException("Remote transaction not found or expired");
       }
-      return null;
-    }
 
-    final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
-    if (session == null) {
-      if (mandatory) {
-        exchange.setStatusCode(401);
-        exchange.getResponseSender().send("{ \"error\" : \"Transaction not found or expired\" }");
-        return null;
-      }
-    }
-
-    if (session != null) {
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
       exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
-    }
 
-    return session;
+      return session;
+    }
+    return null;
   }
 }

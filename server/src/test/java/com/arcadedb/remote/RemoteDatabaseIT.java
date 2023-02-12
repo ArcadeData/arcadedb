@@ -1,35 +1,38 @@
 /*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright 2023 Arcade Data Ltd
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
- * SPDX-License-Identifier: Apache-2.0
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
-package com.arcadedb.server;
+package com.arcadedb.remote;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -294,7 +297,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
               Assertions.assertNotNull(result.next().getProperty("name"));
               ++total;
             }
-            System.out.println("Parallel thread browsed " + total + " records (limit 20,000)");
+            //System.out.println("Parallel thread browsed " + total + " records (limit 20,000)");
           }
         } catch (InterruptedException e) {
           throw new RuntimeException(e);
@@ -327,7 +330,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
             Assertions.assertTrue(totalRecord < executedBatches * BATCH_SIZE,
                 "Found total " + totalRecord + " records but should be less than " + (executedBatches * BATCH_SIZE));
 
-            System.out.println("BATCH " + executedBatches + "/" + TOTAL_TRANSACTIONS);
+            //System.out.println("BATCH " + executedBatches + "/" + TOTAL_TRANSACTIONS);
           });
         } catch (Throwable e) {
           System.err.println("Exception at transaction " + i + "/" + TOTAL_TRANSACTIONS);
@@ -343,6 +346,39 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final ResultSet result = database.query("SQL", "select count(*) as total from Person");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertEquals(TOTAL_TRANSACTIONS * BATCH_SIZE, (int) result.next().getProperty("total"));
+    });
+  }
+
+  @Test
+  public void testTransactionWrongSessionId() throws Exception {
+    testEachServer((serverIndex) -> {
+      Assertions.assertTrue(new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
+
+      final RemoteDatabase database1 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      database1.command("sql", "create vertex type Person");
+
+      database1.begin();
+
+      final MutableDocument jay = database1.newDocument("Person").set("name", "Jay").save();
+      Assertions.assertNotNull(jay);
+      Assertions.assertEquals("Jay", jay.getString("name"));
+      Assertions.assertNotNull(jay.getIdentity());
+      jay.save();
+
+      final String sessionId = database1.getSessionId();
+      database1.setSessionId(sessionId + "1");
+
+      try {
+        final MutableDocument elon = database1.newDocument("Person").set("name", "Elon").save();
+        Assertions.fail();
+      } catch (TransactionException e) {
+        // EXPECTED
+      }
+
+      database1.setSessionId(sessionId);
+
+      database1.commit();
     });
   }
 
