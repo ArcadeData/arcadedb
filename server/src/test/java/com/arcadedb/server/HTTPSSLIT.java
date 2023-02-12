@@ -40,10 +40,10 @@ public class HTTPSSLIT extends BaseGraphServerTest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration configuration) {
     configuration.setValue(GlobalConfiguration.NETWORK_USE_SSL, true);
-    configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "src/test/resources/master.jks");
-    configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "keypassword");
-    configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "src/test/resources/master.jks");
-    configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "storepassword");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "src/test/resources/keystore.pkcs12");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "src/test/resources/truststore.jks");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "nphgDK7ugjGR");
   }
 
   @Override
@@ -56,8 +56,8 @@ public class HTTPSSLIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       final ContextConfiguration configuration = getServer(serverIndex).getConfiguration();
 
-      System.setProperty("javax.net.ssl.keyStoreType", "pkcs12");
-      System.setProperty("javax.net.ssl.trustStoreType", "jks");
+      System.setProperty("javax.net.ssl.keyStoreType", "PKCS12");
+      System.setProperty("javax.net.ssl.trustStoreType", "JKS");
       System.setProperty("javax.net.ssl.keyStore", configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE));
       System.setProperty("javax.net.ssl.trustStore", configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE));
       System.setProperty("javax.net.ssl.keyStorePassword", configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD));

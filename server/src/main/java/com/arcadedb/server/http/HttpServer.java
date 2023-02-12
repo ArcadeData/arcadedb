@@ -46,6 +46,8 @@ import com.arcadedb.server.http.handler.PostOpenDatabaseHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
 import com.arcadedb.server.http.handler.PostServerCommandHandler;
+import com.arcadedb.server.http.ssl.SslUtils;
+import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -66,17 +68,23 @@ import java.security.*;
 import java.security.cert.*;
 import java.util.logging.*;
 
+import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE;
+import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD;
+import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_TRUSTSTORE;
+import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD;
+import static com.arcadedb.server.http.ssl.KeystoreType.JKS;
+import static com.arcadedb.server.http.ssl.KeystoreType.PKCS12;
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
-  private final ArcadeDBServer     server;
+  private final ArcadeDBServer server;
   private final HttpSessionManager sessionManager;
-  private final JsonSerializer     jsonSerializer = new JsonSerializer();
-  private final WebSocketEventBus  webSocketEventBus;
-  private       Undertow           undertow;
-  private       String             listeningAddress;
-  private       String             host;
-  private       int                httpPortListening;
+  private final JsonSerializer jsonSerializer = new JsonSerializer();
+  private final WebSocketEventBus webSocketEventBus;
+  private Undertow undertow;
+  private String listeningAddress;
+  private String host;
+  private int httpPortListening;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -88,12 +96,13 @@ public class HttpServer implements ServerPlugin {
   public void stopService() {
     webSocketEventBus.stop();
 
-    if (undertow != null)
+    if (undertow != null) {
       try {
         undertow.stop();
       } catch (final Exception e) {
         // IGNORE IT
       }
+    }
 
     sessionManager.close();
   }
@@ -147,8 +156,9 @@ public class HttpServer implements ServerPlugin {
     }
 
     // REGISTER PLUGIN API
-    for (final ServerPlugin plugin : server.getPlugins())
+    for (final ServerPlugin plugin : server.getPlugins()) {
       plugin.registerAPI(this, routes);
+    }
 
     int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
     for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
@@ -178,8 +188,9 @@ public class HttpServer implements ServerPlugin {
         if (e.getCause() instanceof BindException) {
           // RETRY
           LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", httpPortListening);
-          if (httpsPortListening > 0)
+          if (httpsPortListening > 0) {
             ++httpsPortListening;
+          }
 
           continue;
         }
@@ -202,21 +213,21 @@ public class HttpServer implements ServerPlugin {
     int portFrom;
     int portTo;
 
-    if (configuredPort instanceof Number)
+    if (configuredPort instanceof Number) {
       portFrom = portTo = ((Number) configuredPort).intValue();
-    else {
+    } else {
       final String[] parts = configuredPort.toString().split("-");
-      if (parts.length > 2)
+      if (parts.length > 2) {
         throw new IllegalArgumentException("Invalid format for http server port range");
-      else if (parts.length == 1)
+      } else if (parts.length == 1) {
         portFrom = portTo = Integer.parseInt(parts[0]);
-      else {
+      } else {
         portFrom = Integer.parseInt(parts[0]);
         portTo = Integer.parseInt(parts[1]);
       }
     }
 
-    return new int[] { portFrom, portTo };
+    return new int[]{portFrom, portTo};
   }
 
   public HttpSessionManager getSessionManager() {
@@ -244,47 +255,88 @@ public class HttpServer implements ServerPlugin {
   }
 
   private SSLContext createSSLContext() throws Exception {
-    final ContextConfiguration configuration = server.getConfiguration();
-    final String keyStorePath = configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
-    if (keyStorePath == null || keyStorePath.isEmpty())
-      throw new ServerSecurityException("SSL key store path is empty");
+    ContextConfiguration configuration = server.getConfiguration();
 
-    final String trustStorePath = configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
-    if (trustStorePath == null || trustStorePath.isEmpty())
-      throw new ServerSecurityException("SSL trust store path is empty");
+    String keystorePath = validateStoreProperty(configuration,
+        NETWORK_SSL_KEYSTORE,
+        "SSL key store path is empty"
+    );
+    String keystorePassword = validateStoreProperty(configuration,
+        NETWORK_SSL_KEYSTORE_PASSWORD,
+        "SSL key store password is empty"
+    );
 
-    final String trustStorePassword = configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
-    if (trustStorePassword == null || trustStorePassword.isEmpty())
-      throw new ServerSecurityException("SSL trust store password is empty");
+    String truststorePath = validateStoreProperty(configuration,
+        NETWORK_SSL_TRUSTSTORE,
+        "SSL trust store path is empty"
+    );
+    String truststorePassword = validateStoreProperty(configuration,
+        NETWORK_SSL_TRUSTSTORE_PASSWORD,
+        "SSL trust store password is empty"
+    );
 
-    final KeyStore keyStore = configureSSL(keyStorePath, trustStorePassword);
-    final KeyStore trustStore = configureSSL(trustStorePath, trustStorePassword);
+    KeyStore keyStore = configureSSLForKeystore(keystorePath,
+        keystorePassword);
 
-    final KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-    keyManagerFactory.init(keyStore, trustStorePassword.toCharArray());
-    final KeyManager[] keyManagers = keyManagerFactory.getKeyManagers();
+    KeyStore trustStore = configureSSLForTruststore(truststorePath,
+        truststorePassword);
 
-    final TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    keyManagerFactory.init(keyStore,
+        keystorePassword.toCharArray());
+    KeyManager[] keyManagers = keyManagerFactory.getKeyManagers();
+
+    TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
     trustManagerFactory.init(trustStore);
-    final TrustManager[] trustManagers = trustManagerFactory.getTrustManagers();
+    TrustManager[] trustManagers = trustManagerFactory.getTrustManagers();
 
-    final SSLContext sslContext;
-    sslContext = SSLContext.getInstance("TLS");
-    sslContext.init(keyManagers, trustManagers, null);
+    SSLContext sslContext = SSLContext.getInstance(TlsProtocol.getLatestTlsVersion().getTlsVersion());
+    sslContext.init(keyManagers,
+        trustManagers,
+        null
+    );
 
     return sslContext;
   }
 
-  private KeyStore configureSSL(final String path, final String password)
+  private KeyStore configureSSLForKeystore(String keystorePath,
+                                           String keystorePassword)
       throws IOException, KeyStoreException, CertificateException, NoSuchAlgorithmException {
-    final InputStream stream = SocketFactory.getAsStream(path);
-    if (stream == null)
-      throw new RuntimeException("Could not load keystore");
 
-    try (InputStream is = stream) {
-      KeyStore loadedKeystore = KeyStore.getInstance("JKS");
-      loadedKeystore.load(is, password.toCharArray());
-      return loadedKeystore;
-    }
+    return SslUtils.loadKeystoreFromStream(SocketFactory.getAsStream(keystorePath),
+        keystorePassword,
+        SslUtils.getDefaultKeystoreTypeForKeystore(() -> PKCS12)
+    );
   }
+
+  private KeyStore configureSSLForTruststore(String truststorePath,
+                                             String truststorePassword)
+      throws IOException, KeyStoreException, CertificateException, NoSuchAlgorithmException {
+
+    return SslUtils.loadKeystoreFromStream(SocketFactory.getAsStream(truststorePath),
+        truststorePassword,
+        SslUtils.getDefaultKeystoreTypeForTruststore(() -> JKS)
+    );
+  }
+
+  private String validateStorePassword(ContextConfiguration contextConfiguration,
+                                       GlobalConfiguration configurationKey,
+                                       String errorMessage) {
+    String storePassword = contextConfiguration.getValueAsString(configurationKey);
+    if (storePassword == null || storePassword.isEmpty()) {
+      throw new ServerSecurityException(errorMessage);
+    }
+    return storePassword;
+  }
+
+  private String validateStoreProperty(ContextConfiguration contextConfiguration,
+                                       GlobalConfiguration configurationKey,
+                                       String errorMessage) {
+    String storePropertyValue = contextConfiguration.getValueAsString(configurationKey);
+    if ((storePropertyValue == null) || storePropertyValue.isEmpty()) {
+      throw new ServerSecurityException(errorMessage);
+    }
+    return storePropertyValue;
+  }
+
 }
