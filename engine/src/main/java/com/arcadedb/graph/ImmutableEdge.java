@@ -72,9 +72,9 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
 
   @Override
   public synchronized Object get(final String propertyName) {
-    if (propertyName.equals("@in"))
+    if ("@in".equals(propertyName))
       return in;
-    else if (propertyName.equals("@out"))
+    else if ("@out".equals(propertyName))
       return out;
     return super.get(propertyName);
   }
