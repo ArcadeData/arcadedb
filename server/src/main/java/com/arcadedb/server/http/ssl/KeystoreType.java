@@ -21,7 +21,7 @@ public enum KeystoreType {
     return stream(KeystoreType.values())
         .filter(enumValue -> enumValue.getKeystoreType().equalsIgnoreCase(keystoreType))
         .findFirst()
-        .orElseThrow(() -> new RuntimeException("Specified keystore type is not valid"));
+        .orElseThrow(() -> new RuntimeException("Specified key store type is not valid"));
   }
 
   public static KeystoreType getFromStringWithDefault(final String keystoreType,
