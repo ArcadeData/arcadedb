@@ -1,5 +1,7 @@
 package com.arcadedb.server.http.ssl;
 
+import com.arcadedb.server.security.ServerSecurityException;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.KeyStore;
@@ -60,14 +62,14 @@ public class SslUtils {
 
   private static Supplier<KeystoreType> doValidateDefaultKeystoreSupplier(Supplier<KeystoreType> defaultSupplier) {
     if ((defaultSupplier == null) || (defaultSupplier.get() == null)) {
-      throw new RuntimeException("Default key store supplier is not configured correctly");
+      throw new ServerSecurityException("Default key store supplier is not configured correctly");
     }
     return defaultSupplier;
   }
 
   private static InputStream doValidateKeystoreStream(InputStream keystoreInputStream) {
     if (keystoreInputStream == null) {
-      throw new RuntimeException("Key store stream cannot be null");
+      throw new ServerSecurityException("Key store stream cannot be null");
     }
     return keystoreInputStream;
   }
