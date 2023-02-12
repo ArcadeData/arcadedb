@@ -21,8 +21,8 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.graph.MutableEdge;
-import org.apache.commons.collections.iterators.ArrayIterator;
-import org.apache.commons.collections.iterators.SingletonIterator;
+import com.arcadedb.utility.IterableObject;
+import com.arcadedb.utility.IterableObjectArray;
 import org.apache.tinkerpop.gremlin.structure.Direction;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Property;
@@ -55,12 +55,12 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
   public Iterator<Vertex> vertices(final Direction direction) {
     switch (direction) {
     case IN:
-      return new SingletonIterator(new ArcadeVertex(graph, baseElement.getInVertex()));
+      return new IterableObject<>(new ArcadeVertex(graph, baseElement.getInVertex()));
     case OUT:
-      return new SingletonIterator(new ArcadeVertex(graph, baseElement.getOutVertex()));
+      return new IterableObject<>(new ArcadeVertex(graph, baseElement.getOutVertex()));
     case BOTH:
-      return new ArrayIterator(
-          new Vertex[] { new ArcadeVertex(graph, baseElement.getOutVertex()), new ArcadeVertex(graph, baseElement.getInVertex()) });
+      return new IterableObjectArray<Vertex>(
+          new Vertex[] { new ArcadeVertex(graph, baseElement.getOutVertex()), new ArcadeVertex(graph, baseElement.getInVertex()) }).iterator();
     default:
       throw new IllegalArgumentException("Direction " + direction + " not supported");
     }
