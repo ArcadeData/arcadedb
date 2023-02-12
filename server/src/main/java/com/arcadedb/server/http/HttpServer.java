@@ -319,16 +319,6 @@ public class HttpServer implements ServerPlugin {
     );
   }
 
-  private String validateStorePassword(ContextConfiguration contextConfiguration,
-                                       GlobalConfiguration configurationKey,
-                                       String errorMessage) {
-    String storePassword = contextConfiguration.getValueAsString(configurationKey);
-    if (storePassword == null || storePassword.isEmpty()) {
-      throw new ServerSecurityException(errorMessage);
-    }
-    return storePassword;
-  }
-
   private String validateStoreProperty(ContextConfiguration contextConfiguration,
                                        GlobalConfiguration configurationKey,
                                        String errorMessage) {
