@@ -22,12 +22,14 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -400,5 +402,18 @@ public class ConsoleTest {
     // VALIDATE WITH DATABASE SCHEMA
     for (String url : urls)
       console.getDatabase().newDocument("doc").set("uri1", url).validate();
+  }
+
+  @Test
+  public void testCustomPropertyInSchema() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING;"));
+    Assertions.assertTrue(console.parse("ALTER PROPERTY doc.prop CUSTOM test = true;"));
+    Assertions.assertEquals(true, ((EmbeddedDatabase) console.getDatabase()).getSchema().getType("doc").getProperty("prop").getCustomValue("test"));
+
+    Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
+        ((EmbeddedDatabase) console.getDatabase()).query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
+            .getProperty("type"));
   }
 }
