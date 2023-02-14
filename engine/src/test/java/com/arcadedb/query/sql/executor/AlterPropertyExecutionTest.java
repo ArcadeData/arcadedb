@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.time.*;
 import java.util.*;
 
 /**
@@ -139,11 +140,21 @@ public class AlterPropertyExecutionTest extends TestHelper {
 
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX Log");
-      final ResultSet result = database.command("sql", "SELECT FROM Log");
+      ResultSet result = database.command("sql", "SELECT FROM Log");
       Assertions.assertTrue(result.hasNext());
 
-      final Vertex v = result.next().getVertex().get();
-      Assertions.assertNotNull(v.getLocalDateTime("createdOn"));
+      Vertex v = result.next().getVertex().get();
+      final LocalDateTime createdOn = v.getLocalDateTime("createdOn");
+      Assertions.assertNotNull(createdOn);
+
+      v.modify().set("lastUpdateOn", LocalDateTime.now()).save();
+
+      result = database.command("sql", "SELECT FROM Log");
+      Assertions.assertTrue(result.hasNext());
+
+      v = result.next().getVertex().get();
+      Assertions.assertEquals(createdOn, v.getLocalDateTime("createdOn"));
+      Assertions.assertNotNull(v.getLocalDateTime("lastUpdateOn"));
     });
   }
 }
