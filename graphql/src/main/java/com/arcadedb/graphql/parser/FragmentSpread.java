@@ -21,7 +21,6 @@
 package com.arcadedb.graphql.parser;
 
 public class FragmentSpread extends SimpleNode {
-
   protected FragmentName name;
   protected Directives   directives;
 

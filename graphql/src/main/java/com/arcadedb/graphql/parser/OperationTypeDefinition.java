@@ -21,13 +21,11 @@
 package com.arcadedb.graphql.parser;
 
 public class OperationTypeDefinition extends SimpleNode {
-
   protected OperationType operationType;
   protected TypeName      typeName;
 
   public OperationTypeDefinition(final int id) {
     super(id);
   }
-
 }
 /* ParserGeneratorCC - OriginalChecksum=fd8564df2af33b83b138cd0ee5078447 (do not edit this line) */

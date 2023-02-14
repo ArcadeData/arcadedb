@@ -373,7 +373,8 @@ public class SimpleCharStream {
   /**
    * Reinitialise.
    */
-  public void ReInit(final InputStream dstream, final String encoding, final int startline, final int startcolumn, final int buffersize) throws UnsupportedEncodingException {
+  public void ReInit(final InputStream dstream, final String encoding, final int startline, final int startcolumn, final int buffersize)
+      throws UnsupportedEncodingException {
     ReInit(encoding == null ? new InputStreamReader(dstream) : new InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
   }
 

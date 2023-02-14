@@ -24,9 +24,9 @@
 
 options {
 	TRACK_TOKENS = true;
-  	JDK_VERSION = "1.11";
+  	JDK_VERSION = "11";
   	MULTI=true;
-  	VISITOR=true;
+  	VISITOR=false;
   	STATIC=false;
   	USER_CHAR_STREAM = true ;
   	JAVA_UNICODE_ESCAPE=false;

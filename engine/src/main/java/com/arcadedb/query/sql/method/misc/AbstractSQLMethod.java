@@ -25,10 +25,9 @@ import com.arcadedb.query.sql.executor.SQLMethod;
  * @author Johann Sorel (Geomatys)
  */
 public abstract class AbstractSQLMethod implements SQLMethod {
-
   private final String name;
-  private final int    minparams;
-  private final int    maxparams;
+  private final int    minParams;
+  private final int    maxParams;
 
   public AbstractSQLMethod(final String name) {
     this(name, 0);
@@ -38,10 +37,10 @@ public abstract class AbstractSQLMethod implements SQLMethod {
     this(name, nbparams, nbparams);
   }
 
-  public AbstractSQLMethod(final String name, final int minparams, final int maxparams) {
+  public AbstractSQLMethod(final String name, final int minParams, final int maxParams) {
     this.name = name;
-    this.minparams = minparams;
-    this.maxparams = maxparams;
+    this.minParams = minParams;
+    this.maxParams = maxParams;
   }
 
   @Override
@@ -54,16 +53,16 @@ public abstract class AbstractSQLMethod implements SQLMethod {
     final StringBuilder sb = new StringBuilder("<field>.");
     sb.append(getName());
     sb.append('(');
-    for (int i = 0; i < minparams; i++) {
+    for (int i = 0; i < minParams; i++) {
       if (i != 0) {
         sb.append(", ");
       }
       sb.append("param");
       sb.append(i + 1);
     }
-    if (minparams != maxparams) {
+    if (minParams != maxParams) {
       sb.append('[');
-      for (int i = minparams; i < maxparams; i++) {
+      for (int i = minParams; i < maxParams; i++) {
         if (i != 0) {
           sb.append(", ");
         }

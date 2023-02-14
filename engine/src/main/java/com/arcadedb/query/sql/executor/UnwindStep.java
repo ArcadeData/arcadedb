@@ -33,7 +33,6 @@ import java.util.stream.*;
 public class UnwindStep extends AbstractExecutionStep {
   private final Unwind       unwind;
   private final List<String> unwindFields;
-
   ResultSet        lastResult      = null;
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;

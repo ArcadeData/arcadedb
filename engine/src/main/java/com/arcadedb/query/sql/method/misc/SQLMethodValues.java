@@ -43,7 +43,7 @@ public class SQLMethodValues extends AbstractSQLMethod {
     if (ioResult instanceof Map)
       return ((Map<?, ?>) ioResult).values();
     else if (ioResult instanceof Document)
-      return Arrays.asList(((Document) ioResult).toMap().values());
+      return List.of(((Document) ioResult).toMap().values());
     else if (ioResult instanceof Result) {
       final Result res = (Result) ioResult;
       return res.toMap().values();

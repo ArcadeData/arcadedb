@@ -34,7 +34,6 @@ public class ObjectValueWithVariable extends AbstractValue {
     return values;
   }
 
-
   @Override
   public String toString() {
     return "ObjectValueWithVariable{" + values + '}';

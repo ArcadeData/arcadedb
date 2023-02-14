@@ -27,25 +27,21 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 public class SQLMethodAsBoolean extends AbstractSQLMethod {
 
-    public static final String NAME = "asboolean";
+  public static final String NAME = "asboolean";
 
-    public SQLMethodAsBoolean() {
-        super(NAME);
-    }
+  public SQLMethodAsBoolean() {
+    super(NAME);
+  }
 
-    @Override
-    public Object execute(final Object self,
-                          final Identifiable currentRecord,
-                          final CommandContext context,
-                          Object result,
-                          final Object[] params) {
-        if (result != null) {
-            if (result instanceof String) {
-                result = Boolean.valueOf(((String) result).trim());
-            } else if (result instanceof Number) {
-                return ((Number) result).intValue() != 0;
-            }
-        }
-        return result;
+  @Override
+  public Object execute(final Object self, final Identifiable currentRecord, final CommandContext context, Object result, final Object[] params) {
+    if (result != null) {
+      if (result instanceof String) {
+        result = Boolean.valueOf(((String) result).trim());
+      } else if (result instanceof Number) {
+        return ((Number) result).intValue() != 0;
+      }
     }
+    return result;
+  }
 }

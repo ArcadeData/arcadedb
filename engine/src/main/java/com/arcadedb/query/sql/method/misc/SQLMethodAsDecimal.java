@@ -22,7 +22,6 @@ package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
 import java.math.*;
 import java.util.*;
@@ -47,7 +46,7 @@ public class SQLMethodAsDecimal extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
     if (iThis instanceof Date) {
       return new BigDecimal(((Date) iThis).getTime());
     }

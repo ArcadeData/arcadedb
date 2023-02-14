@@ -188,10 +188,10 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
-      context.setParentWithoutOverridingChild(parentcontext);
+    if (parentContext != null) {
+      context.setParentWithoutOverridingChild(parentContext);
     }
     context.setDatabase(db);
 
@@ -204,8 +204,7 @@ public class SelectStatement extends Statement {
 
     context.setInputParameters(params);
     final InternalExecutionPlan executionPlan = createExecutionPlan(context, profileExecution);
-    final LocalResultSet result = new LocalResultSet(executionPlan);
-    return result;
+    return new LocalResultSet(executionPlan);
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
@@ -241,23 +240,23 @@ public class SelectStatement extends Statement {
 
   @Override
   public boolean refersToParent() {
-    //no FROM, if a subquery refers to parent it does not make sense, so that reference will be just ignored
+    //no FROM, if a sub-query refers to parent it does not make sense, so that reference will be just ignored
 
-    if (projection != null && projection.refersToParent()) {
+    if (projection != null && projection.refersToParent())
       return true;
-    }
-    if (target != null && target.refersToParent()) {
+
+    if (target != null && target.refersToParent())
       return true;
-    }
-    if (whereClause != null && whereClause.refersToParent()) {
+
+    if (whereClause != null && whereClause.refersToParent())
       return true;
-    }
-    if (groupBy != null && groupBy.refersToParent()) {
+
+    if (groupBy != null && groupBy.refersToParent())
       return true;
-    }
-    if (orderBy != null && orderBy.refersToParent()) {
+
+    if (orderBy != null && orderBy.refersToParent())
       return true;
-    }
+
     return letClause != null && letClause.refersToParent();
   }
 

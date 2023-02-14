@@ -16,9 +16,9 @@
 
 options {
   TRACK_TOKENS = true;
-    JDK_VERSION = "1.6";
+    JDK_VERSION = "11";
     MULTI=true;
-    VISITOR=true;
+    VISITOR=false;
     STATIC=false;
     USER_CHAR_STREAM = true ;
     JAVA_UNICODE_ESCAPE=true;
@@ -2498,7 +2498,6 @@ BinaryCompareOperator CompareOperator():
   | result = ContainsKeyOperator()
   | result = NearOperator()
   | result = WithinOperator()
-  | result = ScAndOperator()
 
 ){return result;}
 }
@@ -2556,12 +2555,6 @@ WithinOperator WithinOperator():
 {}
 {
   <WITHIN> {return jjtThis;}
-}
-
-ScAndOperator ScAndOperator():
-{}
-{
-  <SC_AND> {return jjtThis;}
 }
 
 ContainsKeyOperator ContainsKeyOperator():

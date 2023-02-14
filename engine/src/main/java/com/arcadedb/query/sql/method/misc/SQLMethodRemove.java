@@ -30,39 +30,32 @@ import com.arcadedb.query.sql.executor.MultiValue;
  */
 public class SQLMethodRemove extends AbstractSQLMethod {
 
-    public static final String NAME = "remove";
+  public static final String NAME = "remove";
 
-    public SQLMethodRemove() {
-        super(NAME, 1, -1);
-    }
+  public SQLMethodRemove() {
+    super(NAME, 1, -1);
+  }
 
-    @Override
-    public Object execute(final Object self,
-                          final Identifiable currentRecord,
-                          final CommandContext context,
-                          Object result,
-                          final Object[] params) {
-        if (params != null &&
-                params.length > 0 &&
-                params[0] != null) {
-            final Object[] arguments = MultiValue.array(params, Object.class, argument -> {
-                if (argument instanceof String &&
-                        ((String) argument).startsWith("$")) {
-                    return context.getVariable((String) argument);
-                }
-                return argument;
-            });
-            for (final Object o : arguments) {
-                result = MultiValue.remove(result, o, false);
-            }
-            return result;
+  @Override
+  public Object execute(final Object self, final Identifiable currentRecord, final CommandContext context, Object result, final Object[] params) {
+    if (params != null && params.length > 0 && params[0] != null) {
+      final Object[] arguments = MultiValue.array(params, Object.class, argument -> {
+        if (argument instanceof String && ((String) argument).startsWith("$")) {
+          return context.getVariable((String) argument);
         }
-
-        return result;
+        return argument;
+      });
+      for (final Object o : arguments) {
+        result = MultiValue.remove(result, o, false);
+      }
+      return result;
     }
 
-    @Override
-    public String getSyntax() {
-        return "remove(<item>*)";
-    }
+    return result;
+  }
+
+  @Override
+  public String getSyntax() {
+    return "remove(<item>*)";
+  }
 }

@@ -28,21 +28,17 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 public class SQLMethodSplit extends AbstractSQLMethod {
 
-    public static final String NAME = "split";
+  public static final String NAME = "split";
 
-    public SQLMethodSplit() {
-        super(NAME, 1);
-    }
+  public SQLMethodSplit() {
+    super(NAME, 1);
+  }
 
-    @Override
-    public Object execute(final Object iThis,
-                          final Identifiable iRecord,
-                          final CommandContext iContext,
-                          final Object ioResult,
-                          final Object[] iParams) {
-        if (iThis == null || null == iParams || null == iParams[0])
-            return iThis;
+  @Override
+  public Object execute(final Object iThis, final Identifiable iRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+    if (iThis == null || null == iParams || null == iParams[0])
+      return iThis;
 
-        return iThis.toString().split(iParams[0].toString());
-    }
+    return iThis.toString().split(iParams[0].toString());
+  }
 }
