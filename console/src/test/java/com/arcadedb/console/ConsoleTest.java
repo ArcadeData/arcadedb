@@ -413,7 +413,9 @@ public class ConsoleTest {
     Assertions.assertEquals(true, ((EmbeddedDatabase) console.getDatabase()).getSchema().getType("doc").getProperty("prop").getCustomValue("test"));
 
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
-        ((EmbeddedDatabase) console.getDatabase()).query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
-            .getProperty("type"));
+        console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
+
+    Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
+        console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
   }
 }

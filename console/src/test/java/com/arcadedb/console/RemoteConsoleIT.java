@@ -19,6 +19,7 @@
 package com.arcadedb.console;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.schema.Type;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -229,6 +230,20 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
       pos = buffer.toString().indexOf("node", pos);
       Assertions.assertTrue(pos > -1);
     }
+  }
+
+  @Test
+  public void testCustomPropertyInSchema() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + URL));
+    Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING;"));
+    Assertions.assertTrue(console.parse("ALTER PROPERTY doc.prop CUSTOM test = true;"));
+
+    Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
+        console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
+
+    Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
+        console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
   }
 
   @Override
