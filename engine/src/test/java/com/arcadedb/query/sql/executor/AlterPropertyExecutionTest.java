@@ -125,4 +125,25 @@ public class AlterPropertyExecutionTest extends TestHelper {
     database.command("sql", "ALTER PROPERTY Car.name DEFAULT null");
     Assertions.assertNull(database.getSchema().getType("Car").getProperty("name").getDefaultValue());
   }
+
+  @Test
+  public void sqlAlterPropertyDefaultFunctions() {
+    database.command("sql", "CREATE VERTEX TYPE Log");
+    Assertions.assertTrue(database.getSchema().getType("Log").getSuperTypes().isEmpty());
+
+    database.command("sql", "CREATE PROPERTY Log.createdOn DATETIME_MICROS");
+    Assertions.assertTrue(database.getSchema().getType("Log").existsProperty("createdOn"));
+    Assertions.assertEquals(Type.DATETIME_MICROS, database.getSchema().getType("Log").getProperty("createdOn").getType());
+
+    database.command("sql", "ALTER PROPERTY Log.createdOn DEFAULT sysDate()");
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX Log");
+      final ResultSet result = database.command("sql", "SELECT FROM Log");
+      Assertions.assertTrue(result.hasNext());
+
+      final Vertex v = result.next().getVertex().get();
+      Assertions.assertNotNull(v.getLocalDateTime("createdOn"));
+    });
+  }
 }
