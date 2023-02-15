@@ -80,7 +80,7 @@ public class CypherQueryEngine implements QueryEngine {
     }
   }
 
-  public static Object transformValue(final Object value) {
+  public static Object transformValue(final Object value, final boolean flatArrays) {
     if (value instanceof Map) {
       final List<ResultInternal> list = transformMap((Map<?, ?>) value);
       if (list.size() == 1)
@@ -88,9 +88,8 @@ public class CypherQueryEngine implements QueryEngine {
       return list;
     } else if (value instanceof List) {
       final List<?> listValue = (List<?>) value;
-      return listValue.stream().map(CypherQueryEngine::transformValue).collect(Collectors.toList());
-      // REMOVED FOR #860
-      //return transformed.size() == 1 ? transformed.iterator().next() : transformed;
+      final List<Object> transformed = listValue.stream().map(value1 -> transformValue(value1, false)).collect(Collectors.toList());
+      return flatArrays && transformed.size() == 1 ? transformed.iterator().next() : transformed;
     }
     return value;
   }
@@ -124,11 +123,13 @@ public class CypherQueryEngine implements QueryEngine {
   }
 
   private static ResultInternal cypherObjectToResult(final Map<String, Object> mapStringObject, final Map<Object, Object> internalMap) {
+    boolean isAnObject = false;
     for (final Map.Entry<Object, Object> entry : internalMap.entrySet()) {
       Object mapKey = entry.getKey();
       Object mapValue = entry.getValue();
 
       if (mapKey.getClass().getName().startsWith("org.apache.tinkerpop.gremlin.structure.T$")) {
+        isAnObject = true;
         switch (mapKey.toString()) {
         case "id":
           mapKey = "@rid";
@@ -139,7 +140,7 @@ public class CypherQueryEngine implements QueryEngine {
         }
       } else if (mapKey.equals("  cypher.element")) {
       } else {
-        mapValue = transformValue(mapValue);
+        mapValue = transformValue(mapValue, isAnObject);
       }
       mapStringObject.put(mapKey.toString(), mapValue);
     }
