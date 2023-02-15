@@ -1671,9 +1671,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         final Object pValue = doc.get(pName);
         if (pValue == null) {
           final Property p = type.getPolymorphicProperty(pName);
-          final Object defValue = p.getDefaultValue();
-          if (defValue != null)
-            doc.set(pName, defValue);
+          Object defValue = p.getDefaultValue();
+          doc.set(pName, defValue);
         }
       }
     }

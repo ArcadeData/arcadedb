@@ -18,9 +18,16 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Record;
 import com.arcadedb.index.Index;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.ParseException;
+import com.arcadedb.query.sql.parser.SqlParser;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.io.*;
 import java.util.*;
 
 public class Property {
@@ -81,6 +88,19 @@ public class Property {
   }
 
   public Object getDefaultValue() {
+    if (defaultValue != null) {
+      if (defaultValue instanceof String) {
+        final Database database = owner.getSchema().getEmbedded().getDatabase();
+        final Expression expr;
+        try {
+          expr = new SqlParser(database, new ByteArrayInputStream(defaultValue.toString().getBytes())).ParseExpression();
+          return expr.execute((Record) null, new BasicCommandContext().setDatabase(database));
+        } catch (ParseException e) {
+          // IGNORE IT
+        }
+      }
+    }
+
     return defaultValue;
   }
 
@@ -228,7 +248,7 @@ public class Property {
 
     json.put("type", type.name);
 
-    final Object defValue = getDefaultValue();
+    final Object defValue = defaultValue;
     if (defValue != null)
       json.put("default", defValue);
 

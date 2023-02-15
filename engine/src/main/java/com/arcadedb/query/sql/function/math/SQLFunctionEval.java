@@ -49,7 +49,7 @@ public class SQLFunctionEval extends SQLFunctionMathAbstract {
 
     if (predicate == null) {
       try (final ByteArrayInputStream is = new ByteArrayInputStream(iParams[0].toString().getBytes())) {
-        predicate = new SqlParser(iContext.getDatabase(), is).ParseExpression();
+        predicate = new SqlParser(iContext.getDatabase(), is).ParseCondition();
       } catch (IOException e) {
         throw new CommandSQLParsingException("Error on parsing expression in eval() function", e);
       } catch (ParseException e) {

@@ -80,7 +80,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
     Assertions.assertTrue(database.getSchema().getType("Car").existsProperty("name"));
     Assertions.assertEquals(Type.STRING, database.getSchema().getType("Car").getProperty("name").getType());
 
-    database.command("sql", "ALTER PROPERTY Car.name DEFAULT 'test'");
+    database.command("sql", "ALTER PROPERTY Car.name DEFAULT \"test\"");
     Assertions.assertEquals("test", database.getSchema().getType("Car").getProperty("name").getDefaultValue());
 
     database.command("sql", "CREATE VERTEX TYPE Suv EXTENDS Car");
@@ -95,7 +95,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
     final String def1 = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getString("default");
-    Assertions.assertEquals("test", def1);
+    Assertions.assertEquals("\"test\"", def1);
     final Float def2 = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("properties").getJSONObject("weight").getFloat("default");
     Assertions.assertEquals(1, def2);
 
@@ -140,12 +140,27 @@ public class AlterPropertyExecutionTest extends TestHelper {
 
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX Log");
+
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+
+      database.command("sql", "CREATE VERTEX Log");
+
       ResultSet result = database.command("sql", "SELECT FROM Log");
       Assertions.assertTrue(result.hasNext());
 
       Vertex v = result.next().getVertex().get();
-      final LocalDateTime createdOn = v.getLocalDateTime("createdOn");
-      Assertions.assertNotNull(createdOn);
+      final LocalDateTime createdOn1 = v.getLocalDateTime("createdOn");
+      Assertions.assertNotNull(createdOn1);
+
+      v = result.next().getVertex().get();
+      final LocalDateTime createdOn2 = v.getLocalDateTime("createdOn");
+      Assertions.assertNotNull(createdOn2);
+
+      Assertions.assertNotEquals(createdOn1, createdOn2);
 
       v.modify().set("lastUpdateOn", LocalDateTime.now()).save();
 
@@ -153,8 +168,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
 
       v = result.next().getVertex().get();
-      Assertions.assertEquals(createdOn, v.getLocalDateTime("createdOn"));
-      Assertions.assertNotNull(v.getLocalDateTime("lastUpdateOn"));
+      Assertions.assertEquals(createdOn1, v.getLocalDateTime("createdOn"));
     });
   }
 }

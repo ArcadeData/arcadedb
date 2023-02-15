@@ -54,7 +54,7 @@ public class AlterPropertyStatement extends DDLStatement {
 
     final Property property = typez.getProperty(propertyName.getStringValue());
     if (property == null)
-      throw new CommandExecutionException("Property '" + property + "' not found on type " + typez);
+      throw new CommandExecutionException("Property '" + propertyName + "' not found on type " + typez);
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("type", typeName.getStringValue());
@@ -93,7 +93,7 @@ public class AlterPropertyStatement extends DDLStatement {
         property.setMin("" + finalValue);
       } else if (setting.equalsIgnoreCase("default")) {
         oldValue = property.getDefaultValue();
-        property.setDefaultValue(finalValue);
+        property.setDefaultValue(settingValue.toString());
       } else if (setting.equalsIgnoreCase("regexp")) {
         oldValue = property.getRegexp();
         property.setRegexp("" + finalValue);

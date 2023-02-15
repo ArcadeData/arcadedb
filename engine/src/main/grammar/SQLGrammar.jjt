@@ -669,10 +669,17 @@ Statement Parse() :
   { return result; }
 }
 
-WhereClause ParseExpression() :
+WhereClause ParseCondition() :
 {WhereClause result;}
 {
   result = WhereClause() <EOF>
+  { return result; }
+}
+
+Expression ParseExpression() :
+{Expression result;}
+{
+  result = Expression() <EOF>
   { return result; }
 }
 
