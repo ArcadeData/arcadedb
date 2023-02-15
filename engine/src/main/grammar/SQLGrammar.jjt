@@ -233,8 +233,6 @@ TOKEN:
   |
   < TYPES: ("t"|"T")("y"|"Y")("p"|"P")("e"|"E")("s"|"S")>
   |
-  < SUPERTYPES: ("s"|"S")("u"|"U")("p"|"P")("e"|"E")("r"|"R")("t"|"T")("y"|"Y")("p"|"P")("e"|"E")("s"|"S")>
-  |
   < EXCEPTION: ("e"|"E")("x"|"X")("c"|"C")("e"|"E")("p"|"P")("t"|"T")("i"|"I")("o"|"O")("n"|"N")>
   |
   < PROFILE: ("p"|"P")("r"|"R")("o"|"O")("f"|"F")("i"|"I")("l"|"L")("e"|"E")>
@@ -795,8 +793,6 @@ Identifier Identifier():
   token = <NAME>
   |
   token = <SUPERTYPE>
-  |
-  token = <SUPERTYPES>
   |
   token = <ADDBUCKET>
   |
