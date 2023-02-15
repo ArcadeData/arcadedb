@@ -88,13 +88,14 @@ public class CypherQueryEngine implements QueryEngine {
       return list;
     } else if (value instanceof List) {
       final List<?> listValue = (List<?>) value;
-      final List<Object> transformed = listValue.stream().map(CypherQueryEngine::transformValue).collect(Collectors.toList());
-      return transformed.size() == 1 ? transformed.iterator().next() : transformed;
+      return listValue.stream().map(CypherQueryEngine::transformValue).collect(Collectors.toList());
+      // REMOVED FOR #860
+      //return transformed.size() == 1 ? transformed.iterator().next() : transformed;
     }
     return value;
   }
 
-  public static List<ResultInternal> transformMap(final Map<? extends Object, ? extends Object> map) {
+  public static List<ResultInternal> transformMap(final Map<?, ?> map) {
 
     final List<ResultInternal> result = new ArrayList<>();
 
