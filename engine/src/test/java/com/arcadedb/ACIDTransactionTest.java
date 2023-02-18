@@ -333,7 +333,7 @@ public class ACIDTransactionTest extends TestHelper {
 
         } catch (final Exception e) {
           errors.incrementAndGet();
-          LogManager.instance().log(this, Level.SEVERE, "Error on saving stockId=%d", e, id);
+          LogManager.instance().log(this, Level.INFO, "Error on saving stockId=%d", e, id);
         }
       });
     }
