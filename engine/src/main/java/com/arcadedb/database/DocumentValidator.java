@@ -39,7 +39,7 @@ public class DocumentValidator {
 
   public static void validateField(final MutableDocument document, final Property p) throws ValidationException {
     if (p.isMandatory() && !document.has(p.getName()))
-      throwValidationException(p, "is mandatory, but not found on document: " + document);
+      throwValidationException(p, "is mandatory, but not found on record: " + document);
 
     final Object fieldValue = document.get(p.getName());
 
@@ -52,7 +52,7 @@ public class DocumentValidator {
         // REGEXP
         if (!(fieldValue.toString()).matches(p.getRegexp()))
           throwValidationException(p,
-              "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", document: " + document);
+              "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: " + document);
 
       final Type propertyType = p.getType();
 
