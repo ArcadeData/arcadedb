@@ -50,6 +50,7 @@ import com.arcadedb.query.sql.function.math.SQLFunctionAverage;
 import com.arcadedb.query.sql.function.math.SQLFunctionEval;
 import com.arcadedb.query.sql.function.math.SQLFunctionMax;
 import com.arcadedb.query.sql.function.math.SQLFunctionMin;
+import com.arcadedb.query.sql.function.math.SQLFunctionSquareRoot;
 import com.arcadedb.query.sql.function.math.SQLFunctionSum;
 import com.arcadedb.query.sql.function.misc.SQLFunctionCoalesce;
 import com.arcadedb.query.sql.function.misc.SQLFunctionCount;
@@ -99,6 +100,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionMax.NAME, SQLFunctionMax.class);
     register(SQLFunctionMin.NAME, SQLFunctionMin.class);
     register(SQLFunctionSet.NAME, SQLFunctionSet.class);
+    register(SQLFunctionSquareRoot.NAME, SQLFunctionSquareRoot.class);
     register(SQLFunctionSum.NAME, SQLFunctionSum.class);
     register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
     register(SQLFunctionUnionAll.NAME, SQLFunctionUnionAll.class);
