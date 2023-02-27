@@ -38,7 +38,7 @@ ArcadeDB can be used as:
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
 
-## Getting started in 5 minuted
+## Getting started in 5 minutes
 
 Start ArcadeDB Server with Docker:
 
