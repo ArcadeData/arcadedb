@@ -50,7 +50,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   protected final boolean       reusable;
 
   public interface FetchCallback {
-    void fetch(Binary newBuffer);
+    void fetch(Binary newBuffer) throws IOException;
   }
 
   public Binary() {
