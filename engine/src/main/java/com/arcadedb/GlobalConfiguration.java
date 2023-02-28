@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.Callable;
@@ -137,13 +138,31 @@ public enum GlobalConfiguration {
 
   DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
       "Default date implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDate",
-      Class.class, java.util.Date.class),
+      Class.class, java.util.Date.class, value -> {
+    if (value instanceof String) {
+      try {
+        return Class.forName((String) value);
+      } catch (ClassNotFoundException e) {
+        throw new ConfigurationException("Date implementation '" + value + "' not found", e);
+      }
+    }
+    return value;
+  }),
 
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class, "yyyy-MM-dd"),
 
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
       "Default datetime implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
-      Class.class, java.util.Date.class),
+      Class.class, java.util.Date.class, value -> {
+    if (value instanceof String) {
+      try {
+        return Class.forName((String) value);
+      } catch (ClassNotFoundException e) {
+        throw new ConfigurationException("Date implementation '" + value + "' not found", e);
+      }
+    }
+    return value;
+  }),
 
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax", String.class,
       "yyyy-MM-dd HH:mm:ss"),
