@@ -64,4 +64,13 @@ public class JSONTest extends TestHelper {
 
     Assertions.assertEquals(json, deserialized);
   }
+
+  @Test
+  public void testMalformedTrailingCommas() {
+    JSONObject json = new JSONObject("{'array':[1,2,3,]}");
+    Assertions.assertEquals(4, json.getJSONArray("array").length());
+
+    JSONObject json2 = new JSONObject("{'array':[{'a':3},]}");
+    Assertions.assertEquals(2, json2.getJSONArray("array").length());
+  }
 }

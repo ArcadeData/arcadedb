@@ -28,6 +28,7 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import com.google.gson.stream.JsonReader;
 
 import java.io.*;
 import java.math.*;
@@ -59,9 +60,11 @@ public class JSONObject {
 
   public JSONObject(final String input) {
     try {
-      object = (JsonObject) JsonParser.parseString(input);
+      final JsonReader reader = new JsonReader(new StringReader(input));
+      reader.setLenient(false);
+      object = (JsonObject) JsonParser.parseReader(reader);
     } catch (Exception e) {
-      throw new JSONException("Invalid JSON object format");
+      throw new JSONException("Invalid JSON object format", e);
     }
   }
 
