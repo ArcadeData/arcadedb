@@ -83,6 +83,7 @@ public class ImmutableDocument extends BaseDocument {
   public Map<String, Object> propertiesAsMap() {
     if (database == null || buffer == null)
       return Collections.emptyMap();
+    buffer.position(propertiesStartingPosition);
     return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
   }
 

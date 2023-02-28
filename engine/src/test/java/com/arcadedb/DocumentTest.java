@@ -64,6 +64,9 @@ public class DocumentTest extends TestHelper {
       doc.newEmbeddedDocument("ConversionTest", "embeddedMap", "first").set("embeddedMap", true);
 
       final DetachedDocument detached = doc.detach();
+      doc.save();
+      doc.reload();
+      doc.detach();
 
       Assertions.assertEquals("Tim", detached.getString("name"));
       Assertions.assertEquals(embeddedObj, detached.get("embeddedObj"));
