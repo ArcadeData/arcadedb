@@ -219,27 +219,27 @@ public class ArcadeDBServer {
 
     for (final Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
-      CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(), "Error on halting '" + pEntry.getKey() + "' plugin");
+      CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(), "Error on halting '" + pEntry.getKey() + "' plugin", false);
     }
 
     if (haServer != null)
-      CodeUtils.executeIgnoringExceptions(haServer::stopService, "Error on stopping HA service");
+      CodeUtils.executeIgnoringExceptions(haServer::stopService, "Error on stopping HA service", false);
 
     if (httpServer != null)
-      CodeUtils.executeIgnoringExceptions(httpServer::stopService, "Error on stopping HTTP service");
+      CodeUtils.executeIgnoringExceptions(httpServer::stopService, "Error on stopping HTTP service", false);
 
     if (security != null)
-      CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service");
+      CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service", false);
 
     for (final Database db : databases.values())
-      CodeUtils.executeIgnoringExceptions(db::close, "Error closing database '" + db.getName() + "'");
+      CodeUtils.executeIgnoringExceptions(db::close, "Error closing database '" + db.getName() + "'", false);
     databases.clear();
 
     CodeUtils.executeIgnoringExceptions(() -> {
       LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics");
       serverMetrics.stop();
       serverMetrics = new DefaultServerMetrics();
-    }, "Error on stopping JMX Metrics");
+    }, "Error on stopping JMX Metrics", false);
 
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 

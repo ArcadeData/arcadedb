@@ -135,7 +135,7 @@ public class PageManager extends LockContext {
     flushThread.flushPagesFromQueueToDisk();
     flushThread.setSuspended(true);
     try {
-      CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush");
+      CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
     } finally {
       flushThread.setSuspended(false);
     }
