@@ -135,7 +135,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-resources-plugin</artifactId>
-                <version>${maven-compiler-plugin.version}</version>
+                <version>${maven-resources-plugin.version}</version>
                 <configuration>
                     <nonFilteredFileExtensions>jpg,jpeg,gif,bmp,png,svg,ttf,woff,woff2,swf</nonFilteredFileExtensions>
                 </configuration>
