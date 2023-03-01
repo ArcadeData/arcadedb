@@ -142,9 +142,9 @@
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>org.eclipse.jkube</groupId>
-                        <artifactId>kubernetes-maven-plugin</artifactId>
-                        <version>${kubernetes-maven-plugin.version}</version>
+                        <groupId>io.fabric8</groupId>
+                        <artifactId>docker-maven-plugin</artifactId>
+                        <version>0.42.0</version>
                         <executions>
                             <execution>
                                 <id>default</id>
@@ -169,9 +169,15 @@
                                     <build>
                                         <dockerFile>${project.basedir}/src/main/docker/Dockerfile</dockerFile>
                                         <contextDir>${project.build.directory}/arcadedb-${project.version}.dir</contextDir>
-                                        <args>
-                                            <docker.buildArg.ARCH>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.ARCH>
-                                        </args>
+                                        <buildx>
+                                            <!--dockerStateDir>${project.build.directory}/arcadedb-${project.version}.dir</dockerStateDir-->
+                                            <platforms>
+                                                <platform>linux/amd64</platform>
+                                                <platform>linux/arm64</platform>
+                                                <platform>linux/arm32</platform>
+                                                <platform>windows/amd64</platform>
+                                            </platforms>
+                                        </buildx>
                                         <tags>
                                             <tag>latest</tag>
                                             <tag>${project.version}</tag>

@@ -14,9 +14,7 @@
 # limitations under the License.
 #
 
-ARG ARCH=
-
-FROM ${ARCH}eclipse-temurin:11
+FROM eclipse-temurin:11
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
@@ -32,8 +30,9 @@ RUN useradd -ms /bin/bash arcadedb
 
 WORKDIR /home/arcadedb
 
-COPY --chown=arcadedb:arcadedb ./maven/arcadedb-* ./
-RUN chmod +x ./bin/*.sh
+COPY --chown=arcadedb:arcadedb ./arcadedb-* /home/arcadedb
+
+RUN chmod +x /home/arcadedb/bin/*.sh
 
 # Volumes available
 VOLUME [ "/home/arcadedb/databases"]
