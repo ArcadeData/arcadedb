@@ -334,6 +334,8 @@ public class JSONObject {
       return ((JSONObject) object).getInternal();
     else if (object instanceof JSONArray)
       return ((JSONArray) object).getInternal();
+    else if (object instanceof Collection)
+      return new JSONArray((Collection) object).getInternal();
     else if (object instanceof Map)
       return new JSONObject((Map) object).getInternal();
     else if (object instanceof RID)

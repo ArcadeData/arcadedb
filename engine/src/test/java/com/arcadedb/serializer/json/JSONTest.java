@@ -34,10 +34,25 @@ public class JSONTest extends TestHelper {
   public void testDates() {
     final Date date = new Date();
     JSONObject json = new JSONObject().put("date", date);
-
     final String serialized = json.toString();
     JSONObject deserialized = new JSONObject(serialized);
+    Assertions.assertEquals(json, deserialized);
+  }
 
+  @Test
+  public void testLists() {
+    JSONObject json = new JSONObject().put("list", Collections.unmodifiableList(List.of(1, 2, 3)));
+    final String serialized = json.toString();
+    JSONObject deserialized = new JSONObject(serialized);
+    Assertions.assertEquals(json, deserialized);
+  }
+
+  @Test
+  public void testListsOfLists() {
+    final List<List<Integer>> list = List.of(Collections.unmodifiableList(List.of(1, 2, 3)), Collections.unmodifiableList(List.of(7, 8, 9)));
+    JSONObject json = new JSONObject().put("list", list);
+    final String serialized = json.toString();
+    JSONObject deserialized = new JSONObject(serialized);
     Assertions.assertEquals(json, deserialized);
   }
 
