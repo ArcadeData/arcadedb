@@ -70,7 +70,7 @@ public class BinarySerializer {
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
   }
 
-  public Binary serialize(final Database database, final Record record) {
+  public Binary serialize(final DatabaseInternal database, final Record record) {
     switch (record.getRecordType()) {
     case Document.RECORD_TYPE:
     case EmbeddedDocument.RECORD_TYPE:
@@ -86,12 +86,12 @@ public class BinarySerializer {
     }
   }
 
-  public Binary serializeDocument(final Database database, final Document document) {
+  public Binary serializeDocument(final DatabaseInternal database, final Document document) {
     Binary header = ((BaseRecord) document).getBuffer();
 
     final boolean serializeProperties;
     if (header == null || (document instanceof MutableDocument && ((MutableDocument) document).isDirty())) {
-      header = ((EmbeddedDatabase) database).getContext().getTemporaryBuffer1();
+      header = database.getContext().getTemporaryBuffer1();
       header.putByte(document.getRecordType()); // RECORD TYPE
       serializeProperties = true;
     } else {
@@ -102,7 +102,7 @@ public class BinarySerializer {
     }
 
     if (serializeProperties)
-      return serializeProperties(database, document, header, ((EmbeddedDatabase) database).getContext().getTemporaryBuffer2());
+      return serializeProperties(database, document, header, database.getContext().getTemporaryBuffer2());
 
     return header;
   }

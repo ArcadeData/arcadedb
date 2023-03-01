@@ -20,6 +20,7 @@ package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.EmbeddedModifierProperty;
@@ -163,7 +164,7 @@ public class SerializerTest extends TestHelper {
       v.set("decimal", new BigDecimal("9876543210.0123456789"));
       v.set("string", "Miner");
 
-      final Binary buffer = serializer.serialize(database, v);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
@@ -260,7 +261,7 @@ public class SerializerTest extends TestHelper {
       v.set("listOfMixed", listOfMixed);
       v.set("arrayOfMixed", listOfMixed.toArray());
 
-      final Binary buffer = serializer.serialize(database, v);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
@@ -350,7 +351,7 @@ public class SerializerTest extends TestHelper {
       v.set("mapOfStrings", mapOfStrings);
       v.set("mapOfMixed", mapOfMixed);
 
-      final Binary buffer = serializer.serialize(database, v);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
@@ -390,7 +391,7 @@ public class SerializerTest extends TestHelper {
       embDocument1.set("id", 1);
       embDocument1.save();
 
-      final Binary buffer = serializer.serialize(database, testDocument);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
@@ -434,7 +435,7 @@ public class SerializerTest extends TestHelper {
 
       embDocument2.save();
 
-      final Binary buffer = serializer.serialize(database, testDocument);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
@@ -484,7 +485,7 @@ public class SerializerTest extends TestHelper {
       embeddedMap.put(1, embDocument1);
       embeddedMap.put(2, embDocument2);
 
-      final Binary buffer = serializer.serialize(database, testDocument);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());

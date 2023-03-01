@@ -76,7 +76,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
           final long beginTime = System.currentTimeMillis();
 
           long databaseOrigSize = 0L;
-          databaseOrigSize += compressFile(zipFile, ((EmbeddedDatabase) database).getConfigurationFile());
+          databaseOrigSize += compressFile(zipFile, ((EmbeddedDatabase) database.getEmbedded()).getConfigurationFile());
           databaseOrigSize += compressFile(zipFile, ((EmbeddedSchema) database.getSchema()).getConfigurationFile());
 
           final Collection<PaginatedFile> files = database.getFileManager().getFiles();
