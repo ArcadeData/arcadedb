@@ -184,6 +184,22 @@ public class DocumentValidationTest extends TestHelper {
     });
   }
 
+
+  @Test
+  public void testDefaultNotNullValueIsSetWithSQL() {
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
+
+    database.command("sql", "create property Validation.string STRING (notnull, default \"1\")");
+
+    Assertions.assertEquals("1", clazz.getProperty("string").getDefaultValue());
+
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Validation");
+      d.save();
+      Assertions.assertEquals("1", d.get("string"));
+    });
+  }
+
   @Test
   public void testRequiredValidationSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
