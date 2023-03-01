@@ -59,13 +59,13 @@ public class CreatePropertyStatement extends DDLStatement {
   private void executeInternal(final CommandContext context, final ResultInternal result) {
     final Database db = context.getDatabase();
     final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
-    if (typez == null) {
+    if (typez == null)
       throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
-    }
+
     if (typez.existsProperty(propertyName.getStringValue())) {
-      if (ifNotExists) {
+      if (ifNotExists)
         return;
-      }
+
       throw new CommandExecutionException("Property " + typeName.getStringValue() + "." + propertyName.getStringValue() + " already exists");
     }
 

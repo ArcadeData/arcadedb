@@ -94,7 +94,8 @@ public class Property {
         final Expression expr;
         try {
           expr = new SqlParser(database, new ByteArrayInputStream(defaultValue.toString().getBytes())).ParseExpression();
-          return expr.execute((Record) null, new BasicCommandContext().setDatabase(database));
+          final Object result = expr.execute((Record) null, new BasicCommandContext().setDatabase(database));
+          return Type.convert(database, result, type.javaDefaultType);
         } catch (ParseException e) {
           // IGNORE IT
         }
@@ -105,12 +106,15 @@ public class Property {
   }
 
   public Property setDefaultValue(final Object defaultValue) {
-    if (!Objects.equals(this.defaultValue, defaultValue)) {
-      this.defaultValue = defaultValue;
+    final Database database = owner.getSchema().getEmbedded().getDatabase();
+    final Object convertedValue = Type.convert(database, defaultValue, type.javaDefaultType);
+
+    if (!Objects.equals(this.defaultValue, convertedValue)) {
+      this.defaultValue = convertedValue;
 
       // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
       final Set<String> propertiesWithDefaultDefined = new HashSet<>(owner.propertiesWithDefaultDefined);
-      if (defaultValue == null)
+      if (convertedValue == null)
         propertiesWithDefaultDefined.remove(name);
       else
         propertiesWithDefaultDefined.add(name);

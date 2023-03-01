@@ -68,7 +68,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
       } else if (attrName.equalsIgnoreCase("default")) {
         if (this.settingValue == null)
           throw new CommandExecutionException("Default value not set");
-        internalProp.setDefaultValue("" + attrValue);
+        internalProp.setDefaultValue(attrValue);
       } else if (attrName.equalsIgnoreCase("regexp")) {
         internalProp.setRegexp("" + attrValue);
       } else {

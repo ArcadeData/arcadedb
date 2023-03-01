@@ -164,6 +164,27 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
+  public void testDefaultValueIsSetWithSQL() {
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
+
+    database.command("sql", "create property Validation.long LONG (default 1)");
+    database.command("sql", "create property Validation.string STRING (default \"1\")");
+    database.command("sql", "create property Validation.dat DATETIME (default sysdate('YYYY-MM-DD HH:MM:SS'))");
+
+    Assertions.assertEquals(1L, clazz.getProperty("long").getDefaultValue());
+    Assertions.assertEquals("1", clazz.getProperty("string").getDefaultValue());
+    Assertions.assertTrue(clazz.getProperty("dat").getDefaultValue() instanceof Date);
+
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Validation");
+      d.save();
+      Assertions.assertEquals(1L, d.get("long"));
+      Assertions.assertEquals("1", d.get("string"));
+      Assertions.assertTrue(d.get("dat") instanceof Date);
+    });
+  }
+
+  @Test
   public void testRequiredValidationSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
