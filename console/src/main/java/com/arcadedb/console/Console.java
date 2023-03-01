@@ -785,7 +785,59 @@ public class Console {
       table.writeRows(rows, -1);
     } else if (subject.equalsIgnoreCase("transaction"))
       executeTransactionStatus();
-    else
+    else if (subject.startsWith("type ")) {
+      final String typeName = subject.substring("type ".length()).trim();
+
+      final TableFormatter table = new TableFormatter((text, args) -> output(0, text, args));
+      table.setMaxWidthSize(maxWidth);
+
+      final ResultSet typeResult = databaseProxy.command("sql", "select from schema:types where name = \"" + typeName + "\"");
+      if (!typeResult.hasNext())
+        return;
+
+      final Result result = typeResult.next();
+
+      outputLine(0, result.getProperty("type").toString().toUpperCase() + " TYPE '" + typeName + "'\n");
+      outputLine(0, "Super types.......: " + result.getProperty("parentTypes"));
+      outputLine(0, "Buckets...........: " + result.getProperty("buckets"));
+      outputLine(0, "Bucket selection..: " + result.getProperty("bucketSelectionStrategy"));
+
+      if (result.hasProperty("properties")) {
+        outputLine(0, "\nPROPERTIES");
+
+        final List<TableFormatter.TableMapRow> rows = new ArrayList<>();
+        for (final Result property : (List<Result>) result.getProperty("properties")) {
+          final TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
+          row.setField("NAME", property.getProperty("name"));
+          row.setField("TYPE", property.getProperty("type"));
+          row.setField("MANDATORY", property.hasProperty("mandatory") ? property.getProperty("mandatory") : "false");
+          row.setField("READONLY", property.hasProperty("readOnly") ? property.getProperty("readOnly") : "false");
+          row.setField("NOT NULL", property.hasProperty("notNull") ? property.getProperty("notNull") : "false");
+          row.setField("MIN", property.hasProperty("min") ? property.getProperty("min") : "");
+          row.setField("MAX", property.hasProperty("max") ? property.getProperty("max") : "");
+          row.setField("CUSTOM", property.getProperty("custom"));
+          rows.add(row);
+        }
+        table.writeRows(rows, -1);
+      }
+
+      if (result.hasProperty("indexes")) {
+        final List<Result> indexes = result.getProperty("indexes");
+        outputLine(0, "\nINDEXES (" + indexes.size() + " altogether)");
+
+        final List<TableFormatter.TableMapRow> rows = new ArrayList<>();
+        for (final Result index : indexes) {
+          final TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
+          row.setField("NAME", index.getProperty("name"));
+          row.setField("TYPE", index.getProperty("type"));
+          row.setField("UNIQUE", index.getProperty("unique"));
+          row.setField("PROPERTIES", index.getProperty("properties").toString());
+          rows.add(row);
+        }
+        table.writeRows(rows, -1);
+      }
+
+    } else
       throw new ConsoleException("Information about '" + subject + "' is not available");
   }
 

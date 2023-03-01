@@ -72,6 +72,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             t = "edge";
 
           r.setProperty("type", t);
+          r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
+          r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
 
           final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
@@ -82,6 +84,17 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                 propRes.setProperty("id", property.getId());
                 propRes.setProperty("name", property.getName());
                 propRes.setProperty("type", property.getType());
+
+                if (property.isMandatory())
+                  propRes.setProperty("mandatory", property.isMandatory());
+                if (property.isReadonly())
+                  propRes.setProperty("readOnly", property.isReadonly());
+                if (property.isNotNull())
+                  propRes.setProperty("notNull", property.isNotNull());
+                if (property.getMin() != null)
+                  propRes.setProperty("min", property.getMin());
+                if (property.getMax() != null)
+                  propRes.setProperty("max", property.getMax());
 
                 final Map<String, Object> customs = new HashMap<>();
                 for (final Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())

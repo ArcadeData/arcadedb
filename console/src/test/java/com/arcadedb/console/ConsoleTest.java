@@ -134,6 +134,10 @@ public class ConsoleTest {
     console.setOutput(output -> buffer.append(output));
     Assertions.assertTrue(console.parse("info types"));
     Assertions.assertTrue(buffer.toString().contains("Person"));
+
+    buffer.setLength(0);
+    Assertions.assertTrue(console.parse("info type Person"));
+    Assertions.assertTrue(buffer.toString().contains("DOCUMENT TYPE 'Person'"));
   }
 
   @Test
