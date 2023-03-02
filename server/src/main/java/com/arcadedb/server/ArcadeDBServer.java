@@ -99,7 +99,7 @@ public class ArcadeDBServer {
   public synchronized void start() {
     LogManager.instance().setContext(getServerName());
 
-    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server v" + Constants.getVersion() + " is starting up...");
+    welcomeBanner();
 
     if (status != STATUS.OFFLINE)
       return;
@@ -159,6 +159,20 @@ public class ArcadeDBServer {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
+  }
+
+  private void welcomeBanner() {
+    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server v" + Constants.getVersion() + " is starting up...");
+
+    final String osName = System.getProperty("os.name");
+    final String osVersion = System.getProperty("os.version");
+    final String vmName = System.getProperty("java.vm.name");
+    final String vmVendorVersion = System.getProperty("java.vendor.version");
+    if (vmName != null)
+      LogManager.instance().log(this, Level.INFO,
+          "Running on " + osName + " " + osVersion + " - " + vmName + " " + (vmVendorVersion != null ? vmVendorVersion : System.getProperty("java.version")));
+    else
+      LogManager.instance().log(this, Level.INFO, "Running on " + osName + " " + osVersion + " - Java " + System.getProperty(" java.version"));
   }
 
   private Set<String> getPluginNames() {
