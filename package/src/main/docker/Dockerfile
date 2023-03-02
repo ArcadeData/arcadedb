@@ -22,7 +22,7 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
 ENV JAVA_OPTS=" "
 
-ENV JAVA_OPTS_SCRIPT="-Djna.nosys=true -XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
+ENV JAVA_OPTS_SCRIPT="--add-opens java.base/java.io=ALL-UNNAMED -Dpolyglot.engine.WarnInterpreterOnly=false -Djna.nosys=true -XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
 
 ENV ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
 
