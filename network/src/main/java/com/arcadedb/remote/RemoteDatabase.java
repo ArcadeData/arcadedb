@@ -22,9 +22,12 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -55,6 +58,11 @@ import java.util.*;
 import java.util.logging.*;
 import java.util.stream.*;
 
+/**
+ * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
@@ -76,6 +84,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   private static final String                      protocol                  = "http";
   private static final String                      charset                   = "UTF-8";
   private              String                      sessionId;
+  protected final      DatabaseStats               stats                     = new DatabaseStats();
 
   public List<String> getReplicaAddresses() {
     return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
@@ -176,16 +185,22 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public void transaction(final BasicDatabase.TransactionScope txBlock) {
-    transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
   }
 
   @Override
   public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction) {
-    return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
   }
 
   @Override
   public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts) {
+    return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
+  }
+
+  @Override
+  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts, final OkCallback ok,
+      final ErrorCallback error) {
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
 
@@ -207,17 +222,25 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
         if (createdNewTx)
           commit();
 
+        if (ok != null)
+          ok.call();
+
         return createdNewTx;
 
       } catch (final NeedRetryException | DuplicatedKeyException e) {
         // RETRY
         lastException = e;
+        setSessionId(null);
+
+        if (error != null)
+          error.call(e);
+
       } catch (final Exception e) {
-        try {
-          rollback();
-        } catch (final Throwable t) {
-          // IGNORE IT
-        }
+        setSessionId(null);
+
+        if (error != null)
+          error.call(e);
+
         throw e;
       }
     }
@@ -247,22 +270,35 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   public void commit() {
+    stats.txCommits.incrementAndGet();
+
     if (getSessionId() == null)
       throw new TransactionException("Transaction not begun");
+
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("commit", databaseName));
       connection.connect();
       if (connection.getResponseCode() != 204) {
         final Exception detail = manageException(connection, "commit transaction");
+
+        if (detail instanceof DuplicatedKeyException || detail instanceof ConcurrentModificationException)
+          // SUPPORT RETRY
+          throw detail;
+
         throw new TransactionException("Error on transaction commit", detail);
       }
-      setSessionId(null);
+    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+      throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
+    } finally {
+      setSessionId(null);
     }
   }
 
   public void rollback() {
+    stats.txRollbacks.incrementAndGet();
+
     if (getSessionId() == null)
       throw new TransactionException("Transaction not begun");
 
@@ -273,18 +309,39 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
         final Exception detail = manageException(connection, "rollback transaction");
         throw new TransactionException("Error on transaction rollback", detail);
       }
-      setSessionId(null);
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
+    } finally {
+      setSessionId(null);
     }
   }
 
+  @Override
+  public long countBucket(final String bucketName) {
+    stats.countBucket.incrementAndGet();
+    return ((Number) ((ResultSet) databaseCommand("query", "sql", "select count(*) as count from bucket:" + bucketName, null, false,
+        (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
+  }
+
+  @Override
+  public long countType(final String typeName, final boolean polymorphic) {
+    stats.countType.incrementAndGet();
+    final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
+    return ((Number) ((ResultSet) databaseCommand("query", "sql", "select count(*) as count from " + typeName + appendix, null, false,
+        (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
+  }
+
   public Record lookupByRID(final RID rid) {
+    stats.readRecord.incrementAndGet();
+    if (rid == null)
+      throw new IllegalArgumentException("Record is null");
+
     return lookupByRID(rid, true);
   }
 
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
+    stats.readRecord.incrementAndGet();
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
@@ -308,6 +365,8 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public void deleteRecord(final Record record) {
+    stats.deleteRecord.incrementAndGet();
+
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
@@ -316,22 +375,28 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public ResultSet command(final String language, final String command, final Object... args) {
+    stats.commands.incrementAndGet();
+
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, true, (connection, response) -> createResultSet(response));
   }
 
   @Override
   public ResultSet query(final String language, final String command, final Object... args) {
+    stats.queries.incrementAndGet();
+
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> createResultSet(response));
   }
 
   /**
-   * @deprecated use {@link #command() command} instead
+   * @deprecated use {@link #command(String, String, Object...)} instead
    */
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String command, final Object... args) {
+    stats.commands.incrementAndGet();
+
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, false, (connection, response) -> createResultSet(response));
   }
@@ -403,6 +468,11 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     }
   }
 
+  @Override
+  public Map<String, Object> getStats() {
+    return stats.toMap();
+  }
+
   private Object serverCommand(final String method, final String command, final boolean leaderIsPreferable, final boolean autoReconnect,
       final Callback callback) {
     return httpCommand(method, null, "server", null, command, null, leaderIsPreferable, autoReconnect, callback);
@@ -413,7 +483,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true, callback);
   }
 
-   Object httpCommand(final String method, final String extendedURL, final String operation, final String language, final String payloadCommand,
+  Object httpCommand(final String method, final String extendedURL, final String operation, final String language, final String payloadCommand,
       final Map<String, Object> params, final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
 
     Exception lastException = null;
@@ -699,6 +769,30 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
       }
     }
     return null;
+  }
+
+  RID saveRecord(final MutableDocument record) {
+    stats.createRecord.incrementAndGet();
+
+    RID rid = record.getIdentity();
+    if (rid != null)
+      command("sql", "update " + rid + " content " + record.toJSON());
+    else {
+      final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + record.toJSON());
+      rid = result.next().getIdentity().get();
+    }
+    return rid;
+  }
+
+  RID saveRecord(final MutableDocument record, final String bucketName) {
+    stats.createRecord.incrementAndGet();
+
+    RID rid = record.getIdentity();
+    if (rid != null)
+      throw new IllegalStateException("Cannot update a record in a custom bucket");
+
+    final ResultSet result = command("sql", "insert into " + record.getTypeName() + " bucket " + bucketName + " content " + record.toJSON());
+    return result.next().getIdentity().get();
   }
 
   void setRequestPayload(final HttpURLConnection connection, final JSONObject jsonRequest) throws IOException {

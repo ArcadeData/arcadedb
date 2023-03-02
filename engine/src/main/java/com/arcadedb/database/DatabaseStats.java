@@ -22,20 +22,20 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 
 public class DatabaseStats {
-  protected final AtomicLong txCommits     = new AtomicLong();
-  protected final AtomicLong txRollbacks   = new AtomicLong();
-  protected final AtomicLong createRecord  = new AtomicLong();
-  protected final AtomicLong readRecord    = new AtomicLong();
-  protected final AtomicLong updateRecord  = new AtomicLong();
-  protected final AtomicLong deleteRecord  = new AtomicLong();
-  protected final AtomicLong queries       = new AtomicLong();
-  protected final AtomicLong commands      = new AtomicLong();
-  protected final AtomicLong scanType      = new AtomicLong();
-  protected final AtomicLong scanBucket    = new AtomicLong();
-  protected final AtomicLong iterateType   = new AtomicLong();
-  protected final AtomicLong iterateBucket = new AtomicLong();
-  protected final AtomicLong countType     = new AtomicLong();
-  protected final AtomicLong countBucket   = new AtomicLong();
+  public final AtomicLong txCommits     = new AtomicLong();
+  public final AtomicLong txRollbacks   = new AtomicLong();
+  public final AtomicLong createRecord  = new AtomicLong();
+  public final AtomicLong readRecord    = new AtomicLong();
+  public final AtomicLong updateRecord  = new AtomicLong();
+  public final AtomicLong deleteRecord  = new AtomicLong();
+  public final AtomicLong queries       = new AtomicLong();
+  public final AtomicLong commands      = new AtomicLong();
+  public final AtomicLong scanType      = new AtomicLong();
+  public final AtomicLong scanBucket    = new AtomicLong();
+  public final AtomicLong iterateType   = new AtomicLong();
+  public final AtomicLong iterateBucket = new AtomicLong();
+  public final AtomicLong countType     = new AtomicLong();
+  public final AtomicLong countBucket   = new AtomicLong();
 
   public Map<String, Object> toMap() {
     final Map<String, Object> map = new HashMap<>();

@@ -411,7 +411,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public long countBucket(final String bucketName) {
     stats.countBucket.incrementAndGet();
-
     return (Long) executeInReadLock((Callable<Object>) () -> schema.getBucketByName(bucketName).count());
   }
 
@@ -604,10 +603,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
+    stats.readRecord.incrementAndGet();
+
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
-
-    stats.readRecord.incrementAndGet();
 
     return (Record) executeInReadLock((Callable<Object>) () -> {
 
@@ -1000,6 +999,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         lastException = e;
         if (wrappedDatabaseInstance.isTransactionActive())
           wrappedDatabaseInstance.rollback();
+
+        if (error != null)
+          error.call(e);
+
       } catch (final Throwable e) {
         final TransactionContext tx = getTransaction();
         if (tx != null && tx.isActive())

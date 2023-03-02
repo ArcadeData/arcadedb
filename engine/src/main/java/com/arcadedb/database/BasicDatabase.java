@@ -18,9 +18,13 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import java.util.*;
 
 public interface BasicDatabase extends AutoCloseable {
   String getName();
@@ -90,6 +94,22 @@ public interface BasicDatabase extends AutoCloseable {
   boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int retries);
 
   /**
+   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is parked and a new sub-transaction is begun
+   * if joinCurrentTx is true, otherwise the current active transaction is joined.
+   * The difference with the method {@link #transaction(TransactionScope)} is that in case the NeedRetryException exception is thrown, the transaction is
+   * re-executed for a number of retries.
+   *
+   * @param txBlock       Transaction lambda to execute
+   * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
+   * @param attempts      number of attempts in case the NeedRetryException exception is thrown
+   * @param ok            callback invoked if the transaction completes the commit
+   * @param error         callback invoked if the transaction cannot complete the commit, after the rollback
+   *
+   * @return true if a new transaction has been created or false if an existent transaction has been joined
+   */
+  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, final OkCallback ok, final ErrorCallback error);
+
+  /**
    * Begins a new transaction. If a transaction is already begun, the current transaction is parked and a new sub-transaction is begun. The new sub-transaction
    * does not access to the content of the previous transaction. Sub transactions are totally isolated.
    */
@@ -151,8 +171,34 @@ public interface BasicDatabase extends AutoCloseable {
   ResultSet execute(String language, String script, Object... args);
 
   /**
+   * Returns the number of record contained in all the buckets defined by a type. This operation is expensive because it scans all the entire buckets.
+   *
+   * @param typeName    The name of the type
+   * @param polymorphic true if the records of all the subtypes must be included, otherwise only the records strictly contained in the #typeName
+   *                    will be scanned
+   *
+   * @return The number of records found
+   */
+  long countType(String typeName, boolean polymorphic);
+
+  /**
+   * Returns the number of record contained in a bucket. This operation is expensive because it scans the entire bucket.
+   *
+   * @param bucketName The name of the bucket
+   *
+   * @return The number of records found
+   */
+  long countBucket(String bucketName);
+
+  /**
    * Interface for defining a transaction scope to be executed by the {@link #transaction(TransactionScope)} method.
    */
+
+  /**
+   * Returns statistics for the current database instance as a map.
+   */
+  Map<String, Object> getStats();
+
   interface TransactionScope {
     /**
      * Callback executed inside a transaction. All the changes executed in this method will be executed in a transaction scope where all the operations are

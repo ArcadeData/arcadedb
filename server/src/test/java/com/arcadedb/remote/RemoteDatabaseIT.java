@@ -94,6 +94,20 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         final Document record = (Document) database.lookupByRID(rid);
         Assertions.assertNotNull(result);
         Assertions.assertEquals("Musk", record.getString("lastName"));
+
+        Assertions.assertEquals(1L, database.countType("Person", true));
+        Assertions.assertEquals(1L, database.countType("Person", false));
+
+        long totalInBuckets = 0L;
+        for (int i = 0; i < 100; i++) {
+          try {
+            totalInBuckets += database.countBucket("Person_" + i);
+          } catch (Exception e) {
+            // IGNORE IT
+            break;
+          }
+        }
+        Assertions.assertEquals(1L, totalInBuckets);
       });
 
       // RETRIEVE DOCUMENT WITH QUERY AFTER COMMIT

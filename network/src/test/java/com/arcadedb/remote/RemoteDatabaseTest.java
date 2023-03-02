@@ -184,7 +184,6 @@ class RemoteDatabaseTest {
     assertThrows(RuntimeException.class, () -> database.transaction(() -> {
     }, false, 1));
     verify(database).begin();
-    verify(database).rollback();
   }
 
   @Test

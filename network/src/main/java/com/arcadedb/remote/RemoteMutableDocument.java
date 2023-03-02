@@ -56,22 +56,15 @@ public class RemoteMutableDocument extends MutableDocument {
 
   @Override
   public synchronized MutableDocument save() {
-    dirty = true;
-    if (rid != null)
-      remoteDatabase.command("sql", "update " + rid + " content " + toJSON());
-    else {
-      final ResultSet result = remoteDatabase.command("sql", "insert into " + typeName + " content " + toJSON());
-      rid = result.next().getIdentity().get();
-    }
+    rid = remoteDatabase.saveRecord(this);
+    dirty = false;
     return this;
   }
 
   @Override
   public synchronized MutableDocument save(final String bucketName) {
-    dirty = true;
-    if (rid != null)
-      throw new IllegalStateException("Cannot update a record in a custom bucket");
-    remoteDatabase.command("sql", "insert into " + typeName + " bucket " + bucketName + " content " + toJSON());
+    rid = remoteDatabase.saveRecord(this, bucketName);
+    dirty = false;
     return this;
   }
 

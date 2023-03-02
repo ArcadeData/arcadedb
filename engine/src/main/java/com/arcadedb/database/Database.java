@@ -20,9 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
-import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.NewEdgeCallback;
-import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.WALFile;
@@ -77,22 +75,6 @@ public interface Database extends BasicDatabase {
 
   @Deprecated
   ResultSet execute(String language, String script, Map<String, Object> args);
-
-  /**
-   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is parked and a new sub-transaction is begun
-   * if joinCurrentTx is true, otherwise the current active transaction is joined.
-   * The difference with the method {@link #transaction(TransactionScope)} is that in case the NeedRetryException exception is thrown, the transaction is
-   * re-executed for a number of retries.
-   *
-   * @param txBlock       Transaction lambda to execute
-   * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
-   * @param attempts      number of attempts in case the NeedRetryException exception is thrown
-   * @param ok            callback invoked if the transaction completes the commit
-   * @param error         callback invoked if the transaction cannot complete the commit, after the rollback
-   *
-   * @return true if a new transaction has been created or false if an existent transaction has been joined
-   */
-  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, final OkCallback ok, final ErrorCallback error);
 
   /**
    * Returns true if a transaction is started automatically for all non-idempotent operation in the database.
@@ -197,26 +179,6 @@ public interface Database extends BasicDatabase {
    * @return The number of records found
    */
   Iterator<Record> iterateBucket(String bucketName);
-
-  /**
-   * Returns the number of record contained in all the buckets defined by a type. This operation is expensive because it scans all the entire buckets.
-   *
-   * @param typeName    The name of the type
-   * @param polymorphic true if the records of all the subtypes must be included, otherwise only the records strictly contained in the #typeName
-   *                    will be scanned
-   *
-   * @return The number of records found
-   */
-  long countType(String typeName, boolean polymorphic);
-
-  /**
-   * Returns the number of record contained in a bucket. This operation is expensive because it scans the entire bucket.
-   *
-   * @param bucketName The name of the bucket
-   *
-   * @return The number of records found
-   */
-  long countBucket(String bucketName);
 
   /**
    * Creates a new edge between two vertices specifying the key/value pairs to lookup for both source and destination vertices. The direction of the edge is from source
