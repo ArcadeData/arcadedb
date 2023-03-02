@@ -21,7 +21,7 @@
 package com.arcadedb.gremlin.query;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.gremlin.ArcadeGraph;
@@ -48,7 +48,7 @@ public class GremlinQueryEngineFactory implements QueryEngine.QueryEngineFactory
 
     } catch (final Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing Gremlin query engine", e);
-      throw new QueryParsingException("Error on initializing Gremlin query engine", e);
+      throw new CommandParsingException("Error on initializing Gremlin query engine", e);
     }
   }
 }

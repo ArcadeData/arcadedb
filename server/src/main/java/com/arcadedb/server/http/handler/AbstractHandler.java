@@ -23,10 +23,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
@@ -152,7 +151,7 @@ public abstract class AbstractHandler implements HttpHandler {
     } catch (final IllegalArgumentException e) {
       LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 400, "Cannot execute command", e, null);
-    } catch (final CommandExecutionException | CommandSQLParsingException | QueryParsingException e) {
+    } catch (final CommandExecutionException | CommandParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();

@@ -34,8 +34,7 @@ import java.util.List;
 import java.util.ArrayList;
 import javax.annotation.processing.Generated;
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 
 /** Database Sql grammar. */
@@ -3203,7 +3202,7 @@ MatchPathItem MultiMatchPathItemArrows():
         nextItem = BothPathItemOpt()  { jjtThis.items.add(nextItem); }
       ){
         if(prevItem !=null && prevItem.filter == null){
-          throw new QueryParsingException("MATCH sub-pattern with no square brackets");
+          throw new CommandParsingException("MATCH sub-pattern with no square brackets");
         }
         prevItem = nextItem;
       }

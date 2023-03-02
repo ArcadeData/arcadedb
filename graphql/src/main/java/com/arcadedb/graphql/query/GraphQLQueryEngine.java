@@ -18,7 +18,7 @@
  */
 package com.arcadedb.graphql.query;
 
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -67,12 +67,12 @@ public class GraphQLQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final Map<String, Object> parameters) {
     try {
-
       final ResultSet resultSet = graphQLSchema.execute(query);
-
       return resultSet;
+    } catch (final CommandParsingException e) {
+      throw e;
     } catch (final Exception e) {
-      throw new QueryParsingException("Error on executing GraphQL query:\n" + FileUtils.printWithLineNumbers(query), e);
+      throw new CommandParsingException("Error on executing GraphQL query:\n" + FileUtils.printWithLineNumbers(query), e);
     }
   }
 

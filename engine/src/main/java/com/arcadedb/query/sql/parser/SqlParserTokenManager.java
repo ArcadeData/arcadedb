@@ -6,8 +6,7 @@ import java.util.List;
 import java.util.ArrayList;
 import javax.annotation.processing.Generated;
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 
 /** Token Manager. */

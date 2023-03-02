@@ -19,7 +19,7 @@
 package com.arcadedb.graphql;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
@@ -114,9 +114,9 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
       try {
         database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }");
         Assertions.fail();
-      } catch (final QueryParsingException e) {
+      } catch (final CommandParsingException e) {
         // EXPECTED
-        Assertions.assertEquals(QueryParsingException.class, e.getCause().getClass());
+        Assertions.assertEquals(CommandParsingException.class, e.getCause().getClass());
       }
 
       return null;

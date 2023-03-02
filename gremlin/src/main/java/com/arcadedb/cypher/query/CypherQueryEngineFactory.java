@@ -21,7 +21,7 @@
 package com.arcadedb.cypher.query;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.gremlin.ArcadeGraph;
@@ -47,7 +47,7 @@ public class CypherQueryEngineFactory implements QueryEngine.QueryEngineFactory 
 
     } catch (final Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing Cypher query engine", e);
-      throw new QueryParsingException("Error on initializing Cypher query engine", e);
+      throw new CommandParsingException("Error on initializing Cypher query engine", e);
     }
   }
 }

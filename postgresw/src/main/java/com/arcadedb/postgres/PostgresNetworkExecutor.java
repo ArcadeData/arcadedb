@@ -24,9 +24,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.query.sql.SQLQueryEngine;
@@ -317,7 +316,7 @@ public class PostgresNetworkExecutor extends Thread {
         } else
           writeNoData();
       }
-    } catch (final QueryParsingException | CommandSQLParsingException e) {
+    } catch (final CommandParsingException e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
     } catch (final Exception e) {
@@ -366,7 +365,7 @@ public class PostgresNetworkExecutor extends Thread {
       writeDataRows(cachedResultset, columns);
       writeCommandComplete(queryText, cachedResultset.size());
 
-    } catch (final QueryParsingException | CommandSQLParsingException e) {
+    } catch (final CommandParsingException e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
     } catch (final Exception e) {
@@ -779,7 +778,7 @@ public class PostgresNetworkExecutor extends Thread {
       // ParseComplete
       writeMessage("parse complete", null, '1', 4);
 
-    } catch (final QueryParsingException | CommandSQLParsingException e) {
+    } catch (final CommandParsingException e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + e.getCause().getMessage(), "42601");
     } catch (final Exception e) {

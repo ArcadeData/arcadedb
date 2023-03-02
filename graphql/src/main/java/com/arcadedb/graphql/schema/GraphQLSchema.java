@@ -19,7 +19,7 @@
 package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
 import com.arcadedb.graphql.parser.Definition;
@@ -92,7 +92,7 @@ public class GraphQLSchema {
     final Set<String> typeArgumentNames = new HashSet<>();
 
     if (op.getSelectionSet().getSelections().size() > 1)
-      throw new QueryParsingException("Error on executing multiple queries");
+      throw new CommandParsingException("Error on executing multiple queries");
 
     String queryName = null;
     final Map<String, Object> arguments = null;
@@ -114,7 +114,7 @@ public class GraphQLSchema {
       }
 
       if (from == null)
-        throw new QueryParsingException("Target type not defined for GraphQL query '" + queryName + "'");
+        throw new CommandParsingException("Target type not defined for GraphQL query '" + queryName + "'");
 
       if (typeDefinition != null) {
         final Directives directives = typeDefinition.getDirectives();
@@ -139,7 +139,7 @@ public class GraphQLSchema {
           for (final Argument queryArgument : queryArguments.getList()) {
             final String argName = queryArgument.getName();
             if (!typeArgumentNames.contains(argName))
-              throw new QueryParsingException("Parameter '" + argName + "' not defined in query");
+              throw new CommandParsingException("Parameter '" + argName + "' not defined in query");
 
             final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
 
@@ -173,19 +173,19 @@ public class GraphQLSchema {
 
       return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType);
 
-    } catch (final QueryParsingException e) {
+    } catch (final CommandParsingException e) {
       throw e;
     } catch (final Exception e) {
       if (queryName != null)
-        throw new QueryParsingException("Error on executing GraphQL query '" + queryName + "'", e);
-      throw new QueryParsingException("Error on executing GraphQL query", e);
+        throw new CommandParsingException("Error on executing GraphQL query '" + queryName + "'", e);
+      throw new CommandParsingException("Error on executing GraphQL query", e);
     }
 
   }
 
   private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection, final ObjectTypeDefinition returnType) {
     if (directive.getArguments() == null)
-      throw new QueryParsingException(language.toUpperCase() + " directive has no `statement` argument");
+      throw new CommandParsingException(language.toUpperCase() + " directive has no `statement` argument");
 
     String statement = null;
     Map<String, Object> arguments = null;
@@ -204,7 +204,7 @@ public class GraphQLSchema {
     }
 
     if (statement == null)
-      throw new QueryParsingException(language.toUpperCase() + " directive has no `statement` argument");
+      throw new CommandParsingException(language.toUpperCase() + " directive has no `statement` argument");
 
     final ResultSet resultSet = arguments != null ? database.query(language, statement, arguments) : database.query(language, statement);
 

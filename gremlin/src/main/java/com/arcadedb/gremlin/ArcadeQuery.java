@@ -23,7 +23,6 @@ package com.arcadedb.gremlin;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
-import java.util.concurrent.*;
 
 /**
  * Base class for query implementation from Gremlin/Tinkerpop.
@@ -41,7 +40,7 @@ public abstract class ArcadeQuery {
     this.query = query;
   }
 
-  public abstract ResultSet execute() throws ExecutionException, InterruptedException;
+  public abstract ResultSet execute();
 
   public Map<String, Object> getParameters() {
     return Collections.unmodifiableMap(parameters);

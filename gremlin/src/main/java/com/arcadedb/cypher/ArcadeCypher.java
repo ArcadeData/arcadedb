@@ -61,7 +61,7 @@ public class ArcadeCypher extends ArcadeGremlin {
   }
 
   @Override
-  public ResultSet execute() throws ExecutionException, InterruptedException {
+  public ResultSet execute() {
     final ResultSet resultSet = super.execute();
 
     final InternalResultSet result = new InternalResultSet();

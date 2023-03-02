@@ -18,7 +18,10 @@
  */
 package com.arcadedb.exception;
 
-public class CommandSQLParsingException extends ArcadeDBException {
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class CommandSQLParsingException extends CommandParsingException {
   public CommandSQLParsingException(final String message) {
     super(message);
   }

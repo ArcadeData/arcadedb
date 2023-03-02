@@ -26,7 +26,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
@@ -146,7 +146,7 @@ public class ArcadeGraph implements Graph, Closeable {
     try {
       return new ArcadeCypher(this, query, parameters);
     } catch (final SyntaxException e) {
-      throw new QueryParsingException(e);
+      throw new CommandParsingException(e);
     }
   }
 

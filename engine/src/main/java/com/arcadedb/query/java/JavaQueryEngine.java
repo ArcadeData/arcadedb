@@ -20,7 +20,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -108,7 +108,7 @@ public class JavaQueryEngine implements QueryEngine {
 
         final String[] parts = query.split("::");
         if (parts.length != 2)
-          throw new QueryParsingException(
+          throw new CommandParsingException(
               "Java function name '" + query + "' must contain the full package of the class, :: and the method. Example: org.acme.Math::sum");
 
         if (!registeredMethods.contains(query)) {

@@ -20,7 +20,7 @@
  */
 package com.arcadedb.cypher.query;
 
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -76,7 +76,7 @@ public class CypherQueryEngine implements QueryEngine {
       return arcadeCypher.execute();
 
     } catch (final Exception e) {
-      throw new QueryParsingException("Error on executing Cypher query", e);
+      throw new CommandParsingException("Error on executing Cypher query", e);
     }
   }
 

@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.functions.sql;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -70,7 +70,7 @@ public class CustomSQLFunctionsTest {
 
   @Test
   public void testNonExistingFunction() {
-    assertThrows(QueryParsingException.class, () -> TestHelper.executeInNewDatabase("testRandom", (db) -> {
+    assertThrows(CommandParsingException.class, () -> TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");
       result.next();
     }));

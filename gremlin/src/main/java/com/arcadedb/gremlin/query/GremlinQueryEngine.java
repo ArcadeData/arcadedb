@@ -20,7 +20,7 @@
  */
 package com.arcadedb.gremlin.query;
 
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -58,7 +58,7 @@ public class GremlinQueryEngine implements QueryEngine {
       arcadeGremlin.setParameters(parameters);
       return arcadeGremlin.execute();
     } catch (final Exception e) {
-      throw new QueryParsingException("Error on executing Gremlin query", e);
+      throw new CommandParsingException("Error on executing Gremlin query", e);
     }
   }
 
@@ -80,8 +80,10 @@ public class GremlinQueryEngine implements QueryEngine {
 
       return arcadeGremlin.parse();
 
+    } catch (final CommandParsingException e) {
+      throw e;
     } catch (final Exception e) {
-      throw new QueryParsingException("Error on parsing Gremlin query", e);
+      throw new CommandParsingException("Error on parsing Gremlin query", e);
     }
   }
 }

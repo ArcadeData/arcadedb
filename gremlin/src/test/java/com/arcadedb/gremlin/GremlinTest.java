@@ -22,7 +22,7 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -37,8 +37,8 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.math.*;
 import java.util.*;
-import java.util.concurrent.*;
 
 /**
  * Tests execution of gremlin queries as text.
@@ -47,7 +47,7 @@ import java.util.concurrent.*;
  */
 public class GremlinTest {
   @Test
-  public void testGremlin() throws ExecutionException, InterruptedException {
+  public void testGremlin() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -90,7 +90,7 @@ public class GremlinTest {
    * Issue https://github.com/ArcadeData/arcadedb/issues/500
    */
   @Test
-  public void testGremlinIssue500() throws ExecutionException, InterruptedException {
+  public void testGremlinIssue500() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -153,7 +153,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testCypherSyntaxError() throws ExecutionException, InterruptedException {
+  public void testCypherSyntaxError() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -164,7 +164,7 @@ public class GremlinTest {
             "g.V().as('p').hasLabel22222('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
             "p1", 25);
         Assertions.fail();
-      } catch (final QueryParsingException e) {
+      } catch (final CommandParsingException e) {
         // EXPECTED
       }
 
@@ -174,7 +174,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinParse() throws ExecutionException, InterruptedException {
+  public void testGremlinParse() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -195,7 +195,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinLists() throws ExecutionException, InterruptedException {
+  public void testGremlinLists() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testlist");
     try {
       final ResultSet result = graph.gremlin("g.addV('Person').property( 'list', ['a', 'b'] )").execute();
@@ -214,7 +214,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testUseIndex() throws ExecutionException, InterruptedException {
+  public void testUseIndex() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
@@ -245,7 +245,7 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/289
   @Disabled
   @Test
-  public void infinityValue() throws ExecutionException, InterruptedException {
+  public void infinityValue() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testInfinite");
     try {
       final Vertex alice = graph.addVertex("person");
@@ -266,7 +266,7 @@ public class GremlinTest {
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/690
   @Test
-  public void testVertexConstraints() throws ExecutionException, InterruptedException {
+  public void testVertexConstraints() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testConstraints");
     try {
       final VertexType type = graph.getDatabase().getSchema().getOrCreateVertexType("ChipID");
@@ -285,7 +285,7 @@ public class GremlinTest {
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/290
   @Test
-  public void sort() throws ExecutionException, InterruptedException {
+  public void sort() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testOrder");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
@@ -304,6 +304,36 @@ public class GremlinTest {
 
       Assertions.assertTrue(result.hasNext());
 
+    } finally {
+      graph.drop();
+    }
+  }
+
+  // ISSUE: https://github.com/ArcadeData/arcadedb/issues/911
+  @Test
+  public void testLongOverflow() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testLongOverflow");
+    try {
+      Result value = graph.gremlin("g.inject(Long.MAX_VALUE, 0).sum()").execute().nextIfAvailable();
+      Assertions.assertEquals(Long.MAX_VALUE, (long) value.getProperty("result"));
+
+      value = graph.gremlin("g.inject(Long.MAX_VALUE, 1).sum()").execute().nextIfAvailable();
+      Assertions.assertEquals(Long.MAX_VALUE + 1, (long) value.getProperty("result"));
+
+      value = graph.gremlin("g.inject(new BigInteger(Long.MAX_VALUE), 1).sum()").execute().nextIfAvailable();
+      Assertions.assertEquals(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)), (BigInteger) value.getProperty("result"));
+    } finally {
+      graph.drop();
+    }
+  }
+
+  // ISSUE: https://github.com/ArcadeData/arcadedb/issues/912
+  @Test
+  public void testNumberConversion() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testNumberConversion");
+    try {
+      Result value = graph.gremlin("g.inject(1).size()").execute().nextIfAvailable();
+      Assertions.assertEquals(1, (int) value.getProperty("result"));
     } finally {
       graph.drop();
     }

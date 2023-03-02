@@ -18,7 +18,7 @@
  */
 package com.arcadedb.mongo.query;
 
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
 import com.arcadedb.query.QueryEngine;
@@ -61,7 +61,7 @@ public class MongoQueryEngine implements QueryEngine {
       return mongoDBWrapper.query(query);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing Mongo query engine", e);
-      throw new QueryParsingException("Error on initializing Mongo query engine", e);
+      throw new CommandParsingException("Error on initializing Mongo query engine", e);
     }
   }
 

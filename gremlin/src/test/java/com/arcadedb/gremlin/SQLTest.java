@@ -36,7 +36,7 @@ import java.util.concurrent.*;
  */
 public class SQLTest {
   @Test
-  public void testSQL() throws ExecutionException, InterruptedException {
+  public void testSQL()  {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testsql");
     try {
 

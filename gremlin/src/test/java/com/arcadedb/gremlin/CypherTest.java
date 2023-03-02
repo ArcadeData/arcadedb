@@ -24,7 +24,7 @@ import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
@@ -34,14 +34,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
-import java.util.concurrent.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CypherTest {
   @Test
-  public void testCypher() throws ExecutionException, InterruptedException {
+  public void testCypher() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -78,7 +77,7 @@ public class CypherTest {
   }
 
   @Test
-  public void testCypherSyntaxError() throws ExecutionException, InterruptedException {
+  public void testCypherSyntaxError() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -88,7 +87,7 @@ public class CypherTest {
         graph.cypher("MATCH (p::Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age")//
             .setParameter("p1", 25).execute();
         Assertions.fail();
-      } catch (final QueryParsingException e) {
+      } catch (final CommandParsingException e) {
         // EXPECTED
       }
 
@@ -100,7 +99,7 @@ public class CypherTest {
   }
 
   @Test
-  public void testCypherFromDatabase() throws ExecutionException, InterruptedException {
+  public void testCypherFromDatabase() {
     final Database database = new DatabaseFactory("./target/testcypher").create();
     try {
 
@@ -137,7 +136,7 @@ public class CypherTest {
   }
 
   @Test
-  public void testCypherParse() throws ExecutionException, InterruptedException {
+  public void testCypherParse() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -159,7 +158,7 @@ public class CypherTest {
   }
 
   @Test
-  public void testVertexCreationIdentity() throws ExecutionException, InterruptedException {
+  public void testVertexCreationIdentity() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -185,7 +184,7 @@ public class CypherTest {
    * https://github.com/ArcadeData/arcadedb/issues/314
    */
   @Test
-  public void testIssue314() throws ExecutionException, InterruptedException {
+  public void testIssue314() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -221,7 +220,7 @@ public class CypherTest {
    * https://github.com/ArcadeData/arcadedb/issues/734
    */
   @Test
-  public void testIssue734() throws ExecutionException, InterruptedException {
+  public void testIssue734() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 

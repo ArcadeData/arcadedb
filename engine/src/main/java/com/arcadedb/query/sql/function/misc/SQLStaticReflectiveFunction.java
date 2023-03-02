@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.function.misc;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
@@ -109,13 +109,13 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
     final Method method = pickMethod(iParams);
 
     if (method == null) {
-      throw new QueryParsingException("Unable to find a function for " + name + paramsPrettyPrint.get());
+      throw new CommandParsingException("Unable to find a function for " + name + paramsPrettyPrint.get());
     }
 
     try {
       return method.invoke(null, iParams);
     } catch (final ReflectiveOperationException e) {
-      throw new QueryParsingException("Error executing function " + name + paramsPrettyPrint.get(), e);
+      throw new CommandParsingException("Error executing function " + name + paramsPrettyPrint.get(), e);
     } catch (final IllegalArgumentException x) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing function %s", x, name);
 
