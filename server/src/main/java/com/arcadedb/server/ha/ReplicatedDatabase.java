@@ -588,7 +588,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
         final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
         return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
       }
-      return proxied.command(language, query, args);
     }
 
     return proxied.command(language, query, args);

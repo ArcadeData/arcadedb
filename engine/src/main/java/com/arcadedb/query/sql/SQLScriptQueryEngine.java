@@ -116,6 +116,28 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     return executeInternal(statements, context);
   }
 
+  @Override
+  public AnalyzedQuery analyze(final String query) {
+    final List<Statement> statements = parseScript(query, database);
+    return new AnalyzedQuery() {
+      @Override
+      public boolean isIdempotent() {
+        for (Statement s : statements)
+          if (!s.isIdempotent())
+            return false;
+        return true;
+      }
+
+      @Override
+      public boolean isDDL() {
+        for (Statement s : statements)
+          if (s.isDDL())
+            return true;
+        return false;
+      }
+    };
+  }
+
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
     final InputStream is = new ByteArrayInputStream(addSemicolon(script).getBytes(DatabaseFactory.getDefaultCharset()));
     return parseScript(is, database);
