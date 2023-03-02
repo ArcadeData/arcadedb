@@ -90,6 +90,7 @@ public class Property {
   public Object getDefaultValue() {
     if (defaultValue != null) {
       if (defaultValue instanceof String) {
+        // TODO: OPTIMIZE THE CASE WHERE FUNCTIONS ARE DEFAULT
         final Database database = owner.getSchema().getEmbedded().getDatabase();
         final Expression expr;
         try {
@@ -107,7 +108,9 @@ public class Property {
 
   public Property setDefaultValue(final Object defaultValue) {
     final Database database = owner.getSchema().getEmbedded().getDatabase();
-    final Object convertedValue = Type.convert(database, defaultValue, type.javaDefaultType);
+
+    // TODO: OPTIMIZE THE CASE WHERE FUNCTIONS ARE DEFAULT
+    final Object convertedValue = defaultValue instanceof String ? defaultValue : Type.convert(database, defaultValue, type.javaDefaultType);
 
     if (!Objects.equals(this.defaultValue, convertedValue)) {
       this.defaultValue = convertedValue;

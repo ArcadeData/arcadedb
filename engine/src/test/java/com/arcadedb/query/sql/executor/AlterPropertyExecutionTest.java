@@ -91,7 +91,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
     Assertions.assertEquals(Type.FLOAT, database.getSchema().getType("Suv").getProperty("weight").getType());
 
     database.command("sql", "ALTER PROPERTY Suv.weight DEFAULT 1");
-    Assertions.assertEquals(1, database.getSchema().getType("Suv").getProperty("weight").getDefaultValue());
+    Assertions.assertEquals(1.0F, database.getSchema().getType("Suv").getProperty("weight").getDefaultValue());
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
     final String def1 = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getString("default");
