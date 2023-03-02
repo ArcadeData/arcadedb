@@ -112,7 +112,8 @@ public class ArcadeDBServer {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
-    LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server with plugins %s ...", getPluginNames());
+    LogManager.instance()
+        .log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...", GlobalConfiguration.SERVER_MODE.getValueAsString(), getPluginNames());
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
