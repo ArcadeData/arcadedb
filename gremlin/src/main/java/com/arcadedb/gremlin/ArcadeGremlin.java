@@ -22,6 +22,8 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -53,9 +55,9 @@ public class ArcadeGremlin extends ArcadeQuery {
   }
 
   @Override
-  public ResultSet execute() throws ExecutionException, InterruptedException {
+  public ResultSet execute() {
     try {
-      final GraphTraversal resultSet = executeStatement();
+      final Iterator resultSet = executeStatement();
 
       return new IteratorResultSet(new Iterator() {
         @Override
@@ -75,12 +77,12 @@ public class ArcadeGremlin extends ArcadeQuery {
           return new ResultInternal(Map.of("result", next));
         }
       });
-    } catch (ScriptException e) {
-      throw new RuntimeException(e);
+    } catch (Exception e) {
+      throw new CommandExecutionException("Error on executing command", e);
     }
   }
 
-  public QueryEngine.AnalyzedQuery parse() throws ExecutionException, InterruptedException {
+  public QueryEngine.AnalyzedQuery parse() {
     try {
       final DefaultGraphTraversal resultSet = (DefaultGraphTraversal) executeStatement();
 
@@ -105,8 +107,8 @@ public class ArcadeGremlin extends ArcadeQuery {
           return false;
         }
       };
-    } catch (ScriptException e) {
-      throw new RuntimeException(e);
+    } catch (Exception e) {
+      throw new CommandParsingException("Error on parsing command", e);
     }
   }
 
@@ -119,7 +121,7 @@ public class ArcadeGremlin extends ArcadeQuery {
     return this;
   }
 
-  private GraphTraversal executeStatement() throws ExecutionException, InterruptedException, ScriptException {
+  private Iterator executeStatement() throws ScriptException {
     String gremlinEngine = graph.getDatabase().getConfiguration().getValueAsString(GlobalConfiguration.GREMLIN_ENGINE);
     if ("auto".equals(gremlinEngine)) {
       if (parameters == null || parameters.isEmpty()) {
@@ -137,7 +139,8 @@ public class ArcadeGremlin extends ArcadeQuery {
     return executeStatement(gremlinEngine);
   }
 
-  private GraphTraversal executeStatement(final String gremlinEngine) throws ExecutionException, InterruptedException, ScriptException {
+  private Iterator executeStatement(final String gremlinEngine) throws ScriptException {
+    final Object result;
     if ("java".equals(gremlinEngine)) {
       // USE THE NATIVE GREMLIN PARSER
       final GremlinLangScriptEngine gremlinEngineImpl = graph.getGremlinJavaEngine();
@@ -146,7 +149,7 @@ public class ArcadeGremlin extends ArcadeQuery {
       bindings.put("g", graph.traversal());
       if (parameters != null)
         bindings.putAll(parameters);
-      return (GraphTraversal) gremlinEngineImpl.eval(query, bindings);
+      result = gremlinEngineImpl.eval(query, bindings);
 
     } else if ("groovy".equals(gremlinEngine)) {
       // GROOVY ENGINE
@@ -156,9 +159,14 @@ public class ArcadeGremlin extends ArcadeQuery {
       bindings.put("g", graph.traversal());
       if (parameters != null)
         bindings.putAll(parameters);
-      return (GraphTraversal) gremlinEngineImpl.eval(query, bindings);
+      result = gremlinEngineImpl.eval(query, bindings);
 
     } else
       throw new IllegalArgumentException("Gremlin engine '" + gremlinEngine + "' not supported");
+
+    if (result instanceof GraphTraversal)
+      return (GraphTraversal) result;
+
+    return Collections.singleton(result).iterator();
   }
 }
