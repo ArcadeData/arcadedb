@@ -140,6 +140,9 @@ public class ArcadeDBServer {
 
     registerPlugins();
 
+    // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
+    loadDatabases();
+
     httpServer.startService();
 
     status = STATUS.ONLINE;
