@@ -40,7 +40,12 @@ follow [installation instructions](https://pre-commit.com/#install) for your ope
 
 ### Developer guide
 
-In order to use the latest distribution before the official release, you have to build it from the latest SNAPSHOT version in the `main` branch of GitHub. It's super easy, just follow the following steps:
+In order to use the latest distribution before the official release, you have to build it from the latest SNAPSHOT version in the `main` branch of GitHub.  All you need is:
+
+- Java v11 for the runtime (Apache Gremlin project is still not compatible with Java 16 and major)
+- Apache Maven, to build the distribution
+
+It's super easy, just follow the following steps:
 
 (1) Download the sources
 
