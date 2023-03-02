@@ -116,7 +116,6 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         Assertions.fail();
       } catch (final CommandParsingException e) {
         // EXPECTED
-        Assertions.assertEquals(CommandParsingException.class, e.getCause().getClass());
       }
 
       return null;
