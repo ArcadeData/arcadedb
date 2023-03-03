@@ -43,14 +43,14 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
-    final String targetUrl = this.url.getUrlString();
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "import database");
-    result.setProperty("fromUrl", targetUrl);
+    if (this.url != null)
+      result.setProperty("fromUrl", this.url.getUrlString());
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
-      final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), url.getUrlString());
+      final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), url != null ? url.getUrlString() : null);
 
       // TRANSFORM SETTINGS
       final Map<String, String> settingsToString = new HashMap<>();

@@ -4135,7 +4135,7 @@ ImportDatabaseStatement ImportDatabaseStatement():
 }
 {
   <IMPORT> <DATABASE>
-  jjtThis.url = Url()
+  [ jjtThis.url = Url() ]
   [
     <WITH>
     jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }

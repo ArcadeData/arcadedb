@@ -313,7 +313,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null, expectedVertices, expectedEdges);
 
     try {
-      context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
+      if (context.graphImporter == null)
+        context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
     } catch (ClassNotFoundException e) {
       throw new ImportException("Error on creating internal component", e);
     }

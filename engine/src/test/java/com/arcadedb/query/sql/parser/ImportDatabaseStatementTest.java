@@ -31,7 +31,6 @@ public class ImportDatabaseStatementTest extends ParserTestAbstract {
     checkRightSyntax("IMPORT DATABASE http://www.foo.bar WITH forceDatabaseCreate = true");
     checkRightSyntax("IMPORT DATABASE http://www.foo.bar WITH forceDatabaseCreate = true, commitEvery = 10000");
 
-    checkWrongSyntax("import database ");
     checkWrongSyntax("import database file:///foo/bar/ foo bar");
     checkWrongSyntax("import database http://www.foo.bar asdf ");
     checkWrongSyntax("IMPORT DATABASE https://www.foo.bar asd ");

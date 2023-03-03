@@ -176,48 +176,23 @@ public class SourceDiscovery {
 
     switch (entityType) {
     case DOCUMENT:
-      knownFileType = settings.documentsFileType;
+      knownFileType = settings.documentsFileType != null ? settings.documentsFileType : getFileTypeByExtension(settings.documents);
       knownDelimiter = settings.documentsDelimiter;
       break;
 
     case VERTEX:
-      knownFileType = settings.verticesFileType;
+      knownFileType = settings.verticesFileType != null ? settings.verticesFileType : getFileTypeByExtension(settings.vertices);
       knownDelimiter = settings.verticesDelimiter;
       break;
 
     case EDGE:
-      knownFileType = settings.edgesFileType;
+      knownFileType = settings.edgesFileType != null ? settings.edgesFileType : getFileTypeByExtension(settings.edgeTypeName);
       knownDelimiter = settings.edgesDelimiter;
       break;
 
     case DATABASE:
       // NO SPECIAL SETTINGS
-      String fileExtensionForFormat = settings.url;
-      if (fileExtensionForFormat.lastIndexOf(File.separator) > -1)
-        fileExtensionForFormat = fileExtensionForFormat.substring(fileExtensionForFormat.lastIndexOf(File.separator) + 1);
-
-      if (fileExtensionForFormat.endsWith(".tgz"))
-        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".tgz".length());
-      else if (fileExtensionForFormat.endsWith(".gz"))
-        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".gz".length());
-      else if (fileExtensionForFormat.endsWith(".zip"))
-        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".zip".length());
-
-      if (fileExtensionForFormat.lastIndexOf('.') > -1)
-        fileExtensionForFormat = fileExtensionForFormat.substring(fileExtensionForFormat.lastIndexOf('.') + 1);
-
-      switch (fileExtensionForFormat) {
-      case "csv":
-        knownFileType = "csv";
-        break;
-      case "graphml":
-        knownFileType = "graphml";
-        break;
-      case "graphson":
-        knownFileType = "graphson";
-        break;
-      }
-
+      knownFileType = getFileTypeByExtension(settings.url);
       break;
 
     default:
@@ -317,6 +292,18 @@ public class SourceDiscovery {
 
     // UNKNOWN
     throw new ImportException("Cannot determine the file type. If it is a CSV file, please specify the header via settings");
+  }
+
+  private String getFileTypeByExtension(final String fileName) {
+    switch (getFormatFromExtension(fileName)) {
+    case "csv":
+      return "csv";
+    case "graphml":
+      return "graphml";
+    case "graphson":
+      return "graphson";
+    }
+    return null;
   }
 
   private void skipLine(final Parser parser) throws IOException {
@@ -448,5 +435,22 @@ public class SourceDiscovery {
 
     // ANALYZE THE INPUT AS TEXT
     return new Source(url, in, totalSize, false, resetCallback, closeCallback);
+  }
+
+  private String getFormatFromExtension(String fileName) {
+    if (fileName.lastIndexOf(File.separator) > -1)
+      fileName = fileName.substring(fileName.lastIndexOf(File.separator) + 1);
+
+    if (fileName.endsWith(".tgz"))
+      fileName = fileName.substring(0, fileName.length() - ".tgz".length());
+    else if (fileName.endsWith(".gz"))
+      fileName = fileName.substring(0, fileName.length() - ".gz".length());
+    else if (fileName.endsWith(".zip"))
+      fileName = fileName.substring(0, fileName.length() - ".zip".length());
+
+    if (fileName.lastIndexOf('.') > -1)
+      fileName = fileName.substring(fileName.lastIndexOf('.') + 1);
+
+    return fileName;
   }
 }

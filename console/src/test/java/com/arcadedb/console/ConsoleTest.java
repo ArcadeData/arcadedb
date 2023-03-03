@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.Edge;
@@ -285,6 +286,49 @@ public class ConsoleTest {
         Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
       }
     }
+  }
+
+  @Test
+  public void testImportCSVConsoleOK() throws IOException {
+    final String DATABASE_PATH = "testCSV";
+
+    FileUtils.deleteRecursively(new File("databases/" + DATABASE_PATH));
+
+    final Console newConsole = new Console();
+    newConsole.parse("create database " + DATABASE_PATH + "");
+    newConsole.parse("set arcadedb.asyncWorkerThreads = 7");
+    newConsole.parse("import database with "//
+        + "vertices = `file://src/test/resources/nodes.csv`,"//
+        + "verticesHeader = 'id',"//
+        + "verticesSkipEntries = 0,"//
+        + "vertexType = 'Page',"//
+        + "typeIdProperty = 'id',"//
+        + "typeIdPropertyIsUnique = true,"//
+        + "typeIdType = 'long',"//
+        + "edges = `file://src/test/resources/edges.csv`,"//
+        + "edgesHeader = 'from,to',"//
+        + "edgesSkipEntries = 0,"//
+        + "edgeType = 'Links',"//
+        + "edgeFromField = 'from'," //
+        + "edgeToField = 'to'" //
+    );
+    newConsole.close();
+
+    int vertices = 0;
+    int edges = 0;
+
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + DATABASE_PATH)) {
+      try (final Database database = factory.open()) {
+        for (Iterator<Record> it = database.iterateType("Page", true); it.hasNext(); ) {
+          final Vertex rec = it.next().asVertex();
+          ++vertices;
+          edges += rec.countEdges(Vertex.DIRECTION.OUT, "Links");
+        }
+      }
+    }
+
+    Assertions.assertEquals(101, vertices);
+    Assertions.assertEquals(105, edges);
   }
 
   @Test
