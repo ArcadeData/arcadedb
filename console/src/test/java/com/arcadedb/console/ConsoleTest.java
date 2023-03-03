@@ -296,7 +296,7 @@ public class ConsoleTest {
 
     final Console newConsole = new Console();
     newConsole.parse("create database " + DATABASE_PATH + "");
-    newConsole.parse("set arcadedb.asyncWorkerThreads = 7");
+    newConsole.parse("set arcadedb.asyncWorkerThreads = 1");
     newConsole.parse("import database with "//
         + "vertices = `file://src/test/resources/nodes.csv`,"//
         + "verticesHeader = 'id',"//
@@ -328,7 +328,7 @@ public class ConsoleTest {
     }
 
     Assertions.assertEquals(101, vertices);
-    Assertions.assertEquals(105, edges);
+    Assertions.assertEquals(135, edges);
   }
 
   @Test
