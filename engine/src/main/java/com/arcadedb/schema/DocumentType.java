@@ -34,6 +34,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.*;
@@ -45,7 +46,10 @@ public class DocumentType {
   protected final String                            name;
   protected final List<DocumentType>                superTypes                   = new ArrayList<>();
   protected final List<DocumentType>                subTypes                     = new ArrayList<>();
-  protected final List<Bucket>                      buckets                      = new ArrayList<>();
+  protected       List<Bucket>                      buckets                      = new ArrayList<>();
+  protected       List<Bucket>                      cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  protected       List<Integer>                     bucketIds                    = new ArrayList<>();
+  protected       List<Integer>                     cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   protected final Map<String, Property>             properties                   = new HashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
@@ -106,6 +110,9 @@ public class DocumentType {
       superTypes.add(superType);
       superType.subTypes.add(this);
 
+      // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE
+      superType.updatePolymorphicBucketsCache(true, buckets, bucketIds);
+
       // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
       final Collection<TypeIndex> indexes = new ArrayList<>(getAllIndexes(true));
       indexes.removeAll(indexesByProperties.values());
@@ -149,8 +156,9 @@ public class DocumentType {
    * @see #addSuperType(String)
    * @see #addSuperType(DocumentType, boolean)
    */
-  public void removeSuperType(final String superTypeName) {
+  public DocumentType removeSuperType(final String superTypeName) {
     removeSuperType(schema.getType(superTypeName));
+    return this;
   }
 
   /**
@@ -161,15 +169,21 @@ public class DocumentType {
    * @see #addSuperType(String)
    * @see #addSuperType(DocumentType, boolean)
    */
-  public void removeSuperType(final DocumentType superType) {
+  public DocumentType removeSuperType(final DocumentType superType) {
     recordFileChanges(() -> {
       if (!superTypes.remove(superType))
         // ALREADY REMOVED SUPER TYPE
         return null;
 
       superType.subTypes.remove(this);
+
+      // TODO: CHECK THE EDGE CASE WHERE THE SAME TYPE IS INHERITED ON MULTIPLE LEVEL AND YOU DON'T NEED TO REMOVE THE BUCKETS
+      // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE
+      superType.updatePolymorphicBucketsCache(false, buckets, bucketIds);
+
       return null;
     });
+    return this;
   }
 
   /**
@@ -213,7 +227,7 @@ public class DocumentType {
    * @see #addSuperType(String)
    * @see #addSuperType(DocumentType, boolean)
    */
-  public void setSuperTypes(List<DocumentType> newSuperTypes) {
+  public DocumentType setSuperTypes(List<DocumentType> newSuperTypes) {
     if (newSuperTypes == null)
       newSuperTypes = Collections.emptyList();
 
@@ -227,6 +241,8 @@ public class DocumentType {
     final List<DocumentType> toAdd = new ArrayList<>(newSuperTypes);
     toAdd.removeAll(commonSuperTypes);
     toAdd.forEach(this::addSuperType);
+
+    return this;
   }
 
   /**
@@ -381,16 +397,17 @@ public class DocumentType {
    * Drops a property from the type. If there is any index on the property a @{@link SchemaException} is thrown.
    *
    * @param propertyName Property name to remove
+   *
+   * @return the property dropped if found
    */
-  public void dropProperty(final String propertyName) {
+  public Property dropProperty(final String propertyName) {
     for (final TypeIndex index : getAllIndexes(true)) {
       if (index.getPropertyNames().contains(propertyName))
         throw new SchemaException("Error on dropping property '" + propertyName + "' because used by index '" + index.getName() + "'");
     }
 
-    recordFileChanges(() -> {
-      properties.remove(propertyName);
-      return null;
+    return recordFileChanges(() -> {
+      return properties.remove(propertyName);
     });
   }
 
@@ -431,13 +448,11 @@ public class DocumentType {
   }
 
   public List<Bucket> getBuckets(final boolean polymorphic) {
-    if (!polymorphic || subTypes.isEmpty())
-      return Collections.unmodifiableList(buckets);
+    return polymorphic ? cachedPolymorphicBuckets : buckets;
+  }
 
-    final List<Bucket> allBuckets = new ArrayList<>(buckets);
-    for (final DocumentType p : subTypes)
-      allBuckets.addAll(p.getBuckets(true));
-    return allBuckets;
+  public List<Integer> getBucketIds(final boolean polymorphic) {
+    return polymorphic ? cachedPolymorphicBucketIds : bucketIds;
   }
 
   public DocumentType addBucket(final Bucket bucket) {
@@ -472,12 +487,13 @@ public class DocumentType {
     return bucketSelectionStrategy;
   }
 
-  public void setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
+  public DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
     this.bucketSelectionStrategy = selectionStrategy;
     this.bucketSelectionStrategy.setType(this);
+    return this;
   }
 
-  public void setBucketSelectionStrategy(final String selectionStrategyName, final Object... args) throws Exception {
+  public DocumentType setBucketSelectionStrategy(final String selectionStrategyName, final Object... args) {
     BucketSelectionStrategy selectionStrategy;
     if (selectionStrategyName.equalsIgnoreCase("thread"))
       selectionStrategy = new ThreadBucketSelectionStrategy();
@@ -496,11 +512,18 @@ public class DocumentType {
         convertedParams.add(FileUtils.getStringContent(params[i]));
 
       selectionStrategy = new PartitionedBucketSelectionStrategy(convertedParams);
-    } else            // GET THE VALUE AS FULL-CLASS-NAME
-      selectionStrategy = (BucketSelectionStrategy) Class.forName(selectionStrategyName).getConstructor().newInstance();
+    } else {
+      // GET THE VALUE AS FULL-CLASS-NAME
+      try {
+        selectionStrategy = (BucketSelectionStrategy) Class.forName(selectionStrategyName).getConstructor().newInstance();
+      } catch (Exception e) {
+        throw new SchemaException("Cannot find bucket selection strategy class '" + selectionStrategyName + "'", e);
+      }
+    }
 
     this.bucketSelectionStrategy = selectionStrategy;
     this.bucketSelectionStrategy.setType(this);
+    return this;
   }
 
   public boolean existsProperty(final String propertyName) {
@@ -809,7 +832,12 @@ public class DocumentType {
                 + "'");
     }
 
-    buckets.add(bucket);
+    buckets = CollectionUtils.addToUnmodifiableList(buckets, bucket);
+    cachedPolymorphicBuckets = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBuckets, bucket);
+
+    bucketIds = CollectionUtils.addToUnmodifiableList(bucketIds, bucket.getId());
+    cachedPolymorphicBucketIds = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBucketIds, bucket.getId());
+
     bucketSelectionStrategy.setType(this);
   }
 
@@ -819,7 +847,11 @@ public class DocumentType {
           "Cannot remove the bucket '" + bucket.getName() + "' to the type '" + name + "', because the bucket is not associated to the type '" + getName()
               + "'");
 
-    buckets.remove(bucket);
+    buckets = CollectionUtils.removeFromUnmodifiableList(buckets, bucket);
+    cachedPolymorphicBuckets = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBuckets, bucket);
+
+    bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getId());
+    cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getId());
   }
 
   public boolean hasBucket(final String bucketName) {
@@ -922,5 +954,18 @@ public class DocumentType {
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {
     return schema.recordFileChanges(callback);
+  }
+
+  private void updatePolymorphicBucketsCache(final boolean add, final List<Bucket> buckets, final List<Integer> bucketIds) {
+    if (add) {
+      cachedPolymorphicBuckets = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBuckets, buckets);
+      cachedPolymorphicBucketIds = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
+    } else {
+      cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBuckets, buckets);
+      cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
+    }
+
+    for (DocumentType s : superTypes)
+      s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
   }
 }

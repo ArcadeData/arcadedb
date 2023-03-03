@@ -18,7 +18,6 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
@@ -226,9 +225,7 @@ public class TransactionIndexContext {
         // LOCK ALL THE FILES IMPACTED BY THE INDEX KEYS TO CHECK FOR UNIQUE CONSTRAINT
         // TODO: OPTIMIZE LOCKING IF STRATEGY IS PARTITIONED: LOCK ONLY THE RELEVANT INDEX
         final DocumentType type = schema.getType(index.getTypeName());
-        final List<Bucket> buckets = type.getBuckets(false);
-        for (final Bucket b : buckets)
-          modifiedFiles.add(b.getId());
+        modifiedFiles.addAll(type.getBucketIds(false));
 
         for (final TypeIndex typeIndex : type.getAllIndexes(true))
           for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())

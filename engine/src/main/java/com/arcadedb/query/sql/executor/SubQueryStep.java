@@ -54,7 +54,7 @@ public class SubQueryStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         Result item = parentRs.next();
-        context.setVariable("$current", item);
+        context.setVariable("current", item);
         return item;
       }
 

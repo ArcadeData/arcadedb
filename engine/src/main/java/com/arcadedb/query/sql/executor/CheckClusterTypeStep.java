@@ -69,8 +69,8 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
       if (typez == null)
         throw new CommandExecutionException("Type not found: " + targetType);
 
-      for (final com.arcadedb.engine.Bucket bucket : typez.getBuckets(true)) {
-        if (bucket.getId() == bucketObj.getId()) {
+      for (final Integer bucketId : typez.getBucketIds(true)) {
+        if (bucketId == bucketObj.getId()) {
           found = true;
           break;
         }

@@ -54,6 +54,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
@@ -753,8 +754,12 @@ public class EmbeddedSchema implements Schema {
         final DocumentType type = database.getSchema().getType(typeName);
 
         // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
-        for (final DocumentType parent : type.superTypes)
+        for (final DocumentType parent : type.superTypes) {
           parent.subTypes.remove(type);
+          parent.cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(parent.cachedPolymorphicBuckets, type.buckets);
+          parent.cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(parent.cachedPolymorphicBucketIds, type.bucketIds);
+        }
+
         for (final DocumentType sub : type.subTypes) {
           sub.superTypes.remove(type);
           for (final DocumentType parent : type.superTypes)

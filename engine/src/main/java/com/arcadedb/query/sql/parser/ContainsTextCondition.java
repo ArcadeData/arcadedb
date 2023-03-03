@@ -92,12 +92,11 @@ public class ContainsTextCondition extends BooleanExpression {
     final List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
 
     final List<String> result = new ArrayList<String>();
-    if (leftX != null) {
+    if (leftX != null)
       result.addAll(leftX);
-    }
-    if (rightX != null) {
+
+    if (rightX != null)
       result.addAll(rightX);
-    }
 
     return result.isEmpty() ? null : result;
   }

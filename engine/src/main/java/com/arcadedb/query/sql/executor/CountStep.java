@@ -40,9 +40,9 @@ public class CountStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (executed) {
+    if (executed)
       return new InternalResultSet();
-    }
+
     final ResultInternal resultRecord = new ResultInternal();
     executed = true;
     long count = 0;

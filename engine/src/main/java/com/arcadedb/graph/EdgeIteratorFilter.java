@@ -63,7 +63,9 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge, nextVertex, vertex.getIdentity());
       }
 
-      return next.asEdge();
+      // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
+      return next.asEdge(false);
+
     } catch (final RecordNotFoundException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s from vertex %s direction %s", e, next, vertex, direction);
 

@@ -80,7 +80,8 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
       ++browsed;
 
       try {
-        return nextEdgeRID.asEdge();
+        // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
+        return nextEdgeRID.asEdge(false);
       } catch (final RecordNotFoundException e) {
         // SKIP
       }

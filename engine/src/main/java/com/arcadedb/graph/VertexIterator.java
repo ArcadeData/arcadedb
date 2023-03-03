@@ -57,7 +57,8 @@ public class VertexIterator extends ResettableIteratorBase<Vertex> {
       ++browsed;
 
       try {
-        return rid.asVertex();
+        // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
+        return rid.asVertex(false);
       } catch (final RecordNotFoundException e) {
         // SKIP
       }

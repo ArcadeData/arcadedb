@@ -26,6 +26,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -1007,7 +1008,13 @@ public class SelectStatementExecutionTest extends TestHelper {
   public void testNonExistingRids() {
     final int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).get(0).getId();
     final ResultSet result = database.query("sql", "select from #" + bucketId + ":100000000");
-    Assertions.assertFalse(result.hasNext());
+    Assertions.assertTrue(result.hasNext());
+
+    try {
+      result.next();
+    } catch (RecordNotFoundException e) {
+    }
+
     result.close();
   }
 
@@ -1087,7 +1094,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     Assertions.assertNotNull(result.next());
     Assertions.assertTrue(result.hasNext());
     Assertions.assertNotNull(result.next());
-    Assertions.assertFalse(result.hasNext());
+
+    Assertions.assertTrue(result.hasNext());
+    try {
+      result.next();
+    } catch (RecordNotFoundException e) {
+    }
     result.close();
   }
 
@@ -3521,7 +3533,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + 2 + "  set tags = ['foo']");
     database.commit();
 
-    try (final ResultSet result = database.query("sql", "select from " + className + 2 + " where (select from " + className + 1 + " where name = 'foo') in tags")) {
+    try (final ResultSet result = database.query("sql",
+        "select from " + className + 2 + " where (select from " + className + 1 + " where name = 'foo') in tags")) {
 
       Assertions.assertTrue(result.hasNext());
       result.next();

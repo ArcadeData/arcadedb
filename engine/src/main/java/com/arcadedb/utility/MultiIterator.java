@@ -50,9 +50,6 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
 
   @Override
   public boolean hasNext() {
-    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
-      throw new TimeoutException("Timeout on iteration");
-
     while (skipped < skip) {
       if (!hasNextInternal()) {
         return false;

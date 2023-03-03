@@ -22,11 +22,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.engine.Bucket;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.utility.Pair;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Pair;
 
 import java.util.*;
 
@@ -116,13 +114,9 @@ public class EdgeLinkedList {
     long total = 0;
 
     final Set<Integer> fileIdToFilter;
-    if (edgeType != null) {
-      final DocumentType type = vertex.getDatabase().getSchema().getType(edgeType);
-      final List<Bucket> buckets = type.getBuckets(true);
-      fileIdToFilter = new HashSet<>(buckets.size());
-      for (final Bucket b : buckets)
-        fileIdToFilter.add(b.getId());
-    } else
+    if (edgeType != null)
+      fileIdToFilter = new HashSet<>(vertex.getDatabase().getSchema().getType(edgeType).getBucketIds(true));
+    else
       fileIdToFilter = null;
 
     EdgeSegment current = lastSegment;

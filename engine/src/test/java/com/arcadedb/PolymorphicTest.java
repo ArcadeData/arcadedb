@@ -32,9 +32,10 @@ public class PolymorphicTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(() -> {
-      //------------
-      // VEHICLES VERTICES
-      //------------
+      //------------------------------------------------------------------------------------------------------------------------------------
+      // Vehicle <|---- Motorcycle
+      //         <|---- Car <|---- Supercar
+      //------------------------------------------------------------------------------------------------------------------------------------
       final VertexType vehicle = database.getSchema().createVertexType("Vehicle", 3);
       vehicle.createProperty("brand", String.class);
 
@@ -48,6 +49,7 @@ public class PolymorphicTest extends TestHelper {
       }
 
       Assertions.assertTrue(database.getSchema().getType("Motorcycle").instanceOf("Vehicle"));
+
       database.getSchema().createVertexType("Car", 3).addSuperType("Vehicle");
       Assertions.assertTrue(database.getSchema().getType("Car").instanceOf("Vehicle"));
 

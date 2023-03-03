@@ -36,6 +36,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   private transient final BasicDatabase database;
   protected final         int           bucketId;
   protected final         long          offset;
+  private                 int           cachedHashCode = 0; // BOOST PERFORMANCE BECAUSE RID.HASHCODE() IS ONE OF THE HOTSPOTS FOR ANY USE CASES
 
   public RID(final BasicDatabase database, final int bucketId, final long offset) {
     if (database == null)
@@ -134,7 +135,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Edge asEdge() {
-    return asEdge(true);
+    return asEdge(false);
   }
 
   public Edge asEdge(final boolean loadContent) {
@@ -150,12 +151,17 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
       return false;
 
     final RID o = ((Identifiable) obj).getIdentity();
-    return Objects.equals(database, o.getDatabase()) && bucketId == o.bucketId && offset == o.offset;
+    return bucketId == o.bucketId && offset == o.offset && Objects.equals(database, o.getDatabase());
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(database, bucketId, offset);
+    if (cachedHashCode == 0) {
+      cachedHashCode = database != null ? database.hashCode() : 0;
+      cachedHashCode = 31 * cachedHashCode + bucketId;
+      cachedHashCode = 31 * cachedHashCode + (int) offset;
+    }
+    return cachedHashCode;
   }
 
   @Override

@@ -20,7 +20,6 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 
@@ -28,9 +27,9 @@ import java.util.*;
 import java.util.logging.*;
 
 public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
-  private   int          lastElementPosition = currentPosition.get();
-  protected RID          nextEdge;
-  protected RID          nextVertex;
+  private         int          lastElementPosition = currentPosition.get();
+  protected       RID          nextEdge;
+  protected       RID          nextVertex;
   protected       RID          next;
   protected final Set<Integer> validBuckets;
 
@@ -44,9 +43,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
       final EdgeType type = (EdgeType) database.getSchema().getType(e);
 
-      final List<Bucket> buckets = type.getBuckets(true);
-      for (final Bucket b : buckets)
-        validBuckets.add(b.getId());
+      validBuckets.addAll(type.getBucketIds(true));
     }
   }
 
@@ -67,7 +64,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
           if (nextEdge.getPosition() > -1)
             try {
-              database.lookupByRID(nextEdge, true);
+              database.lookupByRID(nextEdge, false);
             } catch (final Exception e) {
               handleCorruption(e, nextEdge, nextVertex);
               continue;
@@ -78,7 +75,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
           nextVertex = next = currentContainer.getRID(currentPosition);
 
           try {
-            database.lookupByRID(nextVertex, true);
+            database.lookupByRID(nextVertex, false);
           } catch (final Exception e) {
             handleCorruption(e, nextEdge, nextVertex);
             continue;

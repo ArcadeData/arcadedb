@@ -75,4 +75,47 @@ public class CollectionUtils {
       return resultset.next().getProperty(propertyName);
     return null;
   }
+
+  public static <T> List<T> addToUnmodifiableList(List<T> list, T objToAdd) {
+    final ArrayList<T> result = new ArrayList<>(list.size() + 1);
+    result.addAll(list);
+    result.add(objToAdd);
+    return Collections.unmodifiableList(result);
+  }
+
+  public static <T> List<T> removeFromUnmodifiableList(List<T> list, T objToRemove) {
+    final ArrayList<T> result = new ArrayList<>(list.size() - 1);
+    for (int i = 0; i < list.size(); i++) {
+      final T o = list.get(i);
+      if (Objects.equals(o, objToRemove))
+        continue;
+      result.add(o);
+    }
+    return Collections.unmodifiableList(result);
+  }
+
+  public static <T> List<T> addAllToUnmodifiableList(List<T> list, List<T> objsToAdd) {
+    final ArrayList<T> result = new ArrayList<>(list.size() + objsToAdd.size());
+    result.addAll(list);
+    result.addAll(objsToAdd);
+    return Collections.unmodifiableList(result);
+  }
+
+  public static <T> List<T> removeAllFromUnmodifiableList(List<T> list, List<T> objsToRemove) {
+    final ArrayList<T> result = new ArrayList<>(list.size() - objsToRemove.size());
+    for (int i = 0; i < list.size(); i++) {
+      final T o = list.get(i);
+
+      boolean found = false;
+      for (int k = 0; k < objsToRemove.size(); k++) {
+        if (Objects.equals(o, objsToRemove.get(k))) {
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+        result.add(o);
+    }
+    return Collections.unmodifiableList(result);
+  }
 }

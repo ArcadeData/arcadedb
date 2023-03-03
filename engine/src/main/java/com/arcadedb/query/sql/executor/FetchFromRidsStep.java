@@ -62,7 +62,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 
           Identifiable nextDoc = null;
           try {
-            nextDoc = context.getDatabase().lookupByRID(nextRid, true);
+            nextDoc = context.getDatabase().lookupByRID(nextRid, false);
           } catch (final RecordNotFoundException e) {
             // IGNORE HERE< HANDLED BELOW
           }

@@ -187,16 +187,15 @@ public class ContainsAllCondition extends BooleanExpression {
     final List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
     final List<String> rightBlockX = rightBlock == null ? null : rightBlock.getMatchPatternInvolvedAliases();
 
-    final List<String> result = new ArrayList<String>();
-    if (leftX != null) {
+    final List<String> result = new ArrayList<>();
+    if (leftX != null)
       result.addAll(leftX);
-    }
-    if (rightX != null) {
+
+    if (rightX != null)
       result.addAll(rightX);
-    }
-    if (rightBlockX != null) {
+
+    if (rightBlockX != null)
       result.addAll(rightBlockX);
-    }
 
     return result.isEmpty() ? null : result;
   }

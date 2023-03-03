@@ -368,16 +368,19 @@ public class BasicGraphTest extends BaseGraphTest {
 
       Assertions.assertFalse(edges.hasNext());
 
-      Vertex vOut = e2.getOutVertex();
-      edges = vOut.getEdges(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(edges.hasNext());
+      try {
+        e2.getOutVertex();
+        Assertions.fail();
+      } catch (RecordNotFoundException e) {
+        // EXPECTED
+      }
 
-      edges.next();
-      Assertions.assertFalse(edges.hasNext());
-
-      Vertex vIn = e2.getInVertex();
-      edges = vIn.getEdges(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertFalse(edges.hasNext());
+      try {
+        e2.getInVertex();
+        Assertions.fail();
+      } catch (RecordNotFoundException e) {
+        // EXPECTED
+      }
 
       // RELOAD AND CHECK AGAIN
       // -----------------------
@@ -385,18 +388,8 @@ public class BasicGraphTest extends BaseGraphTest {
         database.lookupByRID(e2.getIdentity(), true);
         Assertions.fail("Expected deleted record");
       } catch (final RecordNotFoundException e) {
+        // EXPECTED
       }
-
-      vOut = e2.getOutVertex();
-      edges = vOut.getEdges(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(edges.hasNext());
-
-      edges.next();
-      Assertions.assertFalse(edges.hasNext());
-
-      vIn = e2.getInVertex();
-      edges = vIn.getEdges(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertFalse(edges.hasNext());
 
     } finally {
       database.commit();
@@ -488,7 +481,8 @@ public class BasicGraphTest extends BaseGraphTest {
     try {
       ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("ciao") {
         @Override
-        public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+        public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+            final CommandContext iContext) {
           return "Ciao";
         }
 

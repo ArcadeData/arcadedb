@@ -45,7 +45,7 @@ public class FunctionAggregationContext implements AggregationContext {
 
   @Override
   public void apply(final Result next, final CommandContext context) {
-    final List<Object> paramValues = new ArrayList<>();
+    final List<Object> paramValues = new ArrayList<>(params.size());
     for (final Expression expr : params)
       paramValues.add(expr.execute(next, context));
 

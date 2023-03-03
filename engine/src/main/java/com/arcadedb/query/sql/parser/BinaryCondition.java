@@ -191,7 +191,7 @@ public class BinaryCondition extends BooleanExpression {
       return leftX;
     }
 
-    final List<String> result = new ArrayList<>();
+    final List<String> result = new ArrayList<>(leftX.size() + rightX.size());
     result.addAll(leftX);
     result.addAll(rightX);
     return result;

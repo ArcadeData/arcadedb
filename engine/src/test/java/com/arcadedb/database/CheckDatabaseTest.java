@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeLinkedList;
 import com.arcadedb.graph.MutableVertex;
@@ -317,8 +318,15 @@ public class CheckDatabaseTest extends TestHelper {
     final Iterable<Edge> iter = rootVertex.asVertex().getEdges(Vertex.DIRECTION.OUT);
     int totalEdges = 0;
     try {
-      for (final Edge e : iter)
-        ++totalEdges;
+      for (final Edge e : iter) {
+        try {
+          // FORCE THE LOADING
+          e.has("");
+          ++totalEdges;
+        } catch (RecordNotFoundException Ve) {
+          // IGNORE IT
+        }
+      }
     } catch (final NoSuchElementException e) {
       // EXPECTED FOR BROKEN EDGES WHEN THE FIRST ITEM (LAST IN THE ITERATOR) IS DELETED
     }

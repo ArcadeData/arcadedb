@@ -326,7 +326,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       checkDatabaseIsOpen();
 
       // FORCE THE RESET OF TL
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(databasePath);
       TransactionContext tx = current.getLastTransaction();
       if (tx.isActive()) {
         // CREATE A NESTED TX
@@ -1658,7 +1658,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected void checkDatabaseIsOpen() {
     if (!open)
       throw new DatabaseIsClosedException(name);
-
     if (DatabaseContext.INSTANCE.getContext(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
   }
