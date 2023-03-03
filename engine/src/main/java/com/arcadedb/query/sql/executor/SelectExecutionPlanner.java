@@ -52,6 +52,7 @@ import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LetClause;
 import com.arcadedb.query.sql.parser.LetItem;
 import com.arcadedb.query.sql.parser.LtOperator;
+import com.arcadedb.query.sql.parser.Node;
 import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.OrderBy;
 import com.arcadedb.query.sql.parser.OrderByItem;
@@ -800,6 +801,34 @@ public class SelectExecutionPlanner {
       } else {
         result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
       }
+    } else if (target.getResultSet() != null) {
+      result.chain(new FetchFromResultsetStep(target.getResultSet(), context, profilingEnabled));
+    } else if (target.jjtGetNumChildren() == 1) {
+      // FIX TO HANDLE FROM VARIABLES AS TARGET
+      final Node child = target.jjtGetChild(0);
+
+      if (child instanceof Identifier && ((Identifier) child).getStringValue().startsWith("$")) {
+        final Object variable = context.getVariable(((Identifier) child).getStringValue());
+
+        if (variable instanceof Iterable)
+          info.fetchExecutionPlan.chain(new FetchFromRidsStep((Iterable<RID>) variable, context, profilingEnabled));
+        else if (variable instanceof ResultSet) {
+          final ResultSet resultSet = (ResultSet) variable;
+          info.fetchExecutionPlan.chain(new FetchFromRidsStep(() -> new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+              return resultSet.hasNext();
+            }
+
+            @Override
+            public RID next() {
+              return resultSet.nextIfAvailable().getIdentity().get();
+            }
+          }, context, profilingEnabled));
+        }
+
+      } else
+        throw new UnsupportedOperationException();
     } else {
       throw new UnsupportedOperationException();
     }
@@ -2278,9 +2307,12 @@ public class SelectExecutionPlanner {
     if (info.target == null)
       return Collections.emptySet();
 
+    final FromItem item = info.target.getItem();
+    if (item.getResultSet() != null)
+      return Collections.emptySet();
+
     final Set<String> result = new HashSet<>();
     final Database db = context.getDatabase();
-    final FromItem item = info.target.getItem();
 
     if (item.getIdentifier() != null) {
       if (item.getIdentifier().getStringValue().startsWith("$")) {

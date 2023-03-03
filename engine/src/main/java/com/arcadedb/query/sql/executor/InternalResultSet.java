@@ -37,6 +37,14 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
     add(result);
   }
 
+  /**
+   * Copy constructor.
+   */
+  public InternalResultSet(final ResultSet resultSet) {
+    while (resultSet.hasNext())
+      add(resultSet.next());
+  }
+
   @Override
   public boolean hasNext() {
     return content.size() > next;
@@ -97,6 +105,7 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
     return content.size();
   }
 
+  @Override
   public InternalResultSet copy() {
     final InternalResultSet copy = new InternalResultSet();
     copy.content = this.content;

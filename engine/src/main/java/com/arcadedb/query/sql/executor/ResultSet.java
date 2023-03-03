@@ -214,4 +214,11 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
       }
     }, false);
   }
+
+  /**
+   * Creates a copy of the resultset. If the resultset is not resettable, the iteration will be completely consumed.
+   */
+  default ResultSet copy(){
+    return new InternalResultSet(this);
+  }
 }

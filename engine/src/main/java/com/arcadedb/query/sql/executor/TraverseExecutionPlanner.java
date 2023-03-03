@@ -119,6 +119,8 @@ public class TraverseExecutionPlanner {
       handleIndexAsTarget(result, target.getIndex(), context, profilingEnabled);
     } else if (target.getRids() != null && target.getRids().size() > 0) {
       handleRidsAsTarget(result, target.getRids(), context, profilingEnabled);
+    } else if (target.getResultSet() != null) {
+      result.chain(new FetchFromResultsetStep(target.getResultSet(), context, profilingEnabled));
     } else {
       throw new UnsupportedOperationException();
     }

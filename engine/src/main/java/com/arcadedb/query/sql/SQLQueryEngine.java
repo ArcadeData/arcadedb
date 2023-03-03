@@ -134,8 +134,14 @@ public class SQLQueryEngine implements QueryEngine {
           for (final Object inner : MultiValue.getMultiValueIterable(o, false)) {
             result.addIterator(iCallable.call((Identifiable) inner));
           }
-        } else
-          result.addIterator(iCallable.call((Identifiable) o));
+        } else {
+          if (o instanceof Identifiable)
+            result.addIterator(iCallable.call((Identifiable) o));
+          else if (o instanceof Result) {
+            if (((Result) o).getIdentity().isPresent())
+              result.addIterator(iCallable.call(((Result) o).getIdentity().get()));
+          }
+        }
       }
       return result;
     } else if (iCurrent instanceof Identifiable) {

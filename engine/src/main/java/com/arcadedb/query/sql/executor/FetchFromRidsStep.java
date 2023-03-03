@@ -30,11 +30,11 @@ import java.util.*;
  * Created by luigidellaquila on 22/07/16.
  */
 public class FetchFromRidsStep extends AbstractExecutionStep {
-  private final Collection<RID> rids;
-  private       Iterator<RID>   iterator;
-  private       Result          nextResult = null;
+  private final Iterable<RID> rids;
+  private       Iterator<RID> iterator;
+  private       Result        nextResult = null;
 
-  public FetchFromRidsStep(final Collection<RID> rids, final CommandContext context, final boolean profilingEnabled) {
+  public FetchFromRidsStep(final Iterable<RID> rids, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.rids = rids;
     reset();

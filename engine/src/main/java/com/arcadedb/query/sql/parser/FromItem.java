@@ -30,6 +30,7 @@ import java.util.stream.*;
 public class FromItem extends SimpleNode {
   protected List<Rid>            rids;
   protected List<InputParameter> inputParams;
+  protected ResultSet            resultSet;
   protected Bucket               bucket;
   protected BucketList           bucketList;
   protected IndexIdentifier      index;
@@ -104,14 +105,19 @@ public class FromItem extends SimpleNode {
       functionCall.toString(params, builder);
     } else if (identifier != null) {
       identifier.toString(params, builder);
-    }
-    if (modifier != null) {
+    } else if (resultSet != null)
+      builder.append("resultSet");
+
+    if (modifier != null)
       modifier.toString(params, builder);
-    }
   }
 
   public Identifier getIdentifier() {
     return identifier;
+  }
+
+  public ResultSet getResultSet() {
+    return resultSet;
   }
 
   public List<Rid> getRids() {
@@ -171,6 +177,7 @@ public class FromItem extends SimpleNode {
     result.identifier = identifier == null ? null : identifier.copy();
     result.functionCall = functionCall == null ? null : functionCall.copy();
     result.modifier = modifier == null ? null : modifier.copy();
+    result.resultSet = resultSet == null ? null : resultSet.copy();
 
     return result;
   }
@@ -204,6 +211,8 @@ public class FromItem extends SimpleNode {
       return false;
     if (!Objects.equals(functionCall, oFromItem.functionCall))
       return false;
+    if (!Objects.equals(resultSet, oFromItem.resultSet))
+      return false;
     return Objects.equals(modifier, oFromItem.modifier);
   }
 
@@ -219,6 +228,7 @@ public class FromItem extends SimpleNode {
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     result = 31 * result + (identifier != null ? identifier.hashCode() : 0);
     result = 31 * result + (functionCall != null ? functionCall.hashCode() : 0);
+    result = 31 * result + (resultSet != null ? resultSet.hashCode() : 0);
     result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
     return result;
   }
@@ -269,32 +279,31 @@ public class FromItem extends SimpleNode {
 
   @Override
   public boolean isCacheable() {
-    if (modifier != null) {
+    if (modifier != null)
       return false;
-    }
-    if (inputParam != null) {
+
+    if (inputParam != null)
       return false;
-    }
-    if (inputParams != null && !inputParams.isEmpty()) {
+
+    if (inputParams != null && !inputParams.isEmpty())
       return false;
-    }
-    if (statement != null) {
+
+    if (statement != null)
       return statement.executionPlanCanBeCached();
-    }
-    if (functionCall != null) {
+
+    if (functionCall != null)
       return functionCall.isCacheable();
-    }
 
     return true;
   }
 
   public boolean refersToParent() {
-    if (modifier != null && modifier.refersToParent()) {
+    if (modifier != null && modifier.refersToParent())
       return true;
-    }
-    if (statement != null && statement.refersToParent()) {
+
+    if (statement != null && statement.refersToParent())
       return true;
-    }
+
     return functionCall != null && functionCall.refersToParent();
   }
 
@@ -302,10 +311,7 @@ public class FromItem extends SimpleNode {
     if (value instanceof Identifiable)
       rids.add(new Rid(((Identifiable) value).getIdentity()));
     else if (value instanceof ResultSet) {
-      final ResultSet rs = (ResultSet) value;
-      while (rs.hasNext()) {
-        setValue(rs.next());
-      }
+      resultSet = (ResultSet) value;
     } else if (value instanceof Result) {
       final Result r = (Result) value;
       if (r.isElement())
