@@ -833,6 +833,10 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
       if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
         final int sep = detail.lastIndexOf('.');
         return new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
+      } else if (exception.equals(RecordNotFoundException.class.getName())) {
+        final int begin = detail.indexOf("#");
+        final int end = detail.indexOf(" ", begin);
+        return new RecordNotFoundException(detail, new RID(this, detail.substring(begin, end)));
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
