@@ -152,12 +152,16 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
   public Iterator<Edge> edges(final Direction direction, final String... edgeLabels) {
     final List<Edge> result = new ArrayList<>();
 
-    if (edgeLabels.length == 0)
-      for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction)))
-        result.add(new ArcadeEdge(this.graph, edge));
-    else
+    if (edgeLabels.length == 0) {
+      for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction))) {
+        if (graph.getDatabase().existsRecord(edge.getIdentity())) // FILTER OUT DELETED EDGES
+          result.add(new ArcadeEdge(this.graph, edge));
+      }
+    } else {
       for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels))
-        result.add(new ArcadeEdge(this.graph, edge));
+        if (graph.getDatabase().existsRecord(edge.getIdentity())) // FILTER OUT DELETED EDGES
+          result.add(new ArcadeEdge(this.graph, edge));
+    }
 
     return result.iterator();
   }
@@ -166,12 +170,16 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
   public Iterator<Vertex> vertices(final Direction direction, final String... edgeLabels) {
     final List<Vertex> result = new ArrayList<>();
 
-    if (edgeLabels.length == 0)
-      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction)))
-        result.add(new ArcadeVertex(this.graph, vertex));
-    else
+    if (edgeLabels.length == 0) {
+      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction))) {
+        if (graph.getDatabase().existsRecord(vertex.getIdentity())) // FILTER OUT DELETED VERTICES
+          result.add(new ArcadeVertex(this.graph, vertex));
+      }
+    } else {
       for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels))
-        result.add(new ArcadeVertex(this.graph, vertex));
+        if (graph.getDatabase().existsRecord(vertex.getIdentity())) // FILTER OUT DELETED VERTICES
+          result.add(new ArcadeVertex(this.graph, vertex));
+    }
 
     return result.iterator();
   }

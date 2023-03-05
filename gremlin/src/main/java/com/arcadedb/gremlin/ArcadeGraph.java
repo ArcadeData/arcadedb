@@ -216,7 +216,8 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream().map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
+      return resultset.stream().filter((a) -> a.getIdentity().isPresent() ? database.existsRecord(a.getIdentity().get()) : true)
+          .map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
     }
 
     final List<Vertex> resultSet = new ArrayList<>(vertexIds.length);
@@ -277,7 +278,8 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultSet = this.database.query("sql", query.toString());
-      return resultSet.stream().map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
+      return resultSet.stream().filter((a) -> a.getIdentity().isPresent() ? database.existsRecord(a.getIdentity().get()) : true)
+          .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
 
     }
 
