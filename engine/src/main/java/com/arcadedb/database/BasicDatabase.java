@@ -139,6 +139,15 @@ public interface BasicDatabase extends AutoCloseable {
   Record lookupByRID(RID rid, boolean loadContent);
 
   /**
+   * Checks if the record exists.
+   *
+   * @param rid – @RID record id
+   *
+   * @return true if the record exists, otherwise false
+   */
+  boolean existsRecord(RID rid);
+
+  /**
    * Deletes a record. The actual deletion will be effective only at transaction commit time. This operation is not allowed in databases open in read-only mode.
    *
    * @param record The record to delete

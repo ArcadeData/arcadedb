@@ -195,6 +195,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public boolean existsRecord(final RID rid) {
+    return wrapped.existsRecord(rid);
+  }
+
+  @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
     return wrapped.lookupByRID(rid, loadContent);
   }

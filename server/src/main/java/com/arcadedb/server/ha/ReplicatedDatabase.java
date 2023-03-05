@@ -427,6 +427,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public boolean existsRecord(RID rid) {
+    return proxied.existsRecord(rid);
+  }
+
+  @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
     return proxied.lookupByRID(rid, loadContent);
   }

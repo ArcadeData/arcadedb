@@ -28,6 +28,7 @@ public class DatabaseStats {
   public final AtomicLong readRecord    = new AtomicLong();
   public final AtomicLong updateRecord  = new AtomicLong();
   public final AtomicLong deleteRecord  = new AtomicLong();
+  public final AtomicLong existsRecord  = new AtomicLong();
   public final AtomicLong queries       = new AtomicLong();
   public final AtomicLong commands      = new AtomicLong();
   public final AtomicLong scanType      = new AtomicLong();
@@ -45,6 +46,7 @@ public class DatabaseStats {
     map.put("readRecord", readRecord.get());
     map.put("updateRecord", updateRecord.get());
     map.put("deleteRecord", deleteRecord.get());
+    map.put("existsRecord", existsRecord.get());
     map.put("queries", queries.get());
     map.put("commands", commands.get());
     map.put("scanType", scanType.get());

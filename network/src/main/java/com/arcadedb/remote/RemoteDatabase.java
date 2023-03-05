@@ -340,6 +340,19 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   @Override
+  public boolean existsRecord(RID rid) {
+    stats.existsRecord.incrementAndGet();
+    if (rid == null)
+      throw new IllegalArgumentException("Record is null");
+
+    try {
+      return lookupByRID(rid, false) != null;
+    } catch (RecordNotFoundException e) {
+      return false;
+    }
+  }
+
+  @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
     stats.readRecord.incrementAndGet();
     if (rid == null)

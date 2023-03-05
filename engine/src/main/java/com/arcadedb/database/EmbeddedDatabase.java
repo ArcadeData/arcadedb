@@ -602,6 +602,27 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public boolean existsRecord(final RID rid) {
+    stats.existsRecord.incrementAndGet();
+
+    if (rid == null)
+      throw new IllegalArgumentException("Record is null");
+
+    return (boolean) executeInReadLock((Callable<Object>) () -> {
+
+      checkDatabaseIsOpen();
+
+      // CHECK IN TX CACHE FIRST
+      final TransactionContext tx = getTransaction();
+      Record record = tx.getRecordFromCache(rid);
+      if (record != null)
+        return true;
+
+      return schema.getBucketById(rid.getBucketId()).existsRecord(rid);
+    });
+  }
+
+  @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
     stats.readRecord.incrementAndGet();
 
