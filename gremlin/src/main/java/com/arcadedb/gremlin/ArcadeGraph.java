@@ -238,9 +238,10 @@ public class ArcadeGraph implements Graph, Closeable {
         continue;
 
       try {
-        final Record r = database.lookupByRID(rid, false);
-        if (r instanceof com.arcadedb.graph.Vertex)
+        final Record r = database.lookupByRID(rid, true);
+        if (r instanceof com.arcadedb.graph.Vertex) {
           resultSet.add(new ArcadeVertex(this, ((com.arcadedb.graph.Vertex) r)));
+        }
       } catch (final RecordNotFoundException e) {
         // NP, IGNORE IT
       }
