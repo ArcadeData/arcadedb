@@ -995,6 +995,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (attempts < 1)
       attempts = 1;
 
+    final int retryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
 
@@ -1023,6 +1025,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
         if (error != null)
           error.call(e);
+
+        delayBetweenRetries(retryDelay);
 
       } catch (final Throwable e) {
         final TransactionContext tx = getTransaction();
@@ -1697,6 +1701,16 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           Object defValue = p.getDefaultValue();
           doc.set(pName, defValue);
         }
+      }
+    }
+  }
+
+  private static void delayBetweenRetries(final int retryDelay) {
+    if (retryDelay > 0) {
+      try {
+        Thread.sleep(1 + new Random().nextInt(retryDelay));
+      } catch (InterruptedException ex) {
+        Thread.currentThread().interrupt();
       }
     }
   }

@@ -200,6 +200,10 @@ public enum GlobalConfiguration {
 
   TX_RETRIES("arcadedb.txRetries", SCOPE.DATABASE, "Number of retries in case of MVCC exception", Integer.class, 3),
 
+  TX_RETRY_DELAY("arcadedb.txRetryDelay", SCOPE.DATABASE,
+      "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
+      Integer.class, 100),
+
   // SQL
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache", Integer.class, 300),
 

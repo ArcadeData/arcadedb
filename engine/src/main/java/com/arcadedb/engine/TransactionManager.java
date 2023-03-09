@@ -413,8 +413,7 @@ public class TransactionManager {
 
     final List<Integer> lockedFiles = new ArrayList<>(orderedFilesIds.size());
 
-    boolean error = false;
-    Integer attemptFileId = null;
+    Integer attemptFileId;
     for (final Integer fileId : orderedFilesIds) {
       attemptFileId = fileId;
 
@@ -423,27 +422,22 @@ public class TransactionManager {
       if (lock == LockManager.LOCK_STATUS.YES)
         lockedFiles.add(fileId);
       else if (lock == LockManager.LOCK_STATUS.NO) {
-        error = true;
-        break;
+        // ERROR: UNLOCK LOCKED FILES
+        unlockFilesInOrder(lockedFiles);
+
+        if (attemptFileId != null)
+          throw new TimeoutException(
+              "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName() + ") during commit (fileIds="
+                  + orderedFilesIds + ")");
+
+        throw new TimeoutException("Timeout on locking files during commit (fileIds=" + orderedFilesIds + ")");
       }
     }
 
-    if (!error) {
-      // OK: ALL LOCKED
-      LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().getId());
-      // RETURN ONLY THE LOCKED FILES
-      return lockedFiles;
-    }
-
-    // ERROR: UNLOCK LOCKED FILES
-    unlockFilesInOrder(lockedFiles);
-
-    if (attemptFileId != null)
-      throw new TimeoutException(
-          "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName() + ") during commit (fileIds="
-              + orderedFilesIds + ")");
-
-    throw new TimeoutException("Timeout on locking files during commit (fileIds=" + orderedFilesIds + ")");
+    // OK: ALL LOCKED
+    LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().getId());
+    // RETURN ONLY THE LOCKED FILES
+    return lockedFiles;
   }
 
   public void unlockFilesInOrder(final List<Integer> lockedFileIds) {

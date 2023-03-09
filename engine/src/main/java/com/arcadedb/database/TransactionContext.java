@@ -26,7 +26,6 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedFile;
-import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -112,7 +111,6 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already in commit phase");
 
     final TransactionPhase1 phase1 = commit1stPhase(true);
-
     if (phase1 != null)
       commit2ndPhase(phase1);
     else
@@ -197,20 +195,16 @@ public class TransactionContext implements Transaction {
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
       if (modifiedPages != null) {
         final int dictionaryId = database.getSchema().getDictionary().getId();
-        boolean reloadDictionary = false;
 
         for (final PageId pageId : modifiedPages.keySet()) {
           if (dictionaryId == pageId.getFileId()) {
-            reloadDictionary = true;
+            // RELOAD THE DICTIONARY
+            try {
+              database.getSchema().getDictionary().reload();
+            } catch (final IOException e) {
+              throw new SchemaException("Error on reloading schema dictionary");
+            }
             break;
-          }
-        }
-
-        if (reloadDictionary) {
-          try {
-            database.getSchema().getDictionary().reload();
-          } catch (final IOException e) {
-            throw new SchemaException("Error on reloading schema dictionary");
           }
         }
       }
@@ -593,10 +587,8 @@ public class TransactionContext implements Transaction {
   public void reset() {
     status = STATUS.INACTIVE;
 
-    final TransactionManager txManager = database.getTransactionManager();
-
     if (lockedFiles != null) {
-      txManager.unlockFilesInOrder(lockedFiles);
+      database.getTransactionManager().unlockFilesInOrder(lockedFiles);
       lockedFiles = null;
     }
 
