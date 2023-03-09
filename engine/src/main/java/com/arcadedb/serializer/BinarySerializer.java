@@ -641,12 +641,10 @@ public class BinarySerializer {
 
     final int headerEndOffset = header.position();
 
-    header.append(content);
-
     // UPDATE HEADER SIZE
     header.putInt(headerSizePosition, headerEndOffset);
 
-    header.position(header.size());
+    header.append(content);
     header.flip();
     return header;
   }

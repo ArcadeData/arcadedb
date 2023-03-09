@@ -158,10 +158,10 @@ public class PageManager extends LockContext {
     }
   }
 
-  public BasePage getPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
+  public ImmutablePage getPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
     checkForPageDisposal();
 
-    BasePage page = readCache.get(pageId);
+    ImmutablePage page = readCache.get(pageId);
     if (page == null) {
       page = loadPage(pageId, pageSize, createIfNotExists);
       if (isNew)
@@ -188,7 +188,7 @@ public class PageManager extends LockContext {
           "Concurrent modification on page " + pageId + " file with id " + pageId.getFileId() + " does not exist anymore. Please retry the operation (threadId="
               + Thread.currentThread().getId() + ")");
 
-    final BasePage mostRecentPage = getPage(pageId, page.getPhysicalSize(), isNew, false);
+    final ImmutablePage mostRecentPage = getPage(pageId, page.getPhysicalSize(), isNew, false);
 
     if (mostRecentPage != null && mostRecentPage.getVersion() != page.getVersion()) {
       totalConcurrentModificationExceptions.incrementAndGet();
@@ -223,7 +223,7 @@ public class PageManager extends LockContext {
   public MutablePage updatePage(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
     final PageId pageId = page.getPageId();
 
-    final BasePage mostRecentPage = getPage(pageId, page.getPhysicalSize(), isNew, true);
+    final ImmutablePage mostRecentPage = getPage(pageId, page.getPhysicalSize(), isNew, true);
     if (mostRecentPage != null) {
       if (mostRecentPage.getVersion() != page.getVersion()) {
         totalConcurrentModificationExceptions.incrementAndGet();
