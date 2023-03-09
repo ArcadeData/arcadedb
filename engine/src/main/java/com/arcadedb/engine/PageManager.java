@@ -41,9 +41,7 @@ import java.util.logging.*;
 public class PageManager extends LockContext {
   private final FileManager                          fileManager;
   private final ConcurrentMap<PageId, ImmutablePage> readCache;
-  private final ConcurrentMap<PageId, MutablePage>   writeCache;
   private final TransactionManager                   txManager;
-  private       boolean                              flushOnlyAtClose;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final ConcurrentMap<PageId, Boolean>       pendingFlushPages                     = new ConcurrentHashMap<>();
   private final long                                 maxRAM;
@@ -81,7 +79,6 @@ public class PageManager extends LockContext {
     public long evictionRuns;
     public long pagesEvicted;
     public int  readCachePages;
-    public int  writeCachePages;
   }
 
   public PageManager(final FileManager fileManager, final TransactionManager txManager, final ContextConfiguration configuration) {
@@ -90,9 +87,6 @@ public class PageManager extends LockContext {
 
     this.freePageRAM = configuration.getValueAsInteger(GlobalConfiguration.FREE_PAGE_RAM);
     this.readCache = new ConcurrentHashMap<>(configuration.getValueAsInteger(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE));
-    this.writeCache = new ConcurrentHashMap<>(configuration.getValueAsInteger(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE));
-
-    this.flushOnlyAtClose = configuration.getValueAsBoolean(GlobalConfiguration.FLUSH_ONLY_AT_CLOSE);
 
     maxRAM = configuration.getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM) * 1024 * 1024;
     if (maxRAM < 0)
@@ -112,22 +106,9 @@ public class PageManager extends LockContext {
       }
     }
 
-    // FLUSH REMAINING PAGES
-    final boolean flushOnlyAtCloseOld = flushOnlyAtClose;
-    flushOnlyAtClose = true;
-    for (final MutablePage p : writeCache.values()) {
-      try {
-        flushPage(p);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on flushing page %s at closing (threadId=%d)", e, p, Thread.currentThread().getId());
-      }
-    }
-    writeCache.clear();
     readCache.clear();
     totalReadCacheRAM.set(0);
     totalWriteCacheRAM.set(0);
-
-    flushOnlyAtClose = flushOnlyAtCloseOld;
   }
 
   public void suspendFlushAndExecute(final CallableNoReturn callback) throws IOException, InterruptedException {
@@ -157,7 +138,6 @@ public class PageManager extends LockContext {
       }
     }
 
-    writeCache.clear();
     readCache.clear();
     totalReadCacheRAM.set(0);
     totalWriteCacheRAM.set(0);
@@ -169,15 +149,6 @@ public class PageManager extends LockContext {
   }
 
   public void deleteFile(final int fileId) {
-    // REMOVE WRITE CACHE 1ST TO REDUCE THE CHANCE TO FLUSH PAGES FOR THE FILE TO DROP
-    for (final Iterator<MutablePage> it = writeCache.values().iterator(); it.hasNext(); ) {
-      final MutablePage p = it.next();
-      if (p.getPageId().getFileId() == fileId) {
-        totalWriteCacheRAM.addAndGet(-1L * p.getPhysicalSize());
-        it.remove();
-      }
-    }
-
     for (final Iterator<ImmutablePage> it = readCache.values().iterator(); it.hasNext(); ) {
       final ImmutablePage p = it.next();
       if (p.getPageId().getFileId() == fileId) {
@@ -190,26 +161,21 @@ public class PageManager extends LockContext {
   public BasePage getPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
     checkForPageDisposal();
 
-    BasePage page = writeCache.get(pageId);
-    if (page != null)
+    BasePage page = readCache.get(pageId);
+    if (page == null) {
+      page = loadPage(pageId, pageSize, createIfNotExists);
+      if (isNew)
+        return page;
+
+      cacheMiss.incrementAndGet();
+
+    } else {
       cacheHits.incrementAndGet();
-    else {
-      page = readCache.get(pageId);
-      if (page == null) {
-        page = loadPage(pageId, pageSize, createIfNotExists);
-        if (isNew)
-          return page;
-
-        cacheMiss.incrementAndGet();
-
-      } else {
-        cacheHits.incrementAndGet();
-        page.updateLastAccesses();
-      }
-
-      if (page == null)
-        throw new IllegalArgumentException("Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().getId() + ")");
+      page.updateLastAccesses();
     }
+
+    if (page == null)
+      throw new IllegalArgumentException("Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().getId() + ")");
 
     return page;
   }
@@ -238,16 +204,16 @@ public class PageManager extends LockContext {
       throws IOException, InterruptedException {
     lock();
     try {
-      final List<MutablePage> pagesToFlush = new ArrayList<>((newPages != null ? newPages.size() : 0) + modifiedPages.size());
+      final List<MutablePage> pagesToWrite = new ArrayList<>((newPages != null ? newPages.size() : 0) + modifiedPages.size());
 
       if (newPages != null)
         for (final MutablePage p : newPages.values())
-          pagesToFlush.add(updatePage(p, true));
+          pagesToWrite.add(updatePage(p, true));
 
       for (final MutablePage p : modifiedPages.values())
-        pagesToFlush.add(updatePage(p, false));
+        pagesToWrite.add(updatePage(p, false));
 
-      flushPages(pagesToFlush, asyncFlush);
+      writePages(pagesToWrite, asyncFlush);
 
     } finally {
       unlock();
@@ -278,10 +244,6 @@ public class PageManager extends LockContext {
   public void overwritePage(final MutablePage page) throws IOException {
     readCache.remove(page.pageId);
 
-    // ADD THE PAGE IN TO WRITE CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
-    if (writeCache.put(page.pageId, page) == null)
-      totalWriteCacheRAM.addAndGet(page.getPhysicalSize());
-
     flushPage(page);
 
     LogManager.instance()
@@ -294,7 +256,6 @@ public class PageManager extends LockContext {
     stats.readCacheRAM = totalReadCacheRAM.get();
     stats.writeCacheRAM = totalWriteCacheRAM.get();
     stats.readCachePages = readCache.size();
-    stats.writeCachePages = writeCache.size();
     stats.pagesRead = totalPagesRead.get();
     stats.pagesReadSize = totalPagesReadSize.get();
     stats.pagesWritten = totalPagesWritten.get();
@@ -312,10 +273,6 @@ public class PageManager extends LockContext {
     final ImmutablePage page = readCache.remove(pageId);
     if (page != null)
       totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
-
-    final MutablePage page2 = writeCache.remove(pageId);
-    if (page2 != null)
-      totalWriteCacheRAM.addAndGet(-1L * page2.getPhysicalSize());
   }
 
 //  public void preloadFile(final int fileId) {
@@ -334,18 +291,15 @@ public class PageManager extends LockContext {
 //    }
 //  }
 
-  public void flushPages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
+  public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
     for (final MutablePage page : updatedPages) {
-      // ADD THE PAGE IN TO WRITE CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
-      if (writeCache.put(page.pageId, page) == null)
-        totalWriteCacheRAM.addAndGet(page.getPhysicalSize());
+      // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
+      putPageInReadCache(page.createImmutableView());
     }
 
     if (asyncFlush) {
-      // ASYNCHRONOUS FLUSH
-      if (!flushOnlyAtClose)
-        // ONLY IF NOT ALREADY IN THE QUEUE, ENQUEUE THE PAGE TO BE FLUSHED BY A SEPARATE THREAD
-        flushThread.scheduleFlushOfPages(updatedPages);
+      // ASYNCHRONOUS FLUSH: ONLY IF NOT ALREADY IN THE QUEUE, ENQUEUE THE PAGE TO BE FLUSHED BY A SEPARATE THREAD
+      flushThread.scheduleFlushOfPages(updatedPages);
     } else {
       // SYNCHRONOUS FLUSH
       for (final MutablePage page : updatedPages)
@@ -354,36 +308,26 @@ public class PageManager extends LockContext {
   }
 
   protected void flushPage(final MutablePage page) throws IOException {
-    try {
-      if (fileManager.existsFile(page.pageId.getFileId())) {
-        final PaginatedFile file = fileManager.getFile(page.pageId.getFileId());
-        if (!file.isOpen())
-          throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
+    if (fileManager.existsFile(page.pageId.getFileId())) {
+      final PaginatedFile file = fileManager.getFile(page.pageId.getFileId());
+      if (!file.isOpen())
+        throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
 
-        LogManager.instance().log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().getId());
 
-        if (!flushOnlyAtClose) {
-          putPageInCache(page.createImmutableView());
+      // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
+      concurrentPageAccess(page.pageId, true, () -> {
+        final int written = file.write(page);
+        totalPagesWrittenSize.addAndGet(written);
+      });
 
-          // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
-          concurrentPageAccess(page.pageId, true, () -> {
-            final int written = file.write(page);
-            totalPagesWrittenSize.addAndGet(written);
-          });
-
-          totalPagesWritten.incrementAndGet();
-        }
-      } else
-        LogManager.instance()
-            .log(this, Level.FINE, "Cannot flush page %s because the file has been dropped (threadId=%d)...", null, page, Thread.currentThread().getId());
-
-    } finally {
-      // DELETE ONLY CURRENT VERSION OF THE PAGE (THIS PREVENT TO REMOVE NEWER PAGES)
-      if (writeCache.remove(page.pageId, page))
-        totalWriteCacheRAM.addAndGet(-1L * page.getPhysicalSize());
+      totalPagesWritten.incrementAndGet();
 
       txManager.notifyPageFlushed(page);
-    }
+
+    } else
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot flush page %s because the file has been dropped (threadId=%d)...", null, page, Thread.currentThread().getId());
   }
 
   private ImmutablePage loadPage(final PageId pageId, final int size, final boolean createIfNotExists) throws IOException {
@@ -407,7 +351,7 @@ public class PageManager extends LockContext {
     totalPagesRead.incrementAndGet();
     totalPagesReadSize.addAndGet(page.getPhysicalSize());
 
-    putPageInCache(page);
+    putPageInReadCache(page);
 
     return page;
   }
@@ -508,7 +452,7 @@ public class PageManager extends LockContext {
     lastCheckForRAM = System.currentTimeMillis();
   }
 
-  private void putPageInCache(final ImmutablePage page) {
+  private void putPageInReadCache(final ImmutablePage page) {
     if (readCache.put(page.pageId, page) == null)
       totalReadCacheRAM.addAndGet(page.getPhysicalSize());
 

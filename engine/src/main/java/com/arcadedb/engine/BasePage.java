@@ -54,11 +54,7 @@ public abstract class BasePage {
    * Creates an immutable copy. The content is not copied (the same byte[] is used), because after invoking this method the original page is never modified.
    */
   public ImmutablePage createImmutableView() {
-    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-    final ByteBuffer buffer = content.getByteBuffer();
-    synchronized (buffer) {
-      return new ImmutablePage(manager, pageId, getPhysicalSize(), buffer.array(), version, content.size());
-    }
+    return new ImmutablePage(manager, pageId, size, content.getByteBuffer().array(), version, content.size());
   }
 
   public MutablePage modify() {
