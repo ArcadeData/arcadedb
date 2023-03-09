@@ -40,7 +40,8 @@ public class FunctionCall extends SimpleNode {
   protected List<Expression> params = new ArrayList<>();
   private   SQLFunction      cachedFunction;
 
-  public FunctionCall(int id) {
+  public FunctionCall(final int id) {
+    super(id);
   }
 
   public boolean isStar() {

@@ -105,12 +105,12 @@ public class MatchFirstStep extends AbstractExecutionStep {
       if (matchedNodes != null) {
         initFromPrefetch(matchedNodes);
       } else {
-        initFromExecutionPlan(context);
+        initFromExecutionPlan();
       }
     }
   }
 
-  private void initFromExecutionPlan(final CommandContext context) {
+  private void initFromExecutionPlan() {
     this.subResultSet = new LocalResultSet(executionPlan);
   }
 

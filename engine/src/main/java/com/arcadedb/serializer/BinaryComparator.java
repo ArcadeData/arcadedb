@@ -29,12 +29,6 @@ import java.time.temporal.*;
 import java.util.*;
 
 public class BinaryComparator {
-  private final BinarySerializer serializer;
-
-  public BinaryComparator(final BinarySerializer serializer) {
-    this.serializer = serializer;
-  }
-
   public int compare(final Object value1, final byte type1, final Object value2, final byte type2) {
     if (value1 == null) {
       if (value2 == null)

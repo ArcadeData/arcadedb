@@ -61,7 +61,7 @@ import java.util.logging.*;
  * TODO: efficient, because it doesn't need to unmarshall all the values first.
  */
 public class BinarySerializer {
-  private final BinaryComparator comparator = new BinaryComparator(this);
+  private final BinaryComparator comparator = new BinaryComparator();
   private       Class            dateImplementation;
   private       Class            dateTimeImplementation;
 

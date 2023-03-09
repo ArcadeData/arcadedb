@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.AndBlock;
@@ -236,10 +235,10 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
     final Object rightValue = ((BinaryCondition) condition).getRight().execute((Result) null, context);
-    cursor = createCursor(operator, index, rightValue, context);
+    cursor = createCursor(operator, rightValue);
   }
 
-  private IndexCursor createCursor(final BinaryCompareOperator operator, final Index definition, final Object value, final CommandContext context) {
+  private IndexCursor createCursor(final BinaryCompareOperator operator, final Object value) {
     final boolean orderAsc = isOrderAsc();
     if (operator instanceof EqualsCompareOperator) {
       return index.iterator(orderAsc, new Object[] { value }, true);
@@ -254,7 +253,6 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     } else {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
-
   }
 
   protected boolean isOrderAsc() {

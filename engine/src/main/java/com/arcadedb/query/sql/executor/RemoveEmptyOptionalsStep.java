@@ -19,20 +19,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.parser.Identifier;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
 
-  public RemoveEmptyOptionalsStep(final CommandContext context, final Identifier bucket, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
-
-  }
-
   public RemoveEmptyOptionalsStep(final CommandContext context, final boolean profilingEnabled) {
-    this(context, null, profilingEnabled);
+    super(context, profilingEnabled);
   }
 
   @Override

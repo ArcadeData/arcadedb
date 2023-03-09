@@ -24,9 +24,11 @@ import com.arcadedb.server.ArcadeDBServer;
 public abstract class HAAbstractCommand implements HACommand {
   @Override
   public void toStream(final Binary stream) {
+    // NO ACTIONS
   }
 
   @Override
   public void fromStream(final ArcadeDBServer server, final Binary stream) {
+    // NO ACTIONS
   }
 }

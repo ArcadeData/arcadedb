@@ -61,7 +61,6 @@ public class PageManager extends LockContext {
   private       long                                 lastCheckForRAM                       = 0;
   private final PageManagerFlushThread               flushThread;
   private final int                                  freePageRAM;
-  private final AtomicBoolean                        flushPagesToDisk                      = new AtomicBoolean(true);
 
   public interface ConcurrentPageAccessCallback {
     void access() throws IOException;

@@ -1057,13 +1057,5 @@ public class MathExpression extends SimpleNode {
     }
     childExpressions.get(0).applyRemove(result, context);
   }
-
-  private static Long toLong(final Object left) {
-    if (left instanceof Number)
-      return ((Number) left).longValue();
-    else if (left instanceof Date)
-      return ((Date) left).getTime();
-    return null;
-  }
 }
 /* JavaCC - OriginalChecksum=c255bea24e12493e1005ba2a4d1dbb9d (do not edit this line) */
