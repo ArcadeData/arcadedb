@@ -48,9 +48,12 @@ public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
       else {
         // CHECK THE BUCKETS FIRST
         final List<Bucket> bucketInstances = new ArrayList<>();
-        for (final BucketIdentifier b : buckets)
-          bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
+        for (final BucketIdentifier b : buckets) {
+          if (!schema.existsBucket(b.bucketName.getStringValue()))
+            schema.createBucket(b.bucketName.getStringValue());
 
+          bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
+        }
         type = schema.createDocumentType(name.getStringValue(), bucketInstances);
       }
     }
