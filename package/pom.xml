@@ -142,44 +142,67 @@
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>org.eclipse.jkube</groupId>
-                        <artifactId>kubernetes-maven-plugin</artifactId>
-                        <version>${kubernetes-maven-plugin.version}</version>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
                         <executions>
+
                             <execution>
                                 <id>default</id>
                                 <phase>package</phase>
                                 <goals>
-                                    <goal>build</goal>
+                                    <goal>exec</goal>
                                 </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>build</argument>
+                                        <argument>--tag</argument>
+                                        <argument>arcadedata/arcadedb:latest</argument>
+                                        <argument>--tag</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}</argument>
+                                        <argument>--build-arg</argument>
+                                        <argument>TARGET=target/arcadedb-${project.version}.dir/arcadedb-${project.version}</argument>
+                                        <argument>-f</argument>
+                                        <argument>${project.basedir}/src/main/docker/Dockerfile</argument>
+                                        <argument>.</argument>
+                                    </arguments>
+                                </configuration>
                             </execution>
+
+                            <execution>
+                                <id>arm64v8</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>build</argument>
+                                        <argument>--tag</argument>
+                                        <argument>arcadedata/arcadedb:latest</argument>
+                                        <argument>--tag</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}</argument>
+                                        <argument>--build-arg</argument>
+                                        <argument>ARCH=arm64v8/</argument>
+                                        <argument>--build-arg</argument>
+                                        <argument>TARGET=target/arcadedb-${project.version}.dir/arcadedb-${project.version}</argument>
+                                        <argument>-f</argument>
+                                        <argument>${project.basedir}/src/main/docker/Dockerfile</argument>
+                                        <argument>.</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+
                             <execution>
                                 <id>deploy</id>
                                 <phase>deploy</phase>
                                 <goals>
-                                    <goal>push</goal>
+                                    <goal>exec</goal>
                                 </goals>
                             </execution>
                         </executions>
-                        <configuration>
-                            <verbose>true</verbose>
-                            <images>
-                                <image>
-                                    <name>arcadedata/arcadedb</name>
-                                    <build>
-                                        <dockerFile>${project.basedir}/src/main/docker/Dockerfile</dockerFile>
-                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir</contextDir>
-                                        <args>
-                                            <docker.buildArg.ARCH>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.ARCH>
-                                        </args>
-                                        <tags>
-                                            <tag>latest</tag>
-                                            <tag>${project.version}</tag>
-                                        </tags>
-                                    </build>
-                                </image>
-                            </images>
-                        </configuration>
                     </plugin>
                 </plugins>
             </build>

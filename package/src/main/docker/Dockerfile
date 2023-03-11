@@ -14,9 +14,11 @@
 # limitations under the License.
 #
 
-ARG ARCH=
+ARG ARCH
 
 FROM ${ARCH}eclipse-temurin:11
+
+ARG TARGET
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
@@ -30,10 +32,11 @@ ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxre
 
 RUN useradd -ms /bin/bash arcadedb
 
-WORKDIR /home/arcadedb
+COPY --chown=arcadedb:arcadedb ${TARGET} /home/arcadedb
 
-COPY --chown=arcadedb:arcadedb ./maven/arcadedb-* ./
-RUN chmod +x ./bin/*.sh
+RUN chmod +x /home/arcadedb/bin/*.sh
+
+WORKDIR /home/arcadedb
 
 # Volumes available
 VOLUME [ "/home/arcadedb/databases"]
