@@ -161,6 +161,8 @@
                                         <argument>arcadedata/arcadedb:latest</argument>
                                         <argument>--tag</argument>
                                         <argument>arcadedata/arcadedb:${project.version}</argument>
+                                        <argument>--platform</argument>
+                                        <argument>linux/amd64</argument>
                                         <argument>--build-arg</argument>
                                         <argument>TARGET=target/arcadedb-${project.version}.dir/arcadedb-${project.version}</argument>
                                         <argument>-f</argument>
@@ -171,7 +173,7 @@
                             </execution>
 
                             <execution>
-                                <id>arm64v8</id>
+                                <id>arm64</id>
                                 <phase>package</phase>
                                 <goals>
                                     <goal>exec</goal>
@@ -181,11 +183,11 @@
                                     <arguments>
                                         <argument>build</argument>
                                         <argument>--tag</argument>
-                                        <argument>arcadedata/arcadedb:latest</argument>
+                                        <argument>arcadedata/arcadedb:latest-arm64</argument>
                                         <argument>--tag</argument>
-                                        <argument>arcadedata/arcadedb:${project.version}</argument>
-                                        <argument>--build-arg</argument>
-                                        <argument>ARCH=arm64v8/</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}-arm64</argument>
+                                        <argument>--platform</argument>
+                                        <argument>linux/arm64</argument>
                                         <argument>--build-arg</argument>
                                         <argument>TARGET=target/arcadedb-${project.version}.dir/arcadedb-${project.version}</argument>
                                         <argument>-f</argument>
