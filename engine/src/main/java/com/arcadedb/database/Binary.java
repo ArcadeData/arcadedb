@@ -29,6 +29,8 @@ import java.util.logging.*;
 
 /**
  * Binary data type. It is backed by Java Byte Buffers.
+ * <br>
+ * NOTE: This class is not thread safe and must be not used by multiple threads at the same time.
  *
  * @author Luca Garulli
  */
@@ -122,8 +124,9 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     buffer.position(0);
   }
 
-  public void setAutoResizable(final boolean autoResizable) {
+  public Binary setAutoResizable(final boolean autoResizable) {
     this.autoResizable = autoResizable;
+    return this;
   }
 
   public int getAllocationChunkSize() {
@@ -319,7 +322,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   /**
-   * Reads a signed number.
+   * Reads a signed number. This method is not thread safe
    *
    * @return An array of longs with the signed number in the 1st position and the occupied bytes on the 2nd position.
    */
@@ -498,11 +501,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice() {
-    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-    synchronized (this) {
-      buffer.rewind();
-      return new Binary(buffer.slice());
-    }
+    buffer.rewind();
+    return new Binary(buffer.slice());
   }
 
   /**
@@ -513,11 +513,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice(final int position) {
-    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-    synchronized (this) {
-      buffer.position(position);
-      return new Binary(buffer.slice());
-    }
+    buffer.position(position);
+    return new Binary(buffer.slice());
   }
 
   /**
@@ -529,12 +526,9 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice(final int position, final int length) {
-    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
     final ByteBuffer result;
-    synchronized (this) {
-      buffer.position(position);
-      result = buffer.slice();
-    }
+    buffer.position(position);
+    result = buffer.slice();
     result.position(length);
     result.flip();
     return new Binary(result);
@@ -609,7 +603,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     if (newSizeAsLong > Integer.MAX_VALUE)
       throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
 
-    if (offset + bytesToWrite > content.length) {
+    if (offset + bytesToWrite > content.length - buffer.arrayOffset()) {
       if (!autoResizable)
         throw new IllegalArgumentException("Cannot resize the buffer (autoResizable=false)");
 
@@ -621,12 +615,11 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
       final byte[] newContent = new byte[newSize];
       if (size > 0)
-        System.arraycopy(content, 0, newContent, 0, content.length);
+        System.arraycopy(content, buffer.arrayOffset(), newContent, 0, content.length);
       this.content = newContent;
 
       final int oldPosition = this.buffer.position();
-      final int oldOffset = this.buffer.arrayOffset();
-      this.buffer = ByteBuffer.wrap(this.content, oldOffset, this.content.length);
+      this.buffer = ByteBuffer.wrap(this.content, 0, this.content.length);
       this.buffer.position(oldPosition);
     }
 

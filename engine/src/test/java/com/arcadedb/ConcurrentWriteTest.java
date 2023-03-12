@@ -18,35 +18,38 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package performance;
+package com.arcadedb;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.log.LogManager;
 import org.junit.jupiter.api.Assertions;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
-public class LocalDatabaseBenchmark extends BaseGraphServerTest {
-  private static final int                 TOTAL              = 10_000;
-  private static final int                 BATCH_TX           = 1;
-  private static final int                 PRINT_EVERY_MS     = 1_000;
-  private static final int                 BUCKETS            = 2;
-  private static final int                 CONCURRENT_THREADS = BUCKETS;
-  private static final int                 TX_RETRY           = CONCURRENT_THREADS * 2;
-  private static final String              DATABASE_NAME      = "benchmark";
-  private final        Map<String, Object> globalStats        = new HashMap<>();
-
-  private AtomicLong    globalCounter        = new AtomicLong();
-  private AtomicLong    lastCounter          = new AtomicLong();
-  private AtomicInteger concurrentExceptions = new AtomicInteger();
-  private AtomicInteger errors               = new AtomicInteger();
+public class ConcurrentWriteTest {
+  private static final int                 TOTAL                = 300;
+  private static final int                 BATCH_TX             = 1;
+  private static final int                 PRINT_EVERY_MS       = 1_000;
+  private static final int                 BUCKETS              = 3;
+  private static final int                 CONCURRENT_THREADS   = BUCKETS;
+  private static final int                 TX_RETRY             = CONCURRENT_THREADS * 100;
+  private static final String              DATABASE_NAME        = "benchmark";
+  private final        Map<String, Object> globalStats          = new HashMap<>();
+  private              AtomicLong          globalCounter        = new AtomicLong();
+  private              AtomicLong          lastCounter          = new AtomicLong();
+  private              AtomicInteger       concurrentExceptions = new AtomicInteger();
+  private              AtomicInteger       errors               = new AtomicInteger();
+  private              Database            database;
 
   public static void main(String[] args) {
-    final LocalDatabaseBenchmark perf = new LocalDatabaseBenchmark();
+    GlobalConfiguration.TX_RETRY_DELAY.setValue(0);
+
+    final ConcurrentWriteTest perf = new ConcurrentWriteTest();
     perf.beginTest();
     try {
       perf.run();
@@ -55,15 +58,25 @@ public class LocalDatabaseBenchmark extends BaseGraphServerTest {
     }
   }
 
+  private void endTest() {
+    database.close();
+  }
+
+  private void beginTest() {
+    if (new DatabaseFactory(DATABASE_NAME).exists())
+      new DatabaseFactory(DATABASE_NAME).open().drop();
+    database = new DatabaseFactory(DATABASE_NAME).create();
+  }
+
   public void run() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    database.create();
-
     database.command("sql", "create vertex type User buckets " + BUCKETS);
+    database.command("sql", "create property User.id long");
+//    database.command("sql", "alter type User BucketSelectionStrategy `thread`");
 
-    System.out.println("BEGIN SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
+    //System.out.println("BEGIN SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
 
     final Timer timer = spawnStatThread();
+    final long beginTime = System.currentTimeMillis();
 
     try {
       // SPAWN ALL THE THREADS
@@ -83,17 +96,35 @@ public class LocalDatabaseBenchmark extends BaseGraphServerTest {
         }
     } finally {
       timer.cancel();
-      printStats(System.currentTimeMillis());
+      printStats(0L);
       System.out.println("END CLIENT " + globalStats);
-      System.out.println("END SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
+      //System.out.println("END SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
     }
 
     long totalRecordsOnClusters = 0L;
     for (int i = 0; i < BUCKETS; i++)
       totalRecordsOnClusters += database.countBucket("User_" + i);
 
+    printAllRecordsInDatabase(database);
+
+    List<Long> allIds = checkRecordSequence(database);
+
+    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, allIds.size());
+
+    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, totalRecordsOnClusters);
+
+    final double delta = System.currentTimeMillis() - beginTime;
+
+    System.out.println("INSERTION completed in " + delta / 1000 + " seconds (" + (totalRecordsOnClusters / delta) + " req/sec)");
+
+    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, database.countType("User", true));
+
+    database.close();
+  }
+
+  private List<Long> checkRecordSequence(final Database database) {
     final List<Long> allIds = new ArrayList<>();
-    getServer(0).getDatabase(DATABASE_NAME).iterateType("User", true).forEachRemaining((a) -> allIds.add(a.getRecord().asVertex().getLong("id")));
+    database.iterateType("User", true).forEachRemaining((a) -> allIds.add(a.getRecord().asVertex().getLong("id")));
     allIds.sort(Long::compareTo);
 
     long last = -1;
@@ -102,14 +133,11 @@ public class LocalDatabaseBenchmark extends BaseGraphServerTest {
         System.out.println("MISSING ID " + i);
       last = allIds.get(i);
     }
+    return allIds;
+  }
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, allIds.size());
-
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, totalRecordsOnClusters);
-
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, database.countType("User", true));
-
-    database.close();
+  private void printAllRecordsInDatabase(Database database) {
+    database.iterateType("User", true).forEachRemaining((a) -> System.out.println("Record " + a.getRecord().asVertex().toJSON()));
   }
 
   private Timer spawnStatThread() {
@@ -126,15 +154,18 @@ public class LocalDatabaseBenchmark extends BaseGraphServerTest {
   }
 
   private void executeInThread(final int threadId) {
-    final Database database = getServer(0).getDatabase(DATABASE_NAME);
     try {
 
       for (AtomicInteger threadCounter = new AtomicInteger(); threadCounter.get() < TOTAL; ) {
         database.transaction(() -> {
           for (int txCounter = 0; txCounter < BATCH_TX; txCounter++) {
             try {
-              final MutableVertex user = database.newVertex("User").set("id", threadId * TOTAL + (threadCounter.get() + txCounter));
+              final int id = threadId * TOTAL + (threadCounter.get() + txCounter);
+              final MutableVertex user = database.newVertex("User").set("id", id);
               user.save();
+
+              LogManager.instance().log(this, Level.WARNING, "Saving user id %d as %s (threadId=%d)", id, user.getIdentity(), Thread.currentThread().getId());
+
             } catch (Throwable t) {
               incrementError(t);
             }
@@ -164,12 +195,18 @@ public class LocalDatabaseBenchmark extends BaseGraphServerTest {
 
   private long printStats(long beginTime) {
     final long now = System.currentTimeMillis();
-    final long delta = now - beginTime;
 
-    beginTime = System.currentTimeMillis();
-    System.out.println(
-        ((globalCounter.get() - lastCounter.get()) * PRINT_EVERY_MS / (float) delta) + " req/sec (counter=" + globalCounter.get() + "/" + TOTAL + ", conflicts="
-            + concurrentExceptions.get() + ", errors=" + errors.get() + ")");
+    if (beginTime > 0) {
+      final long delta = now - beginTime;
+      beginTime = System.currentTimeMillis();
+      System.out.println(
+          ((globalCounter.get() - lastCounter.get()) * PRINT_EVERY_MS / (float) delta) + " req/sec (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS
+              * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors=" + errors.get() + ")");
+    } else {
+      System.out.println(
+          "COMPLETED (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors="
+              + errors.get() + ")");
+    }
     lastCounter.set(globalCounter.get());
 
     return beginTime;
@@ -180,10 +217,5 @@ public class LocalDatabaseBenchmark extends BaseGraphServerTest {
       Long current = (Long) globalStats.getOrDefault(entry.getKey(), 0L);
       globalStats.put(entry.getKey(), current + (Long) entry.getValue());
     }
-  }
-
-  @Override
-  protected boolean isCreateDatabases() {
-    return false;
   }
 }

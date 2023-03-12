@@ -566,6 +566,9 @@ public class Bucket extends PaginatedComponent {
       } else
         selectedPage = database.getTransaction().getPageToModify(lastPage.pageId, pageSize, false);
 
+      LogManager.instance()
+          .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, recordCountInPage, Thread.currentThread().getId());
+
       final RID rid = new RID(database, file.getFileId(), ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + recordCountInPage);
 
       final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newPosition;
@@ -584,7 +587,7 @@ public class Bucket extends PaginatedComponent {
       selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) ++recordCountInPage);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Created record %s (page=%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage, Thread.currentThread().getId());
+          .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage, Thread.currentThread().getId());
 
       if (!discardRecordAfter)
         ((RecordInternal) record).setBuffer(buffer.getNotReusable());
@@ -714,7 +717,7 @@ public class Bucket extends PaginatedComponent {
 
           page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
 
-          LogManager.instance().log(this, Level.FINE, "Updated record %s by allocating new space on the same page (page=%s threadId=%d)", null, rid, page,
+          LogManager.instance().log(this, Level.FINE, "Updated record %s by allocating new space on the same page (%s threadId=%d)", null, rid, page,
               Thread.currentThread().getId());
 
         } else {
@@ -730,15 +733,15 @@ public class Bucket extends PaginatedComponent {
             final RID realRID = createRecordInternal(record, true, false);
             page.writeLong(recordPositionInPage + bytesWritten, realRID.getPosition());
 
-            LogManager.instance().log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (page=%s threadId=%d)", null, rid, page,
+            LogManager.instance().log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (%s threadId=%d)", null, rid, page,
                 Thread.currentThread().getId());
           } else {
             // SPLIT THE RECORD IN CHUNKS AS LINKED LIST AND STORE THE FIRST PART ON CURRENT PAGE ISSUE https://github.com/ArcadeData/arcadedb/issues/332
             writeMultiPageRecord(buffer, page, recordPositionInPage, availableSpaceForChunk);
 
             LogManager.instance()
-                .log(this, Level.FINE, "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (page=%s threadId=%d)", null, rid,
-                    page, Thread.currentThread().getId());
+                .log(this, Level.FINE, "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (%s threadId=%d)", null, rid, page,
+                    Thread.currentThread().getId());
           }
         }
       } else {
@@ -747,8 +750,8 @@ public class Bucket extends PaginatedComponent {
         final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
         page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
 
-        LogManager.instance().log(this, Level.FINE, "Updated record %s with the same size or less as before (page=%s threadId=%d)", null, rid, page,
-            Thread.currentThread().getId());
+        LogManager.instance()
+            .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
       }
 
       if (!discardRecordAfter)
@@ -858,7 +861,7 @@ public class Bucket extends PaginatedComponent {
 //
 //      page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordCountInPage - 1));
 
-      LogManager.instance().log(this, Level.FINE, "Deleted record %s (page=%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on deletion of record " + rid, e);

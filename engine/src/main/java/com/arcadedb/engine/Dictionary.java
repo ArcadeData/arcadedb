@@ -231,8 +231,6 @@ public class Dictionary extends PaginatedComponent {
     } else {
       final BasePage header = database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
 
-      header.setBufferPosition(0);
-
       final List<String> newDictionary = new CopyOnWriteArrayList<>();
 
       // LOAD THE DICTIONARY IN RAM

@@ -23,24 +23,26 @@ import com.arcadedb.database.DatabaseFactory;
 
 import java.nio.*;
 import java.util.*;
+import java.util.zip.*;
 
 /**
  * Low level base page implementation of (default) 65536 bytes (2 exp 16 = 65Kb). The first 4 bytes (the header) are reserved to
  * store the page version (MVCC), then 4 bytes more for the actual page content size. Content size is stored in Binary object. The
  * maximum content for a page is pageSize - 16.
+ * <br>
+ * NOTE: This class is not thread safe and must be not used by multiple threads at the same time.
  */
 public abstract class BasePage {
-  public static final    int PAGE_HEADER_SIZE        = Binary.INT_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
   protected static final int PAGE_VERSION_OFFSET     = 0;
   protected static final int PAGE_CONTENTSIZE_OFFSET = Binary.INT_SERIALIZED_SIZE;
+  public static final    int PAGE_HEADER_SIZE        = Binary.INT_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
 
   protected final PageManager manager;
 
   protected final PageId pageId;
-  protected final Binary content;
-  private final   int    size;
+  protected       Binary content;
+  protected final int    size;
   protected       int    version;
-  private         long   lastAccessed = System.currentTimeMillis();
 
   protected BasePage(final PageManager manager, final PageId pageId, final int size, final byte[] buffer, final int version, final int contentSize) {
     this.manager = manager;
@@ -51,11 +53,9 @@ public abstract class BasePage {
   }
 
   /**
-   * Creates an immutable copy. The content is not copied (the same byte[] is used), because after invoking this method the original page is never modified.
+   * Returns an immutable view of the underlying binary object.
    */
-  public ImmutablePage createImmutableView() {
-    return new ImmutablePage(manager, pageId, size, content.getByteBuffer().array(), version, content.size());
-  }
+  public abstract Binary getImmutableView(final int index, final int length);
 
   public MutablePage modify() {
     final byte[] array = this.content.getByteBuffer().array();
@@ -68,33 +68,20 @@ public abstract class BasePage {
     content.size(content.getInt(PAGE_CONTENTSIZE_OFFSET));
   }
 
-  public void updateMetadata() {
-    content.putInt(PAGE_VERSION_OFFSET, version);
-    content.putInt(PAGE_CONTENTSIZE_OFFSET, content.size());
-  }
-
   public int getPhysicalSize() {
     return size;
   }
 
   public int getMaxContentSize() {
-    return getPhysicalSize() - PAGE_HEADER_SIZE;
+    return size - PAGE_HEADER_SIZE;
   }
 
   public int getAvailableContentSize() {
-    return getPhysicalSize() - getContentSize();
+    return size - getContentSize();
   }
 
   public int getContentSize() {
     return content.size() - PAGE_HEADER_SIZE;
-  }
-
-  public void clearContent() {
-    content.clear();
-  }
-
-  public void setContentSize(final int value) {
-    content.size(value + PAGE_HEADER_SIZE);
   }
 
   public long getVersion() {
@@ -162,15 +149,6 @@ public abstract class BasePage {
     return new String(readBytes(PAGE_HEADER_SIZE + index), DatabaseFactory.getDefaultCharset());
   }
 
-  /**
-   * Creates a copy of the ByteBuffer without copying the array[].
-   *
-   * @param index The starting position to copy
-   */
-  public Binary getImmutableView(final int index, final int length) {
-    return content.slice(index + PAGE_HEADER_SIZE, length);
-  }
-
   public PageId getPageId() {
     return pageId;
   }
@@ -186,20 +164,9 @@ public abstract class BasePage {
    * Returns the underlying ByteBuffer. If any changes occur bypassing the page object, must be tracked by calling #updateModifiedRange() method.
    */
   public ByteBuffer slice() {
-    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
     final ByteBuffer buffer = content.getByteBuffer();
-    synchronized (buffer) {
-      buffer.position(PAGE_HEADER_SIZE);
-      return buffer.slice();
-    }
-  }
-
-  public long getLastAccessed() {
-    return lastAccessed;
-  }
-
-  public void updateLastAccesses() {
-    lastAccessed = System.currentTimeMillis();
+    buffer.position(PAGE_HEADER_SIZE);
+    return buffer.slice();
   }
 
   public int getBufferPosition() {
@@ -232,6 +199,10 @@ public abstract class BasePage {
 
   @Override
   public String toString() {
-    return pageId.toString() + " v=" + version;
+    final byte[] c = content.getByteBuffer().array();
+    final Checksum crc32 = new CRC32();
+    crc32.update(c, 0, c.length);
+
+    return pageId.toString() + " v=" + version + " chk=" + crc32.getValue();
   }
 }

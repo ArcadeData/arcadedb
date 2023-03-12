@@ -277,6 +277,9 @@ public class TransactionContext implements Transaction {
         // NOT FOUND, DELEGATES TO THE DATABASE
         final ImmutablePage loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
         if (loadedPage != null) {
+          // TODO: REMOVE THIS, JUST FOR DEBUG
+          LogManager.instance().log(this, Level.FINE, "Page to modify %s loaded in tx: %s", pageId, System.identityHashCode(page));
+
           final MutablePage mutablePage = loadedPage.modify();
           if (isNew)
             newPages.put(pageId, mutablePage);
@@ -284,8 +287,13 @@ public class TransactionContext implements Transaction {
             modifiedPages.put(pageId, mutablePage);
           page = mutablePage;
         }
-      }
-    }
+      } else
+        // TODO: REMOVE THIS, JUST FOR DEBUG
+        LogManager.instance().log(this, Level.FINE, "Page to modify %s found in tx new pages: %s", pageId, System.identityHashCode(page));
+
+    } else
+      // TODO: REMOVE THIS, JUST FOR DEBUG
+      LogManager.instance().log(this, Level.FINE, "Page to modify %s found in tx modified pages", pageId, System.identityHashCode(page));
 
     return page;
   }
