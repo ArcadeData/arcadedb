@@ -23,7 +23,6 @@ import com.arcadedb.database.DatabaseFactory;
 
 import java.nio.*;
 import java.util.*;
-import java.util.zip.*;
 
 /**
  * Low level base page implementation of (default) 65536 bytes (2 exp 16 = 65Kb). The first 4 bytes (the header) are reserved to
@@ -57,11 +56,7 @@ public abstract class BasePage {
    */
   public abstract Binary getImmutableView(final int index, final int length);
 
-  public MutablePage modify() {
-    final byte[] array = this.content.getByteBuffer().array();
-    // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
-    return new MutablePage(manager, pageId, size, Arrays.copyOf(array, array.length), version, content.size());
-  }
+  public abstract MutablePage modify();
 
   public void loadMetadata() {
     version = content.getInt(PAGE_VERSION_OFFSET);
@@ -199,10 +194,10 @@ public abstract class BasePage {
 
   @Override
   public String toString() {
-    final byte[] c = content.getByteBuffer().array();
-    final Checksum crc32 = new CRC32();
-    crc32.update(c, 0, c.length);
-
-    return pageId.toString() + " v=" + version + " chk=" + crc32.getValue();
+//    final byte[] c = content.getByteBuffer().array();
+//    final Checksum crc32 = new CRC32();
+//    crc32.update(c, 0, c.length);
+//    return pageId.toString() + " v=" + version + " chk=" + crc32.getValue() + " records=" + readShort(0);
+    return pageId.toString() + " v=" + version;
   }
 }

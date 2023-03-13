@@ -57,6 +57,11 @@ public class MutablePage extends BasePage implements TrackableContent {
     return copy;
   }
 
+  @Override
+  public MutablePage modify() {
+    return this;
+  }
+
   public TrackableBinary getTrackable() {
     final ByteBuffer buffer = content.getByteBuffer();
     buffer.position(PAGE_HEADER_SIZE);

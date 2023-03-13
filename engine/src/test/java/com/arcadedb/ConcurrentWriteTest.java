@@ -24,15 +24,16 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.log.LogManager;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
-import java.util.logging.*;
 
 public class ConcurrentWriteTest {
-  private static final int                 TOTAL                = 300;
+  private static final int                 TOTAL                = 10_000;
   private static final int                 BATCH_TX             = 1;
   private static final int                 PRINT_EVERY_MS       = 1_000;
   private static final int                 BUCKETS              = 3;
@@ -46,29 +47,20 @@ public class ConcurrentWriteTest {
   private              AtomicInteger       errors               = new AtomicInteger();
   private              Database            database;
 
-  public static void main(String[] args) {
-    GlobalConfiguration.TX_RETRY_DELAY.setValue(0);
-
-    final ConcurrentWriteTest perf = new ConcurrentWriteTest();
-    perf.beginTest();
-    try {
-      perf.run();
-    } finally {
-      perf.endTest();
-    }
+  @AfterEach
+  public void endTest() {
+    database.drop();
   }
 
-  private void endTest() {
-    database.close();
-  }
-
-  private void beginTest() {
+  @BeforeEach
+  public void beginTest() {
     if (new DatabaseFactory(DATABASE_NAME).exists())
       new DatabaseFactory(DATABASE_NAME).open().drop();
     database = new DatabaseFactory(DATABASE_NAME).create();
   }
 
-  public void run() {
+  @Test
+  public void checkConcurrentInsertWithHighConcurrencyOnSamePage() {
     database.command("sql", "create vertex type User buckets " + BUCKETS);
     database.command("sql", "create property User.id long");
 //    database.command("sql", "alter type User BucketSelectionStrategy `thread`");
@@ -97,7 +89,7 @@ public class ConcurrentWriteTest {
     } finally {
       timer.cancel();
       printStats(0L);
-      System.out.println("END CLIENT " + globalStats);
+      //System.out.println("END CLIENT " + globalStats);
       //System.out.println("END SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
     }
 
@@ -105,7 +97,7 @@ public class ConcurrentWriteTest {
     for (int i = 0; i < BUCKETS; i++)
       totalRecordsOnClusters += database.countBucket("User_" + i);
 
-    printAllRecordsInDatabase(database);
+    //printAllRecordsInDatabase(database);
 
     List<Long> allIds = checkRecordSequence(database);
 
@@ -115,23 +107,23 @@ public class ConcurrentWriteTest {
 
     final double delta = System.currentTimeMillis() - beginTime;
 
-    System.out.println("INSERTION completed in " + delta / 1000 + " seconds (" + (totalRecordsOnClusters / delta) + " req/sec)");
+    // System.out.println("INSERTION completed in " + delta / 1000 + " seconds (" + (totalRecordsOnClusters / delta) + " req/sec)");
 
     Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, database.countType("User", true));
-
-    database.close();
   }
 
   private List<Long> checkRecordSequence(final Database database) {
     final List<Long> allIds = new ArrayList<>();
     database.iterateType("User", true).forEachRemaining((a) -> allIds.add(a.getRecord().asVertex().getLong("id")));
-    allIds.sort(Long::compareTo);
+    Collections.sort(allIds);
 
+    int missing = 0;
     long last = -1;
     for (int i = 0; i < allIds.size(); i++) {
-      if (allIds.get(i) != last + 1)
-        System.out.println("MISSING ID " + i);
-      last = allIds.get(i);
+      final Long current = allIds.get(i);
+      if (current != last + 1)
+        System.out.println((++missing) + " - MISSING ID " + (last + 1) + " FOUND " + current);
+      last = current;
     }
     return allIds;
   }
@@ -164,7 +156,7 @@ public class ConcurrentWriteTest {
               final MutableVertex user = database.newVertex("User").set("id", id);
               user.save();
 
-              LogManager.instance().log(this, Level.WARNING, "Saving user id %d as %s (threadId=%d)", id, user.getIdentity(), Thread.currentThread().getId());
+              //LogManager.instance().log(this, Level.WARNING, "Saving user id %d as %s (threadId=%d)", id, user.getIdentity(), Thread.currentThread().getId());
 
             } catch (Throwable t) {
               incrementError(t);
@@ -194,18 +186,18 @@ public class ConcurrentWriteTest {
   }
 
   private long printStats(long beginTime) {
-    final long now = System.currentTimeMillis();
+//    final long now = System.currentTimeMillis();
 
     if (beginTime > 0) {
-      final long delta = now - beginTime;
+//      final long delta = now - beginTime;
       beginTime = System.currentTimeMillis();
-      System.out.println(
-          ((globalCounter.get() - lastCounter.get()) * PRINT_EVERY_MS / (float) delta) + " req/sec (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS
-              * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors=" + errors.get() + ")");
+//      System.out.println(
+//          ((globalCounter.get() - lastCounter.get()) * PRINT_EVERY_MS / (float) delta) + " req/sec (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS
+//              * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors=" + errors.get() + ")");
     } else {
-      System.out.println(
-          "COMPLETED (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors="
-              + errors.get() + ")");
+//      System.out.println(
+//          "COMPLETED (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors="
+//              + errors.get() + ")");
     }
     lastCounter.set(globalCounter.get());
 

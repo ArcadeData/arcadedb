@@ -101,6 +101,10 @@ public class LocalDatabaseBenchmark {
       //System.out.println("END SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
     }
 
+    final double deltaInSecs = (System.currentTimeMillis() - beginTime) / 1000;
+
+    System.out.println("INSERTION completed in " + deltaInSecs + " seconds (" + (globalCounter.get() / deltaInSecs) + " req/sec)");
+
     long totalRecordsOnClusters = 0L;
     for (int i = 0; i < BUCKETS; i++)
       totalRecordsOnClusters += database.countBucket("User_" + i);
@@ -112,10 +116,6 @@ public class LocalDatabaseBenchmark {
     Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, allIds.size());
 
     Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, totalRecordsOnClusters);
-
-    final double delta = System.currentTimeMillis() - beginTime;
-
-    System.out.println("INSERTION completed in " + delta / 1000 + " seconds (" + (totalRecordsOnClusters / delta) + " req/sec)");
 
     Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, database.countType("User", true));
 

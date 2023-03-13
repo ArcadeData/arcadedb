@@ -277,9 +277,6 @@ public class TransactionContext implements Transaction {
         // NOT FOUND, DELEGATES TO THE DATABASE
         final ImmutablePage loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
         if (loadedPage != null) {
-          // TODO: REMOVE THIS, JUST FOR DEBUG
-          LogManager.instance().log(this, Level.FINE, "Page to modify %s loaded in tx: %s", pageId, System.identityHashCode(page));
-
           final MutablePage mutablePage = loadedPage.modify();
           if (isNew)
             newPages.put(pageId, mutablePage);
@@ -287,15 +284,27 @@ public class TransactionContext implements Transaction {
             modifiedPages.put(pageId, mutablePage);
           page = mutablePage;
         }
-      } else
-        // TODO: REMOVE THIS, JUST FOR DEBUG
-        LogManager.instance().log(this, Level.FINE, "Page to modify %s found in tx new pages: %s", pageId, System.identityHashCode(page));
-
-    } else
-      // TODO: REMOVE THIS, JUST FOR DEBUG
-      LogManager.instance().log(this, Level.FINE, "Page to modify %s found in tx modified pages", pageId, System.identityHashCode(page));
-
+      }
+    }
     return page;
+  }
+
+  /**
+   * Puts the page in the TX modified pages.
+   */
+  public MutablePage getPageToModify(final BasePage page) throws IOException {
+    if (!isActive())
+      throw new TransactionException("Transaction not active");
+
+    final MutablePage mutablePage = page.modify();
+
+    final PageId pageId = page.getPageId();
+    if (newPages.containsKey(pageId))
+      newPages.put(mutablePage.getPageId(), mutablePage);
+    else
+      modifiedPages.put(mutablePage.getPageId(), mutablePage);
+
+    return mutablePage;
   }
 
   public MutablePage addPage(final PageId pageId, final int pageSize) {

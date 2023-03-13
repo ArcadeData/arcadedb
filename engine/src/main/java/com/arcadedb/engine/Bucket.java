@@ -564,11 +564,10 @@ public class Bucket extends PaginatedComponent {
         newPosition = contentHeaderSize;
         recordCountInPage = 0;
       } else
-        selectedPage = database.getTransaction().getPageToModify(lastPage.pageId, pageSize, false);
+        selectedPage = database.getTransaction().getPageToModify(lastPage);
 
       LogManager.instance()
           .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, recordCountInPage, Thread.currentThread().getId());
-
       final RID rid = new RID(database, file.getFileId(), ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + recordCountInPage);
 
       final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newPosition;

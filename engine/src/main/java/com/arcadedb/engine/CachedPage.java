@@ -22,7 +22,6 @@ import com.arcadedb.database.Binary;
 
 import java.nio.*;
 import java.util.*;
-import java.util.zip.*;
 
 /**
  * Contains the page content to be shared across threads.
@@ -107,10 +106,10 @@ public class CachedPage {
 
   @Override
   public String toString() {
-    final byte[] c = content.getByteBuffer().array();
-    final Checksum crc32 = new CRC32();
-    crc32.update(c, 0, c.length);
-
-    return pageId.toString() + " v=" + version + " crc=" + crc32.getValue();
+//    final byte[] c = content.getByteBuffer().array();
+//    final Checksum crc32 = new CRC32();
+//    crc32.update(c, 0, c.length);
+//    return pageId.toString() + " v=" + version + " crc=" + crc32.getValue() + " records=" + content.getShort(8);
+    return pageId.toString() + " v=" + version;
   }
 }

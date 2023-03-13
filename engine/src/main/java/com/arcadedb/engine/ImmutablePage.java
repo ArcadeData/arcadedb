@@ -20,6 +20,8 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
 
+import java.util.*;
+
 /**
  * Low level immutable (read-only) page implementation of 65536 bytes (2 exp 16 = 65Kb). The first 8 bytes (the header) are reserved
  * to store the page version (MVCC). The maximum content is 65528.
@@ -44,5 +46,12 @@ public class ImmutablePage extends BasePage {
   @Override
   public Binary getImmutableView(final int index, final int length) {
     return content.slice(index + PAGE_HEADER_SIZE, length);
+  }
+
+  @Override
+  public MutablePage modify() {
+    final byte[] array = this.content.getByteBuffer().array();
+    // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
+    return new MutablePage(manager, pageId, size, Arrays.copyOf(array, array.length), version, content.size());
   }
 }

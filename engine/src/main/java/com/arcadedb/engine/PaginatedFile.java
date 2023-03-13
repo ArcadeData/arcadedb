@@ -143,6 +143,7 @@ public class PaginatedFile {
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
       open(filePath, mode);
+      buffer.rewind();
       channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
     }
 
