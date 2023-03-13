@@ -38,6 +38,8 @@ RUN chmod +x /home/arcadedb/bin/*.sh
 
 WORKDIR /home/arcadedb
 
+USER arcadedb
+
 # Volumes available
 VOLUME [ "/home/arcadedb/databases"]
 
