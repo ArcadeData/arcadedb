@@ -474,11 +474,18 @@ public class ConsoleTest {
   public void testNotNullProperties() throws IOException {
     Assertions.assertTrue(console.parse("connect " + DB_NAME));
     Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING (notnull, default \"1\");"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING (notnull);"));
     Assertions.assertTrue(((EmbeddedDatabase) console.getDatabase()).getSchema().getType("doc").getProperty("prop").isNotNull());
 
-    Assertions.assertTrue(console.parse("INSERT INTO doc;"));
+    Assertions.assertTrue(console.parse("INSERT INTO doc set a = null;"));
 
-    Assertions.assertEquals("1", console.getDatabase().query("sql", "SELECT FROM doc").nextIfAvailable().getProperty("prop"));
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+    Assertions.assertTrue(console.parse("INSERT INTO doc set prop = null;"));
+
+    int pos = buffer.toString().indexOf("ValidationException");
+    Assertions.assertTrue(pos > -1);
+
+    Assertions.assertNull(console.getDatabase().query("sql", "SELECT FROM doc").nextIfAvailable().getProperty("prop"));
   }
 }
