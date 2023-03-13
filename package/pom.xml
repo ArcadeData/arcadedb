@@ -262,7 +262,7 @@
                                         <argument>--amend</argument>
                                         <argument>arcadedata/arcadedb:latest-amd64</argument>
                                         <argument>--amend</argument>
-                                        <argument>arcadedata/arcadedb:latest-amd64</argument>
+                                        <argument>arcadedata/arcadedb:latest-arm64</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -328,7 +328,7 @@
                                         <argument>--amend</argument>
                                         <argument>arcadedata/arcadedb:${project.version}-amd64</argument>
                                         <argument>--amend</argument>
-                                        <argument>arcadedata/arcadedb:${project.version}-amd64</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}-arm64</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
