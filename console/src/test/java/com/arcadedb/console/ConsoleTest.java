@@ -466,4 +466,19 @@ public class ConsoleTest {
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
         console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
   }
+
+  /**
+   * Test case for https://github.com/ArcadeData/arcadedb/issues/885
+   */
+  @Test
+  public void testNotNullProperties() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING (notnull, default \"1\");"));
+    Assertions.assertTrue(((EmbeddedDatabase) console.getDatabase()).getSchema().getType("doc").getProperty("prop").isNotNull());
+
+    Assertions.assertTrue(console.parse("INSERT INTO doc;"));
+
+    Assertions.assertEquals("1", console.getDatabase().query("sql", "SELECT FROM doc").nextIfAvailable().getProperty("prop"));
+  }
 }
