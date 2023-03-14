@@ -92,7 +92,10 @@ public class FunctionCall extends SimpleNode {
     if (targetObjects instanceof Identifiable) {
       record = targetObjects;
     } else if (targetObjects instanceof Result) {
-      record = ((Result) targetObjects).toElement();
+      if (((Result) targetObjects).isElement())
+        record = ((Result) targetObjects).toElement();
+      else
+        record = targetObjects;
     } else {
       record = targetObjects;
     }
