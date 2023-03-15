@@ -80,6 +80,9 @@ public class JsonSerializer {
           value = map;
         }
       }
+
+      value = convertNonNumbers(value);
+
       object.put(p, value);
     }
 
@@ -154,6 +157,8 @@ public class JsonSerializer {
         }
       }
 
+      value = convertNonNumbers(value);
+
       object.put(p, value);
     }
 
@@ -225,5 +230,19 @@ public class JsonSerializer {
     } else
       object.put("@cat", "d");
 
+  }
+
+  private static Object convertNonNumbers(Object value) {
+    if (value != null)
+      if (value.equals(Double.NaN) || value.equals(Float.NaN))
+        // JSON DOES NOT SUPPORT NaN
+        value = "NaN";
+      else if (value.equals(Double.POSITIVE_INFINITY) || value.equals(Float.POSITIVE_INFINITY))
+        // JSON DOES NOT SUPPORT INFINITY
+        value = "PosInfinity";
+      else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
+        // JSON DOES NOT SUPPORT INFINITY
+        value = "NegInfinity";
+    return value;
   }
 }

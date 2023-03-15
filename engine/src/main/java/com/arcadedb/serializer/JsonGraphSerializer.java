@@ -59,16 +59,26 @@ public class JsonGraphSerializer extends JsonSerializer {
     for (final Map.Entry<String, Object> prop : document.toMap().entrySet()) {
       Object value = prop.getValue();
 
-      if (value instanceof Document)
-        value = serializeGraphElement((Document) value, new JSONObject());
-      else if (value instanceof Collection) {
-        final List<Object> list = new ArrayList<>();
-        for (Object o : (Collection) value) {
-          if (o instanceof Document)
-            o = serializeGraphElement((Document) o, new JSONObject());
-          list.add(o);
-        }
-        value = list;
+      if (value != null) {
+        if (value instanceof Document)
+          value = serializeGraphElement((Document) value, new JSONObject());
+        else if (value instanceof Collection) {
+          final List<Object> list = new ArrayList<>();
+          for (Object o : (Collection) value) {
+            if (o instanceof Document)
+              o = serializeGraphElement((Document) o, new JSONObject());
+            list.add(o);
+          }
+          value = list;
+        } else if (value.equals(Double.NaN) || value.equals(Float.NaN))
+          // JSON DOES NOT SUPPORT NaN
+          value = "NaN";
+        else if (value.equals(Double.POSITIVE_INFINITY) || value.equals(Float.POSITIVE_INFINITY))
+          // JSON DOES NOT SUPPORT INFINITY
+          value = "PosInfinity";
+        else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
+          // JSON DOES NOT SUPPORT INFINITY
+          value = "NegInfinity";
       }
       properties.put(prop.getKey(), value);
     }
