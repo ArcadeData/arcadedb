@@ -20,13 +20,13 @@ package com.arcadedb.graphql;
 
 import com.arcadedb.database.Database;
 
-public class GraphQLSQLDirectivesTest extends AbstractGraphQLNativeLanguageDirectivesTest {
+public class GraphQLSQLMatchDirectivesTest extends AbstractGraphQLNativeLanguageDirectivesTest {
   @Override
   protected void defineTypes(final Database database) {
     super.defineTypes(database);
     database.command("graphql", "type Query {\n" +//
         "  bookById(id: String): Book\n" +//
-        "  bookByName(bookNameParameter: String): Book @sql(statement: \"select from Book where name = :bookNameParameter\")\n" +//
+        "  bookByName(bookNameParameter: String): Book @sql(statement: \"match {type:Book, as:b, where:(name = :bookNameParameter)} return expand(b)\")\n" +//
         "}");
   }
 }
