@@ -310,6 +310,37 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertEquals("Miner", map2.get("last"));
   }
 
+  /**
+   * Testcase for issue https://github.com/ArcadeData/arcadedb/issues/927
+   */
+  @Test
+  public void testPlusAssignNestedMaps() {
+    ResultSet result = database.command("sql", "insert into " + className + " set map1 = {}");
+    final RID rid = result.next().getIdentity().get();
+
+    database.command("sql", "update " + rid + " set bars = map( \"23-03-24\" , { \"volume\": 100 } )");
+
+    result = database.command("sql", "update " + rid + " set bars += { \"2023-03-08\": { \"volume\": 134 }}");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    Map<String, Object> map1 = item.getProperty("bars");
+    Assertions.assertEquals(2, map1.size());
+
+    Map nestedMap = (Map) map1.get("23-03-24");
+    Assertions.assertNotNull(nestedMap);
+    Assertions.assertEquals(100, nestedMap.get("volume"));
+
+    nestedMap = (Map) map1.get("2023-03-08");
+    Assertions.assertNotNull(nestedMap);
+    Assertions.assertEquals(134, nestedMap.get("volume"));
+  }
+
   @Test
   public void testPlusAssign() {
     ResultSet result = database.command("sql", "update " + className + " set name += 'foo', newField += 'bar', number += 5");
