@@ -74,7 +74,7 @@
 
         <itCoverageAgent></itCoverageAgent>
         <license-maven-plugin.version>4.1</license-maven-plugin.version>
-        <mockito-core.version>4.11.0</mockito-core.version>
+        <mockito-core.version>5.1.0</mockito-core.version>
     </properties>
 
     <developers>

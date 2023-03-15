@@ -36,7 +36,7 @@
     </properties>
 
     <artifactId>arcadedb-e2e</artifactId>
-    <packaging>pom</packaging>
+    <packaging>jar</packaging>
 
     <build>
         <plugins>
