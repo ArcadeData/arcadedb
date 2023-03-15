@@ -1,0 +1,27 @@
+# For most projects, this workflow file will not need changing; you simply need
+# to commit it to your repository.
+#
+# You may wish to alter this file to override the set of languages analyzed,
+# or to provide custom queries or build logic.
+#
+# ******** NOTE ********
+# We have attempted to detect the languages in your repository. Please check
+# the `language` matrix defined below to confirm you have the correct set of
+# supported CodeQL languages.
+#
+
+name: Meterian Scanner workflow
+
+on: push
+
+jobs:
+  meterian_scan:
+    name: Meterian client scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Meterian Scanner
+        uses: MeterianHQ/meterian-github-action@v1.0.10
+        env:
+          METERIAN_API_TOKEN: ${{ secrets.METERIAN_API_TOKEN }}
