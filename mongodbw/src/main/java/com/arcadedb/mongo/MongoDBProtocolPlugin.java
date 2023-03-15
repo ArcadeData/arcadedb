@@ -19,6 +19,7 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import de.bwaldvogel.mongo.MongoDatabase;
@@ -43,7 +44,7 @@ public class MongoDBProtocolPlugin implements ServerPlugin {
         return new MongoDBDatabaseWrapper(server.getDatabase(databaseName), this);
       }
     });
-    mongoDBServer.bind("localhost", 27017);
+    mongoDBServer.bind(GlobalConfiguration.MONGO_HOST.getValueAsString(), GlobalConfiguration.MONGO_PORT.getValueAsInteger());
   }
 
   @Override
