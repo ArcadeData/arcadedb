@@ -360,6 +360,12 @@ public enum GlobalConfiguration {
 
   REDIS_HOST("arcadedb.redis.host", SCOPE.SERVER, "TCP/IP host name used for incoming connections for Redis plugin. Default is '0.0.0.0'", String.class,
       "0.0.0.0"),
+
+  // MONGO
+  MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER, "TCP/IP port number used for incoming connections for Mongo plugin. Default is 27017", Integer.class, 27017),
+
+  MONGO_HOST("arcadedb.mongo.host", SCOPE.SERVER, "TCP/IP host name used for incoming connections for Mongo plugin. Default is '0.0.0.0'", String.class,
+      "0.0.0.0"),
   ;
 
   /**
