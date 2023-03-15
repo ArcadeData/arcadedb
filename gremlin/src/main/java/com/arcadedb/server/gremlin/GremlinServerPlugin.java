@@ -49,7 +49,7 @@ public class GremlinServerPlugin implements ServerPlugin {
     final File confFile = new File(server.getRootPath() + CONFIG_GREMLIN_SERVER_YAML);
     if (confFile.exists()) {
       try (final FileInputStream is = new FileInputStream(confFile.getAbsolutePath())) {
-        settings = Settings.read(is);
+        settings = ArcadeDBGremlinSettings.read(is);
       } catch (final Exception e) {
         LogManager.instance()
             .log(this, Level.INFO, "Error on loading Gremlin Server configuration file '%s'. Using default configuration", CONFIG_GREMLIN_SERVER_YAML);
