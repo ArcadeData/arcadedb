@@ -799,11 +799,11 @@ function displaySelectedNode(){
   if( globalSelected.length == 1 ) {
     let actions = "<br><h5>Actions</h5>";
     actions += "<ul>";
-    actions += "<li>Load adjacent <a class='link' href='#' onclick='loadNodeNeighbors(\"out\", \""+data.id+"\")'>outgoing</a>, ";
-    actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"in\", \""+data.id+"\")'>incoming</a> or ";
-    actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"both\", \""+data.id+"\")'>both</a></li>";
-    actions += "<li><a class='link' href='#' onclick='removeGraphElement(globalSelected)'>Hide</a> selected elements</li>";
-    actions += "<li>Select all the element of type <a class='link' href='#' onclick='selectGraphElementByType(\"" + type+ "\")'>" + type+ "</a></li>";
+    actions += "<li>Load adjacent <button class='btn btn-outline-primary btn-sm' onclick='loadNodeNeighbors(\"out\", \""+data.id+"\")'>outgoing</button>, ";
+    actions += "<button class='btn btn-outline-primary btn-sm' href='#' onclick='loadNodeNeighbors(\"in\", \""+data.id+"\")'>incoming</button> or ";
+    actions += "<button class='btn btn-outline-primary btn-sm' href='#' onclick='loadNodeNeighbors(\"both\", \""+data.id+"\")'>both</button></li>";
+    actions += "<li><button class='btn btn-outline-primary btn-sm' href='#' onclick='removeGraphElement(globalSelected)'>Hide</button> selected elements</li>";
+    actions += "<li>Select all the element of type <button class='btn btn-outline-primary btn-sm' href='#' onclick='selectGraphElementByType(\"" + type+ "\")'>" + type+ "</button></li>";
     actions += "</ul>";
 
     $("#graphActions").html( actions );
@@ -908,8 +908,8 @@ function displaySelectedEdge(){
   if( globalSelected.length == 1 ) {
     let actions = "<br><h5>Actions</h5>";
     actions += "<ul>";
-    actions += "<li><a class='link' href='#' onclick='removeGraphElement(globalSelected)'>Hide</a> selected elements</li>";
-    actions += "<li>Select all the element of type <a class='link' href='#' onclick='selectGraphElementByType(\"" + data.type+ "\")'>" + data.type+ "</a></li>";
+    actions += "<li><button class='btn btn-outline-primary btn-sm' href='#' onclick='removeGraphElement(globalSelected)'>Hide</button> selected elements</li>";
+    actions += "<li>Select all the element of type <button class='btn btn-outline-primary btn-sm' href='#' onclick='selectGraphElementByType(\"" + data.type+ "\")'>" + data.type+ "</button></li>";
     actions += "</ul>";
 
     $("#graphActions").html( actions );
