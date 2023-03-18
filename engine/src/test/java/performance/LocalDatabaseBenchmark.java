@@ -71,6 +71,7 @@ public class LocalDatabaseBenchmark {
   public void run() {
     database.command("sql", "create vertex type User buckets " + BUCKETS);
     database.command("sql", "create property User.id long");
+//    database.command("sql", "create index on User (id) notunique");
     database.command("sql", "alter type User BucketSelectionStrategy `thread`");
 
     //System.out.println("BEGIN SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
@@ -103,7 +104,7 @@ public class LocalDatabaseBenchmark {
 
     final double deltaInSecs = (System.currentTimeMillis() - beginTime) / 1000;
 
-    System.out.println("INSERTION completed in " + deltaInSecs + " seconds (" + (globalCounter.get() / deltaInSecs) + " req/sec)");
+    System.out.printf("INSERTION completed in %.1f seconds (%.0f req/sec)\n", deltaInSecs, globalCounter.get() / deltaInSecs);
 
     long totalRecordsOnClusters = 0L;
     for (int i = 0; i < BUCKETS; i++)

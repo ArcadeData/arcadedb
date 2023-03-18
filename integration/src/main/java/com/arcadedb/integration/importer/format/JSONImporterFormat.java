@@ -55,6 +55,16 @@ import static com.google.gson.stream.JsonToken.END_ARRAY;
 import static com.google.gson.stream.JsonToken.END_OBJECT;
 
 public class JSONImporterFormat implements FormatImporter {
+  static class CascadingProperties {
+    CascadingProperties parent;
+    Map<String, Object> map;
+
+    public CascadingProperties(CascadingProperties parent, Map<String, Object> map) {
+      this.parent = parent;
+      this.map = map;
+    }
+  }
+
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
@@ -138,15 +148,15 @@ public class JSONImporterFormat implements FormatImporter {
     reader.endArray();
   }
 
-  private static void saveAnonymousRecord(Database database, ImporterSettings settings, final Map<String, Object> map) {
+  private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings, final Map<String, Object> map) {
     // NO MAPPING, SAVE THE RECORD AS A DOCUMENT
     database.getSchema().getOrCreateDocumentType(settings.documentTypeName);
-    database.newDocument(settings.documentTypeName).set(map).save();
+    return database.newDocument(settings.documentTypeName).set(map).save();
   }
 
   private Object parseRecord(final JsonReader reader, final ImporterSettings settings, final ImporterContext context, final Database database,
       final JSONObject mapping, final boolean ignore) throws IOException {
-    final Map<String, Object> attributes = ignore ? null : new LinkedHashMap<>();
+    final CascadingProperties attributes = ignore ? null : new CascadingProperties(null, new LinkedHashMap<>());
 
     context.parsed.incrementAndGet();
 
@@ -196,7 +206,7 @@ public class JSONImporterFormat implements FormatImporter {
       }
 
       if (!ignore)
-        attributes.put(attributeName, attributeValue);
+        attributes.map.put(attributeName, attributeValue);
     }
 
     reader.endObject();
@@ -204,18 +214,47 @@ public class JSONImporterFormat implements FormatImporter {
     if (ignore)
       return null;
 
-    final Document record = createRecord(database, context, attributes, mapping);
+    resolveProperties(mapping, attributes);
+
+    final Document record = createRecord(database, context, attributes, mapping, settings);
     if (record instanceof MutableDocument) {
       ((MutableDocument) record).save();
       return record;
     }
 
-    return attributes;
+    return attributes.map;
   }
 
-  private Document createRecord(final Database database, final ImporterContext context, final Map<String, Object> attributes, final JSONObject mapping) {
+  private void resolveProperties(final JSONObject mapping, final CascadingProperties attributes) {
+    if (mapping == null)
+      return;
+
+    for (Map.Entry<String, Object> entry : mapping.toMap().entrySet()) {
+      if (entry.getKey().startsWith("@"))
+        continue;
+      final Object value = entry.getValue();
+      if (value instanceof String && ((String) value).startsWith("<") && ((String) value).endsWith(">")) {
+        final String copyFrom = ((String) value).substring(1, ((String) value).length() - 1);
+        attributes.map.put(entry.getKey(), getAttribute(attributes, copyFrom));
+      }
+    }
+  }
+
+  private Object getAttribute(final CascadingProperties properties, final String name) {
+    if (properties == null)
+      return null;
+
+    if (name.startsWith("../"))
+      return getAttribute(properties.parent, name.substring(3));
+
+    return properties.map.get(name);
+  }
+
+  private Document createRecord(final Database database, final ImporterContext context, final CascadingProperties attributes, final JSONObject mapping,
+      final ImporterSettings settings) {
     if (mapping == null)
       return null;
+    //return saveAnonymousRecord(database, settings, (Map<String, Object>) attributes.map);
 
     if (!mapping.has("@cat")) {
       LogManager.instance().log(this, Level.WARNING, "No @cat tag defined in mapping object. The following object will be skipped %s", attributes);
@@ -236,7 +275,7 @@ public class JSONImporterFormat implements FormatImporter {
       // GET TYPE NAME FROM THE OBJECT
       typeName = typeName.substring(1, typeName.length() - 1);
       for (String tName : typeName.split(",")) {
-        typeName = (String) attributes.get(tName);
+        typeName = (String) getAttribute(attributes, tName);
         if (typeName != null)
           break;
       }
@@ -269,7 +308,7 @@ public class JSONImporterFormat implements FormatImporter {
 
     if (mapping.has("@id")) {
       final String id = mapping.getString("@id");
-      final Object idValue = attributes.get(id);
+      final Object idValue = getAttribute(attributes, id);
 
       Property prop = type.getPropertyIfExists(id);
       if (prop == null) {
@@ -313,9 +352,9 @@ public class JSONImporterFormat implements FormatImporter {
       }
     }
 
-    applyMappingRules(database, context, record, attributes, mapping);
+    applyMappingRules(database, context, record, attributes, mapping, settings);
 
-    final LinkedHashMap<String, Object> recordProperties = new LinkedHashMap<>(attributes);
+    final LinkedHashMap<String, Object> recordProperties = new LinkedHashMap<>(attributes.map);
     recordProperties.keySet().removeIf(name -> name.startsWith("@"));
 
     record.set(recordProperties);
@@ -323,28 +362,30 @@ public class JSONImporterFormat implements FormatImporter {
     return record;
   }
 
-  private void applyMappingRules(final Database database, final ImporterContext context, final MutableDocument record, final Map<String, Object> attributes,
-      final JSONObject mapping) {
+  private void applyMappingRules(final Database database, final ImporterContext context, final MutableDocument record, final CascadingProperties attributes,
+      final JSONObject mapping, final ImporterSettings settings) {
+    resolveProperties(mapping, attributes);
+
     // CHECK FOR SPECIAL MAPPING
     for (String mappingName : mapping.keySet()) {
       final Object mappingValue = mapping.get(mappingName);
-      final Object attributeValue = attributes.get(mappingName);
+      final Object attributeValue = getAttribute(attributes, mappingName);
 
       if (attributeValue == null)
         continue;
 
       if (mappingValue instanceof JSONObject) {
-        if (!(attributeValue instanceof Map)) {
-          LogManager.instance()
-              .log(this, Level.WARNING, "Defined an object on mapping for property '%s' but found the object of class %s as attribute", mappingName,
-                  attributeValue.getClass());
-          context.errors.incrementAndGet();
-          continue;
-        }
-        Object result = convertMap(database, context, record, attributeValue, mappingValue);
+//        if (!(attributeValue instanceof Map)) {
+//          LogManager.instance()
+//              .log(this, Level.WARNING, "Defined an object on mapping for property '%s' but found the object of class %s as attribute", mappingName,
+//                  attributeValue.getClass());
+//          context.errors.incrementAndGet();
+//          continue;
+//        }
+        Object result = convertMap(database, context, record, attributeValue, mappingValue, attributes, settings);
         if (result instanceof Edge)
           // CONVERTED TO EDGE, REMOVE THE PROPERTY ENTIRELY
-          attributes.remove(mappingName);
+          attributes.map.remove(mappingName);
 
       } else if (mappingValue instanceof JSONArray) {
         if (!(attributeValue instanceof Collection)) {
@@ -358,12 +399,15 @@ public class JSONImporterFormat implements FormatImporter {
         final Object subMapping = ((JSONArray) mappingValue).get(0);
         for (Iterator<?> it = ((Collection<?>) attributeValue).iterator(); it.hasNext(); ) {
           final Object attributeArrayItem = it.next();
-          Object result = convertMap(database, context, record, attributeArrayItem, subMapping);
+          Object result = convertMap(database, context, record, attributeArrayItem, subMapping, attributes, settings);
           if (result instanceof Edge)
             // CONVERTED TO EDGE, REMOVE THE PROPERTY ENTIRELY
-            attributes.remove(mappingName);
+            attributes.map.remove(mappingName);
         }
+      } else if (mappingValue instanceof String && mappingValue.toString().equals("@ignore")) {
+        attributes.map.remove(mappingName);
       }
+
     }
   }
 
@@ -411,103 +455,110 @@ public class JSONImporterFormat implements FormatImporter {
     return list;
   }
 
-  private Object convertMap(final Database database, final ImporterContext context, final MutableDocument record, final Object value, final Object mapping) {
+  private Object convertMap(final Database database, final ImporterContext context, final MutableDocument record, final Object value, final Object mapping,
+      final CascadingProperties attributes, final ImporterSettings settings) {
     if (mapping instanceof JSONObject) {
       final JSONObject mappingObject = (JSONObject) mapping;
-      if (value instanceof Map) {
+
+      final Map<String, Object> attributeMap;
+      if (value instanceof Map)
         // CONVERT EMBEDDED MAP INTO A RECORD
-        final Map<String, Object> attributeMap = new LinkedHashMap<>((Map<String, Object>) value);
+        attributeMap = new LinkedHashMap<>((Map<String, Object>) value);
+      else {
+        // TREAT THE VALUE AS ID
+        attributeMap = new LinkedHashMap<>();
+      }
 
-        final String subCategory = mappingObject.has("@cat") ? mappingObject.getString("@cat") : null;
-        final String subTypeName = mappingObject.has("@type") ? mappingObject.getString("@type") : null;
+      final String subCategory = mappingObject.has("@cat") ? mappingObject.getString("@cat") : null;
+      final String subTypeName = mappingObject.has("@type") ? mappingObject.getString("@type") : null;
 
-        if ("e".equals(subCategory)) {
-          // TRANSFORM INTO AN EDGE
-          if (subTypeName == null) {
-            LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the edge @type is not defined");
-            context.errors.incrementAndGet();
-            return null;
-          }
-
-          if (!(record instanceof Vertex)) {
-            LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the root record is not a vertex");
-            context.errors.incrementAndGet();
-            return null;
-          }
-
-          final JSONObject destVertexMappingObject;
-          final Object destVertexItem;
-
-          if (mappingObject.has("@in")) {
-            final Object inValue = mappingObject.get("@in");
-            if (inValue instanceof String) {
-              final String inVertex = inValue.toString();
-              destVertexMappingObject = mappingObject.getJSONObject(inVertex);
-              destVertexItem = attributeMap.get(inVertex);
-            } else if (inValue instanceof JSONObject) {
-              destVertexMappingObject = (JSONObject) inValue;
-              destVertexItem = attributeMap;
-            } else {
-              LogManager.instance()
-                  .log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in type is not supported: " + inValue);
-              context.errors.incrementAndGet();
-              return null;
-            }
-          } else {
-            LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in is not defined");
-            context.errors.incrementAndGet();
-            return null;
-          }
-
-          final MutableVertex destVertex;
-          if (destVertexItem instanceof Document)
-            destVertex = (MutableVertex) destVertexItem;
-          else if (destVertexItem instanceof Map) {
-            destVertex = (MutableVertex) createRecord(record.getDatabase(), context, (Map<String, Object>) destVertexItem, destVertexMappingObject);
-            if (destVertex == null) {
-              LogManager.instance().log(this, Level.WARNING, "Cannot convert inner map into destination vertex: %s", destVertexItem);
-              context.errors.incrementAndGet();
-              return null;
-            }
-          } else {
-            LogManager.instance().log(this, Level.WARNING, "Cannot convert object " + destVertexItem + " into a record");
-            context.errors.incrementAndGet();
-            return null;
-          }
-
-          record.save();
-          destVertex.save();
-
-          database.getSchema().getOrCreateEdgeType(subTypeName);
-
-          final String cardinality = mappingObject.optString("@cardinality");
-          if ("no-duplicates".equalsIgnoreCase(cardinality)) {
-            boolean duplicates = false;
-            for (Iterator<Vertex> connectedVertices = ((Vertex) record).getVertices(Vertex.DIRECTION.OUT, subTypeName)
-                .iterator(); connectedVertices.hasNext(); ) {
-              final RID connectedVertex = connectedVertices.next().getIdentity();
-              if (destVertex.getIdentity().equals(connectedVertex)) {
-                duplicates = true;
-                break;
-              }
-            }
-
-            if (duplicates) {
-              context.skippedEdges.incrementAndGet();
-              return null;
-            }
-          }
-
-          final MutableEdge edge = ((Vertex) record).newEdge(subTypeName, destVertex, true);
-
-          attributeMap.keySet().removeIf(name -> name.startsWith("@"));
-          edge.set(attributeMap);
-          edge.save();
-
-          context.createdEdges.incrementAndGet();
-
-          return edge;
+      if ("e".equals(subCategory)) {
+        // TRANSFORM INTO AN EDGE
+        if (subTypeName == null) {
+          LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the edge @type is not defined");
+          context.errors.incrementAndGet();
+          return null;
         }
+
+        if (!(record instanceof Vertex)) {
+          LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the root record is not a vertex");
+          context.errors.incrementAndGet();
+          return null;
+        }
+
+        final JSONObject destVertexMappingObject;
+        final Object destVertexItem;
+
+        if (mappingObject.has("@in")) {
+          final Object inValue = mappingObject.get("@in");
+          if (inValue instanceof String) {
+            final String inVertex = inValue.toString();
+            destVertexMappingObject = mappingObject.getJSONObject(inVertex);
+            destVertexItem = attributeMap.get(inVertex);
+          } else if (inValue instanceof JSONObject) {
+            destVertexMappingObject = (JSONObject) inValue;
+            destVertexItem = attributeMap;
+          } else {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in type is not supported: " + inValue);
+            context.errors.incrementAndGet();
+            return null;
+          }
+        } else {
+          LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in is not defined");
+          context.errors.incrementAndGet();
+          return null;
+        }
+
+        final MutableVertex destVertex;
+        if (destVertexItem instanceof Document)
+          destVertex = (MutableVertex) destVertexItem;
+        else if (destVertexItem instanceof Map) {
+          destVertex = (MutableVertex) createRecord(record.getDatabase(), context, new CascadingProperties(attributes, (Map<String, Object>) destVertexItem),
+              destVertexMappingObject, settings);
+          if (destVertex == null) {
+            LogManager.instance().log(this, Level.WARNING, "Cannot convert inner map into destination vertex: %s", destVertexItem);
+            context.errors.incrementAndGet();
+            return null;
+          }
+        } else {
+          LogManager.instance().log(this, Level.WARNING, "Cannot convert object " + destVertexItem + " into a record");
+          context.errors.incrementAndGet();
+          return null;
+        }
+
+        record.save();
+        destVertex.save();
+
+        database.getSchema().getOrCreateEdgeType(subTypeName);
+
+        final String cardinality = mappingObject.optString("@cardinality");
+        if ("no-duplicates".equalsIgnoreCase(cardinality)) {
+          boolean duplicates = false;
+          for (Iterator<Vertex> connectedVertices = ((Vertex) record).getVertices(Vertex.DIRECTION.OUT, subTypeName)
+              .iterator(); connectedVertices.hasNext(); ) {
+            final RID connectedVertex = connectedVertices.next().getIdentity();
+            if (destVertex.getIdentity().equals(connectedVertex)) {
+              duplicates = true;
+              break;
+            }
+          }
+
+          if (duplicates) {
+            context.skippedEdges.incrementAndGet();
+            return null;
+          }
+        }
+
+        final MutableEdge edge = ((Vertex) record).newEdge(subTypeName, destVertex, true);
+
+        attributeMap.keySet().removeIf(name -> name.startsWith("@"));
+        edge.set(attributeMap);
+        edge.save();
+
+        context.createdEdges.incrementAndGet();
+
+        return edge;
       }
     }
     return null;
