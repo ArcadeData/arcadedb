@@ -140,7 +140,9 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
         return false;
 
       try {
-        return this.compare(f, s) == 0;
+        // comparable(f, s) assures that type(f) == type(s)
+        final Type type = Type.type(f);
+        return comparator(type).compare(f, s) == 0;
       } catch (GremlinTypeErrorException ex) {
         /**
          * By routing through the compare(f, s) path we expose ourselves to type errors, which should be
