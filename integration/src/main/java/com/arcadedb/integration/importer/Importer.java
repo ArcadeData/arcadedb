@@ -62,8 +62,8 @@ public class Importer extends AbstractImporter {
     } catch (final Exception e) {
       throw new ImportException("Error on parsing source '" + source + "'", e);
     } finally {
+      stopImporting();
       if (database != null) {
-        stopImporting();
         closeDatabase();
       }
       closeInputFile();
