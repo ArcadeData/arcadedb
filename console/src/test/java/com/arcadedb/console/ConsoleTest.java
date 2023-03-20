@@ -488,4 +488,29 @@ public class ConsoleTest {
 
     Assertions.assertNull(console.getDatabase().query("sql", "SELECT FROM doc").nextIfAvailable().getProperty("prop"));
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/958
+   */
+  @Test
+  public void testPercentWildcardInQuery() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type Person"));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner', nothing = null"));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Thom', lastname='Yorke', nothing = 'something'"));
+
+    {
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+      Assertions.assertTrue(console.parse("select from Person where name like 'Thom%'"));
+      Assertions.assertTrue(buffer.toString().contains("Yorke"));
+    }
+
+    {
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+      Assertions.assertTrue(console.parse("select from Person where not ( name like 'Thom%' )"));
+      Assertions.assertTrue(buffer.toString().contains("Miner"));
+    }
+  }
 }
