@@ -125,7 +125,6 @@ public class Profiler {
       evictionRuns += pStats.evictionRuns;
       pagesEvicted += pStats.pagesEvicted;
       readCachePages += pStats.readCachePages;
-      writeCachePages += pStats.writeCachePages;
 
       final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
       totalOpenFiles += fStats.totalOpenFiles;
@@ -287,7 +286,6 @@ public class Profiler {
         evictionRuns += pStats.evictionRuns;
         pagesEvicted += pStats.pagesEvicted;
         readCachePages += pStats.readCachePages;
-        writeCachePages += pStats.writeCachePages;
 
         final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
         totalOpenFiles += fStats.totalOpenFiles;

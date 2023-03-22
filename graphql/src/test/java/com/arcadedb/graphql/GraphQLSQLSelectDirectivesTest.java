@@ -16,20 +16,17 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.parser;
+package com.arcadedb.graphql;
 
-import org.junit.jupiter.api.Test;
+import com.arcadedb.database.Database;
 
-public class CreateBucketStatementTest extends ParserTestAbstract {
-
-  @Test
-  public void testPlain() {
-    checkRightSyntax("CREATE BUCKET Foo");
-    checkRightSyntax("create bucket Foo");
-    checkRightSyntax("CREATE Bucket Foo if not exists");
-
-    checkWrongSyntax("CREATE Bucket");
-    checkWrongSyntax("CREATE Bucket foo bar");
-    checkWrongSyntax("CREATE Bucket foo.bar");
+public class GraphQLSQLSelectDirectivesTest extends AbstractGraphQLNativeLanguageDirectivesTest {
+  @Override
+  protected void defineTypes(final Database database) {
+    super.defineTypes(database);
+    database.command("graphql", "type Query {\n" +//
+        "  bookById(id: String): Book\n" +//
+        "  bookByName(bookNameParameter: String): Book @sql(statement: \"select from Book where name = :bookNameParameter\")\n" +//
+        "}");
   }
 }

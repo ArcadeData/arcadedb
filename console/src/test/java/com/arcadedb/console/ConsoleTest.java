@@ -466,4 +466,51 @@ public class ConsoleTest {
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
         console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
   }
+
+  /**
+   * Test case for https://github.com/ArcadeData/arcadedb/issues/885
+   */
+  @Test
+  public void testNotNullProperties() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING (notnull);"));
+    Assertions.assertTrue(((EmbeddedDatabase) console.getDatabase()).getSchema().getType("doc").getProperty("prop").isNotNull());
+
+    Assertions.assertTrue(console.parse("INSERT INTO doc set a = null;"));
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+    Assertions.assertTrue(console.parse("INSERT INTO doc set prop = null;"));
+
+    int pos = buffer.toString().indexOf("ValidationException");
+    Assertions.assertTrue(pos > -1);
+
+    Assertions.assertNull(console.getDatabase().query("sql", "SELECT FROM doc").nextIfAvailable().getProperty("prop"));
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/958
+   */
+  @Test
+  public void testPercentWildcardInQuery() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type Person"));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner', nothing = null"));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Thom', lastname='Yorke', nothing = 'something'"));
+
+    {
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+      Assertions.assertTrue(console.parse("select from Person where name like 'Thom%'"));
+      Assertions.assertTrue(buffer.toString().contains("Yorke"));
+    }
+
+    {
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+      Assertions.assertTrue(console.parse("select from Person where not ( name like 'Thom%' )"));
+      Assertions.assertTrue(buffer.toString().contains("Miner"));
+    }
+  }
 }

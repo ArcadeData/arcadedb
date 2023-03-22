@@ -108,8 +108,6 @@ public class RedisNetworkListener extends Thread {
    * @param hostName
    */
   private void listen(final String hostName, final String hostPortRange) {
-
-    int port;
     for (final int tryPort : getPorts(hostPortRange)) {
       final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {
@@ -120,7 +118,6 @@ public class RedisNetworkListener extends Thread {
               "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort() + "} (protocol v."
                   + protocolVersion + ")");
 
-          port = tryPort;
           return;
         }
       } catch (final BindException be) {
@@ -143,7 +140,7 @@ public class RedisNetworkListener extends Thread {
     final int[] ports;
 
     if (iHostPortRange.contains(",")) {
-      // MULTIPLE ENUMERATED PORTS
+      // MULTIPLE ENUMERATED ports
       final String[] portValues = iHostPortRange.split(",");
       ports = new int[portValues.length];
       for (int i = 0; i < portValues.length; ++i)

@@ -34,7 +34,7 @@ public class GraphQLResult extends ResultInternal {
 
   public GraphQLResult(final Map<String, Object> map) {
     super(map);
-    identity = (RID) map.remove("@rid");
+    identity = (RID) map.get("@rid");
   }
 
   @Override

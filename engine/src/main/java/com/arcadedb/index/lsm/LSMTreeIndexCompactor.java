@@ -23,7 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
-import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.log.LogManager;
@@ -99,7 +99,7 @@ public class LSMTreeIndexCompactor {
     // FIND LAST IMMUTABLE PAGE TO COMPACT
     int lastImmutablePage = totalPages - 1;
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
-      final BasePage page = database.getPageManager().getPage(new PageId(mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, true);
+      final ImmutablePage page = database.getPageManager().getPage(new PageId(mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, true);
       if (!mutableIndex.isMutable(page)) {
         lastImmutablePage = pageIndex;
         break;
@@ -296,7 +296,7 @@ public class LSMTreeIndexCompactor {
       if (rootPage != null)
         modifiedPages.add(database.getPageManager().updatePage(rootPage, true));
 
-      database.getPageManager().flushPages(modifiedPages, false);
+      database.getPageManager().writePages(modifiedPages, false);
 
       compactedPages += pagesToCompact;
 

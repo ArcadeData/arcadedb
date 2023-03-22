@@ -150,7 +150,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
       }
 
       // FORCE THE RESET OF TL
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
+      DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
       exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
 
       return session;

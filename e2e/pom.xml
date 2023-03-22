@@ -31,12 +31,12 @@
 
     <properties>
         <testcontainers.version>1.17.6</testcontainers.version>
-        <postgresql.version>42.5.3</postgresql.version>
-        <logback-classic.version>1.4.5</logback-classic.version>
+        <postgresql.version>42.6.0</postgresql.version>
+        <logback-classic.version>1.4.6</logback-classic.version>
     </properties>
 
     <artifactId>arcadedb-e2e</artifactId>
-    <packaging>pom</packaging>
+    <packaging>jar</packaging>
 
     <build>
         <plugins>

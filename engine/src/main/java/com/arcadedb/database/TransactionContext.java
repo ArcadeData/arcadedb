@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
@@ -253,12 +254,9 @@ public class TransactionContext implements Transaction {
     if (page == null && newPages != null)
       page = newPages.get(pageId);
 
-    if (page == null) {
+    if (page == null)
       // NOT FOUND, DELEGATES TO THE DATABASE
       page = database.getPageManager().getPage(pageId, size, false, true);
-      if (page != null)
-        page = page.createImmutableView();
-    }
 
     return page;
   }
@@ -277,7 +275,7 @@ public class TransactionContext implements Transaction {
 
       if (page == null) {
         // NOT FOUND, DELEGATES TO THE DATABASE
-        final BasePage loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
+        final ImmutablePage loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
         if (loadedPage != null) {
           final MutablePage mutablePage = loadedPage.modify();
           if (isNew)
@@ -288,8 +286,25 @@ public class TransactionContext implements Transaction {
         }
       }
     }
-
     return page;
+  }
+
+  /**
+   * Puts the page in the TX modified pages.
+   */
+  public MutablePage getPageToModify(final BasePage page) throws IOException {
+    if (!isActive())
+      throw new TransactionException("Transaction not active");
+
+    final MutablePage mutablePage = page.modify();
+
+    final PageId pageId = page.getPageId();
+    if (newPages.containsKey(pageId))
+      newPages.put(mutablePage.getPageId(), mutablePage);
+    else
+      modifiedPages.put(mutablePage.getPageId(), mutablePage);
+
+    return mutablePage;
   }
 
   public MutablePage addPage(final PageId pageId, final int pageSize) {

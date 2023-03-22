@@ -4182,4 +4182,22 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertEquals("abbb", item.getProperty("name"));
     }
   }
+
+  @Test
+  public void testSchemaMap() {
+    database.command("sql", "CREATE DOCUMENT TYPE SchemaMap");
+    database.command("sql", "ALTER TYPE SchemaMap CUSTOM label = 'Document'");
+    final ResultSet result = database.query("sql", "SELECT map(name,custom.label) as map FROM schema:types");
+
+    Assertions.assertTrue(result.hasNext());
+    final Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    Object map = item.getProperty("map");
+    Assertions.assertTrue(map instanceof Map);
+
+    Assertions.assertEquals("Document", ((Map<?, ?>) map).get("SchemaMap"));
+
+    result.close();
+  }
 }

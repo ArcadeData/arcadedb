@@ -19,6 +19,7 @@
 package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graphql.parser.AbstractField;
 import com.arcadedb.graphql.parser.Argument;
@@ -155,6 +156,8 @@ public class GraphQLResultSet implements ResultSet {
     if (current.getElement().isPresent()) {
       final Document element = current.getElement().get();
       map.put("@rid", element.getIdentity());
+      map.put("@type", element.getTypeName());
+      map.put("@cat", element instanceof Vertex ? "v" : element instanceof Edge ? "e" : "d");
     }
 
     for (final Projection entry : projections) {

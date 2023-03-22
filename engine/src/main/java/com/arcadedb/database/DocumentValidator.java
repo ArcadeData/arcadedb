@@ -44,15 +44,14 @@ public class DocumentValidator {
     final Object fieldValue = document.get(p.getName());
 
     if (fieldValue == null) {
-      if (p.isNotNull())
+      if (p.isNotNull() && document.has(p.getName()))
         // NULLITY
         throwValidationException(p, "cannot be null, record: " + document);
     } else {
       if (p.getRegexp() != null)
         // REGEXP
         if (!(fieldValue.toString()).matches(p.getRegexp()))
-          throwValidationException(p,
-              "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: " + document);
+          throwValidationException(p, "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: " + document);
 
       final Type propertyType = p.getType();
 

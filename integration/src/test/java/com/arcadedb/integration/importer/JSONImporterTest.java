@@ -21,6 +21,8 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Record;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
@@ -28,6 +30,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.util.*;
 
 public class JSONImporterTest {
   @Test
@@ -61,6 +64,76 @@ public class JSONImporterTest {
 
     try (final Database db = new DatabaseFactory(databasePath).open()) {
       Assertions.assertEquals(2, db.countType("Food", true));
+    }
+
+    TestHelper.checkActiveDatabases();
+  }
+
+  @Test
+  public void importEmployees() throws IOException {
+    final String databasePath = "target/databases/test-import-graph";
+
+    final String mapping = "{" + //
+        "  \"Users\":[" + //
+        "    {" + //
+        "      \"@cat\":\"v\"," + //
+        "      \"@type\":\"User\"," + //
+        "      \"@id\":\"id\"," + //
+        "      \"id\":\"<EmployeeID>\"," + //
+        "      \"@idType\":\"string\"," + //
+        "      \"@strategy\": \"merge\"," + //
+        "      \"EmployeeID\": \"@ignore\"," + //
+        "      \"ManagerID\":{" + //
+        "        \"@cat\":\"e\"," + //
+        "        \"@type\":\"HAS_MANAGER\"," + //
+        "        \"@cardinality\":\"no-duplicates\"," + //
+        "        \"@in\": {" + //
+        "          \"@cat\":\"v\"," + //
+        "          \"@type\":\"User\"," + //
+        "          \"@id\":\"id\"," + //
+        "          \"@idType\": \"string\"," + //
+        "          \"@strategy\": \"merge\"," + //
+        "          \"EmployeeID\": \"@ignore\"," + //
+        "          \"id\":\"<../ManagerID>\"" + //
+        "        }     " + //
+        "      }" + //
+        "    }" + //
+        "  ]" + //
+        "}";
+
+    Importer importer = new Importer(
+        new String[] { "-url", "file://src/test/resources/importer-employees.json", "-database", databasePath, "-forceDatabaseCreate", "true", "-mapping",
+            mapping });
+    importer.load();
+
+    try (final Database db = new DatabaseFactory(databasePath).open()) {
+      for (Iterator<Record> it = db.iterateType("User", true); it.hasNext(); ) {
+        final Vertex vertex = it.next().asVertex();
+
+        final String name = vertex.getString("Name");
+
+        if ("Marcus".equalsIgnoreCase(name)) {
+          Assertions.assertEquals("1234", vertex.getString("id"));
+          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.OUT))
+            v.getString("1230");
+          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.IN))
+            Assertions.fail();
+        } else if ("Win".equals(name)) {
+          Assertions.assertEquals("1230", vertex.getString("id"));
+          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.IN))
+            v.getString("1234");
+          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.OUT))
+            v.getString("1231");
+        } else {
+          Assertions.assertEquals("1231", vertex.getString("id"));
+          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.IN))
+            v.getString("1230");
+          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.OUT))
+            Assertions.fail();
+        }
+      }
+
+      Assertions.assertEquals(3, db.countType("User", true));
     }
 
     TestHelper.checkActiveDatabases();

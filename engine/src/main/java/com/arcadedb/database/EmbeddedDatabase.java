@@ -1705,8 +1705,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     }
   }
 
-  private static void delayBetweenRetries(final int retryDelay) {
+  private void delayBetweenRetries(final int retryDelay) {
     if (retryDelay > 0) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Wait %d ms before the next retry for transaction commit (threadId=%d)", retryDelay, Thread.currentThread().getId());
+
       try {
         Thread.sleep(1 + new Random().nextInt(retryDelay));
       } catch (InterruptedException ex) {

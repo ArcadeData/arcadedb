@@ -802,7 +802,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       return;
 
     final InstallDatabaseRequest request = new InstallDatabaseRequest(getName());
-    final List<Object> responsePayloads = ha.sendCommandToReplicasWithQuorum(request, quorum, 30_000);
+    ha.sendCommandToReplicasWithQuorum(request, quorum, 30_000);
   }
 
   private DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {

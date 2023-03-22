@@ -738,10 +738,17 @@ public class Console {
     if (verboseLevel < level)
       return;
 
-    if (output != null)
-      output.onOutput(String.format(text, args));
-    else
-      terminal.writer().printf(text, args);
+    if (args.length > 0) {
+      if (output != null)
+        output.onOutput(String.format(text, args));
+      else
+        terminal.writer().printf(text, args);
+    } else {
+      if (output != null)
+        output.onOutput(text);
+      else
+        terminal.writer().print(text);
+    }
   }
 
   private void executeInfo(final String subject) {

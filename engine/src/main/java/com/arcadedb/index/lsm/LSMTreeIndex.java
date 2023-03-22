@@ -524,7 +524,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           newMutableIndex.setPageCount(i + 2);
         }
 
-        database.getPageManager().flushPages(modifiedPages, false);
+        database.getPageManager().writePages(modifiedPages, false);
 
         newMutableIndex.setCurrentMutablePages(newMutableIndex.getTotalPages() - 1);
         if (compactedIndex.getTotalPages() < 1)

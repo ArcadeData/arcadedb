@@ -40,7 +40,8 @@ public class FunctionCall extends SimpleNode {
   protected List<Expression> params = new ArrayList<>();
   private   SQLFunction      cachedFunction;
 
-  public FunctionCall(int id) {
+  public FunctionCall(final int id) {
+    super(id);
   }
 
   public boolean isStar() {
@@ -91,7 +92,10 @@ public class FunctionCall extends SimpleNode {
     if (targetObjects instanceof Identifiable) {
       record = targetObjects;
     } else if (targetObjects instanceof Result) {
-      record = ((Result) targetObjects).toElement();
+      if (((Result) targetObjects).isElement())
+        record = ((Result) targetObjects).toElement();
+      else
+        record = targetObjects;
     } else {
       record = targetObjects;
     }

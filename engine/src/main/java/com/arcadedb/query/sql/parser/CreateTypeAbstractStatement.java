@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -178,6 +179,17 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     result = 31 * result + (buckets != null ? buckets.hashCode() : 0);
     result = 31 * result + (totalBucketNo != null ? totalBucketNo.hashCode() : 0);
     return result;
+  }
+
+  protected List<com.arcadedb.engine.Bucket> getBuckets(final Schema schema) {
+    final List<Bucket> bucketInstances = new ArrayList<>();
+    for (final BucketIdentifier b : buckets) {
+      if (!schema.existsBucket(b.bucketName.getStringValue()))
+        schema.createBucket(b.bucketName.getStringValue());
+
+      bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
+    }
+    return bucketInstances;
   }
 }
 /* JavaCC - OriginalChecksum=4043013624f55fdf0ea8fee6d4f211b0 (do not edit this line) */

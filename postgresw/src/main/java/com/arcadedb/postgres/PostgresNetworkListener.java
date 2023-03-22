@@ -101,7 +101,6 @@ public class PostgresNetworkListener extends Thread {
    */
   private void listen(final String hostName, final String hostPortRange) {
 
-    int port;
     for (final int tryPort : getPorts(hostPortRange)) {
       final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {
@@ -112,7 +111,6 @@ public class PostgresNetworkListener extends Thread {
               "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort() + "} (protocol v."
                   + protocolVersion + ")");
 
-          port = tryPort;
           return;
         }
       } catch (final BindException be) {

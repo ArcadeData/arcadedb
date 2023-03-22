@@ -23,9 +23,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.EmbeddedModifier;
 import com.arcadedb.database.EmbeddedModifierProperty;
@@ -61,7 +61,7 @@ import java.util.logging.*;
  * TODO: efficient, because it doesn't need to unmarshall all the values first.
  */
 public class BinarySerializer {
-  private final BinaryComparator comparator = new BinaryComparator(this);
+  private final BinaryComparator comparator = new BinaryComparator();
   private       Class            dateImplementation;
   private       Class            dateTimeImplementation;
 
@@ -89,9 +89,11 @@ public class BinarySerializer {
   public Binary serializeDocument(final DatabaseInternal database, final Document document) {
     Binary header = ((BaseRecord) document).getBuffer();
 
+    final DatabaseContext.DatabaseContextTL context = database.getContext();
+
     final boolean serializeProperties;
     if (header == null || (document instanceof MutableDocument && ((MutableDocument) document).isDirty())) {
-      header = database.getContext().getTemporaryBuffer1();
+      header = context.getTemporaryBuffer1();
       header.putByte(document.getRecordType()); // RECORD TYPE
       serializeProperties = true;
     } else {
@@ -102,17 +104,19 @@ public class BinarySerializer {
     }
 
     if (serializeProperties)
-      return serializeProperties(database, document, header, database.getContext().getTemporaryBuffer2());
+      return serializeProperties(database, document, header, context.getTemporaryBuffer2());
 
     return header;
   }
 
-  public Binary serializeVertex(final Database database, final VertexInternal vertex) {
+  public Binary serializeVertex(final DatabaseInternal database, final VertexInternal vertex) {
     Binary header = ((BaseRecord) vertex).getBuffer();
+
+    final DatabaseContext.DatabaseContextTL context = database.getContext();
 
     final boolean serializeProperties;
     if (header == null || (vertex instanceof MutableVertex && ((MutableVertex) vertex).isDirty())) {
-      header = ((EmbeddedDatabase) database).getContext().getTemporaryBuffer1();
+      header = context.getTemporaryBuffer1();
       header.putByte(vertex.getRecordType()); // RECORD TYPE
       serializeProperties = true;
     } else {
@@ -142,17 +146,19 @@ public class BinarySerializer {
     }
 
     if (serializeProperties)
-      return serializeProperties(database, vertex, header, ((EmbeddedDatabase) database).getContext().getTemporaryBuffer2());
+      return serializeProperties(database, vertex, header, context.getTemporaryBuffer2());
 
     return header;
   }
 
-  public Binary serializeEdge(final Database database, final Edge edge) {
+  public Binary serializeEdge(final DatabaseInternal database, final Edge edge) {
     Binary header = ((BaseRecord) edge).getBuffer();
+
+    final DatabaseContext.DatabaseContextTL context = database.getContext();
 
     final boolean serializeProperties;
     if (header == null || (edge instanceof MutableEdge && ((MutableEdge) edge).isDirty())) {
-      header = ((EmbeddedDatabase) database).getContext().getTemporaryBuffer1();
+      header = context.getTemporaryBuffer1();
       header.putByte(edge.getRecordType()); // RECORD TYPE
       serializeProperties = true;
     } else {
@@ -167,7 +173,7 @@ public class BinarySerializer {
     serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getIn());
 
     if (serializeProperties)
-      return serializeProperties(database, edge, header, ((EmbeddedDatabase) database).getContext().getTemporaryBuffer2());
+      return serializeProperties(database, edge, header, context.getTemporaryBuffer2());
 
     return header;
   }
@@ -641,12 +647,10 @@ public class BinarySerializer {
 
     final int headerEndOffset = header.position();
 
-    header.append(content);
-
     // UPDATE HEADER SIZE
     header.putInt(headerSizePosition, headerEndOffset);
 
-    header.position(header.size());
+    header.append(content);
     header.flip();
     return header;
   }

@@ -23,9 +23,14 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.TrackableBinary;
 
 import java.nio.*;
+import java.util.*;
 
 /**
  * Mutable page that accepts updates. It keeps track of the modified bytes.
+ * <br>
+ * NOTE: This class is not thread safe and must be not used by multiple threads at the same time.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class MutablePage extends BasePage implements TrackableContent {
   private int     modifiedRangeFrom = Integer.MAX_VALUE;
@@ -41,13 +46,39 @@ public class MutablePage extends BasePage implements TrackableContent {
     super(manager, pageId, size, array, version, contentSize);
   }
 
+  /**
+   * Returns a copy of the underlying buffer because it could change in the current thread.
+   */
+  @Override
+  public Binary getImmutableView(final int index, final int length) {
+    final int offset = content.getByteBuffer().arrayOffset() + index + PAGE_HEADER_SIZE;
+    final Binary copy = new Binary(Arrays.copyOfRange(content.getContent(), offset, offset + length));
+    copy.setAutoResizable(true);
+    return copy;
+  }
+
+  @Override
+  public MutablePage modify() {
+    return this;
+  }
+
   public TrackableBinary getTrackable() {
     final ByteBuffer buffer = content.getByteBuffer();
-    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-    synchronized (buffer) {
-      buffer.position(PAGE_HEADER_SIZE);
-      return new TrackableBinary(this, buffer.slice());
-    }
+    buffer.position(PAGE_HEADER_SIZE);
+    return new TrackableBinary(this, buffer.slice());
+  }
+
+  public void setContentSize(final int value) {
+    content.size(value + PAGE_HEADER_SIZE);
+  }
+
+  public void clearContent() {
+    content.clear();
+  }
+
+  public void updateMetadata() {
+    content.putInt(PAGE_VERSION_OFFSET, version);
+    content.putInt(PAGE_CONTENTSIZE_OFFSET, content.size());
   }
 
   public void incrementVersion() {

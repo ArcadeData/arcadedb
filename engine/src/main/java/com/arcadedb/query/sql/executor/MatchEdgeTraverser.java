@@ -184,8 +184,8 @@ public class MatchEdgeTraverser {
               final ResultInternal next = iter.next();
               final Document elem = next.toElement();
               iCommandContext.setVariable("currentMatch", elem);
-              if (matchesFilters(iCommandContext, theFilter, elem) && matchesClass(iCommandContext, theClassName, elem) && matchesCluster(iCommandContext,
-                  theClusterId, elem) && matchesRid(iCommandContext, theTargetRid, elem)) {
+              if (matchesFilters(iCommandContext, theFilter, elem) && matchesClass(theClassName, elem) && matchesCluster(theClusterId, elem) && matchesRid(
+                  iCommandContext, theTargetRid, elem)) {
                 nextElement = next;
                 break;
               }
@@ -202,8 +202,8 @@ public class MatchEdgeTraverser {
       final Object previousMatch = iCommandContext.getVariable("currentMatch");
       iCommandContext.setVariable("currentMatch", startingPoint);
 
-      if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(iCommandContext, className, startingPoint) && matchesCluster(iCommandContext,
-          clusterId, startingPoint) && matchesRid(iCommandContext, targetRid, startingPoint)) {
+      if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(clusterId, startingPoint)
+          && matchesRid(iCommandContext, targetRid, startingPoint)) {
         final ResultInternal rs = new ResultInternal((Document) startingPoint.getRecord());
         // set traversal depth in the metadata
         rs.setMetadata("$depth", depth);
@@ -262,7 +262,7 @@ public class MatchEdgeTraverser {
     return item.getFilter().getRid(iCommandContext);
   }
 
-  private boolean matchesClass(final CommandContext iCommandContext, final String className, final Identifiable origin) {
+  private boolean matchesClass(final String className, final Identifiable origin) {
     if (className == null) {
       return true;
     }
@@ -285,7 +285,7 @@ public class MatchEdgeTraverser {
     return false;
   }
 
-  private boolean matchesCluster(final CommandContext iCommandContext, final Integer bucketId, final Identifiable origin) {
+  private boolean matchesCluster(final Integer bucketId, final Identifiable origin) {
     if (bucketId == null) {
       return true;
     }

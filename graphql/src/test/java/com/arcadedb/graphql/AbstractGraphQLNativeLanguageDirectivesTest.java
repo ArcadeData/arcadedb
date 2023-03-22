@@ -26,6 +26,10 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 
 public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends AbstractGraphQLTest {
+  protected int getExpectedPropertiesMetadata() {
+    return 3;
+  }
+
   @Test
   public void testUseTypeDefinitionForReturn() {
     executeTest((database) -> {
@@ -34,7 +38,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
       try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\")}")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(4 + getExpectedPropertiesMetadata(), record.getPropertyNames().size());
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
         Assertions.assertEquals("Harry Potter and the Philosopher's Stone", record.getProperty("name"));
         Assertions.assertFalse(resultSet.hasNext());
@@ -43,7 +47,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
       try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Mr. brain\") }")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(4 + getExpectedPropertiesMetadata(), record.getPropertyNames().size());
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
         Assertions.assertEquals("Mr. brain", record.getProperty("name"));
         Assertions.assertFalse(resultSet.hasNext());
@@ -62,7 +66,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
           "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\"){ id name pageCount } }")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
-        Assertions.assertEquals(3, record.getPropertyNames().size());
+        Assertions.assertEquals(3 + getExpectedPropertiesMetadata(), record.getPropertyNames().size());
         Assertions.assertEquals("Harry Potter and the Philosopher's Stone", record.getProperty("name"));
         Assertions.assertFalse(resultSet.hasNext());
       }
@@ -70,7 +74,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
       try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Mr. brain\"){ id name pageCount } }")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
-        Assertions.assertEquals(3, record.getPropertyNames().size());
+        Assertions.assertEquals(3 + getExpectedPropertiesMetadata(), record.getPropertyNames().size());
         Assertions.assertEquals("Mr. brain", record.getProperty("name"));
         Assertions.assertFalse(resultSet.hasNext());
       }

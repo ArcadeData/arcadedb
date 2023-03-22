@@ -39,7 +39,9 @@ public class BucketSQLTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
 
     database.transaction(() -> {
-      database.command("sql", "CREATE BUCKET Customer_Europe");
+      database.command("sql", "CREATE BUCKET Customer_Europe if not exists");
+      database.command("sql", "CREATE BUCKET Customer_Europe if not exists");
+
       database.command("sql", "CREATE BUCKET Customer_Americas");
       database.command("sql", "CREATE BUCKET Customer_Asia");
       database.command("sql", "CREATE BUCKET Customer_Other");

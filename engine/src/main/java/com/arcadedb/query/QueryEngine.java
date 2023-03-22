@@ -61,5 +61,6 @@ public interface QueryEngine {
   }
 
   default void close() {
+    // NO OPERATIONS
   }
 }

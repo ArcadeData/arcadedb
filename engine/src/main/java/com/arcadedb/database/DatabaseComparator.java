@@ -18,8 +18,8 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.index.Index;
@@ -83,8 +83,8 @@ public class DatabaseComparator {
       for (int i = 0; i < bucket1.getTotalPages(); ++i) {
         final PageId pageId = new PageId(bucket1.getId(), i);
 
-        final BasePage page1;
-        final BasePage page2;
+        final ImmutablePage page1;
+        final ImmutablePage page2;
 
         try {
           page1 = db1.getPageManager().getPage(pageId, pageSize, false, true);

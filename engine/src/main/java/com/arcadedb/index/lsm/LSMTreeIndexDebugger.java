@@ -19,6 +19,7 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
 
 import java.io.*;
@@ -75,7 +76,7 @@ public class LSMTreeIndexDebugger {
 
     int lastImmutablePage = totalPages - 1;
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
-      final BasePage page;
+      final ImmutablePage page;
       try {
         page = index.getDatabase().getPageManager().getPage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
         if (!index.isMutable(page)) {
@@ -89,7 +90,7 @@ public class LSMTreeIndexDebugger {
 
     out(0, "COMPACTED INDEX " + index.getName() + " fileId=" + index.getFileId() + " lastImmutablePage=" + lastImmutablePage + "/" + totalPages);
     for (int pageIndex = 0; pageIndex < totalPages; ++pageIndex) {
-      final BasePage page;
+      final ImmutablePage page;
       try {
         page = index.getDatabase().getPageManager().getPage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
         LSMTreeIndexDebugger.out(1, LSMTreeIndexDebugger.printMutableIndexPage(index, page));

@@ -162,7 +162,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
       }
 
     } catch (final Exception e) {
-      throw new RuntimeException("Error on deleting database", e);
+      throw new DatabaseOperationException("Error on deleting database", e);
     }
     close();
   }
@@ -462,7 +462,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
       }
 
     } catch (final Exception e) {
-      throw new RuntimeException("Error on creating user", e);
+      throw new DatabaseOperationException("Error on creating user", e);
     }
   }
 

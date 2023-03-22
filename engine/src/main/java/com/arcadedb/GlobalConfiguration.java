@@ -134,8 +134,6 @@ public enum GlobalConfiguration {
 
   INITIAL_PAGE_CACHE_SIZE("arcadedb.initialPageCacheSize", SCOPE.DATABASE, "Initial number of entries for page cache", Integer.class, 65535),
 
-  FLUSH_ONLY_AT_CLOSE("arcadedb.flushOnlyAtClose", SCOPE.DATABASE, "Never flushes pages on disk until the database closing", Boolean.class, false),
-
   DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
       "Default date implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDate",
       Class.class, java.util.Date.class, value -> {

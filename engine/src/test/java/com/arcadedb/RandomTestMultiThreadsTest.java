@@ -42,7 +42,7 @@ import java.util.logging.*;
 public class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
   private static final int STARTING_ACCOUNT = 10000;
-  private static final int PARALLEL         = 4;
+  private static final int BUCKETS          = 4;
   private static final int WORKERS          = 4 * 8;
 
   private final AtomicLong                     total                   = new AtomicLong();
@@ -355,7 +355,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
     if (!database.getSchema().existsType("Account")) {
       database.begin();
 
-      final VertexType accountType = database.getSchema().createVertexType("Account", PARALLEL);
+      final VertexType accountType = database.getSchema().createVertexType("Account", BUCKETS);
       accountType.createProperty("id", Long.class);
       accountType.createProperty("name", String.class);
       accountType.createProperty("surname", String.class);
@@ -363,7 +363,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Account", new String[] { "id" }, 500000);
 
-      final VertexType txType = database.getSchema().createVertexType("Transaction", PARALLEL);
+      final VertexType txType = database.getSchema().createVertexType("Transaction", BUCKETS);
       txType.createProperty("uuid", Long.class);
       txType.createProperty("date", Date.class);
       txType.createProperty("amount", BigDecimal.class);
@@ -372,7 +372,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Transaction", new String[] { "uuid" }, 500000);
 
-      final EdgeType edgeType = database.getSchema().createEdgeType("PurchasedBy", PARALLEL);
+      final EdgeType edgeType = database.getSchema().createEdgeType("PurchasedBy", BUCKETS);
       edgeType.createProperty("date", Date.class);
 
       database.commit();
