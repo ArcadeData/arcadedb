@@ -158,9 +158,9 @@
                                     <arguments>
                                         <argument>build</argument>
                                         <argument>--tag</argument>
-                                        <argument>${docker.user}/arcadedb:latest-amd64</argument>
+                                        <argument>arcadedata/arcadedb:latest-amd64</argument>
                                         <argument>--tag</argument>
-                                        <argument>${docker.user}/arcadedb:${project.version}-amd64</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}-amd64</argument>
                                         <argument>--platform</argument>
                                         <argument>linux/amd64</argument>
                                         <argument>--build-arg</argument>
@@ -183,9 +183,9 @@
                                     <arguments>
                                         <argument>build</argument>
                                         <argument>--tag</argument>
-                                        <argument>${docker.user}/arcadedb:latest-arm64</argument>
+                                        <argument>arcadedata/arcadedb:latest-arm64</argument>
                                         <argument>--tag</argument>
-                                        <argument>${docker.user}/arcadedb:${project.version}-arm64</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}-arm64</argument>
                                         <argument>--platform</argument>
                                         <argument>linux/arm64</argument>
                                         <argument>--build-arg</argument>
@@ -193,24 +193,6 @@
                                         <argument>-f</argument>
                                         <argument>${project.basedir}/src/main/docker/Dockerfile</argument>
                                         <argument>.</argument>
-                                    </arguments>
-                                </configuration>
-                            </execution>
-
-                            <!-- add `"max-concurrent-uploads" : 1` to `~/.docker/daemon.json` -->
-                            <!-- mvn clean deploy -Ddocker.user=<user> -Ddocker.pass=<pass> -Pdocker -DskipTests -->
-                            <execution>
-                                <id>login</id>
-                                <phase>deploy</phase>
-                                <goals>
-                                    <goal>exec</goal>
-                                </goals>
-                                <configuration>
-                                <executable>docker</executable>
-                                    <arguments>
-                                        <argument>login</argument>
-                                        <argument>-u${docker.user}</argument>
-                                        <argument>-p${docker.pass}</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -225,7 +207,7 @@
                                     <executable>docker</executable>
                                     <arguments>
                                         <argument>push</argument>
-                                        <argument>${docker.user}/arcadedb:latest-amd64</argument>
+                                        <argument>arcadedata/arcadedb:latest-amd64</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -240,7 +222,7 @@
                                     <executable>docker</executable>
                                     <arguments>
                                         <argument>push</argument>
-                                        <argument>${docker.user}/arcadedb:latest-arm64</argument>
+                                        <argument>arcadedata/arcadedb:latest-arm64</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -256,11 +238,11 @@
                                     <arguments>
                                         <argument>manifest</argument>
                                         <argument>create</argument>
-                                        <argument>${docker.user}/arcadedb:latest</argument>
+                                        <argument>arcadedata/arcadedb:latest</argument>
                                         <argument>--amend</argument>
-                                        <argument>${docker.user}/arcadedb:latest-amd64</argument>
+                                        <argument>arcadedata/arcadedb:latest-amd64</argument>
                                         <argument>--amend</argument>
-                                        <argument>${docker.user}/arcadedb:latest-arm64</argument>
+                                        <argument>arcadedata/arcadedb:latest-arm64</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -276,7 +258,7 @@
                                     <arguments>
                                         <argument>manifest</argument>
                                         <argument>push</argument>
-                                        <argument>${docker.user}/arcadedb:latest</argument>
+                                        <argument>arcadedata/arcadedb:latest</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -291,7 +273,7 @@
                                     <executable>docker</executable>
                                     <arguments>
                                         <argument>push</argument>
-                                        <argument>${docker.user}/arcadedb:${project.version}-amd64</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}-amd64</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -306,7 +288,7 @@
                                     <executable>docker</executable>
                                     <arguments>
                                         <argument>push</argument>
-                                        <argument>${docker.user}/arcadedb:${project.version}-arm64</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}-arm64</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -322,11 +304,11 @@
                                     <arguments>
                                         <argument>manifest</argument>
                                         <argument>create</argument>
-                                        <argument>${docker.user}/arcadedb:${project.version}</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}</argument>
                                         <argument>--amend</argument>
-                                        <argument>${docker.user}/arcadedb:${project.version}-amd64</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}-amd64</argument>
                                         <argument>--amend</argument>
-                                        <argument>${docker.user}/arcadedb:${project.version}-arm64</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}-arm64</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -342,7 +324,7 @@
                                     <arguments>
                                         <argument>manifest</argument>
                                         <argument>push</argument>
-                                        <argument>${docker.user}/arcadedb:${project.version}</argument>
+                                        <argument>arcadedata/arcadedb:${project.version}</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
