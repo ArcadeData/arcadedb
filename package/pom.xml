@@ -161,8 +161,8 @@
                                         <argument>arcadedata/arcadedb:latest-amd64</argument>
                                         <argument>--tag</argument>
                                         <argument>arcadedata/arcadedb:${project.version}-amd64</argument>
-                                        <argument>--platform</argument>
-                                        <argument>linux/amd64</argument>
+                                        <argument>--build-arg</argument>
+                                        <argument>ARCH=amd64/</argument>
                                         <argument>--build-arg</argument>
                                         <argument>TARGET=target/arcadedb-${project.version}.dir/arcadedb-${project.version}</argument>
                                         <argument>-f</argument>
@@ -186,8 +186,8 @@
                                         <argument>arcadedata/arcadedb:latest-arm64</argument>
                                         <argument>--tag</argument>
                                         <argument>arcadedata/arcadedb:${project.version}-arm64</argument>
-                                        <argument>--platform</argument>
-                                        <argument>linux/arm64/v8</argument>
+                                        <argument>--build-arg</argument>
+                                        <argument>ARCH=arm64v8/</argument>
                                         <argument>--build-arg</argument>
                                         <argument>TARGET=target/arcadedb-${project.version}.dir/arcadedb-${project.version}</argument>
                                         <argument>-f</argument>
