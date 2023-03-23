@@ -46,8 +46,9 @@ function updateDatabases( callback ){
     selected = globalStorageLoad("database.current");
 
   jQuery.ajax({
-    type: "GET",
-    url: "/api/v1/databases",
+    type: "POST",
+    url: "/api/v1/server",
+    data: "{ command: 'list databases' }",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
