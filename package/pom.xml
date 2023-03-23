@@ -187,7 +187,7 @@
                                         <argument>--tag</argument>
                                         <argument>arcadedata/arcadedb:${project.version}-arm64</argument>
                                         <argument>--platform</argument>
-                                        <argument>linux/arm64/v8</argument>
+                                        <argument>linux/arm64</argument>
                                         <argument>--build-arg</argument>
                                         <argument>TARGET=target/arcadedb-${project.version}.dir/arcadedb-${project.version}</argument>
                                         <argument>-f</argument>
