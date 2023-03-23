@@ -32,7 +32,10 @@ RUN useradd -ms /bin/bash arcadedb
 
 WORKDIR /home/arcadedb
 
+USER arcadedb
+
 COPY --chown=arcadedb:arcadedb ./maven/arcadedb-* ./
+
 RUN chmod +x ./bin/*.sh
 
 # Volumes available
