@@ -37,7 +37,7 @@ jobs:
           server-password: MAVEN_PASSWORD
 
       - name: Publish to OSS and Docker hub
-        run: mvn deploy -DskipTests -Pintegration -Pcoverage -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml
+        run: mvn deploy -Pintegration -Pcoverage -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
