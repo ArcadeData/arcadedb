@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -47,6 +48,9 @@ public class GetExistsDatabaseHandler extends AbstractHandler {
 
     final boolean existsDatabase = installedDatabases.contains(databaseName.getFirst());
 
-    return new ExecutionResponse(200, "{ \"result\" : " + existsDatabase + "}");
+    final JSONObject response = createResult(user, null);
+    response.put("result", existsDatabase);
+
+    return new ExecutionResponse(200, response.toString());
   }
 }
