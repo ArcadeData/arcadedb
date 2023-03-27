@@ -73,7 +73,7 @@
         <skipIntegration>true</skipIntegration>
 
         <itCoverageAgent></itCoverageAgent>
-        <license-maven-plugin.version>4.1</license-maven-plugin.version>
+        <license-maven-plugin.version>4.2</license-maven-plugin.version>
         <mockito-core.version>5.1.0</mockito-core.version>
     </properties>
 
