@@ -201,6 +201,44 @@ public class GetServerHandler extends AbstractHandler {
       // MASK SENSITIVE DATA
       value = "*****";
 
+    if (key.equals("arcadedb.server.defaultDatabases")) {
+      final String defaultDatabases = (String) value;
+      if (value != null && !defaultDatabases.isEmpty()) {
+        // CREATE DEFAULT DATABASES
+        String modified = "";
+
+        final String[] dbs = defaultDatabases.split(";");
+        for (final String db : dbs) {
+          final int credentialBegin = db.indexOf('[');
+          if (credentialBegin < 0) {
+            modified += db;
+            continue;
+          }
+
+          final String dbName = db.substring(0, credentialBegin);
+          final int credentialEnd = db.indexOf(']', credentialBegin);
+          final String credentials = db.substring(credentialBegin + 1, credentialEnd);
+
+          final String[] credentialPairs = credentials.split(",");
+          for (final String credential : credentialPairs) {
+            final String[] credentialParts = credential.split(":");
+            if (credentialParts.length >= 2) {
+              final String userName = credentialParts[0];
+              modified += dbName + "[" + userName + ":*****]";
+            } else
+              modified += dbName + "[" + credentialParts + "]";
+          }
+
+          modified += ";";
+        }
+
+        if (modified.endsWith(";"))
+          modified = modified.substring(0, modified.length() - 1);
+
+        value = modified;
+      }
+    }
+
     if (value instanceof Class)
       value = ((Class<?>) value).getName();
 
