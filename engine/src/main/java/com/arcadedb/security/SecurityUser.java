@@ -44,4 +44,9 @@ public interface SecurityUser {
    * (default group will be taken).
    */
   SecurityUser addDatabase(String databaseName, String[] groups);
+
+  /**
+   * Returns true if the user can access to a particular database
+   */
+  boolean canAccessToDatabase(String dbName);
 }

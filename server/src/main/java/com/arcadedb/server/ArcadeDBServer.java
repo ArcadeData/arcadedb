@@ -525,21 +525,29 @@ public class ArcadeDBServer {
       } else {
         final String userName = credentialParts[0];
         final String userPassword = credentialParts[1];
-        final String userRole = credentialParts.length > 2 ? credentialParts[2] : null;
+        final String userGroup = credentialParts.length > 2 ? credentialParts[2] : null;
 
         if (security.existsUser(userName)) {
           // EXISTING USER: CHECK CREDENTIALS
-          try {
-            final ServerSecurityUser user = security.authenticate(userName, userPassword, dbName);
-            if (!user.getAuthorizedDatabases().contains(dbName)) {
-              // UPDATE DB LIST
-              user.addDatabase(dbName, new String[] { userRole });
-              security.saveUsers();
-            }
+          ServerSecurityUser user = security.getUser(userName);
+          if (user.canAccessToDatabase(dbName)) {
+            try {
+              user = security.authenticate(userName, userPassword, dbName);
+              if (!user.getAuthorizedDatabases().contains(dbName)) {
+                // UPDATE DB LIST
+                user.addDatabase(dbName, new String[] { userGroup });
+                security.saveUsers();
+              }
 
-          } catch (final ServerSecurityException e) {
-            LogManager.instance()
-                .log(this, Level.WARNING, "Cannot create database '%s' because the user '%s' already exists with a different password", null, dbName, userName);
+            } catch (final ServerSecurityException e) {
+              LogManager.instance()
+                  .log(this, Level.WARNING, "Cannot create database '%s' because the user '%s' already exists with a different password", null, dbName,
+                      userName);
+            }
+          } else {
+            // UPDATE DB LIST
+            user.addDatabase(dbName, new String[] { userGroup });
+            security.saveUsers();
           }
         } else {
           // CREATE A NEW USER

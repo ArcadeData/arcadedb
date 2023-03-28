@@ -61,7 +61,7 @@ public class ServerSecurityUser implements SecurityUser {
     final Set<Object> groupSet;
     if (userDatabases.has(databaseName)) {
       groupSet = new HashSet(userDatabases.getJSONArray(databaseName).toList());
-        Collections.addAll(groupSet, groups);
+      Collections.addAll(groupSet, groups);
     } else {
       groupSet = new HashSet(Arrays.asList(groups));
       newDatabaseName.add(databaseName);
@@ -124,6 +124,11 @@ public class ServerSecurityUser implements SecurityUser {
   @Override
   public Set<String> getAuthorizedDatabases() {
     return databasesNames;
+  }
+
+  @Override
+  public boolean canAccessToDatabase(final String databaseName) {
+    return databasesNames.contains(SecurityManager.ANY) || databasesNames.contains(databaseName);
   }
 
   @Override
