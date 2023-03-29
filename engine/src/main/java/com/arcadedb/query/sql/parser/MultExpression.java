@@ -20,20 +20,10 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.util.*;
-
 public class MultExpression extends MathExpression {
 
-  public MultExpression(int id) {
+  public MultExpression(final int id) {
     super(id);
-  }
-
-  public MultExpression(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public boolean needsAliases(Set<String> aliases) {
-    return super.needsAliases(aliases);
   }
 }
 /* JavaCC - OriginalChecksum=f75b8be48dca1e0cafae0cacadc608c8 (do not edit this line) */

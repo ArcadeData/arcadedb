@@ -21,17 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 public class DeleteEdgeFromToStatement extends DeleteEdgeStatement {
-  public DeleteEdgeFromToStatement(int id) {
+  public DeleteEdgeFromToStatement(final int id) {
     super(id);
-  }
-
-  public DeleteEdgeFromToStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  @Override
-  public DeleteEdgeStatement copy() {
-    return super.copy();
   }
 }
 /* JavaCC - OriginalChecksum=ca4781ee373b544b84bd6be28dba3ad5 (do not edit this line) */

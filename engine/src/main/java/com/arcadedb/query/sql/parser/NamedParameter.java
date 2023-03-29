@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class NamedParameter extends InputParameter {
@@ -30,12 +27,8 @@ public class NamedParameter extends InputParameter {
   protected int    paramNumber;
   protected String paramName;
 
-  public NamedParameter(int id) {
+  public NamedParameter(final int id) {
     super(id);
-  }
-
-  public NamedParameter(SqlParser p, int id) {
-    super(p, id);
   }
 
   @Override
@@ -43,8 +36,8 @@ public class NamedParameter extends InputParameter {
     return ":" + paramName;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-    Object finalValue = bindFromInputParams(params);
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    final Object finalValue = bindFromInputParams(params);
     if (finalValue == this) {
       builder.append(":" + paramName);
     } else if (finalValue instanceof String) {
@@ -58,10 +51,10 @@ public class NamedParameter extends InputParameter {
     }
   }
 
-  public Object getValue(Map<String, Object> params) {
+  public Object getValue(final Map<String, Object> params) {
     Object result = null;
     if (params != null) {
-      String key = paramName;
+      final String key = paramName;
       if (params.containsKey(":" + key)) {
         result = params.get(":" + key);
       } else if (params.containsKey(key)) {
@@ -73,9 +66,9 @@ public class NamedParameter extends InputParameter {
     return result;
   }
 
-  public Object bindFromInputParams(Map<String, Object> params) {
+  public Object bindFromInputParams(final Map<String, Object> params) {
     if (params != null) {
-      String key = paramName;
+      final String key = paramName;
       if (params.containsKey(key)) {
         return toParsedTree(params.get(key));
       }
@@ -86,20 +79,20 @@ public class NamedParameter extends InputParameter {
 
   @Override
   public NamedParameter copy() {
-    NamedParameter result = new NamedParameter(-1);
+    final NamedParameter result = new NamedParameter(-1);
     result.paramName = paramName;
     result.paramNumber = paramNumber;
     return result;
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final  NamedParameter that = (NamedParameter) o;
+    final NamedParameter that = (NamedParameter) o;
 
     if (paramNumber != that.paramNumber)
       return false;
@@ -111,18 +104,6 @@ public class NamedParameter extends InputParameter {
     int result = paramNumber;
     result = 31 * result + (paramName != null ? paramName.hashCode() : 0);
     return result;
-  }
-
-  public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
-    result.setProperty("paramNumber", paramNumber);
-    result.setProperty("paramName", paramName);
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    paramNumber = fromResult.getProperty("paramNumber");
-    paramName = fromResult.getProperty("paramName");
   }
 }
 /* JavaCC - OriginalChecksum=8a00a9cf51a15dd75202f6372257fc1c (do not edit this line) */

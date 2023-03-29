@@ -69,7 +69,7 @@ public interface SQLFunction {
    *
    * @param configuredParameters
    */
-  void config(Object[] configuredParameters);
+  SQLFunction config(Object[] configuredParameters);
 
   /**
    * A function can make calculation on several records before returning a result.

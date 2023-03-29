@@ -34,21 +34,15 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
-
-  private long cost = 0;
-
   ResultSet prevResult = null;
 
-  public ConvertToUpdatableResultStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public ConvertToUpdatableResultStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
-      throw new IllegalStateException("filter step requires a previous step");
-    }
-    ExecutionStepInternal prevStep = prev.get();
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ExecutionStepInternal prevStep = checkForPrevious();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -62,7 +56,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -70,20 +64,20 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
             }
           }
           nextItem = prevResult.next();
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nextItem instanceof UpdatableResult) {
               break;
             }
             if (nextItem.isElement()) {
-              Record element = nextItem.getElement().get();
+              final Record element = nextItem.getElement().get();
               if (element != null) {
                 nextItem = new UpdatableResult(((Document) element.getRecord()).modify());
               }
@@ -113,18 +107,18 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (fetched >= nRecords || finished) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextItem == null) {
           fetchNextItem();
         }
         if (nextItem == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
-        ctx.setVariable("$current", result);
+        context.setVariable("current", result);
         return result;
       }
 
@@ -132,31 +126,15 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
       public void close() {
         ConvertToUpdatableResultStep.this.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
-
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CONVERT TO UPDATABLE ITEM";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
   }
 }

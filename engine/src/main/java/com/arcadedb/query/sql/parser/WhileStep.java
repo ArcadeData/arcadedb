@@ -32,66 +32,64 @@ import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
 import java.util.*;
 
 public class WhileStep extends AbstractExecutionStep {
-  private final BooleanExpression condition;
-  private final List<Statement>   statements;
+  private final BooleanExpression     condition;
+  private final List<Statement>       statements;
+  private       ExecutionStepInternal finalResult = null;
 
-  private ExecutionStepInternal finalResult = null;
-
-  public WhileStep(final BooleanExpression condition, final List<Statement> statements,final  CommandContext ctx, final boolean enableProfiling) {
-    super(ctx, enableProfiling);
+  public WhileStep(final BooleanExpression condition, final List<Statement> statements, final CommandContext context, final boolean enableProfiling) {
+    super(context, enableProfiling);
     this.condition = condition;
     this.statements = statements;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    prev.ifPresent(x -> x.syncPull(ctx, nRecords));
-    if (finalResult != null) {
-      return finalResult.syncPull(ctx, nRecords);
-    }
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    if (prev != null)
+      prev.syncPull(context, nRecords);
 
-    while (condition.evaluate(new ResultInternal(), ctx)) {
+    if (finalResult != null)
+      return finalResult.syncPull(context, nRecords);
 
-      ScriptExecutionPlan plan = initPlan(ctx);
-      ExecutionStepInternal result = plan.executeFull();
+
+    while (condition.evaluate(new ResultInternal(), context)) {
+      final ScriptExecutionPlan plan = initPlan(context);
+      final ExecutionStepInternal result = plan.executeFull();
       if (result != null) {
         this.finalResult = result;
-        return result.syncPull(ctx, nRecords);
+        return result.syncPull(context, nRecords);
       }
     }
-    finalResult = new EmptyStep(ctx, false);
-    return finalResult.syncPull(ctx, nRecords);
-
+    finalResult = new EmptyStep(context, false);
+    return finalResult.syncPull(context, nRecords);
   }
 
-  public ScriptExecutionPlan initPlan(final CommandContext ctx) {
-    final BasicCommandContext subCtx1 = new BasicCommandContext();
-    subCtx1.setParent(ctx);
-    final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
-    for (Statement stm : statements) {
+  public ScriptExecutionPlan initPlan(final CommandContext context) {
+    final BasicCommandContext subcontext1 = new BasicCommandContext();
+    subcontext1.setParent(context);
+    final ScriptExecutionPlan plan = new ScriptExecutionPlan(subcontext1);
+    for (final Statement stm : statements) {
       if (stm.originalStatement == null) {
-        stm.originalStatement = stm.toString();
+        stm.originalStatement = stm;
       }
-      InternalExecutionPlan subPlan = stm.createExecutionPlan(subCtx1, profilingEnabled);
+      final InternalExecutionPlan subPlan = stm.createExecutionPlan(subcontext1, profilingEnabled);
       plan.chain(subPlan, profilingEnabled);
     }
     return plan;
   }
 
   public boolean containsReturn() {
-    for (Statement stm : this.statements) {
-      if (stm instanceof ReturnStatement) {
+    for (final Statement stm : this.statements) {
+      if (stm instanceof ReturnStatement)
         return true;
-      }
-      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn()) {
+
+      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn())
         return true;
-      }
-      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn()) {
+
+      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn())
         return true;
-      }
-      if (stm instanceof WhileBlock && ((WhileBlock) stm).containsReturn()) {
+
+      if (stm instanceof WhileBlock && ((WhileBlock) stm).containsReturn())
         return true;
-      }
     }
     return false;
   }

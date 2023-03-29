@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.functions.sql;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -28,54 +28,51 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CustomSQLFunctionsTest {
+  @Test
+  public void testRandom() throws Exception {
+    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+      final ResultSet result = db.query("sql", "select math_random() as random");
+      assertTrue((Double) result.next().getProperty("random") > 0);
+    });
+  }
 
-    @Test
-    public void testRandom() throws Exception {
-        TestHelper.executeInNewDatabase("testRandom", (db) -> {
-            ResultSet result = db.query("sql", "select math_random() as random");
-            assertTrue((Double) result.next().getProperty("random") > 0);
-        });
-    }
+  @Test
+  public void testLog10() throws Exception {
+    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+      final ResultSet result = db.query("sql", "select math_log10(10000) as log10");
+      assertEquals(result.next().getProperty("log10"), 4.0, 0.0001);
+    });
+  }
 
-    @Test
-    public void testLog10() throws Exception {
-        TestHelper.executeInNewDatabase("testRandom", (db) -> {
-            ResultSet result = db.query("sql", "select math_log10(10000) as log10");
-            assertEquals(result.next().getProperty("log10"), 4.0, 0.0001);
-        });
-    }
+  @Test
+  public void testAbsInt() throws Exception {
+    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+      final ResultSet result = db.query("sql", "select math_abs(-5) as abs");
+      assertTrue((Integer) result.next().getProperty("abs") == 5);
+    });
+  }
 
-    @Test
-    public void testAbsInt() throws Exception {
-        TestHelper.executeInNewDatabase("testRandom", (db) -> {
-            ResultSet result = db.query("sql", "select math_abs(-5) as abs");
-            assertTrue((Integer) result.next().getProperty("abs") == 5);
-        });
-    }
+  @Test
+  public void testAbsDouble() throws Exception {
+    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+      final ResultSet result = db.query("sql", "select math_abs(-5.0d) as abs");
+      assertTrue((Double) result.next().getProperty("abs") == 5.0);
+    });
+  }
 
-    @Test
-    public void testAbsDouble() throws Exception {
-        TestHelper.executeInNewDatabase("testRandom", (db) -> {
-            ResultSet result = db.query("sql", "select math_abs(-5.0d) as abs");
-            assertTrue((Double) result.next().getProperty("abs") == 5.0);
-        });
-    }
+  @Test
+  public void testAbsFloat() throws Exception {
+    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+      final ResultSet result = db.query("sql", "select math_abs(-5.0f) as abs");
+      assertTrue((Float) result.next().getProperty("abs") == 5.0);
+    });
+  }
 
-    @Test
-    public void testAbsFloat() throws Exception {
-        TestHelper.executeInNewDatabase("testRandom", (db) -> {
-            ResultSet result = db.query("sql", "select math_abs(-5.0f) as abs");
-            assertTrue((Float) result.next().getProperty("abs") == 5.0);
-        });
-    }
-
-    @Test
-    public void testNonExistingFunction() {
-        assertThrows(QueryParsingException.class, () ->
-                TestHelper.executeInNewDatabase("testRandom", (db) -> {
-                    ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");
-                    result.next();
-                })
-        );
-    }
+  @Test
+  public void testNonExistingFunction() {
+    assertThrows(CommandParsingException.class, () -> TestHelper.executeInNewDatabase("testRandom", (db) -> {
+      final ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");
+      result.next();
+    }));
+  }
 }

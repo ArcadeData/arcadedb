@@ -40,7 +40,7 @@ public class DefaultConsoleReader {
       System.out.print("\u0008*");
       try {
         Thread.sleep(1);
-      } catch (InterruptedException ignore) {
+      } catch (final InterruptedException ignore) {
         // om nom nom
       }
     }
@@ -49,7 +49,7 @@ public class DefaultConsoleReader {
   public String readLine() {
     try {
       return reader.readLine();
-    } catch (IOException ignore) {
+    } catch (final IOException ignore) {
       return null;
     }
   }
@@ -66,7 +66,7 @@ public class DefaultConsoleReader {
 
     try {
       return reader.readLine();
-    } catch (IOException ignore) {
+    } catch (final IOException ignore) {
       return null;
     } finally {
       et.sendShutdown();

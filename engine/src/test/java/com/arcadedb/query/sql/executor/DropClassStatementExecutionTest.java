@@ -29,15 +29,15 @@ import org.junit.jupiter.api.Test;
 public class DropClassStatementExecutionTest extends TestHelper {
   @Test
   public void testPlain() {
-    String className = "testPlain";
-    Schema schema = database.getSchema();
+    final String className = "testPlain";
+    final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
     Assertions.assertNotNull(schema.getType(className));
 
-    ResultSet result = database.command("sql", "drop type " + className);
+    final ResultSet result = database.command("sql", "drop type " + className);
     Assertions.assertTrue(result.hasNext());
-    Result next = result.next();
+    final Result next = result.next();
     Assertions.assertEquals("drop type", next.getProperty("operation"));
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -47,15 +47,15 @@ public class DropClassStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIfExists() {
-    String className = "testIfExists";
-    Schema schema = database.getSchema();
+    final String className = "testIfExists";
+    final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
     Assertions.assertNotNull(schema.getType(className));
 
     ResultSet result = database.command("sql", "drop type " + className + " if exists");
     Assertions.assertTrue(result.hasNext());
-    Result next = result.next();
+    final Result next = result.next();
     Assertions.assertEquals("drop type", next.getProperty("operation"));
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -70,15 +70,15 @@ public class DropClassStatementExecutionTest extends TestHelper {
 
   @Test
   public void testParam() {
-    String className = "testParam";
-    Schema schema = database.getSchema();
+    final String className = "testParam";
+    final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
     Assertions.assertNotNull(schema.getType(className));
 
-    ResultSet result = database.command("sql", "drop type ?", className);
+    final ResultSet result = database.command("sql", "drop type ?", className);
     Assertions.assertTrue(result.hasNext());
-    Result next = result.next();
+    final Result next = result.next();
     Assertions.assertEquals("drop type", next.getProperty("operation"));
     Assertions.assertFalse(result.hasNext());
     result.close();

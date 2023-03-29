@@ -38,24 +38,23 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
   private final List<ResultInternal> result = new ArrayList<>();
 
-  private int  cursor = 0;
-  private long cost   = 0;
+  private int cursor = 0;
 
-  public FetchFromSchemaTypesStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromSchemaTypesStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
 
     if (cursor == 0) {
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
-        final Schema schema = ctx.getDatabase().getSchema();
+        final Schema schema = context.getDatabase().getSchema();
 
         final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase).collect(Collectors.toList());
-        for (String typeName : orderedTypes) {
+        for (final String typeName : orderedTypes) {
           final DocumentType type = schema.getType(typeName);
 
           final ResultInternal r = new ResultInternal();
@@ -73,8 +72,10 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             t = "edge";
 
           r.setProperty("type", t);
+          r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
+          r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
 
-          List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
+          final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
 
           final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase).map(name -> type.getProperty(name))
@@ -84,9 +85,20 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                 propRes.setProperty("name", property.getName());
                 propRes.setProperty("type", property.getType());
 
-                final List<ResultInternal> customs = new ArrayList<>();
-                for (Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
-                  customs.add(new ResultInternal().setProperty((String) customKey, property.getCustomValue((String) customKey)));
+                if (property.isMandatory())
+                  propRes.setProperty("mandatory", property.isMandatory());
+                if (property.isReadonly())
+                  propRes.setProperty("readOnly", property.isReadonly());
+                if (property.isNotNull())
+                  propRes.setProperty("notNull", property.isNotNull());
+                if (property.getMin() != null)
+                  propRes.setProperty("min", property.getMin());
+                if (property.getMax() != null)
+                  propRes.setProperty("max", property.getMax());
+
+                final Map<String, Object> customs = new HashMap<>();
+                for (final Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
+                  customs.put((String) customKey, property.getCustomValue((String) customKey));
                 propRes.setProperty("custom", customs);
 
                 return propRes;
@@ -106,7 +118,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           r.setProperty("indexes", indexes);
 
           final Map<String, Object> customs = new HashMap<>();
-          for (Object customKey : type.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
+          for (final Object customKey : type.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
             customs.put((String) customKey, type.getCustomValue((String) customKey));
           r.setProperty("custom", customs);
 
@@ -134,16 +146,6 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
       }
 
       @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
-
-      @Override
       public void reset() {
         cursor = 0;
       }
@@ -151,8 +153,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA TYPES";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -160,8 +162,4 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

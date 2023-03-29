@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -29,23 +28,33 @@ import com.arcadedb.schema.DocumentType;
 import java.util.*;
 
 public class AndBlock extends BooleanExpression {
-  List<BooleanExpression> subBlocks = new ArrayList<>();
+  final List<BooleanExpression> subBlocks;
 
   public AndBlock(final int id) {
     super(id);
+    this.subBlocks = new ArrayList<>();
   }
 
-  public AndBlock(final SqlParser p, final int id) {
-    super(p, id);
+  public AndBlock(final List<BooleanExpression>... expressions) {
+    super(-1);
+
+    int total = 0;
+    for (int i = 0; i < expressions.length; i++)
+      total += expressions[i].size();
+
+    this.subBlocks = new ArrayList<>(total);
+
+    for (int i = 0; i < expressions.length; i++)
+      subBlocks.addAll(expressions[i]);
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (getSubBlocks() == null)
       return true;
 
-    for (BooleanExpression block : subBlocks) {
-      if (!block.evaluate(currentRecord, ctx)) {
+    for (final BooleanExpression block : subBlocks) {
+      if (!block.evaluate(currentRecord, context)) {
         return false;
       }
     }
@@ -53,12 +62,12 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (getSubBlocks() == null)
       return true;
 
-    for (BooleanExpression block : subBlocks) {
-      if (!block.evaluate(currentRecord, ctx)) {
+    for (final BooleanExpression block : subBlocks) {
+      if (!block.evaluate(currentRecord, context)) {
         return false;
       }
     }
@@ -70,58 +79,26 @@ public class AndBlock extends BooleanExpression {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (subBlocks == null || subBlocks.size() == 0) {
+    if (subBlocks == null || subBlocks.size() == 0)
       return;
-    }
-    // if (subBlocks.size() == 1) {
-    // subBlocks.get(0).toString(params, builder);
-    // }
 
     boolean first = true;
     for (BooleanExpression expr : subBlocks) {
-      if (!first) {
+      if (!first)
         builder.append(" AND ");
-      }
+
       expr.toString(params, builder);
       first = false;
     }
   }
 
-  @Override
-  protected boolean supportsBasicCalculation() {
-    for (BooleanExpression expr : subBlocks) {
-      if (!expr.supportsBasicCalculation()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int result = 0;
-    for (BooleanExpression expr : subBlocks) {
-      result += expr.getNumberOfExternalCalculations();
-    }
-    return result;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<>();
-    for (BooleanExpression expr : subBlocks) {
-      result.addAll(expr.getExternalCalculationConditions());
-    }
-    return result;
-  }
-
-  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (subBlocks == null) {
       return null;
     }
     final List<BinaryCondition> result = new ArrayList<>();
-    for (BooleanExpression exp : subBlocks) {
-      final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, database);
+    for (final BooleanExpression exp : subBlocks) {
+      final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, context);
       if (sub != null && sub.size() > 0) {
         result.addAll(sub);
       }
@@ -132,18 +109,18 @@ public class AndBlock extends BooleanExpression {
   public List<AndBlock> flatten() {
     List<AndBlock> result = new ArrayList<>();
     boolean first = true;
-    for (BooleanExpression sub : subBlocks) {
+    for (final BooleanExpression sub : subBlocks) {
       final List<AndBlock> subFlattened = sub.flatten();
-      List<AndBlock> oldResult = result;
+      final List<AndBlock> oldResult = result;
       result = new ArrayList<>();
-      for (AndBlock subAndItem : subFlattened) {
+      for (final AndBlock subAndItem : subFlattened) {
         if (first) {
           result.add(subAndItem);
         } else {
-          for (AndBlock oldResultItem : oldResult) {
+          for (final AndBlock oldResultItem : oldResult) {
             final AndBlock block = new AndBlock(-1);
             block.subBlocks.addAll(oldResultItem.subBlocks);
-            for (BooleanExpression resultItem : subAndItem.subBlocks) {
+            for (final BooleanExpression resultItem : subAndItem.subBlocks) {
               block.subBlocks.add(resultItem);
             }
             result.add(block);
@@ -164,39 +141,12 @@ public class AndBlock extends BooleanExpression {
     return result;
   }
 
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    for (BooleanExpression block : subBlocks) {
-      if (block.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public AndBlock copy() {
     final AndBlock result = new AndBlock(-1);
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       result.subBlocks.add(exp.copy());
     }
     return result;
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AndBlock andBlock = (AndBlock) o;
-
-    return Objects.equals(subBlocks, andBlock.subBlocks);
-  }
-
-  @Override
-  public int hashCode() {
-    return subBlocks != null ? subBlocks.hashCode() : 0;
   }
 
   @Override
@@ -204,7 +154,7 @@ public class AndBlock extends BooleanExpression {
     if (subBlocks.isEmpty()) {
       return true;
     }
-    for (BooleanExpression block : subBlocks) {
+    for (final BooleanExpression block : subBlocks) {
       if (!block.isEmpty()) {
         return false;
       }
@@ -214,25 +164,15 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   public void extractSubQueries(final SubQueryCollector collector) {
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       exp.extractSubQueries(collector);
     }
   }
 
   @Override
-  public boolean refersToParent() {
-    for (BooleanExpression exp : subBlocks) {
-      if (exp.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  @Override
   public List<String> getMatchPatternInvolvedAliases() {
     final List<String> result = new ArrayList<>();
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       final List<String> x = exp.getMatchPatternInvolvedAliases();
       if (x != null) {
         result.addAll(x);
@@ -242,9 +182,22 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return subBlocks.toArray(new SimpleNode[subBlocks.size()]);
+  }
+
+  @Override
+  public boolean isAlwaysTrue() {
+    if (subBlocks.isEmpty())
+      return true;
+
     for (BooleanExpression exp : subBlocks) {
-      if (!exp.isCacheable()) {
+      if (!exp.isAlwaysTrue()) {
         return false;
       }
     }

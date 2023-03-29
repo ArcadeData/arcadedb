@@ -21,8 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-
 /**
  * for UPDATE, unwraps the current result set to return the previous value
  *
@@ -30,15 +28,15 @@ import java.util.*;
  */
 public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
-  private long cost = 0;
-
-  public UnwrapPreviousValueStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UnwrapPreviousValueStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = prev.get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    checkForPrevious();
+
+    final ResultSet upstream = prev.syncPull(context, nRecords);
     return new ResultSet() {
 
       @Override
@@ -48,7 +46,7 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           Result prevResult = upstream.next();
           if (prevResult instanceof UpdatableResult) {
@@ -71,21 +69,11 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ UNWRAP PREVIOUS VALUE";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -93,8 +81,4 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

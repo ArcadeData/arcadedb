@@ -21,8 +21,8 @@ package com.arcadedb.query.sql.method.misc;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.utility.DateUtils;
 
-import java.text.*;
 import java.util.*;
 
 /**
@@ -38,50 +38,38 @@ public class SQLMethodFormat extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iRecord, final CommandContext iContext, Object ioResult,
-      final Object[] iParams) {
+  public Object execute(final Object iThis, final Identifiable iRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
 
     // TRY TO RESOLVE AS DYNAMIC VALUE
-    Object v = getParameterValue(iRecord, iParams[0].toString());
-    if (v == null)
+    String format = (String) getParameterValue(iRecord, iParams[0].toString());
+    if (format == null)
       // USE STATIC ONE
-      v = iParams[0].toString();
+      format = iParams[0].toString();
 
-    if (v != null) {
-      if (isCollectionOfDates(ioResult)) {
-        List<String> result = new ArrayList<String>();
-        Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
-        final SimpleDateFormat format = new SimpleDateFormat(v.toString());
+    if (format == null)
+      throw new IllegalArgumentException("Format was null");
 
-        final TimeZone tz =
-            iParams.length > 1 ? TimeZone.getTimeZone(iParams[1].toString()) : iContext.getDatabase().getSchema().getTimeZone();
+    if (isCollectionOfDates(ioResult)) {
+      final List<String> result = new ArrayList<String>();
+      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
 
-        format.setTimeZone(tz);
+      while (iterator.hasNext())
+        result.add(DateUtils.format(iterator.next(), format));
 
-        while (iterator.hasNext()) {
-          result.add(format.format(iterator.next()));
-        }
-        ioResult = result;
-      } else if (ioResult instanceof Date) {
-        final SimpleDateFormat format = new SimpleDateFormat(v.toString());
-        final TimeZone tz =
-            iParams.length > 1 ? TimeZone.getTimeZone(iParams[1].toString()) : iContext.getDatabase().getSchema().getTimeZone();
+      return result;
 
-        format.setTimeZone(tz);
-        ioResult = format.format(ioResult);
-      } else {
-        ioResult = ioResult != null ? String.format(v.toString(), ioResult) : null;
-      }
+    } else if (DateUtils.isDate(ioResult)) {
+      return DateUtils.format(ioResult, format);
     }
-    return ioResult;
+    return ioResult != null ? String.format(format, ioResult) : null;
   }
 
-  private boolean isCollectionOfDates(Object ioResult) {
+  private boolean isCollectionOfDates(final Object ioResult) {
     if (MultiValue.isMultiValue(ioResult)) {
-      Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
+      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
       while (iterator.hasNext()) {
-        Object item = iterator.next();
-        if (item != null && !(item instanceof Date)) {
+        final Object item = iterator.next();
+        if (item != null && !DateUtils.isDate(item)) {
           return false;
         }
       }

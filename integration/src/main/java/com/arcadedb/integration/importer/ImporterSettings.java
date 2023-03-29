@@ -67,6 +67,7 @@ public class ImporterSettings {
   public long    parsingLimitBytes;
   public long    parsingLimitEntries;
   public int     commitEvery            = 5000;
+  public String  mapping                = null;
 
   public final Map<String, String> options = new HashMap<>();
 
@@ -86,7 +87,9 @@ public class ImporterSettings {
       }
   }
 
-  public void parseParameter(final String name, final String value) {
+  public void parseParameter(final String name, String value) {
+    value = FileUtils.getStringContent(value);
+
     if ("database".equals(name))
       database = value;
     else if ("url".equals(name))
@@ -115,6 +118,8 @@ public class ImporterSettings {
       parsingLimitBytes = FileUtils.getSizeAsNumber(value);
     else if ("parsingLimitEntries".equals(name))
       parsingLimitEntries = Long.parseLong(value);
+    else if ("mapping".equals(name))
+      mapping = value;
 
       // DOCUMENT SETTINGS
 

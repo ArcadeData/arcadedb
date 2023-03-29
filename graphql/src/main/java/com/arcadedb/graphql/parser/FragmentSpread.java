@@ -21,23 +21,11 @@
 package com.arcadedb.graphql.parser;
 
 public class FragmentSpread extends SimpleNode {
-
   protected FragmentName name;
   protected Directives   directives;
 
-  public FragmentSpread(int id) {
+  public FragmentSpread(final int id) {
     super(id);
-  }
-
-  public FragmentSpread(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=d963ff13f71ad79b35665827792399de (do not edit this line) */

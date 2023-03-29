@@ -4,12 +4,15 @@
 
 [![Java CI - deploy](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg)](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml)
 [![Codacy Badge](https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668)](https://www.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Coverage)
-[![Language grade: Java](https://img.shields.io/lgtm/grade/java/g/ArcadeData/arcadedb.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/ArcadeData/arcadedb/context:java)
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b)](https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings)
 [![security status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
 [![stability status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
 
 ![ArcadeDB Logo](https://arcadedb.com/assets/images/arcadedb-logo.png)
+
+<p align="center">
+  <a href="https://discord.gg/w2Npx2B7hZ"><img width="208" height="97" src="https://arcadedb.com/assets/images/discord_button.png" alt="Join Discord"></a>
+</p>
 
 ArcadeDB is a Multi-Model DBMS (created originally as a fork from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand-new engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
 minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java11+ but only using low level API to use advanced
@@ -35,7 +38,7 @@ ArcadeDB can be used as:
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
 
-## Getting started in 5 minuted
+## Getting started in 5 minutes
 
 Start ArcadeDB Server with Docker:
 
@@ -54,11 +57,11 @@ Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](h
 
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
 
-- View our official [Blog](https://blog.arcadedb.com/)
-- Chat live with us on [Discord](https://discord.com/channels/883057780553052180/883057780553052184)
-- Follow us on [Twitter](https://twitter.com/surrealdb)
-- Connect with us on [LinkedIn](https://twitter.com/arcade_db)
+- Chat live with us on [Discord](https://discord.gg/w2Npx2B7hZ)
+- Follow us on [Twitter](https://twitter.com/arcade_db)
+- Connect with us on [LinkedIn](https://www.linkedin.com/products/arcadedb)
 - Questions tagged #arcadedb on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
+- View our official [Blog](https://blog.arcadedb.com/)
 
 ## Security
 

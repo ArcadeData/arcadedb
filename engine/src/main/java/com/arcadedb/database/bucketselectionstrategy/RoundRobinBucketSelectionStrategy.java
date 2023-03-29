@@ -27,14 +27,25 @@ import com.arcadedb.schema.DocumentType;
  * @author Luca Garulli
  */
 public class RoundRobinBucketSelectionStrategy extends ThreadBucketSelectionStrategy {
-  private volatile int current = -1;
+  public static final String NAME    = "round-robin";
+  private volatile    int    current = -1;
+
+  @Override
+  public BucketSelectionStrategy copy() {
+    final RoundRobinBucketSelectionStrategy copy = new RoundRobinBucketSelectionStrategy();
+    copy.total = total;
+    copy.current = current;
+    return copy;
+  }
 
   @Override
   public void setType(final DocumentType type) {
     this.total = type.getBuckets(false).size();
-    if (current >= total)
-      // RESET IT
-      current = -1;
+    synchronized (this) {
+      if (current >= total)
+        // RESET IT
+        current = -1;
+    }
   }
 
   @Override
@@ -42,17 +53,19 @@ public class RoundRobinBucketSelectionStrategy extends ThreadBucketSelectionStra
     if (async)
       return super.getBucketIdByRecord(record, async);
 
-    // COPY THE VALUE ON THE HEAP FOR MULTI-THREAD ACCESS
-    int bucketIndex = ++current;
-    if (bucketIndex >= total) {
-      current = 0;
-      bucketIndex = 0;
+    synchronized (this) {
+      // COPY THE VALUE ON THE HEAP FOR MULTI-THREAD ACCESS
+      int bucketIndex = ++current;
+      if (bucketIndex >= total) {
+        current = 0;
+        bucketIndex = 0;
+      }
+      return bucketIndex;
     }
-    return bucketIndex;
   }
 
   @Override
   public String getName() {
-    return "round-robin";
+    return NAME;
   }
 }

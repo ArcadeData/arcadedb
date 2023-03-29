@@ -57,14 +57,14 @@ public class QueryTest extends TestHelper {
   public void testScan() {
 
     database.transaction(() -> {
-      ResultSet rs = database.command("SQL", "SELECT FROM V", new HashMap<>());
+      final ResultSet rs = database.command("SQL", "SELECT FROM V", new HashMap<>());
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
 
-        Set<String> prop = new HashSet<>();
+        final Set<String> prop = new HashSet<>();
         prop.addAll(record.getPropertyNames());
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
@@ -83,14 +83,14 @@ public class QueryTest extends TestHelper {
   public void testEqualsFiltering() {
 
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":name", "Jay");
       params.put(":surname", "Miner123");
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
@@ -105,18 +105,17 @@ public class QueryTest extends TestHelper {
     });
   }
 
-
   @Test
   public void testNullSafeEqualsFiltering() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":name", "Jay");
       params.put(":surname", "Miner123");
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE notExistent <=> null");
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE notExistent <=> null");
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
@@ -131,14 +130,14 @@ public class QueryTest extends TestHelper {
   public void testCachedStatementAndExecutionPlan() {
 
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":name", "Jay");
       params.put(":surname", "Miner123");
       ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
 
       AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
@@ -162,7 +161,7 @@ public class QueryTest extends TestHelper {
 
       total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
@@ -180,13 +179,13 @@ public class QueryTest extends TestHelper {
   @Test
   public void testMajorFiltering() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":id", TOT - 11);
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE id > :id", params);
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE id > :id", params);
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertTrue((int) record.getProperty("id") > TOT - 11);
         total.incrementAndGet();
@@ -198,13 +197,13 @@ public class QueryTest extends TestHelper {
   @Test
   public void testMajorEqualsFiltering() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":id", TOT - 11);
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE id >= :id", params);
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE id >= :id", params);
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertTrue((int) record.getProperty("id") >= TOT - 11);
         total.incrementAndGet();
@@ -216,13 +215,13 @@ public class QueryTest extends TestHelper {
   @Test
   public void testMinorFiltering() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE id < :id", params);
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE id < :id", params);
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertTrue((int) record.getProperty("id") < 10);
         total.incrementAndGet();
@@ -234,13 +233,13 @@ public class QueryTest extends TestHelper {
   @Test
   public void testMinorEqualsFiltering() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE id <= :id", params);
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE id <= :id", params);
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertTrue((int) record.getProperty("id") <= 10);
         total.incrementAndGet();
@@ -252,13 +251,13 @@ public class QueryTest extends TestHelper {
   @Test
   public void testNotFiltering() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE NOT( id > :id )", params);
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE NOT( id > :id )", params);
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertTrue((int) record.getProperty("id") <= 10);
         total.incrementAndGet();
@@ -274,7 +273,7 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX Foo SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX Foo SET name = 'bar'");
 
-      ResultSet rs = database.query("SQL", "SELECT FROM Foo");
+      final ResultSet rs = database.query("SQL", "SELECT FROM Foo");
       Assertions.assertTrue(rs.hasNext());
       rs.next();
       Assertions.assertTrue(rs.hasNext());
@@ -294,7 +293,7 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX Foo SET name = 'bar'");
       database.command("SQL", "CREATE EDGE TheEdge FROM (SELECT FROM Foo WHERE name ='foo') TO (SELECT FROM Foo WHERE name ='bar')");
 
-      ResultSet rs = database.query("SQL", "SELECT FROM TheEdge");
+      final ResultSet rs = database.query("SQL", "SELECT FROM TheEdge");
       Assertions.assertTrue(rs.hasNext());
       rs.next();
       Assertions.assertFalse(rs.hasNext());
@@ -324,8 +323,8 @@ public class QueryTest extends TestHelper {
 
       rs = database.query("SQL", "SELECT out()[0].name as name from " + vertexClass + " where name = 'foo'");
       Assertions.assertTrue(rs.hasNext());
-      Result item = rs.next();
-      String name = item.getProperty("name");
+      final Result item = rs.next();
+      final String name = item.getProperty("name");
       Assertions.assertTrue(name.contains("bar"));
       Assertions.assertFalse(rs.hasNext());
 
@@ -336,7 +335,7 @@ public class QueryTest extends TestHelper {
   @Test
   public void testMethod() {
     database.transaction(() -> {
-      ResultSet rs = database.query("SQL", "SELECT 'bar'.prefix('foo') as name");
+      final ResultSet rs = database.query("SQL", "SELECT 'bar'.prefix('foo') as name");
       Assertions.assertTrue(rs.hasNext());
       Assertions.assertEquals("foobar", rs.next().getProperty("name"));
 
@@ -368,7 +367,7 @@ public class QueryTest extends TestHelper {
       rs = database.query("SQL", "MATCH {type:" + vertexClass + ", as:a} -" + edgeClass + "->{}  RETURN $patterns");
       rs.getExecutionPlan().get().prettyPrint(0, 2);
       Assertions.assertTrue(rs.hasNext());
-      Result item = rs.next();
+      final Result item = rs.next();
       Assertions.assertFalse(rs.hasNext());
 
       rs.close();
@@ -397,7 +396,7 @@ public class QueryTest extends TestHelper {
       rs = database.query("SQL", "MATCH {type:" + vertexClass + ", as:a} --> {}  RETURN $patterns");
       rs.getExecutionPlan().get().prettyPrint(0, 2);
       Assertions.assertTrue(rs.hasNext());
-      Result item = rs.next();
+      final Result item = rs.next();
       Assertions.assertFalse(rs.hasNext());
 
       rs.close();
@@ -454,7 +453,6 @@ public class QueryTest extends TestHelper {
 
   @Test
   public void testTimeout() {
-
     database.transaction(() -> {
       try {
         for (int i = 0; i < TOT * 3; ++i) {
@@ -466,14 +464,59 @@ public class QueryTest extends TestHelper {
           v.save();
         }
 
-        ResultSet rs = database.command("SQL", "SELECT FROM V ORDER BY ID DESC TIMEOUT 1", new HashMap<>());
+        final ResultSet rs = database.command("SQL", "SELECT FROM V ORDER BY ID DESC TIMEOUT 1", new HashMap<>());
         while (rs.hasNext()) {
           final Result record = rs.next();
           LogManager.instance().log(this, Level.INFO, "Found record %s", null, record);
         }
         Assertions.fail("Timeout should be triggered");
-      } catch (TimeoutException e) {
+      } catch (final TimeoutException e) {
         // OK
+      }
+    });
+  }
+
+  /**
+   * Test case for issue https://github.com/ArcadeData/arcadedb/issues/725
+   */
+  @Test
+  public void testOrderByRID() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("SQL", "SELECT @rid, name FROM V order by @rid asc LIMIT 2");
+
+      final AtomicInteger total = new AtomicInteger();
+      while (rs.hasNext()) {
+        final Result record = rs.next();
+        Assertions.assertNotNull(record);
+
+        final Set<String> prop = new HashSet<>();
+        prop.addAll(record.getPropertyNames());
+
+        Assertions.assertEquals(2, record.getPropertyNames().size());
+        Assertions.assertTrue(prop.contains("@rid"));
+        Assertions.assertTrue(prop.contains("name"));
+
+        total.incrementAndGet();
+      }
+
+      Assertions.assertEquals(2, total.get());
+    });
+  }
+
+  @Test
+  public void testFlattenWhereCondition() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("test");
+      String query = "SELECT FROM test WHERE (";
+      for (int i = 1; i < 10; i++) {
+        if (i > 1)
+          query += " and ";
+        query += "((property" + i + " is null) or (property" + i + " = #107:150))";
+      }
+      query += ")";
+
+      try (ResultSet set = database.query("sql", query)) {
+        Assertions.assertEquals(set.stream().count(), 0);
       }
     });
   }

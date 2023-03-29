@@ -68,7 +68,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   public void testReplication(final int serverId) {
     checkDatabases();
 
-    Database db = getServerDatabase(serverId, getDatabaseName());
+    final Database db = getServerDatabase(serverId, getDatabaseName());
     db.rollbackAllNested();
 
     db.begin();
@@ -95,7 +95,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           db.commit();
           break;
 
-        } catch (TransactionException | NeedRetryException e) {
+        } catch (final TransactionException | NeedRetryException e) {
           LogManager.instance().log(this, Level.FINE, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
           if (retry >= getMaxRetry() - 1)
             throw e;
@@ -117,16 +117,16 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
-    Assertions.assertEquals(1 + getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + 0);
+    Assertions.assertEquals(1 + (long) getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + 0);
 
     try {
       Thread.sleep(1000);
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (int s : getServerToCheck()) {
+    for (final int s : getServerToCheck()) {
       checkEntriesOnServer(s);
     }
 
@@ -139,7 +139,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
   protected void checkDatabases() {
     for (int s = 0; s < getServerCount(); ++s) {
-      Database db = getServerDatabase(s, getDatabaseName());
+      final Database db = getServerDatabase(s, getDatabaseName());
       db.begin();
       try {
         Assertions.assertEquals(1, db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + s);
@@ -148,7 +148,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
         Assertions.assertEquals(1, db.countType(EDGE1_TYPE_NAME, true), "Check for edge count for server" + s);
         Assertions.assertEquals(2, db.countType(EDGE2_TYPE_NAME, true), "Check for edge count for server" + s);
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         e.printStackTrace();
         Assertions.fail("Error on checking on server" + s);
       }
@@ -176,7 +176,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
         final TypeIndex index = db.getSchema().getType(VERTEX1_TYPE_NAME).getPolymorphicIndexByProperties("id");
         long total = 0;
-        for (IndexCursor it = index.iterator(true); it.hasNext(); ) {
+        for (final IndexCursor it = index.iterator(true); it.hasNext(); ) {
           it.dumpStats();
           it.next();
           ++total;
@@ -188,7 +188,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
         long total2 = 0;
         long missingsCount = 0;
 
-        for (IndexCursor it = index.iterator(true); it.hasNext(); ) {
+        for (final IndexCursor it = index.iterator(true); it.hasNext(); ) {
           final Identifiable rid = it.next();
           ++total2;
 
@@ -203,7 +203,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           Record record = null;
           try {
             record = rid.getRecord(true);
-          } catch (RecordNotFoundException e) {
+          } catch (final RecordNotFoundException e) {
             // IGNORE IT, CAUGHT BELOW
           }
 
@@ -218,7 +218,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
         Assertions.assertEquals(0, missingsCount);
         Assertions.assertEquals(total, total2);
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         e.printStackTrace();
         Assertions.fail("TEST: Error on checking on server" + s);
       }

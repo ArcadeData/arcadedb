@@ -29,18 +29,18 @@ public class DistinctExecutionStepTest {
 
   @Test
   public void test() {
-    CommandContext ctx = new BasicCommandContext();
-    DistinctExecutionStep step = new DistinctExecutionStep(ctx, false);
+    final CommandContext ctx = new BasicCommandContext();
+    final DistinctExecutionStep step = new DistinctExecutionStep(ctx, false);
 
-    AbstractExecutionStep prev = new AbstractExecutionStep(ctx, false) {
+    final AbstractExecutionStep prev = new AbstractExecutionStep(ctx, false) {
       boolean done = false;
 
       @Override
-      public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-        InternalResultSet result = new InternalResultSet();
+      public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+        final InternalResultSet result = new InternalResultSet();
         if (!done) {
           for (int i = 0; i < 10; i++) {
-            ResultInternal item = new ResultInternal();
+            final ResultInternal item = new ResultInternal();
             item.setProperty("name", i % 2 == 0 ? "foo" : "bar");
             result.add(item);
           }
@@ -51,7 +51,7 @@ public class DistinctExecutionStepTest {
     };
 
     step.setPrevious(prev);
-    ResultSet res = step.syncPull(ctx, 10);
+    final ResultSet res = step.syncPull(ctx, 10);
     Assertions.assertTrue(res.hasNext());
     res.next();
     Assertions.assertTrue(res.hasNext());

@@ -60,17 +60,17 @@ public class SQLFunctionVariance extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public SQLFunctionVariance(final String iName, final int iMinParams, final int iMaxParams) {
-    super(iName);
+  protected SQLFunctionVariance(final String name) {
+    super(name);
   }
 
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, Object iCurrentResult,
-      Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams[0] instanceof Number) {
       addValue((Number) iParams[0]);
     } else if (MultiValue.isMultiValue(iParams[0])) {
-      for (Object n : MultiValue.getMultiValueIterable(iParams[0])) {
+      for (final Object n : MultiValue.getMultiValueIterable(iParams[0])) {
         addValue((Number) n);
       }
     }
@@ -92,11 +92,11 @@ public class SQLFunctionVariance extends SQLFunctionAbstract {
     return NAME + "(<field>)";
   }
 
-  private void addValue(Number value) {
+  private void addValue(final Number value) {
     if (value != null) {
       ++n;
-      double doubleValue = value.doubleValue();
-      double nextM = mean + (doubleValue - mean) / n;
+      final double doubleValue = value.doubleValue();
+      final double nextM = mean + (doubleValue - mean) / n;
       m2 += (doubleValue - mean) * (doubleValue - nextM);
       mean = nextM;
     }

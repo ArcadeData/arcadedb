@@ -39,11 +39,11 @@ public class SQLMethodValuesTest {
   @Test
   public void testWithResult() {
 
-    ResultInternal resultInternal = new ResultInternal();
+    final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("name", "Foo");
     resultInternal.setProperty("surname", "Bar");
 
-    Object result = function.execute(null, null, null, resultInternal, null);
+    final Object result = function.execute(null, null, null, resultInternal, null);
     assertEquals(Arrays.asList("Foo", "Bar"), new ArrayList<>((Collection<String>) result));
   }
 }

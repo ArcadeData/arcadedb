@@ -22,40 +22,34 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
 public class RecordAttribute extends SimpleNode {
-
   protected String name;
 
-  public RecordAttribute(int id) {
+  public RecordAttribute(final int id) {
     super(id);
   }
 
-  public RecordAttribute(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(name);
   }
 
   public RecordAttribute copy() {
-    RecordAttribute result = new RecordAttribute(-1);
+    final RecordAttribute result = new RecordAttribute(-1);
     result.name = name;
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    RecordAttribute that = (RecordAttribute) o;
+    final RecordAttribute that = (RecordAttribute) o;
 
     return Objects.equals(name, that.name);
   }
@@ -69,21 +63,11 @@ public class RecordAttribute extends SimpleNode {
     return name;
   }
 
-  public void setName(String name) {
+  public void setName(final String name) {
     this.name = name;
   }
 
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("name", name);
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    name = fromResult.getProperty("name");
-  }
-
-  public Object evaluate(Result iCurrentRecord, CommandContext ctx) {
+  public Object evaluate(final Result iCurrentRecord, final CommandContext context) {
     if (name.equalsIgnoreCase("@rid")) {
       return iCurrentRecord.getIdentity().orElse(null);
     } else if (name.equalsIgnoreCase("@type")) {

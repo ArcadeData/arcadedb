@@ -20,6 +20,7 @@ package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.EmbeddedModifierProperty;
@@ -142,8 +143,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testLiteralPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testLiteralPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
@@ -163,15 +164,15 @@ public class SerializerTest extends TestHelper {
       v.set("decimal", new BigDecimal("9876543210.0123456789"));
       v.set("string", "Miner");
 
-      final Binary buffer = serializer.serialize(database, v);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
-      Binary buffer3 = new Binary(buffer2);
+      final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(Integer.MIN_VALUE, record2.get("minInt"));
       Assertions.assertEquals(Integer.MAX_VALUE, record2.get("maxInt"));
@@ -192,42 +193,42 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testListPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testListPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
       database.commit();
 
-      List<Boolean> listOfBooleans = new ArrayList<>();
+      final List<Boolean> listOfBooleans = new ArrayList<>();
       listOfBooleans.add(true);
       listOfBooleans.add(false);
 
-      List<Integer> listOfIntegers = new ArrayList<>();
+      final List<Integer> listOfIntegers = new ArrayList<>();
       for (int i = 0; i < 100; ++i)
         listOfIntegers.add(i);
 
-      List<Long> listOfLongs = new ArrayList<>();
+      final List<Long> listOfLongs = new ArrayList<>();
       for (int i = 0; i < 100; ++i)
         listOfLongs.add((long) i);
 
-      List<Short> listOfShorts = new ArrayList<>();
+      final List<Short> listOfShorts = new ArrayList<>();
       for (int i = 0; i < 100; ++i)
         listOfShorts.add((short) i);
 
-      List<Float> listOfFloats = new ArrayList<>();
+      final List<Float> listOfFloats = new ArrayList<>();
       for (int i = 0; i < 100; ++i)
         listOfFloats.add(((float) i) + 0.123f);
 
-      List<Double> listOfDoubles = new ArrayList<>();
+      final List<Double> listOfDoubles = new ArrayList<>();
       for (int i = 0; i < 100; ++i)
         listOfDoubles.add(((double) i) + 0.123f);
 
-      List<String> listOfStrings = new ArrayList<>();
+      final List<String> listOfStrings = new ArrayList<>();
       for (int i = 0; i < 100; ++i)
         listOfStrings.add("" + i);
 
-      List<Object> listOfMixed = new ArrayList<>();
+      final List<Object> listOfMixed = new ArrayList<>();
       listOfMixed.add(0);
       listOfMixed.add((long) 1);
       listOfMixed.add((short) 2);
@@ -260,15 +261,15 @@ public class SerializerTest extends TestHelper {
       v.set("listOfMixed", listOfMixed);
       v.set("arrayOfMixed", listOfMixed.toArray());
 
-      final Binary buffer = serializer.serialize(database, v);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
-      Binary buffer3 = new Binary(buffer2);
+      final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertIterableEquals(listOfBooleans, (Iterable<?>) record2.get("listOfBooleans"));
       Assertions.assertIterableEquals(listOfBooleans, (Iterable<?>) record2.get("arrayOfBooleans"));
@@ -297,42 +298,42 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testMapPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testMapPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
       database.commit();
 
-      Map<String, Boolean> mapOfStringsBooleans = new HashMap<>();
+      final Map<String, Boolean> mapOfStringsBooleans = new HashMap<>();
       mapOfStringsBooleans.put("true", true);
       mapOfStringsBooleans.put("false", false);
 
-      Map<Integer, Integer> mapOfIntegers = new LinkedHashMap<>();
+      final Map<Integer, Integer> mapOfIntegers = new LinkedHashMap<>();
       for (int i = 0; i < 100; ++i)
         mapOfIntegers.put(i, i);
 
-      Map<Long, Long> mapOfLongs = new HashMap<>();
+      final Map<Long, Long> mapOfLongs = new HashMap<>();
       for (int i = 0; i < 100; ++i)
         mapOfLongs.put((long) i, (long) i);
 
-      Map<Short, Short> mapOfShorts = new LinkedHashMap<>();
+      final Map<Short, Short> mapOfShorts = new LinkedHashMap<>();
       for (int i = 0; i < 100; ++i)
         mapOfShorts.put((short) i, (short) i);
 
-      Map<Float, Float> mapOfFloats = new LinkedHashMap<>();
+      final Map<Float, Float> mapOfFloats = new LinkedHashMap<>();
       for (int i = 0; i < 100; ++i)
         mapOfFloats.put(((float) i) + 0.123f, ((float) i) + 0.123f);
 
-      Map<Double, Double> mapOfDoubles = new LinkedHashMap<>();
+      final Map<Double, Double> mapOfDoubles = new LinkedHashMap<>();
       for (int i = 0; i < 100; ++i)
         mapOfDoubles.put(((double) i) + 0.123f, ((double) i) + 0.123f);
 
-      Map<String, String> mapOfStrings = new HashMap<>();
+      final Map<String, String> mapOfStrings = new HashMap<>();
       for (int i = 0; i < 100; ++i)
         mapOfStrings.put("" + i, "" + i);
 
-      Map<Object, Object> mapOfMixed = new HashMap<>();
+      final Map<Object, Object> mapOfMixed = new HashMap<>();
       mapOfMixed.put("0", 0);
       mapOfMixed.put(1l, (long) 1);
       mapOfMixed.put("2short", (short) 2);
@@ -350,15 +351,15 @@ public class SerializerTest extends TestHelper {
       v.set("mapOfStrings", mapOfStrings);
       v.set("mapOfMixed", mapOfMixed);
 
-      final Binary buffer = serializer.serialize(database, v);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
-      Binary buffer3 = new Binary(buffer2);
+      final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(mapOfStringsBooleans, record2.get("mapOfStringsBooleans"));
       Assertions.assertEquals(mapOfIntegers, record2.get("mapOfIntegers"));
@@ -372,8 +373,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -384,33 +385,33 @@ public class SerializerTest extends TestHelper {
 
       database.begin();
 
-      MutableDocument testDocument = database.newDocument("Test");
+      final MutableDocument testDocument = database.newDocument("Test");
       testDocument.set("id", 0);
-      MutableEmbeddedDocument embDocument1 = testDocument.newEmbeddedDocument("Embedded", "embedded");
+      final MutableEmbeddedDocument embDocument1 = testDocument.newEmbeddedDocument("Embedded", "embedded");
       embDocument1.set("id", 1);
       embDocument1.save();
 
-      final Binary buffer = serializer.serialize(database, testDocument);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
-      Binary buffer3 = new Binary(buffer2);
+      final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"));
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"), null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
-      EmbeddedDocument embeddedDoc = (EmbeddedDocument) record2.get("embedded");
+      final EmbeddedDocument embeddedDoc = (EmbeddedDocument) record2.get("embedded");
 
       Assertions.assertEquals(1, embeddedDoc.get("id"));
     });
   }
 
   @Test
-  public void testListOfEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testListOfEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -421,43 +422,43 @@ public class SerializerTest extends TestHelper {
 
       database.begin();
 
-      MutableDocument testDocument = database.newDocument("Test");
+      final MutableDocument testDocument = database.newDocument("Test");
       testDocument.set("id", 0);
 
-      List<Document> embeddedList = new ArrayList<>();
+      final List<Document> embeddedList = new ArrayList<>();
       testDocument.set("embedded", embeddedList);
 
-      MutableDocument embDocument1 = testDocument.newEmbeddedDocument("Embedded", "embedded");
+      final MutableDocument embDocument1 = testDocument.newEmbeddedDocument("Embedded", "embedded");
       embDocument1.set("id", 1);
-      MutableDocument embDocument2 = testDocument.newEmbeddedDocument("Embedded", "embedded");
+      final MutableDocument embDocument2 = testDocument.newEmbeddedDocument("Embedded", "embedded");
       embDocument2.set("id", 2);
 
       embDocument2.save();
 
-      final Binary buffer = serializer.serialize(database, testDocument);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
-      Binary buffer3 = new Binary(buffer2);
+      final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"));
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"), null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
-      List<Document> embeddedList2 = (List<Document>) record2.get("embedded");
+      final List<Document> embeddedList2 = (List<Document>) record2.get("embedded");
 
       Assertions.assertIterableEquals(embeddedList, embeddedList2);
 
-      for (Document d : embeddedList2)
+      for (final Document d : embeddedList2)
         Assertions.assertTrue(d instanceof EmbeddedDocument);
     });
   }
 
   @Test
-  public void testMapOfEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testMapOfEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -468,15 +469,15 @@ public class SerializerTest extends TestHelper {
 
       database.begin();
 
-      MutableDocument testDocument = database.newDocument("Test");
+      final MutableDocument testDocument = database.newDocument("Test");
       testDocument.set("id", 0);
 
-      Map<Integer, Document> embeddedMap = new HashMap<>();
+      final Map<Integer, Document> embeddedMap = new HashMap<>();
       testDocument.set("embedded", embeddedMap);
 
-      MutableDocument embDocument1 = testDocument.newEmbeddedDocument("Embedded", "embedded", 1);
+      final MutableDocument embDocument1 = testDocument.newEmbeddedDocument("Embedded", "embedded", 1);
       embDocument1.set("id", 1);
-      MutableDocument embDocument2 = testDocument.newEmbeddedDocument("Embedded", "embedded", 2);
+      final MutableDocument embDocument2 = testDocument.newEmbeddedDocument("Embedded", "embedded", 2);
       embDocument2.set("id", 2);
 
       embDocument2.save();
@@ -484,27 +485,26 @@ public class SerializerTest extends TestHelper {
       embeddedMap.put(1, embDocument1);
       embeddedMap.put(2, embDocument2);
 
-      final Binary buffer = serializer.serialize(database, testDocument);
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
       final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
-      Binary buffer3 = new Binary(buffer2);
+      final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
-      Map<Integer, Document> embeddedMap2 = (Map<Integer, Document>) record2.get("embedded");
+      final Map<Integer, Document> embeddedMap2 = (Map<Integer, Document>) record2.get("embedded");
 
       Assertions.assertIterableEquals(embeddedMap.entrySet(), embeddedMap2.entrySet());
 
-      for (Map.Entry<Integer, Document> d : embeddedMap2.entrySet()) {
+      for (final Map.Entry<Integer, Document> d : embeddedMap2.entrySet()) {
         Assertions.assertTrue(d.getKey() instanceof Integer);
         Assertions.assertTrue(d.getValue() instanceof EmbeddedDocument);
       }
     });
   }
-
 }

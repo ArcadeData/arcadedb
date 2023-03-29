@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -49,16 +50,12 @@ public class AlterTypeStatement extends DDLStatement {
   protected Identifier       customKey;
   protected Expression       customValue;
 
-  public AlterTypeStatement(int id) {
+  public AlterTypeStatement(final int id) {
     super(id);
   }
 
-  public AlterTypeStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALTER TYPE ");
     name.toString(params, builder);
     if (property != null) {
@@ -86,7 +83,7 @@ public class AlterTypeStatement extends DDLStatement {
   }
 
   public Statement copy() {
-    AlterTypeStatement result = new AlterTypeStatement(-1);
+    final AlterTypeStatement result = new AlterTypeStatement(-1);
     result.name = name == null ? null : name.copy();
     result.property = property;
     result.identifierListValue = identifierListValue.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -99,52 +96,20 @@ public class AlterTypeStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AlterTypeStatement that = (AlterTypeStatement) o;
-
-    if (!Objects.equals(name, that.name))
-      return false;
-    if (property != that.property)
-      return false;
-    if (!identifierListValue.equals(that.identifierListValue))
-      return false;
-    if (!identifierListAddRemove.equals(that.identifierListAddRemove))
-      return false;
-    if (!Objects.equals(numberValue, that.numberValue))
-      return false;
-    if (!Objects.equals(booleanValue, that.booleanValue))
-      return false;
-    if (!Objects.equals(customKey, that.customKey))
-      return false;
-    return Objects.equals(customValue, that.customValue);
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, property, identifierListValue, identifierListAddRemove, numberValue, booleanValue, customKey, customValue };
   }
 
   @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (property != null ? property.hashCode() : 0);
-    result = 31 * result + identifierListValue.hashCode();
-    result = 31 * result + identifierListAddRemove.hashCode();
-    result = 31 * result + (numberValue != null ? numberValue.hashCode() : 0);
-    result = 31 * result + (booleanValue != null ? booleanValue.hashCode() : 0);
-    result = 31 * result + (customKey != null ? customKey.hashCode() : 0);
-    result = 31 * result + (customValue != null ? customValue.hashCode() : 0);
-    return result;
-  }
-
-  @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-    final DocumentType type = ctx.getDatabase().getSchema().getType(name.getStringValue());
+  public ResultSet executeDDL(final CommandContext context) {
+    final DocumentType type = context.getDatabase().getSchema().getType(name.getStringValue());
     if (type == null)
       throw new CommandExecutionException("Type not found: " + name);
 
+    final ResultInternal result = new ResultInternal();
+
     if (property != null) {
-      switch (property) {
+      switch (property.toLowerCase()) {
       case "bucket":
         for (int i = 0; i < identifierListValue.size(); i++) {
           final Identifier identifierValue = identifierListValue.get(i);
@@ -153,32 +118,47 @@ public class AlterTypeStatement extends DDLStatement {
           if (Boolean.TRUE.equals(add)) {
 
             if (identifierValue != null) {
-              if (!ctx.getDatabase().getSchema().existsBucket(identifierValue.getStringValue()))
-                ctx.getDatabase().getSchema().createBucket(identifierValue.getStringValue());
+              if (!context.getDatabase().getSchema().existsBucket(identifierValue.getStringValue()))
+                context.getDatabase().getSchema().createBucket(identifierValue.getStringValue());
 
-              type.addBucket(ctx.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
+              type.addBucket(context.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
+              result.setProperty("addBucket", identifierValue.getStringValue());
 
-            } else if (numberValue != null)
-              type.addBucket(ctx.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
-            else
+            } else if (numberValue != null) {
+              type.addBucket(context.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
+              result.setProperty("addBucket", numberValue.getValue().intValue());
+            } else
               throw new CommandExecutionException("Invalid bucket value: " + this);
 
           } else if (Boolean.FALSE.equals(add)) {
 
-            if (identifierValue != null)
-              type.removeBucket(ctx.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
-            else if (numberValue != null)
-              type.removeBucket(ctx.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
-            else
+            if (identifierValue != null) {
+              type.removeBucket(context.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
+              result.setProperty("removeBucket", identifierValue.getStringValue());
+            } else if (numberValue != null) {
+              type.removeBucket(context.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
+              result.setProperty("removeBucket", numberValue.getValue().intValue());
+            } else
               throw new CommandExecutionException("Invalid bucket value: " + this);
-
           }
         }
         break;
 
       case "supertype":
-        doSetSuperType(ctx, type);
+        doSetSuperType(context, type);
+        result.setProperty("supertype", type);
         break;
+
+      case "bucketselectionstrategy": {
+        final String implName = identifierValue.getStringValue();
+        try {
+          type.setBucketSelectionStrategy(implName);
+          result.setProperty("bucketSelectionStrategy", implName);
+        } catch (Exception e) {
+          throw new CommandSQLParsingException("Bucket selection strategy implementation '" + implName + "' was not found", e);
+        }
+        break;
+      }
 
       default:
         throw new CommandExecutionException("Error on alter type: property '" + property + "' not valid");
@@ -187,21 +167,25 @@ public class AlterTypeStatement extends DDLStatement {
 
     if (customKey != null) {
       Object value = null;
-      if (customValue != null)
-        value = customValue.execute((Identifiable) null, ctx);
+      if (customValue != null) {
+        value = customValue.execute((Identifiable) null, context);
+      }
 
       type.setCustomValue(customKey.getStringValue(), value);
+      result.setProperty("custom", customKey.getStringValue() + "=" + value);
     }
 
-    final InternalResultSet resultSet = new InternalResultSet();
-    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "ALTER TYPE");
     result.setProperty("typeName", name.getStringValue());
     result.setProperty("result", "OK");
+
+    final InternalResultSet resultSet = new InternalResultSet();
+    resultSet.add(result);
+
     return resultSet;
   }
 
-  private void doSetSuperType(final CommandContext ctx, final DocumentType type) {
+  private void doSetSuperType(final CommandContext context, final DocumentType type) {
     if (identifierListValue == null)
       throw new CommandExecutionException("Invalid super type names");
 
@@ -209,7 +193,7 @@ public class AlterTypeStatement extends DDLStatement {
       final Identifier superTypeName = identifierListValue.get(i);
       final Boolean add = identifierListAddRemove.get(i);
 
-      final DocumentType superclass = ctx.getDatabase().getSchema().getType(superTypeName.getStringValue());
+      final DocumentType superclass = context.getDatabase().getSchema().getType(superTypeName.getStringValue());
       if (superclass == null)
         throw new CommandExecutionException("Super type '" + superTypeName.getStringValue() + "' not found");
 

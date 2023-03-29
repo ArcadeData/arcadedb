@@ -21,11 +21,11 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.exception.ArcadeDBException;
 
 public class ImportException extends ArcadeDBException {
-  public ImportException(String message) {
+  public ImportException(final String message) {
     super(message);
   }
 
-  public ImportException(String message, Throwable cause) {
+  public ImportException(final String message, final Throwable cause) {
     super(message, cause);
   }
 }

@@ -26,7 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.BinaryTypes;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -59,7 +59,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
 
   public synchronized MutableEdge modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
-    if (recordInCache != this && recordInCache instanceof MutableEdge)
+    if (recordInCache instanceof MutableEdge)
       return (MutableEdge) recordInCache;
 
     checkForLazyLoading();
@@ -68,6 +68,15 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
       return new MutableEdge(database, (EdgeType) type, rid, buffer.copy());
     }
     return new MutableEdge(database, (EdgeType) type, rid, getOut(), getIn());
+  }
+
+  @Override
+  public synchronized Object get(final String propertyName) {
+    if ("@in".equals(propertyName))
+      return in;
+    else if ("@out".equals(propertyName))
+      return out;
+    return super.get(propertyName);
   }
 
   @Override
@@ -119,11 +128,13 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
-    final Map<String, Object> map = super.toMap();
-    map.put("@cat", "e");
-    map.put("@in", in);
-    map.put("@out", out);
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> map = super.toMap(includeMetadata);
+    if (includeMetadata) {
+      map.put("@cat", "e");
+      map.put("@in", in);
+      map.put("@out", out);
+    }
     return map;
   }
 
@@ -135,9 +146,9 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   @Override
   public synchronized String toString() {
     final StringBuilder buffer = new StringBuilder();
-    buffer.append(out.toString());
+    buffer.append(out != null ? out.toString() : "?");
     buffer.append("<->");
-    buffer.append(in.toString());
+    buffer.append(in != null ? in.toString() : "?");
     return buffer.toString();
   }
 

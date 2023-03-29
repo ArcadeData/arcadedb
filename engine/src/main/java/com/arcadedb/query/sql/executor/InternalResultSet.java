@@ -18,12 +18,14 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.utility.ResettableIterator;
+
 import java.util.*;
 
 /**
  * Created by luigidellaquila on 07/07/16.
  */
-public class InternalResultSet implements ResultSet {
+public class InternalResultSet implements ResultSet, ResettableIterator<Result> {
   private   List<Result>  content = new ArrayList<>();
   private   int           next    = 0;
   protected ExecutionPlan plan;
@@ -35,6 +37,14 @@ public class InternalResultSet implements ResultSet {
     add(result);
   }
 
+  /**
+   * Copy constructor.
+   */
+  public InternalResultSet(final ResultSet resultSet) {
+    while (resultSet.hasNext())
+      add(resultSet.next());
+  }
+
   @Override
   public boolean hasNext() {
     return content.size() > next;
@@ -42,6 +52,8 @@ public class InternalResultSet implements ResultSet {
 
   @Override
   public Result next() {
+    if (!hasNext())
+      throw new NoSuchElementException();
     return content.get(next++);
   }
 
@@ -55,7 +67,7 @@ public class InternalResultSet implements ResultSet {
     return Optional.ofNullable(plan);
   }
 
-  public void setPlan(ExecutionPlan plan) {
+  public void setPlan(final ExecutionPlan plan) {
     this.plan = plan;
   }
 
@@ -64,16 +76,28 @@ public class InternalResultSet implements ResultSet {
     return new HashMap<>();
   }
 
-  public void add(Result nextResult) {
+  public InternalResultSet add(final Result nextResult) {
     content.add(nextResult);
+    return this;
   }
 
   public void addAll(final List<ResultInternal> list) {
     content.addAll(list);
   }
 
+  @Override
   public void reset() {
     this.next = 0;
+  }
+
+  @Override
+  public long countEntries() {
+    return content.size();
+  }
+
+  @Override
+  public long getBrowsed() {
+    return next;
   }
 
   @Override
@@ -81,6 +105,7 @@ public class InternalResultSet implements ResultSet {
     return content.size();
   }
 
+  @Override
   public InternalResultSet copy() {
     final InternalResultSet copy = new InternalResultSet();
     copy.content = this.content;

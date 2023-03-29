@@ -33,19 +33,15 @@ public class AlignDatabaseStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public AlignDatabaseStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "align database");
 
-    if (ctx.getDatabase().isTransactionActive())
-      ctx.getDatabase().rollback();
+    if (context.getDatabase().isTransactionActive())
+      context.getDatabase().rollback();
 
-    final DatabaseInternal database = ctx.getDatabase().getWrappedDatabaseInstance();
+    final DatabaseInternal database = context.getDatabase().getWrappedDatabaseInstance();
 
     final Map<String, Object> commandResult = database.alignToReplicas();
 

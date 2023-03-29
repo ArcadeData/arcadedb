@@ -29,13 +29,15 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
@@ -55,7 +57,7 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk")));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       checkElonUser(setCurrentUser("elon", database));
 
@@ -76,6 +78,19 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(validRID, true));
 
+      expectedSecurityException(() -> {
+        executeRemoteCommand("INSERT INTO Vertex1 set name = 'invalid'", "elon", "musk");
+      });
+      expectedSecurityException(() -> {
+        executeRemoteCommand("INSERT INTO Document1 set name = 'invalid'", "elon", "musk");
+      });
+      expectedSecurityException(() -> {
+        executeRemoteCommand("SELECT FROM Document1", "elon", "musk");
+      });
+      expectedSecurityException(() -> {
+        executeRemoteCommand("SELECT FROM " + validRID, "elon", "musk");
+      });
+
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);
       dropSchema(database);
@@ -85,13 +100,19 @@ public class ServerProfilingIT {
     }
   }
 
+  private static void executeRemoteCommand(final String command, final String userName, final String userPassword) {
+    final String[] address = SERVER.getHttpServer().getListeningAddress().split(":");
+    final RemoteDatabase remoteDatabase = new RemoteDatabase(address[0], Integer.parseInt(address[1]), DATABASE_NAME, userName, userPassword);
+    remoteDatabase.command("sql", command);
+  }
+
   @Test
   void notRootAdminAccess() {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       checkElonUser(setCurrentUser("elon", database));
 
@@ -116,7 +137,7 @@ public class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator", "reader", "updater", "deleter" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       setCurrentUser("root", database);
       createSchema(database);
@@ -144,7 +165,7 @@ public class ServerProfilingIT {
             new JSONArray(new String[] { "creatorOfDocuments", "readerOfDocuments", "updaterOfDocuments", "deleterOfDocuments" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       setCurrentUser("root", database);
       createSchema(database);
@@ -170,7 +191,7 @@ public class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       checkElonUser(setCurrentUser("elon", database));
 
@@ -186,10 +207,50 @@ public class ServerProfilingIT {
 
       final RID validRID = createSomeRecords(database, false);
 
-      database.newVertex("Vertex1").save();
+      MutableVertex v1 = database.newVertex("Vertex1").save();
+      MutableVertex v2 = database.newVertex("Vertex1").save();
+
+      // NEW EDGE IS TECHNICALLY A 2-STEP OPERATION: CREATE THE EDGE AND UPDATE THE VERTICES
+      expectedSecurityException(() -> v1.newEdge("Edge1", v2, true).save());
+
       database.newDocument("Document1").save();
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(validRID, true));
+
+      // SWITCH TO ROOT TO DROP THE SCHEMA
+      setCurrentUser("root", database);
+      dropSchema(database);
+
+    } finally {
+      SECURITY.dropUser("elon");
+    }
+  }
+
+  @Test
+  void createEdgeAccess() throws Throwable {
+    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+        .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "createOnlyGraph" }))));
+
+    try {
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
+      checkElonUser(setCurrentUser("elon", database));
+
+      createSchemaNotAllowed(database);
+
+      // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
+      setCurrentUser("root", database);
+
+      createSchema(database);
+
+      // SWITCH BACK TO ELON
+      checkElonUser(setCurrentUser("elon", database));
+
+      MutableVertex v1 = database.newVertex("Vertex1").save();
+      MutableVertex v2 = database.newVertex("Vertex1").save();
+
+      // NEW EDGE IS TECHNICALLY A 2-STEP OPERATION: CREATE THE EDGE AND UPDATE THE VERTICES
+      v1.newEdge("Edge1", v2, true);
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);
@@ -206,7 +267,7 @@ public class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       checkElonUser(setCurrentUser("elon", database));
 
@@ -242,7 +303,7 @@ public class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "updater" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       checkElonUser(setCurrentUser("elon", database));
 
@@ -255,7 +316,7 @@ public class ServerProfilingIT {
 
       final RID validRID = createSomeRecords(database, true);
 
-      Vertex v = validRID.getRecord(true).asVertex();
+      final Vertex v = validRID.getRecord(true).asVertex();
 
       // SWITCH BACK TO ELON
       checkElonUser(setCurrentUser("elon", database));
@@ -282,19 +343,22 @@ public class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "deleter" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      final ServerSecurityUser elon = setCurrentUser("elon", database);
+      checkElonUser(elon);
+      Assertions.assertTrue(elon.getAuthorizedDatabases().contains(database.getName()));
 
       createSchemaNotAllowed(database);
 
       // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
-      setCurrentUser("root", database);
+      final ServerSecurityUser root = setCurrentUser("root", database);
+      Assertions.assertTrue(root.getAuthorizedDatabases().contains("*"));
 
       createSchema(database);
 
       createSomeRecords(database, true);
-      Document doc = database.iterateType("Document1", true).next().asDocument();
+      final Document doc = database.iterateType("Document1", true).next().asDocument();
 
       // SWITCH BACK TO ELON
       checkElonUser(setCurrentUser("elon", database));
@@ -321,7 +385,7 @@ public class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsCapped" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       checkElonUser(setCurrentUser("elon", database));
 
@@ -374,7 +438,7 @@ public class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsShortTimeout" }))));
 
     try {
-      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
       checkElonUser(setCurrentUser("elon", database));
 
@@ -402,7 +466,7 @@ public class ServerProfilingIT {
           iter.next();
         }
         Assertions.fail();
-      } catch (TimeoutException e) {
+      } catch (final TimeoutException e) {
         // EXPECTED
       }
 
@@ -411,7 +475,7 @@ public class ServerProfilingIT {
           iter.next();
         }
         Assertions.fail();
-      } catch (TimeoutException e) {
+      } catch (final TimeoutException e) {
         // EXPECTED
       }
 
@@ -449,7 +513,7 @@ public class ServerProfilingIT {
     }
   }
 
-  private void createSchemaNotAllowed(DatabaseInternal database) throws Throwable {
+  private void createSchemaNotAllowed(final DatabaseInternal database) throws Throwable {
     expectedSecurityException(() -> database.getSchema().createBucket("Bucket1"));
     expectedSecurityException(() -> database.getSchema().createVertexType("Vertex1"));
     expectedSecurityException(() -> database.getSchema().createEdgeType("Edge1"));
@@ -465,39 +529,40 @@ public class ServerProfilingIT {
     expectedSecurityException(() -> database.getSchema().dropBucket("Bucket1"));
   }
 
-  private void expectedSecurityException(CallableNoReturn callback) throws Throwable {
+  private void expectedSecurityException(final CallableNoReturn callback) throws Throwable {
     try {
       callback.call();
       Assertions.fail();
-    } catch (SecurityException e) {
+    } catch (final SecurityException e) {
       // EXPECTED
     }
   }
 
-  private void checkElonUser(ServerSecurityUser elon) {
+  private void checkElonUser(final ServerSecurityUser elon) {
     Assertions.assertNotNull(elon);
-    ServerSecurityUser authElon = SECURITY.authenticate("elon", "musk", null);
+    final ServerSecurityUser authElon = SECURITY.authenticate("elon", "musk", null);
     Assertions.assertNotNull(authElon);
     Assertions.assertEquals(elon.getName(), authElon.getName());
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target/config");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target/config");
     Assertions.assertEquals(2, repository.getUsers().size());
     Assertions.assertEquals("elon", repository.getUsers().get(1).getString("name"));
   }
 
-  private ServerSecurityUser setCurrentUser(final String userName, DatabaseInternal database) {
+  private ServerSecurityUser setCurrentUser(final String userName, final DatabaseInternal database) {
     final ServerSecurityUser user = SECURITY.getUser(userName);
-    SecurityDatabaseUser dbUser = user.getDatabaseUser(database);
+    final SecurityDatabaseUser dbUser = user.getDatabaseUser(database);
     DatabaseContext.INSTANCE.init(database).setCurrentUser(dbUser);
     Assertions.assertEquals(dbUser, DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).getCurrentUser());
+    Assertions.assertEquals(userName, dbUser.getName());
     return user;
   }
 
-  private RID createSomeRecords(DatabaseInternal database, boolean createEdge) {
+  private RID createSomeRecords(final DatabaseInternal database, final boolean createEdge) {
     final AtomicReference<RID> validRID = new AtomicReference<>();
     database.transaction(() -> {
-      MutableVertex v1 = database.newVertex("Vertex1").save();
-      MutableVertex v2 = database.newVertex("Vertex1").save();
+      final MutableVertex v1 = database.newVertex("Vertex1").save();
+      final MutableVertex v2 = database.newVertex("Vertex1").save();
       if (createEdge)
         v1.newEdge("Edge1", v2, true);
       database.newDocument("Document1").save();
@@ -507,14 +572,14 @@ public class ServerProfilingIT {
     return validRID.get();
   }
 
-  private void createSchema(DatabaseInternal database) {
+  private void createSchema(final DatabaseInternal database) {
     database.getSchema().createBucket("Bucket1");
     database.getSchema().createVertexType("Vertex1");
     database.getSchema().createEdgeType("Edge1");
     database.getSchema().createDocumentType("Document1");
   }
 
-  private void dropSchema(DatabaseInternal database) {
+  private void dropSchema(final DatabaseInternal database) {
     database.getSchema().dropBucket("Bucket1");
     database.getSchema().dropType("Vertex1");
     database.getSchema().dropType("Edge1");
@@ -534,6 +599,18 @@ public class ServerProfilingIT {
     createSecurity();
 
     SERVER.getOrCreateDatabase(DATABASE_NAME);
+  }
+
+  @AfterAll
+  public static void afterAll() {
+    SERVER.stop();
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+
+    FileUtils.deleteRecursively(new File("./target/config"));
+    TestServerHelper.deleteDatabaseFolders(1);
+
+    TestServerHelper.checkActiveDatabases();
+    GlobalConfiguration.resetAll();
   }
 
   private static void createSecurity() {
@@ -556,6 +633,12 @@ public class ServerProfilingIT {
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleterOfDocuments",
         new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
 
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("createOnlyGraph",//
+        new JSONObject().put("types", new JSONObject()//
+            .put("Vertex1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord", "updateRecord" })))//
+            .put("Edge1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))//
+        ));
+
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsCapped",//
         new JSONObject().put("resultSetLimit", 10)//
             .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
@@ -564,14 +647,5 @@ public class ServerProfilingIT {
         new JSONObject().put("readTimeout", 1)
             .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
     SECURITY.saveGroups();
-  }
-
-  @AfterAll
-  public static void afterAll() {
-    SERVER.stop();
-    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
-
-    FileUtils.deleteRecursively(new File("./target/config"));
-    FileUtils.deleteRecursively(new File("./target/databases"));
   }
 }

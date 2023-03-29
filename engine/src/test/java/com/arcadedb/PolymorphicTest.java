@@ -32,22 +32,24 @@ public class PolymorphicTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(() -> {
-      //------------
-      // VEHICLES VERTICES
-      //------------
-      VertexType vehicle = database.getSchema().createVertexType("Vehicle", 3);
+      //------------------------------------------------------------------------------------------------------------------------------------
+      // Vehicle <|---- Motorcycle
+      //         <|---- Car <|---- Supercar
+      //------------------------------------------------------------------------------------------------------------------------------------
+      final VertexType vehicle = database.getSchema().createVertexType("Vehicle", 3);
       vehicle.createProperty("brand", String.class);
 
-      VertexType motorcycle = database.getSchema().createVertexType("Motorcycle", 3);
+      final VertexType motorcycle = database.getSchema().createVertexType("Motorcycle", 3);
       motorcycle.addSuperType("Vehicle");
 
       try {
         motorcycle.createProperty("brand", String.class);
         Assertions.fail("Expected to fail by creating the same property name as the parent type");
-      } catch (SchemaException e) {
+      } catch (final SchemaException e) {
       }
 
       Assertions.assertTrue(database.getSchema().getType("Motorcycle").instanceOf("Vehicle"));
+
       database.getSchema().createVertexType("Car", 3).addSuperType("Vehicle");
       Assertions.assertTrue(database.getSchema().getType("Car").instanceOf("Vehicle"));
 
@@ -58,7 +60,7 @@ public class PolymorphicTest extends TestHelper {
       //------------
       // PEOPLE VERTICES
       //------------
-      VertexType person = database.getSchema().createVertexType("Person");
+      final VertexType person = database.getSchema().createVertexType("Person");
       database.getSchema().createVertexType("Client").addSuperType(person);
       Assertions.assertTrue(database.getSchema().getType("Client").instanceOf("Person"));
       Assertions.assertFalse(database.getSchema().getType("Client").instanceOf("Vehicle"));

@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -28,12 +26,12 @@ import java.util.stream.*;
  */
 public class SelectExecutionPlan implements InternalExecutionPlan {
   private       String                      location;
-  private final CommandContext              ctx;
+  private final CommandContext              context;
   protected     List<ExecutionStepInternal> steps    = new ArrayList<>();
   private       ExecutionStepInternal       lastStep = null;
 
-  public SelectExecutionPlan(CommandContext ctx) {
-    this.ctx = ctx;
+  public SelectExecutionPlan(final CommandContext context) {
+    this.context = context;
   }
 
   @Override
@@ -42,15 +40,15 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public ResultSet fetchNext(int n) {
-    return lastStep.syncPull(ctx, n);
+  public ResultSet fetchNext(final int n) {
+    return lastStep.syncPull(context, n);
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder result = new StringBuilder();
     for (int i = 0; i < steps.size(); i++) {
-      ExecutionStepInternal step = steps.get(i);
+      final ExecutionStepInternal step = steps.get(i);
       result.append(step.prettyPrint(depth, indent));
       if (i < steps.size() - 1) {
         result.append("\n");
@@ -60,15 +58,14 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public void reset(CommandContext ctx) {
+  public void reset(final CommandContext context) {
     steps.forEach(ExecutionStepInternal::reset);
   }
 
-  public void chain(ExecutionStepInternal nextStep) {
-    if (lastStep != null) {
-      lastStep.setNext(nextStep);
+  public void chain(final ExecutionStepInternal nextStep) {
+    if (lastStep != null)
       nextStep.setPrevious(lastStep);
-    }
+
     lastStep = nextStep;
     steps.add(nextStep);
   }
@@ -79,7 +76,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     return (List) steps;
   }
 
-  public void setSteps(List<ExecutionStepInternal> steps) {
+  public void setSteps(final List<ExecutionStepInternal> steps) {
     this.steps = steps;
     if (steps.size() > 0) {
       lastStep = steps.get(steps.size() - 1);
@@ -90,7 +87,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public Result toResult() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", "QueryExecutionPlan");
     result.setProperty(JAVA_TYPE, getClass().getName());
     result.setProperty("cost", getCost());
@@ -100,45 +97,13 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public long getCost() {
-    return 0L;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("type", "QueryExecutionPlan");
-    result.setProperty(JAVA_TYPE, getClass().getName());
-    result.setProperty("cost", getCost());
-    result.setProperty("prettyPrint", prettyPrint(0, 2));
-    result.setProperty("steps", steps == null ? null : steps.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    return result;
-  }
-
-  public void deserialize(Result serializedExecutionPlan) {
-    List<Result> serializedSteps = serializedExecutionPlan.getProperty("steps");
-    for (Result serializedStep : serializedSteps) {
-      try {
-        String className = serializedStep.getProperty(JAVA_TYPE);
-        ExecutionStepInternal step = (ExecutionStepInternal) Class.forName(className).getConstructor().newInstance();
-        step.deserialize(serializedStep);
-        chain(step);
-      } catch (Exception e) {
-        throw new CommandExecutionException("Cannot deserialize execution step:" + serializedStep, e);
-      }
-    }
-  }
-
-  @Override
-  public InternalExecutionPlan copy(final CommandContext ctx) {
-    final SelectExecutionPlan copy = new SelectExecutionPlan(ctx);
+  public InternalExecutionPlan copy(final CommandContext context) {
+    final SelectExecutionPlan copy = new SelectExecutionPlan(context);
 
     ExecutionStepInternal lastStep = null;
-    for (ExecutionStepInternal step : this.steps) {
-      ExecutionStepInternal newStep = (ExecutionStepInternal) step.copy(ctx);
+    for (final ExecutionStepInternal step : this.steps) {
+      final ExecutionStepInternal newStep = (ExecutionStepInternal) step.copy(context);
       newStep.setPrevious(lastStep);
-      if (lastStep != null) {
-        lastStep.setNext(newStep);
-      }
       lastStep = newStep;
       copy.getSteps().add(newStep);
     }
@@ -149,7 +114,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public boolean canBeCached() {
-    for (ExecutionStepInternal step : steps) {
+    for (final ExecutionStepInternal step : steps) {
       if (!step.canBeCached()) {
         return false;
       }

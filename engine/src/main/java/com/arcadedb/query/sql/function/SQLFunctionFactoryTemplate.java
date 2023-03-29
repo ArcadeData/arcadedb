@@ -42,7 +42,7 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
     functions.remove(name);
   }
 
-  public void register(String name, Object function) {
+  public void register(final String name, final Object function) {
     functions.put(name.toLowerCase(Locale.ENGLISH), function);
   }
 
@@ -57,11 +57,10 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
   }
 
   @Override
-  public SQLFunction createFunction(final String name) throws CommandExecutionException {
+  public SQLFunction getFunctionInstance(final String name) throws CommandExecutionException {
     final Object obj = functions.get(name.toLowerCase(Locale.ENGLISH));
-
     if (obj == null)
-      throw new CommandExecutionException("Unknown function name :" + name);
+      return null;
 
     if (obj instanceof SQLFunction)
       return (SQLFunction) obj;
@@ -70,17 +69,14 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
       final Class<?> typez = (Class<?>) obj;
       try {
         return (SQLFunction) typez.getConstructor().newInstance();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new CommandExecutionException(
             "Error in creation of function " + name + "(). Probably there is not an empty constructor or the constructor generates errors", e);
-
       }
     }
-
   }
 
   public Map<String, Object> getFunctions() {
     return functions;
   }
-
 }

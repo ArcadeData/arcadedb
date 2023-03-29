@@ -38,9 +38,9 @@ public interface EdgeSegment extends Record {
 
   int removeVertex(RID vertexRID);
 
-  EdgeSegment getNext();
+  EdgeSegment getPrevious();
 
-  void setNext(EdgeSegment next);
+  void setPrevious(EdgeSegment next);
 
   Binary getContent();
 

@@ -29,7 +29,7 @@ public class SQLFunctionBothV extends SQLFunctionMove {
   public static final String NAME = "bothV";
 
   public SQLFunctionBothV() {
-    super(NAME, 0, -1);
+    super(NAME);
   }
 
   @Override

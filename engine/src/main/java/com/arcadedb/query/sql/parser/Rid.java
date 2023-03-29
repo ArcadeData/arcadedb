@@ -26,31 +26,32 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
 public class Rid extends SimpleNode {
-  protected PInteger bucket;
-  protected PInteger position;
-
+  protected PInteger   bucket;
+  protected PInteger   position;
   protected Expression expression;
   protected boolean    legacy;
 
-  public Rid(int id) {
+  public Rid(final int id) {
     super(id);
   }
 
-  public Rid(SqlParser p, int id) {
-    super(p, id);
+  public Rid(final RID rid) {
+    super(-1);
+    bucket = new PInteger(-1).setValue(rid.getBucketId());
+    position = new PInteger(-1).setValue(rid.getBucketId());
+    legacy = true;
   }
 
   @Override
-  public String toString(String prefix) {
+  public String toString(final String prefix) {
     return "#" + bucket.getValue() + ":" + position.getValue();
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (legacy) {
       builder.append("#" + bucket.getValue() + ":" + position.getValue());
     } else {
@@ -60,28 +61,28 @@ public class Rid extends SimpleNode {
     }
   }
 
-  public RID toRecordId(final Result target, final CommandContext ctx) {
+  public RID toRecordId(final Result target, final CommandContext context) {
     if (legacy) {
-      return new RID(ctx.getDatabase(), bucket.value.intValue(), position.value.longValue());
+      return new RID(context.getDatabase(), bucket.value.intValue(), position.value.longValue());
     } else {
-      Object result = expression.execute(target, ctx);
-      if (result == null) {
+      final Object result = expression.execute(target, context);
+      if (result == null)
         return null;
-      }
-      if (result instanceof Identifiable) {
+
+      if (result instanceof Identifiable)
         return ((Identifiable) result).getIdentity();
-      }
+
       if (result instanceof String) {
-        if (!(((String) result).startsWith("#") && (((String) result).contains(":")))) {
+        if (!(((String) result).startsWith("#") && (((String) result).contains(":"))))
           throw new CommandExecutionException("Cannot convert to RID: " + result);
-        }
-        String[] parts = ((String) result).substring(1).split(":");
-        if (parts.length != 2) {
+
+        final String[] parts = ((String) result).substring(1).split(":");
+        if (parts.length != 2)
           throw new CommandExecutionException("Cannot convert to RID: " + result);
-        }
+
         try {
-          return new RID(ctx.getDatabase(), Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
-        } catch (Exception e) {
+          return new RID(context.getDatabase(), Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+        } catch (final Exception e) {
           throw new CommandExecutionException("Cannot convert to RID: " + result);
         }
       }
@@ -89,26 +90,26 @@ public class Rid extends SimpleNode {
     }
   }
 
-  public RID toRecordId(Identifiable target, CommandContext ctx) {
+  public RID toRecordId(final Identifiable target, final CommandContext context) {
     if (legacy) {
-      return new RID(ctx.getDatabase(), bucket.value.intValue(), position.value.longValue());
+      return new RID(context.getDatabase(), bucket.value.intValue(), position.value.longValue());
     } else {
-      Object result = expression.execute(target, ctx);
-      if (result == null) {
+      final Object result = expression.execute(target, context);
+      if (result == null)
         return null;
-      }
-      if (result instanceof Identifiable) {
+
+      if (result instanceof Identifiable)
         return ((Identifiable) result).getIdentity();
-      }
-      if (result instanceof String) {
+
+      if (result instanceof String)
         throw new UnsupportedOperationException();
-      }
+
       return null;
     }
   }
 
   public Rid copy() {
-    Rid result = new Rid(-1);
+    final Rid result = new Rid(-1);
     result.bucket = bucket == null ? null : bucket.copy();
     result.position = position == null ? null : position.copy();
     result.expression = expression == null ? null : expression.copy();
@@ -117,13 +118,13 @@ public class Rid extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Rid oRid = (Rid) o;
+    final Rid oRid = (Rid) o;
 
     if (!Objects.equals(bucket, oRid.bucket))
       return false;
@@ -142,23 +143,23 @@ public class Rid extends SimpleNode {
     return result;
   }
 
-  public void setBucket(PInteger bucket) {
+  public void setBucket(final PInteger bucket) {
     this.bucket = bucket;
   }
 
-  public void setPosition(PInteger position) {
+  public void setPosition(final PInteger position) {
     this.position = position;
   }
 
-  public void setLegacy(boolean b) {
+  public void setLegacy(final boolean b) {
     this.legacy = b;
   }
 
   public PInteger getBucket() {
     if (expression != null) {
-      RID rid = toRecordId((Result) null, new BasicCommandContext());
+      final RID rid = toRecordId((Result) null, new BasicCommandContext());
       if (rid != null) {
-        PInteger result = new PInteger(-1);
+        final PInteger result = new PInteger(-1);
         result.setValue(rid.getBucketId());
         return result;
       }
@@ -168,45 +169,14 @@ public class Rid extends SimpleNode {
 
   public PInteger getPosition() {
     if (expression != null) {
-      RID rid = toRecordId((Result) null, new BasicCommandContext());
+      final RID rid = toRecordId((Result) null, new BasicCommandContext());
       if (rid != null) {
-        PInteger result = new PInteger(-1);
+        final PInteger result = new PInteger(-1);
         result.setValue(rid.getPosition());
         return result;
       }
     }
     return position;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (bucket != null) {
-      result.setProperty("bucket", bucket.serialize());
-    }
-    if (position != null) {
-      result.setProperty("position", position.serialize());
-    }
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    result.setProperty("legacy", legacy);
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("bucket") != null) {
-      bucket = new PInteger(-1);
-      bucket.deserialize(fromResult.getProperty("bucket"));
-    }
-    if (fromResult.getProperty("position") != null) {
-      position = new PInteger(-1);
-      position.deserialize(fromResult.getProperty("position"));
-    }
-    if (fromResult.getProperty("expression") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    legacy = fromResult.getProperty("legacy");
   }
 }
 /* JavaCC - OriginalChecksum=c2c6d67d7722e29212e438574698d7cd (do not edit this line) */

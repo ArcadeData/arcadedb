@@ -28,13 +28,13 @@ import org.junit.jupiter.api.Test;
 public class SleepStatementExecutionTest extends TestHelper {
   @Test
   public void testBasic() {
-    long begin = System.currentTimeMillis();
-    ResultSet result = database.command("sql", "sleep 1000");
+    final long begin = System.currentTimeMillis();
+    final ResultSet result = database.command("sql", "sleep 1000");
     Assertions.assertTrue(System.currentTimeMillis() - begin >= 1000);
     //printExecutionPlan(null, result);
     Assertions.assertNotNull(result);
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertEquals("sleep", item.getProperty("operation"));
     Assertions.assertFalse(result.hasNext());
   }

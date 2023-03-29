@@ -22,7 +22,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -47,7 +47,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   public synchronized void merge(final Map<String, Object> other) {
-    for (Map.Entry<String, Object> entry : other.entrySet())
+    for (final Map.Entry<String, Object> entry : other.entrySet())
       set(entry.getKey(), entry.getValue());
   }
 
@@ -70,12 +70,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   public synchronized MutableDocument fromMap(final Map<String, Object> map) {
     this.map = new LinkedHashMap<>(map.size());
-    for (Map.Entry<String, Object> entry : map.entrySet()) {
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final String key = entry.getKey();
       if (key.startsWith("@"))
         // SKIP METADATA
         continue;
-      this.map.put(key, convertValueToSchemaType(key, entry.getValue(), type));
+      final Object value = setTransformValue(entry.getValue(), key);
+      this.map.put(key, convertValueToSchemaType(key, value, type));
     }
 
     dirty = true;
@@ -89,13 +90,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
     final Map<String, Object> result = new HashMap<>(map);
-    result.put("@cat", "d");
-    result.put("@type", type.getName());
-    if (getIdentity() != null)
-      result.put("@rid", getIdentity().toString());
+    if (includeMetadata) {
+      result.put("@cat", "d");
+      result.put("@type", type.getName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
     return result;
   }
 
@@ -128,7 +131,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized boolean has(String propertyName) {
+  public synchronized boolean has(final String propertyName) {
     checkForLazyLoadingProperties();
     return map.containsKey(propertyName);
   }
@@ -164,12 +167,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkForLazyLoadingProperties();
     dirty = true;
 
-    if (properties.length > 0) {
-      for (int p = 0; p < properties.length; p += 2) {
-        final String propertyName = (String) properties[p];
-        final Object value = setTransformValue(properties[p + 1], propertyName);
-        map.put(propertyName, convertValueToSchemaType(propertyName, value, type));
-      }
+    for (int p = 0; p < properties.length; p += 2) {
+      final String propertyName = (String) properties[p];
+      final Object value = setTransformValue(properties[p + 1], propertyName);
+      map.put(propertyName, convertValueToSchemaType(propertyName, value, type));
     }
 
     return this;
@@ -259,7 +260,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkForLazyLoadingProperties();
     dirty = true;
 
-    for (Map.Entry<String, Object> entry : properties.entrySet()) {
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String propertyName = entry.getKey();
       if (propertyName.startsWith("@"))
         // SKIP METADATA
@@ -289,10 +290,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   public synchronized MutableDocument save(final String bucketName) {
     dirty = true;
-    if (rid != null)
-      throw new IllegalStateException("Cannot update a record in a custom bucket");
+    if (rid != null) {
+      // UPDATE
+      if (rid.bucketId != database.getSchema().getBucketByName(bucketName).getId())
+        throw new IllegalStateException("Cannot update a record in a custom bucket");
 
-    database.createRecord(this, bucketName);
+      database.updateRecord(this);
+    } else
+      // CREATE
+      database.createRecord(this, bucketName);
     return this;
   }
 
@@ -315,7 +321,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       result.append('?');
     } else {
       int i = 0;
-      for (Map.Entry<String, Object> entry : map.entrySet()) {
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
         if (i > 0)
           result.append(',');
 
@@ -360,7 +366,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return;
 
       buffer.position(propertiesStartingPosition);
-      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this));
+      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this), type);
     }
   }
 
@@ -368,13 +374,33 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (value == null || value == JSONObject.NULL)
       return null;
 
-    final Property prop = type.getPolymorphicPropertyIfExists(name);
-    if (prop != null)
+    final Property property = type.getPolymorphicPropertyIfExists(name);
+    if (property != null)
       try {
-        return Type.convert(database, value, prop.getType().getDefaultJavaType());
-      } catch (Exception e) {
-        throw new IllegalArgumentException("Cannot convert type '" + value.getClass() + "' to '" + prop.getType().name() + "' found in property '" + name + "'",
-            e);
+        final Type propType = property.getType();
+
+        final Class javaImplementation;
+        if (propType == Type.DATE)
+          javaImplementation = database.getSerializer().getDateImplementation();
+        else if (propType == Type.DATETIME)
+          javaImplementation = database.getSerializer().getDateTimeImplementation();
+        else {
+          javaImplementation = propType.getDefaultJavaType();
+
+          if (javaImplementation.equals(Document.class)) {
+            // EMBEDDED DOCUMENT
+            if (value instanceof Map) {
+              final Map<String, Object> map = (Map<String, Object>) value;
+              final String embType = (String) map.get("@type");
+              return newEmbeddedDocument(embType, name);
+            }
+          }
+        }
+
+        return Type.convert(database, value, javaImplementation, property);
+      } catch (final Exception e) {
+        throw new IllegalArgumentException(
+            "Cannot convert type '" + value.getClass() + "' to '" + property.getType().name() + "' found in property '" + name + "'", e);
       }
 
     return value;
@@ -395,9 +421,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return newRecord;
       }
     } else if (value instanceof List) {
-      List<Object> list = (List<Object>) value;
+      final List<Object> list = (List<Object>) value;
       for (int i = 0; i < list.size(); i++) {
-        Object v = list.get(i);
+        final Object v = list.get(i);
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
@@ -410,8 +436,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         }
       }
     } else if (value instanceof Map) {
-      final Map<Object, Object> map = (Map<Object, Object>) value;
-      for (Map.Entry<Object, Object> entry : map.entrySet()) {
+      final Map<String, Object> map = (Map<String, Object>) value;
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
         final Object v = entry.getValue();
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
@@ -423,6 +449,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
           newRecord.set(((BaseDocument) v).toMap());
           map.put(entry.getKey(), newRecord);
         }
+      }
+
+      final String embType = (String) map.get("@type");
+      if (embType != null) {
+        final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);
+        embedded.fromMap(map);
+        return embedded;
       }
     }
     return value;

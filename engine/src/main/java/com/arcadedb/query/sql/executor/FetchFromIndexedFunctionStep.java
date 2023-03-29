@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -31,24 +30,23 @@ import java.util.*;
  * Created by luigidellaquila on 06/08/16.
  */
 public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
-  private BinaryCondition functionCondition;
-  private FromClause      queryTarget;
+  private final BinaryCondition functionCondition;
+  private final FromClause      queryTarget;
 
-  private long cost = 0;
   //runtime0
   Iterator<Record> fullResult = null;
 
-  public FetchFromIndexedFunctionStep(BinaryCondition functionCondition, FromClause queryTarget, CommandContext ctx,
-      boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final CommandContext context,
+      final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.functionCondition = functionCondition;
     this.queryTarget = queryTarget;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    init(ctx);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+    init(context);
 
     return new ResultSet() {
       int localCount = 0;
@@ -63,15 +61,15 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (localCount >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (!fullResult.hasNext()) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
-          ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal();
           result.setElement((Document) fullResult.next().getRecord());
           localCount++;
           return result;
@@ -82,28 +80,14 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private void init(CommandContext ctx) {
+  private void init(final CommandContext context) {
     if (fullResult == null) {
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
-        fullResult = functionCondition.executeIndexedFunction(queryTarget, ctx).iterator();
+        fullResult = functionCondition.executeIndexedFunction(queryTarget, context).iterator();
       } finally {
         if (profilingEnabled) {
           cost += (System.nanoTime() - begin);
@@ -113,9 +97,8 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String result =
-        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
+  public String prettyPrint(final int depth, final int indent) {
+    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }
@@ -125,34 +108,5 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   @Override
   public void reset() {
     this.fullResult = null;
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
-  }
-
-  @Override
-  public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    result.setProperty("functionCondition", this.functionCondition.serialize());
-    result.setProperty("queryTarget", this.queryTarget.serialize());
-
-    return result;
-  }
-
-  @Override
-  public void deserialize(Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      functionCondition = new BinaryCondition(-1);
-      functionCondition.deserialize(fromResult.getProperty("functionCondition "));
-
-      queryTarget = new FromClause(-1);
-      queryTarget.deserialize(fromResult.getProperty("functionCondition "));
-
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
   }
 }

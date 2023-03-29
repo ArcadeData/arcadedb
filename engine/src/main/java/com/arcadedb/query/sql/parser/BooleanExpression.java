@@ -18,12 +18,10 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -35,33 +33,13 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public static final BooleanExpression TRUE = new BooleanExpression(0) {
     @Override
-    public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+    public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
       return true;
     }
 
     @Override
-    public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+    public boolean evaluate(final Result currentRecord, final CommandContext context) {
       return true;
-    }
-
-    @Override
-    protected boolean supportsBasicCalculation() {
-      return true;
-    }
-
-    @Override
-    protected int getNumberOfExternalCalculations() {
-      return 0;
-    }
-
-    @Override
-    protected List<Object> getExternalCalculationConditions() {
-      return Collections.EMPTY_LIST;
-    }
-
-    @Override
-    public boolean needsAliases(final Set<String> aliases) {
-      return false;
     }
 
     @Override
@@ -95,6 +73,7 @@ public abstract class BooleanExpression extends SimpleNode {
 
     @Override
     public void extractSubQueries(final SubQueryCollector collector) {
+      // NO ACTIONS
     }
 
     @Override
@@ -105,32 +84,12 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public static final BooleanExpression FALSE = new BooleanExpression(0) {
     @Override
-    public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+    public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
       return false;
     }
 
     @Override
-    public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-      return false;
-    }
-
-    @Override
-    protected boolean supportsBasicCalculation() {
-      return true;
-    }
-
-    @Override
-    protected int getNumberOfExternalCalculations() {
-      return 0;
-    }
-
-    @Override
-    protected List<Object> getExternalCalculationConditions() {
-      return Collections.EMPTY_LIST;
-    }
-
-    @Override
-    public boolean needsAliases(Set<String> aliases) {
+    public boolean evaluate(final Result currentRecord, final CommandContext context) {
       return false;
     }
 
@@ -164,8 +123,8 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
-    public void extractSubQueries(SubQueryCollector collector) {
-
+    public void extractSubQueries(final SubQueryCollector collector) {
+      // NO ACTIONS
     }
 
     @Override
@@ -178,30 +137,11 @@ public abstract class BooleanExpression extends SimpleNode {
     super(id);
   }
 
-  public BooleanExpression(final SqlParser p, final int id) {
-    super(p, id);
-  }
+  public abstract boolean evaluate(final Identifiable currentRecord, final CommandContext context);
 
-  public abstract boolean evaluate(final Identifiable currentRecord, final CommandContext ctx);
+  public abstract boolean evaluate(final Result currentRecord, final CommandContext context);
 
-  public abstract boolean evaluate(final Result currentRecord, final CommandContext ctx);
-
-  /**
-   * @return true if this expression can be calculated in plain Java, false otherwise
-   */
-  protected abstract boolean supportsBasicCalculation();
-
-  /**
-   * @return the number of sub-expressions that have to be calculated using an external engine
-   */
-  protected abstract int getNumberOfExternalCalculations();
-
-  /**
-   * @return the sub-expressions that have to be calculated using an external engine
-   */
-  protected abstract List<Object> getExternalCalculationConditions();
-
-  public List<BinaryCondition> getIndexedFunctionConditions(DocumentType iSchemaClass, Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     return null;
   }
 
@@ -218,8 +158,6 @@ public abstract class BooleanExpression extends SimpleNode {
     return result;
   }
 
-  public abstract boolean needsAliases(final Set<String> aliases);
-
   public abstract BooleanExpression copy();
 
   public boolean isEmpty() {
@@ -227,8 +165,6 @@ public abstract class BooleanExpression extends SimpleNode {
   }
 
   public abstract void extractSubQueries(final SubQueryCollector collector);
-
-  public abstract boolean refersToParent();
 
   /**
    * returns the equivalent of current condition as an UPDATE expression with the same syntax, if possible.
@@ -244,25 +180,30 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public abstract List<String> getMatchPatternInvolvedAliases();
 
-  public static BooleanExpression deserializeFromOResult(final Result doc) {
-    try {
-      final BooleanExpression result = (BooleanExpression) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
-      result.deserialize(doc);
-    } catch (Exception e) {
-      throw new CommandExecutionException("", e);
-    }
-    return null;
+  public boolean createRangeWith(final BooleanExpression match) {
+    return false;
   }
 
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("__class", getClass().getName());
-    return result;
+  /**
+   * returns true only if the expression does not need any further evaluation (eg. "true") and
+   * always evaluates to true. It is supposed to be used as and optimization, and is allowed to
+   * return false negatives
+   *
+   * @return
+   */
+  public boolean isAlwaysTrue() {
+    return false;
   }
 
-  public void deserialize(final Result fromResult) {
-    throw new UnsupportedOperationException();
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    return false;
   }
 
-  public abstract boolean isCacheable();
+  public Expression resolveKeyFrom(BinaryCondition additional) {
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
+
+  public Expression resolveKeyTo(BinaryCondition additional) {
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
 }

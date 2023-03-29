@@ -40,11 +40,11 @@ public class ValueExpression extends Expression {
     this.value = val;
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
     return value;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     return value;
   }
 
@@ -68,19 +68,22 @@ public class ValueExpression extends Expression {
     return true;
   }
 
-  public boolean isIndexedFunctionCal() {
+  public boolean isIndexedFunctionCal(CommandContext context) {
     return false;
   }
 
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     return false;
   }
 
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     return false;
   }
 
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     return false;
   }
 
@@ -92,11 +95,7 @@ public class ValueExpression extends Expression {
     return null;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    return false;
-  }
-
-  public boolean isAggregate() {
+  public boolean isAggregate(CommandContext context) {
     return false;
   }
 
@@ -104,7 +103,7 @@ public class ValueExpression extends Expression {
     return this;
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     throw new CommandExecutionException("Cannot aggregate on " + this);
   }
 
@@ -122,7 +121,7 @@ public class ValueExpression extends Expression {
       return false;
 
     final ValueExpression that = (ValueExpression) o;
-    return that.value == this.value;
+    return that.value.equals(this.value);
   }
 
   @Override
@@ -130,10 +129,12 @@ public class ValueExpression extends Expression {
     return 1;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    // NO ACTIONS
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
+    // NO ACTIONS
   }
 
   public boolean refersToParent() {
@@ -144,7 +145,7 @@ public class ValueExpression extends Expression {
     return null;
   }
 
-  public void applyRemove(ResultInternal result, CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext context) {
     throw new CommandExecutionException("Cannot apply REMOVE " + this);
   }
 
@@ -152,19 +153,11 @@ public class ValueExpression extends Expression {
     return false;
   }
 
-  public Result serialize() {
-    throw new UnsupportedOperationException("Cannot serialize value expression (not supported yet)");
-  }
-
-  public void deserialize(Result fromResult) {
-    throw new UnsupportedOperationException("Cannot deserialize value expression (not supported yet)");
-  }
-
-  public boolean isDefinedFor(Result currentRecord) {
+  public boolean isDefinedFor(final Result currentRecord) {
     return true;
   }
 
-  public boolean isDefinedFor(Record currentRecord) {
+  public boolean isDefinedFor(final Record currentRecord) {
     return true;
   }
 

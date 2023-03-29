@@ -31,7 +31,7 @@ import java.math.*;
 public class NeOperatorTest {
   @Test
   public void test() {
-    NeOperator op = new NeOperator(-1);
+    final NeOperator op = new NeOperator(-1);
 
     Assertions.assertTrue(op.execute(null, null, 1));
     Assertions.assertTrue(op.execute(null, 1, null));

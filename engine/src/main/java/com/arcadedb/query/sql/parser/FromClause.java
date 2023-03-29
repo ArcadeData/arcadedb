@@ -20,24 +20,16 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class FromClause extends SimpleNode {
-
   FromItem item;
 
-  public FromClause(int id) {
+  public FromClause(final int id) {
     super(id);
   }
 
-  public FromClause(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (item != null) {
       item.toString(params, builder);
     }
@@ -47,46 +39,28 @@ public class FromClause extends SimpleNode {
     return item;
   }
 
-  public void setItem(FromItem item) {
+  public void setItem(final FromItem item) {
     this.item = item;
   }
 
   public FromClause copy() {
-    FromClause result = new FromClause(-1);
+    final FromClause result = new FromClause(-1);
     result.item = item.copy();
     return result;
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final    FromClause that = (FromClause) o;
-
-    return Objects.equals(item, that.item);
+  protected Object[] getIdentityElements() {
+    return new Object[] { item };
   }
 
   @Override
-  public int hashCode() {
-    return item != null ? item.hashCode() : 0;
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { item };
   }
 
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("item", item.serialize());
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    item = new FromItem(-1);
-    item.deserialize(fromResult.getProperty("item"));
-  }
-
-  public boolean isCacheable() {
-    return item.isCacheable();
+  public boolean refersToParent() {
+    return item.refersToParent();
   }
 }
 /* JavaCC - OriginalChecksum=051839d20dabfa4cce26ebcbe0d03a86 (do not edit this line) */

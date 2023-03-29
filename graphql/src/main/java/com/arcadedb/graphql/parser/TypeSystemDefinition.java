@@ -27,20 +27,10 @@ public class TypeSystemDefinition extends Definition {
   protected TypeExtensionDefinition typeExtensionDefinition;
   protected DirectiveDefinition     directiveDefinition;
 
-  public TypeSystemDefinition(int id) {
+  public TypeSystemDefinition(final int id) {
     super(id);
   }
 
-  public TypeSystemDefinition(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public TypeDefinition getTypeDefinition() {
     return typeDefinition;

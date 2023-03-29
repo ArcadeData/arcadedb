@@ -31,12 +31,13 @@ import java.util.*;
 import java.util.logging.*;
 
 public class Exporter {
-  protected ExporterSettings       settings = new ExporterSettings();
-  protected ExporterContext        context  = new ExporterContext();
+  protected ExporterSettings       settings           = new ExporterSettings();
+  protected ExporterContext        context            = new ExporterContext();
   protected DatabaseInternal       database;
   protected Timer                  timer;
   protected ConsoleLogger          logger;
   protected AbstractExporterFormat formatImplementation;
+  protected boolean                closeDatabaseAtEnd = true;
 
   public Exporter(final String[] args) {
     settings.parseParameters(args);
@@ -44,12 +45,19 @@ public class Exporter {
 
   public Exporter(final Database database, final String file) {
     this.database = (DatabaseInternal) database;
-    settings.file = file;
+    this.settings.file = file;
+    this.closeDatabaseAtEnd = false;
   }
 
   public static void main(final String[] args) {
     new Exporter(args).exportDatabase();
     System.exit(0);
+  }
+
+  public void setSettings(final Map<String, String> parameters) {
+    if (parameters != null)
+      for (final Map.Entry<String, String> entry : parameters.entrySet())
+        settings.parseParameter(entry.getKey(), entry.getValue());
   }
 
   public Exporter setFormat(final String format) {
@@ -62,7 +70,7 @@ public class Exporter {
     return this;
   }
 
-  public void exportDatabase() {
+  public Map<String, Object> exportDatabase() {
     try {
       startExporting();
 
@@ -81,7 +89,17 @@ public class Exporter {
           "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",//
           totalRecords, elapsedInSecs, (totalRecords / elapsedInSecs), context.documents.get(), context.vertices.get(), context.edges.get());
 
-    } catch (Exception e) {
+      // RETURN STATISTICS
+      final Map<String, Object> result = new LinkedHashMap<>();
+      result.put("totalRecords", totalRecords);
+      result.put("elapsedInSecs", totalRecords);
+      result.put("documents", context.documents.get());
+      result.put("vertices", context.vertices.get());
+      result.put("edges", context.edges.get());
+
+      return result;
+
+    } catch (final Exception e) {
       throw new ExportException("Error on writing to '" + settings.file + "'", e);
     } finally {
       if (database != null) {
@@ -147,7 +165,7 @@ public class Exporter {
       context.lastVertices = context.vertices.get();
       context.lastEdges = context.edges.get();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       logger.errorLine("Error on print statistics: " + e.getMessage());
     }
   }
@@ -156,7 +174,8 @@ public class Exporter {
     if (database != null) {
       if (database.isTransactionActive())
         database.commit();
-      database.close();
+      if (closeDatabaseAtEnd)
+        database.close();
     }
   }
 
@@ -167,10 +186,11 @@ public class Exporter {
 
     case "graphml": {
       try {
-        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName("com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
-        return clazz.getConstructor( DatabaseInternal.class,  ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
-                .newInstance(database, settings, context, logger);
-      } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
+        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(
+            "com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
+        return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
+            .newInstance(database, settings, context, logger);
+      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
         LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphml' ", e);
 
       }
@@ -178,10 +198,11 @@ public class Exporter {
     }
     case "graphson": {
       try {
-        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName("com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
-        return clazz.getConstructor( DatabaseInternal.class,  ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
-                .newInstance(database, settings, context, logger);
-      } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
+        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(
+            "com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
+        return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
+            .newInstance(database, settings, context, logger);
+      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
         LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphson' ", e);
       }
 

@@ -35,6 +35,13 @@ public class ThreadBucketSelectionStrategy implements BucketSelectionStrategy {
   }
 
   @Override
+  public BucketSelectionStrategy copy() {
+    final ThreadBucketSelectionStrategy copy = new ThreadBucketSelectionStrategy();
+    copy.total = total;
+    return copy;
+  }
+
+  @Override
   public int getBucketIdByRecord(final Document record, final boolean async) {
     return (int) (Thread.currentThread().getId() % total);
   }

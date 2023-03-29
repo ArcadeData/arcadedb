@@ -31,19 +31,19 @@ public class CountFromClassStepTest {
   @Test
   public void shouldCountRecordsOfClass() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      String className = TestHelper.createRandomType(db).getName();
+      final String className = TestHelper.createRandomType(db).getName();
       for (int i = 0; i < 20; i++) {
-        MutableDocument document = db.newDocument(className);
+        final MutableDocument document = db.newDocument(className);
         document.save();
       }
 
-      Identifier classIdentifier = new Identifier(className);
+      final Identifier classIdentifier = new Identifier(className);
 
-      BasicCommandContext context = new BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      CountFromClassStep step = new CountFromClassStep(classIdentifier, ALIAS, context, false);
+      final CountFromClassStep step = new CountFromClassStep(classIdentifier, ALIAS, context, false);
 
-      ResultSet result = step.syncPull(context, 20);
+      final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(20, (long) result.next().getProperty(ALIAS));
       Assertions.assertFalse(result.hasNext());
     });

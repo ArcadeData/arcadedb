@@ -20,6 +20,10 @@ a, a:visited {
   background-color: #B9D8F9 !important;
 }
 
+.btn-outline-primary {
+  padding: 0rem .3rem;
+}
+
 .nav-link {
   background-color: white;
 }

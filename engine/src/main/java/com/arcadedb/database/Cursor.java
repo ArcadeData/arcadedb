@@ -26,5 +26,5 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public interface Cursor extends Iterable<Identifiable>, Iterator<Identifiable> {
-  long size();
+  long estimateSize();
 }

@@ -29,46 +29,42 @@ import java.util.*;
 
 /**
  * Superclass for SQL statements that are too simple to deserve an execution planner.
- * All the execution is delegated to the statement itself, with the execute(ctx) method.
+ * All the execution is delegated to the statement itself, with the execute(context) method.
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public abstract class SimpleExecStatement extends Statement {
 
-  public SimpleExecStatement(int id) {
+  public SimpleExecStatement(final int id) {
     super(id);
   }
 
-  public SimpleExecStatement(SqlParser p, int id) {
-    super(p, id);
-  }
+  public abstract ResultSet executeSimple(CommandContext context);
 
-  public abstract ResultSet executeSimple(CommandContext ctx);
-
-  public ResultSet execute(Database db, Object[] args, CommandContext parentContext, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null) {
-      ctx.setParentWithoutOverridingChild(parentContext);
+      context.setParentWithoutOverridingChild(parentContext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
-    return executionPlan.executeInternal(ctx);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context, false);
+    return executionPlan.executeInternal();
   }
 
-  public ResultSet execute(Database db, Map<String, Object> params, CommandContext parentContext, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null) {
-      ctx.setParentWithoutOverridingChild(parentContext);
+      context.setParentWithoutOverridingChild(parentContext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
-    return executionPlan.executeInternal(ctx);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context, false);
+    return executionPlan.executeInternal();
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    return new SingleOpExecutionPlan(ctx, this);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    return new SingleOpExecutionPlan(context, this);
   }
 
 }

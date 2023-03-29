@@ -19,7 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.log.LogManager;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -71,7 +71,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
       connection.connect();
 
-      PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
+      final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
       pw.write(payload.toString());
       pw.close();
 
@@ -94,7 +94,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       try {
         checkDocumentWasCreated(serverIndex, payload, rid, null);
         Assertions.fail();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         // EXPECTED
       }
 
@@ -211,7 +211,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
       connection.connect();
 
-      PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
+      final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
       pw.write(payload.toString());
       pw.close();
 
@@ -219,7 +219,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       try {
         response = readResponse(connection);
         Assertions.fail();
-      } catch (IOException e) {
+      } catch (final IOException e) {
         response = readError(connection);
         Assertions.assertEquals(503, connection.getResponseCode());
         connection.disconnect();
@@ -228,8 +228,8 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     });
   }
 
-  private void checkDocumentWasCreated(int serverIndex, JSONObject payload, String rid, String sessionId) throws IOException {
-    HttpURLConnection connection = (HttpURLConnection) new URL(
+  private void checkDocumentWasCreated(final int serverIndex, final JSONObject payload, final String rid, final String sessionId) throws IOException {
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + rid.substring(1)).openConnection();
 
     connection.setRequestMethod("GET");

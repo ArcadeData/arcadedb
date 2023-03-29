@@ -23,12 +23,8 @@ package com.arcadedb.graphql.parser;
 public class BooleanValue extends AbstractValue {
   protected boolean val;
 
-  public BooleanValue(int id) {
+  public BooleanValue(final int id) {
     super(id);
-  }
-
-  public BooleanValue(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   @Override
@@ -36,12 +32,6 @@ public class BooleanValue extends AbstractValue {
     return null;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   @Override
   public String toString() {

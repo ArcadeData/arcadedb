@@ -24,35 +24,28 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
-import java.io.IOException;
+import java.io.*;
 import java.net.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class PostgresNetworkListener extends Thread {
+  private final    ArcadeDBServer      server;
+  private final    ServerSocketFactory socketFactory;
+  private          ServerSocket        serverSocket;
+  private volatile boolean             active          = true;
+  private final    int                 protocolVersion = -1;
 
   public interface ClientConnected {
     void connected();
   }
 
-  private final    ArcadeDBServer      server;
-  private final    ServerSocketFactory socketFactory;
-  private          ServerSocket        serverSocket;
-  private          InetSocketAddress   inboundAddr;
-  private volatile boolean             active          = true;
-  private final    int                 protocolVersion = -1;
-  private final    String              hostName;
-  private          int                 port;
-  private          ClientConnected     callback;
-
   public PostgresNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String hostName, final String hostPortRange) {
     super(server.getServerName() + " PostgresW listening at " + hostName + ":" + hostPortRange);
 
     this.server = server;
-    this.hostName = hostName;
-    this.socketFactory = iSocketFactory == null ? ServerSocketFactory.getDefault() : iSocketFactory;
+    this.socketFactory = iSocketFactory;
 
     listen(hostName, hostPortRange);
-
     start();
   }
 
@@ -70,10 +63,7 @@ public class PostgresNetworkListener extends Thread {
           final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null);
           connection.start();
 
-          if (callback != null)
-            callback.connected();
-
-        } catch (Exception e) {
+        } catch (final Exception e) {
           if (active)
             LogManager.instance().log(this, Level.WARNING, "Error on client connection", e);
         }
@@ -82,17 +72,9 @@ public class PostgresNetworkListener extends Thread {
       try {
         if (serverSocket != null && !serverSocket.isClosed())
           serverSocket.close();
-      } catch (IOException ioe) {
+      } catch (final IOException ioe) {
       }
     }
-  }
-
-  public String getHost() {
-    return hostName;
-  }
-
-  public int getPort() {
-    return port;
   }
 
   public void close() {
@@ -101,13 +83,9 @@ public class PostgresNetworkListener extends Thread {
     if (serverSocket != null)
       try {
         serverSocket.close();
-      } catch (IOException e) {
+      } catch (final IOException e) {
         // IGNORE IT
       }
-  }
-
-  public void setCallback(final ClientConnected callback) {
-    this.callback = callback;
   }
 
   @Override
@@ -123,25 +101,24 @@ public class PostgresNetworkListener extends Thread {
    */
   private void listen(final String hostName, final String hostPortRange) {
 
-    for (int tryPort : getPorts(hostPortRange)) {
-      inboundAddr = new InetSocketAddress(hostName, tryPort);
+    for (final int tryPort : getPorts(hostPortRange)) {
+      final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {
         serverSocket = socketFactory.createServerSocket(tryPort, 0, InetAddress.getByName(hostName));
 
         if (serverSocket.isBound()) {
           LogManager.instance().log(this, Level.INFO,
-              "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort()
-                  + "} (protocol v." + protocolVersion + ")");
+              "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort() + "} (protocol v."
+                  + protocolVersion + ")");
 
-          port = tryPort;
           return;
         }
-      } catch (BindException be) {
+      } catch (final BindException be) {
         LogManager.instance().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
-      } catch (SocketException se) {
+      } catch (final SocketException se) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
         throw new ArcadeDBException(se);
-      } catch (IOException ioe) {
+      } catch (final IOException ioe) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
         throw new ArcadeDBException(ioe);
       }
@@ -153,20 +130,20 @@ public class PostgresNetworkListener extends Thread {
   }
 
   private static int[] getPorts(final String iHostPortRange) {
-    int[] ports;
+    final int[] ports;
 
     if (iHostPortRange.contains(",")) {
       // MULTIPLE ENUMERATED PORTS
-      String[] portValues = iHostPortRange.split(",");
+      final String[] portValues = iHostPortRange.split(",");
       ports = new int[portValues.length];
       for (int i = 0; i < portValues.length; ++i)
         ports[i] = Integer.parseInt(portValues[i]);
 
     } else if (iHostPortRange.contains("-")) {
       // MULTIPLE RANGE PORTS
-      String[] limits = iHostPortRange.split("-");
-      int lowerLimit = Integer.parseInt(limits[0]);
-      int upperLimit = Integer.parseInt(limits[1]);
+      final String[] limits = iHostPortRange.split("-");
+      final int lowerLimit = Integer.parseInt(limits[0]);
+      final int upperLimit = Integer.parseInt(limits[1]);
       ports = new int[upperLimit - lowerLimit + 1];
       for (int i = 0; i < upperLimit - lowerLimit + 1; ++i)
         ports[i] = lowerLimit + i;

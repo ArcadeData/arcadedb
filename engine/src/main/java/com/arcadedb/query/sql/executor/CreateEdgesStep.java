@@ -60,11 +60,10 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   private boolean inited = false;
 
-  private long cost = 0;
-
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final String uniqueIndex, final Identifier fromAlias,
-      final Identifier toAlias, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+      final Identifier toAlias, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext context,
+      final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetClass = targetClass;
     this.targetCluster = targetClusterName;
     this.uniqueIndexName = uniqueIndex;
@@ -76,8 +75,9 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
     init();
     return new ResultSet() {
       private int currentBatch = 0;
@@ -92,18 +92,18 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         if (currentTo == null) {
           loadNextFromTo();
         }
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 
           if (finished || currentBatch >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (currentTo == null) {
             throw new CommandExecutionException("Invalid TO vertex for edge");
           }
 
           if (ifNotExists) {
-            if (ctx.getDatabase().getGraphEngine()
+            if (context.getDatabase().getGraphEngine()
                 .isVertexConnectedTo((VertexInternal) currentFrom, currentTo, Vertex.DIRECTION.OUT, targetClass.getStringValue()))
               // SKIP CREATING EDGE
               return null;
@@ -122,20 +122,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           }
         }
       }
-
-      @Override
-      public void close() {
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
@@ -146,7 +132,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       }
       inited = true;
     }
-    Object fromValues = ctx.getVariable(fromAlias.getStringValue());
+    Object fromValues = context.getVariable(fromAlias.getStringValue());
     if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable)) {
       fromValues = ((Iterable) fromValues).iterator();
     } else if (!(fromValues instanceof Iterator)) {
@@ -156,7 +142,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       fromValues = ((InternalResultSet) fromValues).copy();
     }
 
-    Object toValues = ctx.getVariable(toAlias.getStringValue());
+    Object toValues = context.getVariable(toAlias.getStringValue());
     if (toValues instanceof Iterable && !(toValues instanceof Identifiable)) {
       toValues = ((Iterable) toValues).iterator();
     } else if (!(toValues instanceof Iterator)) {
@@ -170,16 +156,16 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     if (fromIter instanceof ResultSet) {
       try {
         ((ResultSet) fromIter).reset();
-      } catch (Exception ignore) {
+      } catch (final Exception ignore) {
       }
     }
 
-    Iterator toIter = (Iterator) toValues;
+    final Iterator toIter = (Iterator) toValues;
 
     if (toIter instanceof ResultSet) {
       try {
         ((ResultSet) toIter).reset();
-      } catch (Exception ignore) {
+      } catch (final Exception ignore) {
       }
     }
     while (toIter != null && toIter.hasNext()) {
@@ -191,7 +177,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     currentFrom = fromIter != null && fromIter.hasNext() ? asVertex(fromIter.next()) : null;
 
     if (uniqueIndexName != null) {
-      final DatabaseInternal database = ctx.getDatabase();
+      final DatabaseInternal database = context.getDatabase();
       uniqueIndex = database.getSchema().getIndexByName(uniqueIndexName);
       if (uniqueIndex == null) {
         throw new CommandExecutionException("Index not found for upsert: " + uniqueIndexName);
@@ -210,7 +196,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           finished = true;
           return;
         }
-        currentFrom = fromIter.hasNext() ? asVertex(fromIter.next()) : null;
+        currentFrom = asVertex(fromIter.next());
       }
       if (toIterator.hasNext() || (toList.size() > 0 && fromIter.hasNext())) {
         if (currentFrom == null) {
@@ -220,7 +206,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           }
         }
 
-        Object obj = toIterator.next();
+        final Object obj = toIterator.next();
 
         currentTo = asVertex(obj);
         if (currentTo == null) {
@@ -228,16 +214,14 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         }
 
         if (isUpsert()) {
-          Edge existingEdge = getExistingEdge(currentFrom, currentTo);
+          final Edge existingEdge = getExistingEdge(currentFrom, currentTo);
           if (existingEdge != null) {
             edgeToUpdate = existingEdge.modify();
           }
         }
-        return;
 
       } else {
         this.currentTo = null;
-        return;
       }
     } finally {
       if (profilingEnabled) {
@@ -261,41 +245,35 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   private Vertex asVertex(Object currentFrom) {
-    if (currentFrom instanceof RID) {
+    if (currentFrom instanceof RID)
       currentFrom = ((RID) currentFrom).getRecord();
-    }
+
     if (currentFrom instanceof Result) {
-      Object from = currentFrom;
-      currentFrom = ((Result) currentFrom).getVertex().orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from.toString()));
+      final Object from = currentFrom;
+      currentFrom = ((Result) currentFrom).getVertex().orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from));
     }
-    if (currentFrom instanceof Vertex) {
+    if (currentFrom instanceof Vertex)
       return (Vertex) currentFrom;
-    }
-    if (currentFrom instanceof Document) {
-      Object from = currentFrom;
+
+    if (currentFrom instanceof Document)
       return ((Document) currentFrom).asVertex();
-    }
+
     throw new CommandExecutionException("Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FOR EACH x in " + fromAlias + "\n";
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
     result += spaces + "       CREATE EDGE " + targetClass + " FROM x TO y";
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
-    }
-    if (targetCluster != null) {
-      result += "\n" + spaces + "       (target cluster " + targetCluster + ")";
-    }
-    return result;
-  }
 
-  @Override
-  public long getCost() {
-    return cost;
+    if (targetCluster != null)
+      result += "\n" + spaces + "       (target cluster " + targetCluster + ")";
+
+    return result;
   }
 
   @Override
@@ -304,8 +282,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(final CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext context) {
     return new CreateEdgesStep(targetClass == null ? null : targetClass.copy(), targetCluster == null ? null : targetCluster.copy(), uniqueIndexName,
-        fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), ifNotExists, wait, retry, ctx, profilingEnabled);
+        fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), ifNotExists, wait, retry, context, profilingEnabled);
   }
 }

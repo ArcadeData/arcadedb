@@ -45,15 +45,15 @@ public class IndexSearchDescriptor {
 
   }
 
-  public int cost(final CommandContext ctx) {
-    final QueryStats stats = QueryStats.get(ctx.getDatabase());
+  public int cost(final CommandContext context) {
+    final QueryStats stats = QueryStats.get(context.getDatabase());
 
     final String indexName = idx.getName();
     final int size = keyCondition.getSubBlocks().size();
     boolean range = false;
     final BooleanExpression lastOp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
     if (lastOp instanceof BinaryCondition) {
-      BinaryCompareOperator op = ((BinaryCondition) lastOp).getOperator();
+      final BinaryCompareOperator op = ((BinaryCondition) lastOp).getOperator();
       range = op.isRangeOperator();
     }
 

@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.lang.reflect.*;
 import java.util.*;
 
 /**
@@ -30,7 +29,7 @@ import java.util.*;
  * (upstream) step, does its elaboration (eg. for a filtering step, it can discard the record and fetch another one if it doesn't
  * match the conditions) and returns the elaborated step</p>
  * <br>
- * <p>The invocation of {@literal syncPull(ctx, nResults)} has to return a result set of at most nResults records. If the upstream
+ * <p>The invocation of {@literal syncPull(context, nResults)} has to return a result set of at most nResults records. If the upstream
  * (the previous steps) return more records, they have to be returned by next call of {@literal syncPull()}. The returned result
  * set can have less than nResults records ONLY if current step cannot produce any more records (eg. the upstream does not have any
  * more records)</p>
@@ -39,8 +38,8 @@ import java.util.*;
  */
 public interface ExecutionStepInternal extends ExecutionStep {
 
-  static String getIndent(int depth, int indent) {
-    StringBuilder result = new StringBuilder();
+  static String getIndent(final int depth, final int indent) {
+    final StringBuilder result = new StringBuilder();
     for (int i = 0; i < depth; i++) {
       for (int j = 0; j < indent; j++) {
         result.append(" ");
@@ -49,51 +48,7 @@ public interface ExecutionStepInternal extends ExecutionStep {
     return result.toString();
   }
 
-  static ResultInternal basicSerialize(ExecutionStepInternal step) {
-    ResultInternal result = new ResultInternal();
-    result.setProperty(InternalExecutionPlan.JAVA_TYPE, step.getClass().getName());
-    if (step.getSubSteps() != null && step.getSubSteps().size() > 0) {
-      List<Result> serializedSubsteps = new ArrayList<>();
-      for (ExecutionStep substep : step.getSubSteps()) {
-        serializedSubsteps.add(((ExecutionStepInternal) substep).serialize());
-      }
-      result.setProperty("subSteps", serializedSubsteps);
-    }
-
-    if (step.getSubExecutionPlans() != null && step.getSubExecutionPlans().size() > 0) {
-      List<Result> serializedSubPlans = new ArrayList<>();
-      for (ExecutionPlan substep : step.getSubExecutionPlans()) {
-        serializedSubPlans.add(((InternalExecutionPlan) substep).serialize());
-      }
-      result.setProperty("subExecutionPlans", serializedSubPlans);
-    }
-    return result;
-  }
-
-  static void basicDeserialize(Result serialized, ExecutionStepInternal step)
-      throws ClassNotFoundException, IllegalAccessException, InstantiationException, NoSuchMethodException, InvocationTargetException {
-    List<Result> serializedSubsteps = serialized.getProperty("subSteps");
-    if (serializedSubsteps != null) {
-      for (Result serializedSub : serializedSubsteps) {
-        String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
-        ExecutionStepInternal subStep = (ExecutionStepInternal) Class.forName(className).getConstructor().newInstance();
-        subStep.deserialize(serializedSub);
-        step.getSubSteps().add(subStep);
-      }
-    }
-
-    List<Result> serializedPlans = serialized.getProperty("subExecutionPlans");
-    if (serializedSubsteps != null) {
-      for (Result serializedSub : serializedPlans) {
-        String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
-        InternalExecutionPlan subStep = (InternalExecutionPlan) Class.forName(className).getConstructor().newInstance();
-        subStep.deserialize(serializedSub);
-        step.getSubExecutionPlans().add(subStep);
-      }
-    }
-  }
-
-  ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException;
+  ResultSet syncPull(CommandContext context, int nRecords) throws TimeoutException;
 
   void sendTimeout();
 
@@ -101,12 +56,10 @@ public interface ExecutionStepInternal extends ExecutionStep {
 
   void setPrevious(ExecutionStepInternal step);
 
-  void setNext(ExecutionStepInternal step);
-
   void close();
 
-  default String prettyPrint(int depth, int indent) {
-    String spaces = getIndent(depth, indent);
+  default String prettyPrint(final int depth, final int indent) {
+    final String spaces = getIndent(depth, indent);
     return spaces + getClass().getSimpleName();
   }
 
@@ -122,10 +75,6 @@ public interface ExecutionStepInternal extends ExecutionStep {
     return prettyPrint(0, 3);
   }
 
-  default String getTargetNode() {
-    return "<local>";
-  }
-
   default List<ExecutionStep> getSubSteps() {
     return Collections.emptyList();
   }
@@ -138,15 +87,7 @@ public interface ExecutionStepInternal extends ExecutionStep {
     //do nothing
   }
 
-  default Result serialize() {
-    throw new UnsupportedOperationException();
-  }
-
-  default void deserialize(Result fromResult) {
-    throw new UnsupportedOperationException();
-  }
-
-  default ExecutionStep copy(CommandContext ctx) {
+  default ExecutionStep copy(final CommandContext context) {
     throw new UnsupportedOperationException();
   }
 

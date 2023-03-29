@@ -24,21 +24,29 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+/**
+ * Drops a database.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @Deprecated Use the generic @see PostServerCommandHandler
+ */
+@Deprecated
 public class PostDropDatabaseHandler extends DatabaseAbstractHandler {
   public PostDropDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
+    checkRootUser(user);
+
     ((DatabaseInternal) database).getEmbedded().drop();
 
     httpServer.getServer().getServerMetrics().meter("http.drop-database").mark();
 
     httpServer.getServer().removeDatabase(database.getName());
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+    return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
   }
 
   @Override

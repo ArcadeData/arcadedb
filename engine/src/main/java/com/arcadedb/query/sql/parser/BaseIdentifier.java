@@ -38,10 +38,6 @@ public class BaseIdentifier extends SimpleNode {
     super(id);
   }
 
-  public BaseIdentifier(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public BaseIdentifier(final Identifier identifier) {
     this.suffix = new SuffixIdentifier(identifier);
   }
@@ -57,25 +53,25 @@ public class BaseIdentifier extends SimpleNode {
       suffix.toString(params, builder);
   }
 
-  public Object execute(final Record iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Record iCurrentRecord, final CommandContext context) {
     if (levelZero != null)
-      return levelZero.execute(iCurrentRecord, ctx);
+      return levelZero.execute(iCurrentRecord, context);
     if (suffix != null)
-      return suffix.execute(iCurrentRecord, ctx);
+      return suffix.execute(iCurrentRecord, context);
     return null;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     if (levelZero != null)
-      return levelZero.execute(iCurrentRecord, ctx);
+      return levelZero.execute(iCurrentRecord, context);
     if (suffix != null)
-      return suffix.execute(iCurrentRecord, ctx);
+      return suffix.execute(iCurrentRecord, context);
     return null;
   }
 
-  public boolean isIndexedFunctionCall() {
+  public boolean isIndexedFunctionCall(final CommandContext context) {
     if (levelZero != null)
-      return levelZero.isIndexedFunctionCall();
+      return levelZero.isIndexedFunctionCall(context);
     return false;
   }
 
@@ -158,16 +154,10 @@ public class BaseIdentifier extends SimpleNode {
     return levelZero.getExpandContent();
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (levelZero != null && levelZero.needsAliases(aliases))
+  public boolean isAggregate(final CommandContext context) {
+    if (levelZero != null && levelZero.isAggregate(context))
       return true;
-    return suffix != null && suffix.needsAliases(aliases);
-  }
-
-  public boolean isAggregate() {
-    if (levelZero != null && levelZero.isAggregate())
-      return true;
-    return suffix != null && suffix.isAggregate();
+    return suffix != null && suffix.isAggregate(context);
   }
 
   public boolean isCount() {
@@ -176,17 +166,17 @@ public class BaseIdentifier extends SimpleNode {
     return suffix != null && suffix.isCount();
   }
 
-  public boolean isEarlyCalculated() {
-    if (levelZero != null && levelZero.isEarlyCalculated())
+  public boolean isEarlyCalculated(final CommandContext context) {
+    if (levelZero != null && levelZero.isEarlyCalculated(context))
       return true;
     return suffix != null && suffix.isEarlyCalculated();
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
-    if (isAggregate()) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
       final BaseIdentifier result = new BaseIdentifier(-1);
       if (levelZero != null) {
-        SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj);
+        final SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj, context);
         if (splitResult instanceof LevelZeroIdentifier) {
           result.levelZero = (LevelZeroIdentifier) splitResult;
         } else {
@@ -203,12 +193,12 @@ public class BaseIdentifier extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(final CommandContext ctx) {
-    if (isAggregate()) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
+    if (isAggregate(context)) {
       if (levelZero != null)
-        return levelZero.getAggregationContext(ctx);
+        return levelZero.getAggregationContext(context);
       else if (suffix != null)
-        return suffix.getAggregationContext(ctx);
+        return suffix.getAggregationContext(context);
       else
         throw new CommandExecutionException("cannot aggregate on " + this);
     } else {
@@ -227,33 +217,6 @@ public class BaseIdentifier extends SimpleNode {
     return result;
   }
 
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BaseIdentifier that = (BaseIdentifier) o;
-
-    if (!Objects.equals(levelZero, that.levelZero))
-      return false;
-    return Objects.equals(suffix, that.suffix);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = levelZero != null ? levelZero.hashCode() : 0;
-    result = 31 * result + (suffix != null ? suffix.hashCode() : 0);
-    return result;
-  }
-
-  public boolean refersToParent() {
-    if (levelZero != null && levelZero.refersToParent())
-      return true;
-    return suffix != null && suffix.refersToParent();
-  }
-
   public SuffixIdentifier getSuffix() {
     return suffix;
   }
@@ -262,31 +225,11 @@ public class BaseIdentifier extends SimpleNode {
     return levelZero;
   }
 
-  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext context) {
     if (suffix != null)
-      suffix.applyRemove(result, ctx);
+      suffix.applyRemove(result, context);
     else
       throw new CommandExecutionException("cannot apply REMOVE " + this);
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (levelZero != null)
-      result.setProperty("levelZero", levelZero.serialize());
-    if (suffix != null)
-      result.setProperty("suffix", suffix.serialize());
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("levelZero") != null) {
-      levelZero = new LevelZeroIdentifier(-1);
-      levelZero.deserialize(fromResult.getProperty("levelZero"));
-    }
-    if (fromResult.getProperty("suffix") != null) {
-      suffix = new SuffixIdentifier(-1);
-      suffix.deserialize(fromResult.getProperty("suffix"));
-    }
   }
 
   public boolean isDefinedFor(final Result currentRecord) {
@@ -311,12 +254,14 @@ public class BaseIdentifier extends SimpleNode {
       this.levelZero.extractSubQueries(collector);
   }
 
-  public boolean isCacheable() {
-    if (levelZero != null)
-      return levelZero.isCacheable();
-    if (suffix != null)
-      return suffix.isCacheable();
-    return true;
+  @Override
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { levelZero, suffix };
   }
 }
 /* JavaCC - OriginalChecksum=ed89af10d8be41a83428c5608a4834f6 (do not edit this line) */

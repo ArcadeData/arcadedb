@@ -25,22 +25,20 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>22.12.1-SNAPSHOT</version>
+        <version>23.3.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-engine</artifactId>
     <packaging>jar</packaging>
 
     <properties>
-        <maven-resources-plugin.version>3.3.0</maven-resources-plugin.version>
-        <ph-javacc-maven-plugin.version>4.1.5</ph-javacc-maven-plugin.version>
+        <javacc-maven-plugin.version>3.0.1</javacc-maven-plugin.version>
         <disruptor.version>1.2.21</disruptor.version>
-        <json.version>20220924</json.version>
-        <gson.version>2.10</gson.version>
+        <gson.version>2.10.1</gson.version>
         <lz4-java.version>1.8.0</lz4-java.version>
         <lucene.version>8.11.2</lucene.version>
+        <graalvm.version>22.3.1</graalvm.version>
     </properties>
 
     <build>
@@ -65,17 +63,15 @@
                 </executions>
             </plugin>
             <plugin>
-                <groupId>com.helger.maven</groupId>
-                <artifactId>ph-javacc-maven-plugin</artifactId>
-                <version>${ph-javacc-maven-plugin.version}</version>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>javacc-maven-plugin</artifactId>
+                <version>${javacc-maven-plugin.version}</version>
                 <executions>
                     <execution>
-                        <id>jjc1</id>
+                        <id>jjtree-javacc</id>
                         <phase>generate-sources</phase>
                         <goals>
                             <goal>jjtree-javacc</goal>
-                            <!--<goal>jjdoc</goal>-->
-
                         </goals>
                         <configuration>
                             <jdkVersion>1.8</jdkVersion>
@@ -101,11 +97,6 @@
             <version>${disruptor.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.json</groupId>
-            <artifactId>json</artifactId>
-            <version>${json.version}</version>
-        </dependency>
-        <dependency>
             <groupId>org.lz4</groupId>
             <artifactId>lz4-java</artifactId>
             <version>${lz4-java.version}</version>
@@ -121,10 +112,37 @@
             <version>${lucene.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.locationtech.spatial4j</groupId>
+            <artifactId>spatial4j</artifactId>
+            <version>0.8</version>
+        </dependency>
+        <dependency>
+            <groupId>org.locationtech.jts</groupId>
+            <artifactId>jts-core</artifactId>
+            <version>1.19.0</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>xerces</groupId>
+                    <artifactId>xercesImpl</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
             <version>${gson.version}</version>
             <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.sdk</groupId>
+            <artifactId>graal-sdk</artifactId>
+            <version>${graalvm.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.js</groupId>
+            <artifactId>js</artifactId>
+            <version>${graalvm.version}</version>
+            <scope>runtime</scope>
         </dependency>
     </dependencies>
 

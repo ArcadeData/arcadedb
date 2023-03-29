@@ -25,59 +25,61 @@ import java.util.*;
  */
 public class InfoExecutionStep implements ExecutionStep {
 
-  String              name;
-  String              type;
-  String              javaType;
-  String              targetNode;
-  String              description;
-  long                cost;
+  String name;
+  String type;
+  String javaType;
+  String targetNode;
+  String description;
+  long   cost;
   final List<ExecutionStep> subSteps = new ArrayList<>();
 
-  @Override public String getName() {
+  @Override
+  public String getName() {
     return name;
   }
 
-  @Override public String getType() {
+  @Override
+  public String getType() {
     return type;
   }
 
-  @Override public String getTargetNode() {
-    return targetNode;
-  }
-
-  @Override public String getDescription() {
+  @Override
+  public String getDescription() {
     return description;
   }
 
-  @Override public List<ExecutionStep> getSubSteps() {
+  @Override
+  public List<ExecutionStep> getSubSteps() {
     return subSteps;
   }
 
-  @Override public long getCost() {
-    return cost;
-  }
-
-  @Override public Result toResult() {
+  @Override
+  public Result toResult() {
     return null;
   }
 
-  public void setName(String name) {
+  public void setName(final String name) {
     this.name = name;
   }
 
-  public void setType(String type) {
+  public void setType(final String type) {
     this.type = type;
   }
 
-  public void setTargetNode(String targetNode) {
+  public void setTargetNode(final String targetNode) {
     this.targetNode = targetNode;
   }
 
-  public void setDescription(String description) {
+  public void setDescription(final String description) {
     this.description = description;
   }
 
-  public void setCost(long cost) {
+  @Override
+  public long getCost() {
+    return cost;
+  }
+
+  public void setCost(final long cost) {
     this.cost = cost;
   }
 
@@ -85,7 +87,7 @@ public class InfoExecutionStep implements ExecutionStep {
     return javaType;
   }
 
-  public void setJavaType(String javaType) {
+  public void setJavaType(final String javaType) {
     this.javaType = javaType;
   }
 }

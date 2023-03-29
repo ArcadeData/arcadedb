@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -54,12 +55,8 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    */
   protected PInteger totalBucketNo;
 
-  public CreateTypeAbstractStatement(int id) {
+  public CreateTypeAbstractStatement(final int id) {
     super(id);
-  }
-
-  public CreateTypeAbstractStatement(SqlParser p, int id) {
-    super(p, id);
   }
 
   protected abstract String commandType();
@@ -67,9 +64,9 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   protected abstract DocumentType createType(Schema schema);
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
 
-    final Schema schema = ctx.getDatabase().getSchema();
+    final Schema schema = context.getDatabase().getSchema();
     if (schema.existsType(name.getStringValue())) {
       if (ifNotExists) {
         return new InternalResultSet();
@@ -77,7 +74,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
         throw new CommandExecutionException("Type " + name + " already exists");
       }
     }
-    checkSuperTypes(schema, ctx);
+    checkSuperTypes(schema, context);
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", commandType());
@@ -87,23 +84,23 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
     final DocumentType type = createType(schema);
 
-    for (DocumentType c : superclasses)
+    for (final DocumentType c : superclasses)
       type.addSuperType(c);
 
     return new InternalResultSet(result);
   }
 
-  protected DocumentType[] getSuperTypes(Schema schema) {
+  protected DocumentType[] getSuperTypes(final Schema schema) {
     if (supertypes == null) {
       return new DocumentType[] {};
     }
     return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList()).toArray(new DocumentType[] {});
   }
 
-  protected void checkSuperTypes(Schema schema, CommandContext ctx) {
+  protected void checkSuperTypes(final Schema schema, final CommandContext context) {
     if (supertypes != null) {
-      for (Identifier superType : supertypes) {
-        if (!schema.existsType(superType.value)) {
+      for (final Identifier superType : supertypes) {
+        if (!schema.existsType(superType.getStringValue())) {
           throw new CommandExecutionException("Supertype '" + superType + "' not found");
         }
       }
@@ -111,7 +108,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(commandType());
     builder.append(" ");
     name.toString(params, builder);
@@ -121,7 +118,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     if (supertypes != null && supertypes.size() > 0) {
       builder.append(" EXTENDS ");
       boolean first = true;
-      for (Identifier sup : supertypes) {
+      for (final Identifier sup : supertypes) {
         if (!first) {
           builder.append(", ");
         }
@@ -132,7 +129,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     if (buckets != null && buckets.size() > 0) {
       builder.append(" BUCKET ");
       boolean first = true;
-      for (BucketIdentifier bucket : buckets) {
+      for (final BucketIdentifier bucket : buckets) {
         if (!first) {
           builder.append(",");
         }
@@ -184,8 +181,15 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     return result;
   }
 
-  public List<Identifier> getSupertypes() {
-    return supertypes;
+  protected List<com.arcadedb.engine.Bucket> getBuckets(final Schema schema) {
+    final List<Bucket> bucketInstances = new ArrayList<>();
+    for (final BucketIdentifier b : buckets) {
+      if (!schema.existsBucket(b.bucketName.getStringValue()))
+        schema.createBucket(b.bucketName.getStringValue());
+
+      bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
+    }
+    return bucketInstances;
   }
 }
 /* JavaCC - OriginalChecksum=4043013624f55fdf0ea8fee6d4f211b0 (do not edit this line) */

@@ -29,12 +29,8 @@ public class ContainsKeyOperator extends SimpleNode implements BinaryCompareOper
     super(id);
   }
 
-  public ContainsKeyOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean execute(final DatabaseInternal database, Object left, final Object right) {
+  public boolean execute(final DatabaseInternal database, final Object left, final Object right) {
     if (left == null)
       return false;
 
@@ -48,11 +44,6 @@ public class ContainsKeyOperator extends SimpleNode implements BinaryCompareOper
   @Override
   public String toString() {
     return "CONTAINSKEY";
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   public ContainsKeyOperator copy() {

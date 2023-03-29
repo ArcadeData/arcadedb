@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -26,37 +26,31 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
 
-public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
+public class GetExistsDatabaseHandler extends AbstractHandler {
   public GetExistsDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  protected boolean requiresDatabase() {
-    return false;
-  }
-
-  @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
-    if (databaseName.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Database parameter is null\"}");
-      return;
-    }
+    if (databaseName.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.exists-database").mark();
 
-    final boolean existsDatabase = server.existsDatabase(databaseName.getFirst());
+    final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
+    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : " + existsDatabase + "}");
+    if (!allowedDatabases.contains("*"))
+      installedDatabases.retainAll(allowedDatabases);
+
+    final boolean existsDatabase = installedDatabases.contains(databaseName.getFirst());
+
+    final JSONObject response = createResult(user, null);
+    response.put("result", existsDatabase);
+
+    return new ExecutionResponse(200, response.toString());
   }
-
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
-  }
-
 }

@@ -37,7 +37,7 @@ public class QueryAndIndexesTest extends TestHelper {
   protected void beginTest() {
     database.transaction(() -> {
       if (!database.getSchema().existsType("V")) {
-        VertexType t = database.getSchema().createVertexType("V");
+        final VertexType t = database.getSchema().createVertexType("V");
         t.createProperty("name", String.class);
         t.createProperty("surname", String.class);
         database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "name", "surname");
@@ -58,17 +58,17 @@ public class QueryAndIndexesTest extends TestHelper {
   public void testEqualsFiltering() {
 
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":name", "Jay");
       params.put(":surname", "Miner123");
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
 
-        Set<String> prop = new HashSet<>();
+        final Set<String> prop = new HashSet<>();
           prop.addAll(record.getPropertyNames());
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
@@ -87,17 +87,17 @@ public class QueryAndIndexesTest extends TestHelper {
   public void testPartialMatchingFiltering() {
 
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":name", "Jay");
       params.put(":surname", "Miner123");
-      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name", params);
+      final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name", params);
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
 
-        Set<String> prop = new HashSet<>();
+        final Set<String> prop = new HashSet<>();
           prop.addAll(record.getPropertyNames());
 
         Assertions.assertEquals("Jay", record.getProperty("name"));

@@ -39,46 +39,42 @@ public class CreateEdgeStatement extends Statement {
   protected Number     wait;
   protected boolean    ifNotExists;
 
-  public CreateEdgeStatement(int id) {
+  public CreateEdgeStatement(final int id) {
     super(id);
   }
 
-  public CreateEdgeStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public InsertExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    CreateEdgeExecutionPlanner planner = new CreateEdgeExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final CreateEdgeExecutionPlanner planner = new CreateEdgeExecutionPlanner(this);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CREATE EDGE");
     if (targetType != null) {
       builder.append(" ");
@@ -126,42 +122,8 @@ public class CreateEdgeStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final CreateEdgeStatement that = (CreateEdgeStatement) o;
-
-    if (!Objects.equals(targetType, that.targetType))
-      return false;
-    if (!Objects.equals(targetBucketName, that.targetBucketName))
-      return false;
-    if (!Objects.equals(leftExpression, that.leftExpression))
-      return false;
-    if (!Objects.equals(rightExpression, that.rightExpression))
-      return false;
-    if (ifNotExists != that.ifNotExists)
-      return false;
-    if (!Objects.equals(body, that.body))
-      return false;
-    if (!Objects.equals(retry, that.retry))
-      return false;
-    return Objects.equals(wait, that.wait);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = targetType != null ? targetType.hashCode() : 0;
-    result = 31 * result + (targetBucketName != null ? targetBucketName.hashCode() : 0);
-    result = 31 * result + (leftExpression != null ? leftExpression.hashCode() : 0);
-    result = 31 * result + (rightExpression != null ? rightExpression.hashCode() : 0);
-    result = 31 * result + (ifNotExists ? 1 : 0);
-    result = 31 * result + (body != null ? body.hashCode() : 0);
-    result = 31 * result + (retry != null ? retry.hashCode() : 0);
-    result = 31 * result + (wait != null ? wait.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, ifNotExists, body, retry, wait };
   }
 
   public Identifier getTargetType() {

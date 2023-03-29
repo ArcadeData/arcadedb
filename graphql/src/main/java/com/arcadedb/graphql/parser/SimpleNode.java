@@ -20,33 +20,27 @@
 /* ParserGeneratorCCOptions:MULTI=false,NODE_USES_PARSER=false,VISITOR=false,TRACK_TOKENS=false,NODE_PREFIX=AST,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import com.arcadedb.query.sql.parser.SqlParserVisitor;
-
 import java.util.*;
 import java.util.stream.*;
 
 public class SimpleNode implements Node {
-  protected Node          parent;
-  protected Node[]        children;
-  protected int           id;
-  protected Object        value;
-  protected GraphQLParser parser;
-  protected Token         firstToken;
-  protected Token         lastToken;
+  protected Node   parent;
+  protected Node[] children;
+  protected int    id;
+  protected Object value;
+  protected Token  firstToken;
+  protected Token  lastToken;
 
   public SimpleNode(final int i) {
     id = i;
   }
 
-  public SimpleNode(final GraphQLParser p, final int i) {
-    this(i);
-    parser = p;
-  }
-
   public void jjtOpen() {
+    // NO ACTIONS
   }
 
   public void jjtClose() {
+    // NO ACTIONS
   }
 
   public void jjtSetParent(final Node n) {
@@ -61,7 +55,7 @@ public class SimpleNode implements Node {
     if (children == null) {
       children = new Node[i + 1];
     } else if (i >= children.length) {
-      Node[] c = new Node[i + 1];
+      final Node[] c = new Node[i + 1];
       System.arraycopy(children, 0, c, 0, children.length);
       children = c;
     }
@@ -95,41 +89,32 @@ public class SimpleNode implements Node {
   }
 
   public String treeToString(final String prefix, final Class... excludes) {
-    String buffer = prefix + this;
+    StringBuilder buffer = new StringBuilder(prefix + this);
     if (children != null) {
       final Set<Class> set = Arrays.stream(excludes).collect(Collectors.toSet());
 
       for (int i = 0; i < children.length; ++i) {
-        SimpleNode n = (SimpleNode) children[i];
-        if (set.contains(n.getClass()))
-          continue;
-
-        if (n != null)
-          buffer += "\n" + n.treeToString(prefix + " ");
+        final SimpleNode n = (SimpleNode) children[i];
+        if (n != null) {
+          if (set.contains(n.getClass()))
+            continue;
+          buffer.append("\n").append(n.treeToString(prefix + " "));
+        }
       }
     }
-    return buffer;
+    return buffer.toString();
   }
 
   public int getId() {
     return id;
   }
 
-  public void jjtSetFirstToken(Token token) {
+  public void jjtSetFirstToken(final Token token) {
     this.firstToken = token;
   }
 
-  public void jjtSetLastToken(Token token) {
+  public void jjtSetLastToken(final Token token) {
     this.lastToken = token;
-  }
-
-  public Object childrenAccept(SqlParserVisitor visitor, Object data) {
-    if (children != null) {
-      for (int i = 0; i < children.length; ++i) {
-//        children[i].jjtAccept(visitor, data);//TODO fix
-      }
-    }
-    return data;
   }
 
   public Node[] getChildren() {

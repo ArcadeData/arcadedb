@@ -21,27 +21,14 @@ package com.arcadedb.server.ha.network;
 import java.io.*;
 import java.net.*;
 
+/**
+ * Default factory for TCP/IP sockets.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class DefaultServerSocketFactory extends ServerSocketFactory {
-
-  public DefaultServerSocketFactory() {
-  }
-
-  public ServerSocket createServerSocket() throws IOException {
-    return new ServerSocket();
-  }
-
   @Override
-  public ServerSocket createServerSocket(int port) throws IOException {
-    return new ServerSocket(port);
-  }
-
-  @Override
-  public ServerSocket createServerSocket(int port, int backlog) throws IOException {
-    return new ServerSocket(port, backlog);
-  }
-
-  @Override
-  public ServerSocket createServerSocket(int port, int backlog, InetAddress ifAddress) throws IOException {
+  public ServerSocket createServerSocket(final int port, final int backlog, final InetAddress ifAddress) throws IOException {
     return new ServerSocket(port, backlog, ifAddress);
   }
 }

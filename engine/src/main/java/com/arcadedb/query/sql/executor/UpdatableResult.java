@@ -45,7 +45,7 @@ public class UpdatableResult extends ResultInternal {
   }
 
   public boolean hasProperty(final String propName) {
-    return element != null && element.getPropertyNames().contains(propName);
+    return element != null && element.has(propName);
   }
 
   @Override

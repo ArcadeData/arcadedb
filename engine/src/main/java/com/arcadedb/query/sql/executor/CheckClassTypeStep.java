@@ -40,26 +40,25 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
   private final String targetClass;
   private final String parentClass;
 
-  private long cost = 0;
-
   boolean found = false;
 
   /**
    * @param targetClass      a class to be checked
    * @param parentClass      a class that is supposed to be the same or a parent class of the target class
-   * @param ctx              execution context
+   * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckClassTypeStep(String targetClass, String parentClass, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CheckClassTypeStep(final String targetClass, final String parentClass, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetClass = targetClass;
     this.parentClass = parentClass;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
         return new InternalResultSet();
@@ -67,14 +66,14 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
       if (this.targetClass.equals(this.parentClass)) {
         return new InternalResultSet();
       }
-      Database db = ctx.getDatabase();
+      final Database db = context.getDatabase();
 
-      Schema schema = db.getSchema();
-      DocumentType parentClazz = schema.getType(this.parentClass);
+      final Schema schema = db.getSchema();
+      final DocumentType parentClazz = schema.getType(this.parentClass);
       if (parentClazz == null) {
         throw new CommandExecutionException("Class not found: " + this.parentClass);
       }
-      DocumentType targetClazz = schema.getType(this.targetClass);
+      final DocumentType targetClazz = schema.getType(this.targetClass);
       if (targetClazz == null) {
         throw new CommandExecutionException("Class not found: " + this.targetClass);
       }
@@ -82,7 +81,7 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
       if (parentClazz.equals(targetClazz)) {
         found = true;
       } else {
-        for (DocumentType subclass : parentClazz.getSubTypes()) {
+        for (final DocumentType subclass : parentClazz.getSubTypes()) {
           if (subclass.equals(targetClazz)) {
             this.found = true;
             break;
@@ -101,9 +100,9 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK TYPE HIERARCHY");
     if (profilingEnabled) {
@@ -114,8 +113,4 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

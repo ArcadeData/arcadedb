@@ -26,19 +26,8 @@ public class ImplementsInterface extends SimpleNode {
 
   protected List<TypeName> typeNames = new ArrayList<>();
 
-  public ImplementsInterface(int id) {
+  public ImplementsInterface(final int id) {
     super(id);
-  }
-
-  public ImplementsInterface(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=49e5f69105886df7997cdcdbfef273bb (do not edit this line) */

@@ -25,12 +25,8 @@ import java.util.*;
 public class ListValueWithVariable extends AbstractValue {
   protected List<ValueWithVariable> values = new ArrayList<>();
 
-  public ListValueWithVariable(int id) {
+  public ListValueWithVariable(final int id) {
     super(id);
-  }
-
-  public ListValueWithVariable(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   @Override
@@ -38,12 +34,6 @@ public class ListValueWithVariable extends AbstractValue {
     return values;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   @Override
   public String toString() {

@@ -23,19 +23,21 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
 public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
-  private final String      databaseName;
-  private final String      userName;
-  private       String[]    groups;
-  private       boolean[][] fileAccessMap     = null;
-  private       long        resultSetLimit    = -1;
-  private       long        readTimeout       = -1;
-  private final boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+  private static final JSONObject  NO_ACCESS_GROUP   = new JSONObject().put("types",
+      new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access", new JSONArray())));
+  private final        String      databaseName;
+  private final        String      userName;
+  private              String[]    groups;
+  private              boolean[][] fileAccessMap     = null;
+  private              long        resultSetLimit    = -1;
+  private              long        readTimeout       = -1;
+  private final        boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
     this.databaseName = databaseName;
@@ -91,7 +93,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       return;
 
     JSONArray access = null;
-    for (String groupName : groups) {
+    for (final String groupName : groups) {
       if (!configuredGroups.has(groupName))
         // GROUP NOT DEFINED
         continue;
@@ -101,35 +103,35 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         access = group.getJSONArray("access");
 
       if (group.has("resultSetLimit")) {
-        long value = group.getLong("resultSetLimit");
+        final long value = group.getLong("resultSetLimit");
         if (value > -1 && (resultSetLimit == -1 || value < resultSetLimit))
           // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
           resultSetLimit = value;
       }
 
       if (group.has("readTimeout")) {
-        long value = group.getLong("readTimeout");
+        final long value = group.getLong("readTimeout");
         if (value > -1 && (readTimeout == -1 || value < readTimeout))
           // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
           readTimeout = value;
       }
     }
 
-    if (access == null) {
+    if (access == null && configuredGroups.has(SecurityManager.ANY)) {
       // NOT FOUND, GET DEFAULT GROUP ACCESS
       final JSONObject defaultGroup = configuredGroups.getJSONObject(SecurityManager.ANY);
       if (defaultGroup.has("access"))
         access = defaultGroup.getJSONArray("access");
 
       if (defaultGroup.has("resultSetLimit")) {
-        long value = defaultGroup.getLong("resultSetLimit");
+        final long value = defaultGroup.getLong("resultSetLimit");
         if (value > -1 && (resultSetLimit == -1 || value < resultSetLimit))
           // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
           resultSetLimit = value;
       }
 
       if (defaultGroup.has("readTimeout")) {
-        long value = defaultGroup.getLong("readTimeout");
+        final long value = defaultGroup.getLong("readTimeout");
         if (value > -1 && (readTimeout == -1 || value < readTimeout))
           // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
           readTimeout = value;
@@ -151,7 +153,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
     fileAccessMap = new boolean[files.size()][];
 
-    final JSONObject defaultGroup = configuredGroups.getJSONObject(SecurityManager.ANY);
+    final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY) ? configuredGroups.getJSONObject(SecurityManager.ANY) : NO_ACCESS_GROUP;
+
     final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
 
     for (int i = 0; i < files.size(); ++i) {
@@ -161,7 +164,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
       final String typeName = type.getName();
 
-      for (String groupName : groups) {
+      for (final String groupName : groups) {
         if (!configuredGroups.has(groupName))
           // GROUP NOT DEFINED
           continue;

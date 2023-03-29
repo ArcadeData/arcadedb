@@ -23,18 +23,14 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
-import com.arcadedb.server.http.HttpServer;
-import io.undertow.server.handlers.PathHandler;
 
 public class RedisProtocolPlugin implements ServerPlugin {
   private ArcadeDBServer       server;
-  private ContextConfiguration configuration;
   private RedisNetworkListener listener;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
-    this.configuration = configuration;
   }
 
   @Override
@@ -47,9 +43,5 @@ public class RedisProtocolPlugin implements ServerPlugin {
   public void stopService() {
     if (listener != null)
       listener.close();
-  }
-
-  @Override
-  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 }

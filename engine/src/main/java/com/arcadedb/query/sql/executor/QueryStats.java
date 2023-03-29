@@ -34,67 +34,67 @@ public class QueryStats {
 
   public final Map<String, Long> stats = new ConcurrentHashMap<>();
 
-  public static QueryStats get(Database db) {
+  public static QueryStats get(final Database db) {
     return new QueryStats();//TODO
   }
 
-  public long getIndexStats(String indexName, int params, boolean range, boolean additionalRange) {
-    String key = generateKey("INDEX", indexName, String.valueOf(params), String.valueOf(range), String.valueOf(additionalRange));
-    Long val = stats.get(key);
+  public long getIndexStats(final String indexName, final int params, final boolean range, final boolean additionalRange) {
+    final String key = generateKey("INDEX", indexName, String.valueOf(params), String.valueOf(range), String.valueOf(additionalRange));
+    final Long val = stats.get(key);
     if (val != null) {
       return val;
     }
     return -1;
   }
 
-  public void pushIndexStats(String indexName, int params, boolean range, boolean additionalRange, Long value) {
-    String key = generateKey("INDEX", indexName, String.valueOf(params), String.valueOf(range), String.valueOf(additionalRange));
+  public void pushIndexStats(final String indexName, final int params, final boolean range, final boolean additionalRange, final Long value) {
+    final String key = generateKey("INDEX", indexName, String.valueOf(params), String.valueOf(range), String.valueOf(additionalRange));
     pushValue(key, value);
   }
 
-  public long getAverageOutEdgeSpan(String vertexClass, String edgeClass) {
-    String key = generateKey(vertexClass, "-", edgeClass, "->");
-    Long val = stats.get(key);
+  public long getAverageOutEdgeSpan(final String vertexClass, final String edgeClass) {
+    final String key = generateKey(vertexClass, "-", edgeClass, "->");
+    final Long val = stats.get(key);
     if (val != null) {
       return val;
     }
     return -1;
   }
 
-  public long getAverageInEdgeSpan(String vertexClass, String edgeClass) {
-    String key = generateKey(vertexClass, "<-", edgeClass, "-");
-    Long val = stats.get(key);
+  public long getAverageInEdgeSpan(final String vertexClass, final String edgeClass) {
+    final String key = generateKey(vertexClass, "<-", edgeClass, "-");
+    final Long val = stats.get(key);
     if (val != null) {
       return val;
     }
     return -1;
   }
 
-  public long getAverageBothEdgeSpan(String vertexClass, String edgeClass) {
-    String key = generateKey(vertexClass, "-", edgeClass, "-");
-    Long val = stats.get(key);
+  public long getAverageBothEdgeSpan(final String vertexClass, final String edgeClass) {
+    final String key = generateKey(vertexClass, "-", edgeClass, "-");
+    final Long val = stats.get(key);
     if (val != null) {
       return val;
     }
     return -1;
   }
 
-  public void pushAverageOutEdgeSpan(String vertexClass, String edgeClass, Long value) {
-    String key = generateKey(vertexClass, "-", edgeClass, "->");
+  public void pushAverageOutEdgeSpan(final String vertexClass, final String edgeClass, final Long value) {
+    final String key = generateKey(vertexClass, "-", edgeClass, "->");
     pushValue(key, value);
   }
 
-  public void pushAverageInEdgeSpan(String vertexClass, String edgeClass, Long value) {
-    String key = generateKey(vertexClass, "<-", edgeClass, "-");
+  public void pushAverageInEdgeSpan(final String vertexClass, final String edgeClass, final Long value) {
+    final String key = generateKey(vertexClass, "<-", edgeClass, "-");
     pushValue(key, value);
   }
 
-  public void pushAverageBothEdgeSpan(String vertexClass, String edgeClass, Long value) {
-    String key = generateKey(vertexClass, "-", edgeClass, "-");
+  public void pushAverageBothEdgeSpan(final String vertexClass, final String edgeClass, final Long value) {
+    final String key = generateKey(vertexClass, "-", edgeClass, "-");
     pushValue(key, value);
   }
 
-  private void pushValue(String key, Long value) {
+  private void pushValue(final String key, final Long value) {
     if (value == null) {
       return;
     }
@@ -112,9 +112,9 @@ public class QueryStats {
     stats.put(key, val);
   }
 
-  protected String generateKey(String... keys) {
-    StringBuilder result = new StringBuilder();
-    for (String s : keys) {
+  protected String generateKey(final String... keys) {
+    final StringBuilder result = new StringBuilder();
+    for (final String s : keys) {
       result.append(".->");
       result.append(s);
     }

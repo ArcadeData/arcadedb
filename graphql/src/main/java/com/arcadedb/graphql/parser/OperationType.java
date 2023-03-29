@@ -25,20 +25,10 @@ public class OperationType extends SimpleNode {
   protected boolean mutation = false;
   protected boolean query    = false;
 
-  public OperationType(int id) {
+  public OperationType(final int id) {
     super(id);
   }
 
-  public OperationType(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public boolean isQuery() {
     return query;

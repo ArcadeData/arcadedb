@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.lang.reflect.*;
 import java.util.*;
@@ -35,15 +34,11 @@ public class ArraySelector extends SimpleNode {
   protected Expression     expression;
   protected PInteger       integer;
 
-  public ArraySelector(int id) {
+  public ArraySelector(final int id) {
     super(id);
   }
 
-  public ArraySelector(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (rid != null) {
       rid.toString(params, builder);
     } else if (inputParam != null) {
@@ -55,12 +50,12 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public java.lang.Integer getValue(Identifiable iCurrentRecord, Object iResult, CommandContext ctx) {
+  public Integer getValue(final Identifiable iCurrentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
-      result = inputParam.getValue(ctx.getInputParameters());
+      result = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      result = expression.execute(iCurrentRecord, ctx);
+      result = expression.execute(iCurrentRecord, context);
     } else if (integer != null) {
       result = integer;
     }
@@ -74,12 +69,12 @@ public class ArraySelector extends SimpleNode {
     return null;
   }
 
-  public Object getValue(Result iCurrentRecord, Object iResult, CommandContext ctx) {
+  public Object getValue(final Result iCurrentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
-      result = inputParam.getValue(ctx.getInputParameters());
+      result = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      result = expression.execute(iCurrentRecord, ctx);
+      result = expression.execute(iCurrentRecord, context);
     } else if (integer != null) {
       result = integer;
     }
@@ -93,86 +88,56 @@ public class ArraySelector extends SimpleNode {
     return result;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
-    if (expression != null) {
-      return expression.needsAliases(aliases);
-    }
-    return false;
-  }
-
   public ArraySelector copy() {
-    ArraySelector result = new ArraySelector(-1);
-
+    final ArraySelector result = new ArraySelector(-1);
     result.rid = rid == null ? null : rid.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.expression = expression == null ? null : expression.copy();
     result.integer = integer == null ? null : integer.copy();
-
     return result;
   }
 
-  @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    ArraySelector that = (ArraySelector) o;
-
-    if (!Objects.equals(rid, that.rid))
-      return false;
-    if (!Objects.equals(inputParam, that.inputParam))
-      return false;
-    if (!Objects.equals(expression, that.expression))
-      return false;
-    return Objects.equals(integer, that.integer);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = rid != null ? rid.hashCode() : 0;
-    result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
-    result = 31 * result + (expression != null ? expression.hashCode() : 0);
-    result = 31 * result + (integer != null ? integer.hashCode() : 0);
-    return result;
-  }
-
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (expression != null) {
       expression.extractSubQueries(collector);
     }
   }
 
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
+  @Override
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
-  public void setValue(Result currentRecord, Object target, Object value, CommandContext ctx) {
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { inputParam, expression, inputParam };
+  }
+
+  public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {
     Object idx = null;
     if (this.rid != null) {
-      idx = this.rid.toRecordId(currentRecord, ctx);
+      idx = this.rid.toRecordId(currentRecord, context);
     } else if (inputParam != null) {
-      idx = inputParam.getValue(ctx.getInputParameters());
+      idx = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      idx = expression.execute(currentRecord, ctx);
+      idx = expression.execute(currentRecord, context);
     } else if (integer != null) {
       idx = integer.getValue();
     }
 
     if (target instanceof Set && idx instanceof Number) {
-      setValue((Set) target, ((Number) idx).intValue(), value, ctx);
+      setValue((Set) target, ((Number) idx).intValue(), value, context);
     } else if (target instanceof List && idx instanceof Number) {
-      setValue((List) target, ((Number) idx).intValue(), value, ctx);
+      setValue((List) target, ((Number) idx).intValue(), value, context);
     } else if (target instanceof Map) {
-      setValue((Map) target, idx, value, ctx);
+      setValue((Map) target, idx, value, context);
     } else if (target.getClass().isArray() && idx instanceof Number) {
-      setArrayValue(target, ((Number) idx).intValue(), value, ctx);
+      setArrayValue(target, ((Number) idx).intValue(), value, context);
     }
   }
 
-  public void setValue(List target, int idx, Object value, CommandContext ctx) {
-    int originalSize = target.size();
+  public void setValue(final List target, final int idx, final Object value, final CommandContext context) {
+    final int originalSize = target.size();
     for (int i = originalSize; i <= idx; i++) {
       if (i >= originalSize) {
         target.add(null);
@@ -181,11 +146,11 @@ public class ArraySelector extends SimpleNode {
     target.set(idx, value);
   }
 
-  public void setValue(Set target, int idx, Object value, CommandContext ctx) {
-    Set result = new LinkedHashSet<>();
-    int originalSize = target.size();
-    int max = Math.max(idx, originalSize - 1);
-    Iterator targetIterator = target.iterator();
+  public void setValue(final Set target, final int idx, final Object value, final CommandContext context) {
+    final Set result = new LinkedHashSet<>();
+    final int originalSize = target.size();
+    final int max = Math.max(idx, originalSize - 1);
+    final Iterator targetIterator = target.iterator();
     for (int i = 0; i <= max; i++) {
       Object next = null;
       if (targetIterator.hasNext()) {
@@ -203,48 +168,13 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public void setValue(Map target, Object idx, Object value, CommandContext ctx) {
+  public void setValue(final Map target, final Object idx, final Object value, final CommandContext context) {
     target.put(idx, value);
   }
 
-  private void setArrayValue(Object target, int idx, Object value, CommandContext ctx) {
+  private void setArrayValue(final Object target, final int idx, final Object value, final CommandContext context) {
     if (idx >= 0 && idx < Array.getLength(target)) {
       Array.set(target, idx, value);
-    }
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (rid != null) {
-      result.setProperty("rid", rid.serialize());
-    }
-    if (inputParam != null) {
-      result.setProperty("inputParam", inputParam.serialize());
-    }
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    if (integer != null) {
-      result.setProperty("integer", integer.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("rid") != null) {
-      rid = new Rid(-1);
-      rid.deserialize(fromResult.getProperty("rid"));
-    }
-    if (fromResult.getProperty("inputParam") != null) {
-      inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
-    }
-    if (fromResult.getProperty("expression") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    if (fromResult.getProperty("integer") != null) {
-      integer = new PInteger(-1);
-      integer.deserialize(fromResult.getProperty("integer"));
     }
   }
 }

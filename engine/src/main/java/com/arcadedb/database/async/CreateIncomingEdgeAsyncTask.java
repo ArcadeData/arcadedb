@@ -33,14 +33,14 @@ public class CreateIncomingEdgeAsyncTask implements DatabaseAsyncTask {
 
   protected final NewEdgeCallback callback;
 
-  public CreateIncomingEdgeAsyncTask(final RID sourceVertex, final Identifiable destinationVertex, final Identifiable edge,
-      final NewEdgeCallback callback) {
+  public CreateIncomingEdgeAsyncTask(final RID sourceVertex, final Identifiable destinationVertex, final Identifiable edge, final NewEdgeCallback callback) {
     this.sourceVertexRID = sourceVertex;
     this.destinationVertex = destinationVertex;
     this.edge = edge;
     this.callback = callback;
   }
 
+  @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     database.getGraphEngine().connectIncomingEdge(destinationVertex, sourceVertexRID, edge.getIdentity());
 

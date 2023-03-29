@@ -38,8 +38,8 @@ import java.util.*;
 import java.util.logging.*;
 
 public class GraphImporter {
-  private final CompressedAny2RIDIndex verticesIndex;
-  private final DatabaseInternal       database;
+  private final CompressedAny2RIDIndex       verticesIndex;
+  private final DatabaseInternal             database;
   private final GraphImporterThreadContext[] threadContexts;
 
   enum STATUS {IMPORTING_VERTEX, IMPORTING_EDGE, CLOSED}
@@ -55,12 +55,12 @@ public class GraphImporter {
     List<GraphEngine.CreateEdgeOperation> connections      = new ArrayList<>();
     int                                   importedEdges    = 0;
 
-    public GraphImporterThreadContext(final int expectedVertices, final int expectedEdges) {
+    public GraphImporterThreadContext(final int expectedVertices, final int expectedEdges) throws ClassNotFoundException {
       incomingConnectionsIndexThread = new CompressedRID2RIDsIndex(database, expectedVertices, expectedEdges);
     }
   }
 
-  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges, Type idType) {
+  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges, final Type idType) throws ClassNotFoundException {
     this.database = database;
 
     final int parallel = database.async().getParallelLevel();
@@ -108,7 +108,7 @@ public class GraphImporter {
     final Object transformedVertexId = verticesIndex.getKeyBinaryType().newInstance(vertexId);
 
     final MutableVertex sourceVertex;
-    RID sourceVertexRID = verticesIndex.get(transformedVertexId);
+    final RID sourceVertexRID = verticesIndex.get(transformedVertexId);
     if (sourceVertexRID == null) {
       // CREATE THE VERTEX
       sourceVertex = database.newVertex(vertexTypeName);

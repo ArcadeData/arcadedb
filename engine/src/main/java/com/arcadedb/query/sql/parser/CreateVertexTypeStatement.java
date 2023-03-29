@@ -20,20 +20,13 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
-import java.util.*;
-
 public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
   public CreateVertexTypeStatement(final int id) {
     super(id);
-  }
-
-  public CreateVertexTypeStatement(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override
@@ -42,7 +35,7 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
   }
 
   @Override
-  protected DocumentType createType(Schema schema) {
+  protected DocumentType createType(final Schema schema) {
     final VertexType type;
     if (totalBucketNo != null)
       type = schema.createVertexType(name.getStringValue(), totalBucketNo.getValue().intValue());
@@ -50,12 +43,7 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
       if (buckets == null || buckets.isEmpty())
         type = schema.createVertexType(name.getStringValue());
       else {
-        // CHECK THE BUCKETS FIRST
-        final List<Bucket> bucketInstances = new ArrayList<>();
-        for (BucketIdentifier b : buckets)
-          bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
-
-        type = schema.createVertexType(name.getStringValue(), bucketInstances);
+        type = schema.createVertexType(name.getStringValue(), getBuckets(schema));
       }
     }
     return type;

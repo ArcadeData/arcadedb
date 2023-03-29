@@ -18,14 +18,15 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 
 import java.math.*;
+import java.time.*;
 import java.util.*;
 
 public class BinaryTypes {
@@ -49,6 +50,9 @@ public class BinaryTypes {
   public final static byte TYPE_MAP               = 17;
   public final static byte TYPE_COMPRESSED_STRING = 18;
   public final static byte TYPE_EMBEDDED          = 19;
+  public final static byte TYPE_DATETIME_MICROS   = 20; // @SINCE 23.1.1
+  public final static byte TYPE_DATETIME_NANOS    = 21; // @SINCE 23.1.1
+  public final static byte TYPE_DATETIME_SECOND   = 22; // @SINCE 23.1.1
 
   public static byte getTypeFromValue(final Object value) {
     final byte type;
@@ -72,6 +76,16 @@ public class BinaryTypes {
       type = TYPE_FLOAT;
     else if (value instanceof Double)
       type = TYPE_DOUBLE;
+    else if (value instanceof LocalDateTime)
+      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(((LocalDateTime) value).getNano()));
+    else if (value instanceof ZonedDateTime)
+      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(((ZonedDateTime) value).getNano()));
+    else if (value instanceof Instant)
+      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(((Instant) value).getNano()));
+    else if (value instanceof LocalDate)
+      type = TYPE_DATE;
+    else if (value instanceof Calendar) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
+      type = TYPE_DATETIME;
     else if (value instanceof Date) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
       type = TYPE_DATETIME;
     else if (value instanceof BigDecimal)
@@ -97,7 +111,24 @@ public class BinaryTypes {
     } else if (value instanceof Iterable || value.getClass().isArray())
       // TODO: SUPPORT SET SEMANTIC TOO
       type = TYPE_LIST;
-    else
+    else if (value instanceof Number) {
+      // GENERIC NUMBER IMPLEMENTATION. THIS HAPPENS WITH JSON NUMBERS
+      byte t;
+
+      try {
+        Integer.parseInt(value.toString());
+        t = TYPE_INT;
+      } catch (NumberFormatException e) {
+        try {
+          Long.parseLong(value.toString());
+          t = TYPE_LONG;
+        } catch (NumberFormatException e2) {
+          Double.parseDouble(value.toString());
+          t = TYPE_DOUBLE;
+        }
+      }
+      type = t;
+    } else
       throw new IllegalArgumentException("Cannot serialize value '" + value + "' of type " + value.getClass());
 
     return type;
@@ -139,52 +170,6 @@ public class BinaryTypes {
     }
   }
 
-  public static byte getTypeFromClass(final Class typez) {
-    final byte type;
-
-    if (typez == String.class)
-      type = TYPE_STRING;
-    else if (typez == Byte.class)
-      type = TYPE_BYTE;
-    else if (typez == Short.class)
-      type = TYPE_SHORT;
-    else if (typez == Integer.class)
-      type = TYPE_INT;
-    else if (typez == Long.class)
-      type = TYPE_LONG;
-    else if (typez == Float.class)
-      type = TYPE_FLOAT;
-    else if (typez == Double.class)
-      type = TYPE_DOUBLE;
-    else if (typez == Date.class) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
-      type = TYPE_DATETIME;
-    else if (typez == BigDecimal.class)
-      type = TYPE_DECIMAL;
-    else if (typez == Boolean.class)
-      type = TYPE_BOOLEAN;
-    else if (typez == byte[].class)
-      type = TYPE_BINARY;
-    else if (typez == RID.class)
-      type = TYPE_COMPRESSED_RID;
-    else if (typez == UUID.class)
-      type = TYPE_UUID;
-    else if (Collection.class.isAssignableFrom(typez) || typez.isArray())
-      // TODO: SUPPORT SET SEMANTIC TOO
-      type = TYPE_LIST;
-    else if (Map.class.isAssignableFrom(typez))
-      type = TYPE_MAP;
-    else if (Document.class.isAssignableFrom(typez))
-      type = TYPE_EMBEDDED;
-    else
-      throw new DatabaseMetadataException("Cannot find type for class '" + typez + "'");
-
-    return type;
-  }
-
-  public static byte getType(final Type inputType) {
-    return inputType.getBinaryType();
-  }
-
   public static Class<?> getClassFromType(final byte type) {
     switch (type) {
     case BinaryTypes.TYPE_STRING:
@@ -213,8 +198,13 @@ public class BinaryTypes {
       return Double.class;
 
     case BinaryTypes.TYPE_DATETIME:
+    case BinaryTypes.TYPE_DATETIME_MICROS:
+    case BinaryTypes.TYPE_DATETIME_NANOS:
+    case BinaryTypes.TYPE_DATETIME_SECOND:
+      return GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue();
+
     case BinaryTypes.TYPE_DATE:
-      return Date.class;
+      return GlobalConfiguration.DATE_IMPLEMENTATION.getValue();
 
     case BinaryTypes.TYPE_RID:
     case BinaryTypes.TYPE_UUID:

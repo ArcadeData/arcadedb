@@ -23,11 +23,17 @@ import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
 
 public interface ServerPlugin {
-  void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration);
+  default void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration) {
+    // DEFAULT IMPLEMENTATION
+  }
 
   void startService();
 
-  void stopService();
+  default void stopService() {
+    // DEFAULT IMPLEMENTATION
+  }
 
-  void registerAPI(HttpServer httpServer, PathHandler routes);
+  default void registerAPI(final HttpServer httpServer, final PathHandler routes) {
+    // DEFAULT IMPLEMENTATION
+  }
 }

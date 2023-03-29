@@ -52,7 +52,7 @@ public class MultipleDatabasesTest extends TestHelper {
       try {
         v.newEmbeddedDocument("V1", "embedded").set("db", 1).set("embedded", true).save();
         Assertions.fail();
-      } catch (IllegalArgumentException e) {
+      } catch (final IllegalArgumentException e) {
         // EXPECTED
       }
       v.newEmbeddedDocument("Embedded", "embedded").set("db", 1).set("embedded", true).save();
@@ -70,7 +70,7 @@ public class MultipleDatabasesTest extends TestHelper {
 
     // SET THE EMBEDDED DOCUMENTS OF DATABASE 1 AND 2 IN 3
     database3.transaction(() -> {
-      MutableVertex v3 = database3.iterateType("V1", true).next().asVertex().modify();
+      final MutableVertex v3 = database3.iterateType("V1", true).next().asVertex().modify();
       v3.set("embedded1", database.iterateType("V1", true).next().asVertex().getEmbedded("embedded"));
 
       v3.set("list2", Arrays.asList(database2.iterateType("V1", true).next().asVertex().getEmbedded("embedded")));
@@ -107,7 +107,7 @@ public class MultipleDatabasesTest extends TestHelper {
     try {
       new DatabaseFactory(getDatabasePath()).open();
       Assertions.fail();
-    } catch (DatabaseOperationException e) {
+    } catch (final DatabaseOperationException e) {
       // EXPECTED
     }
   }

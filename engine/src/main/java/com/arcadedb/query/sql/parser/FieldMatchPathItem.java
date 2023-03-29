@@ -28,17 +28,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 public class FieldMatchPathItem extends MatchPathItem {
+  protected Identifier       field;
+  private   SuffixIdentifier exp;
 
-  protected Identifier field;
-
-  private SuffixIdentifier exp;
-
-  public FieldMatchPathItem(int id) {
+  public FieldMatchPathItem(final int id) {
     super(id);
-  }
-
-  public FieldMatchPathItem(SqlParser p, int id) {
-    super(p, id);
   }
 
   /**
@@ -48,7 +42,7 @@ public class FieldMatchPathItem extends MatchPathItem {
     return false;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(".");
     field.toString(params, builder);
     if (filter != null) {
@@ -56,7 +50,8 @@ public class FieldMatchPathItem extends MatchPathItem {
     }
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(MatchStatement.MatchContext matchContext, Identifiable startingPoint, CommandContext iCommandContext) {
+  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,
+      final CommandContext iCommandContext) {
 
     //    Iterable possibleResults = null;
     //    if (filter != null) {
@@ -76,19 +71,19 @@ public class FieldMatchPathItem extends MatchPathItem {
       exp = new SuffixIdentifier(field);
     }
     // TODO check possible results!
-    Object qR = this.exp.execute(startingPoint, iCommandContext);
+    final Object qR = this.exp.execute(startingPoint, iCommandContext);
     return (qR instanceof Iterable && !(qR instanceof Document)) ? (Iterable) qR : Collections.singleton((Identifiable) qR);
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
     if (!super.equals(o))
       return false;
-    final  FieldMatchPathItem that = (FieldMatchPathItem) o;
+    final FieldMatchPathItem that = (FieldMatchPathItem) o;
     return Objects.equals(field, that.field) && Objects.equals(exp, that.exp);
   }
 
@@ -102,7 +97,7 @@ public class FieldMatchPathItem extends MatchPathItem {
     FieldMatchPathItem result = null;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }
     result.field = field == null ? null : field.copy();

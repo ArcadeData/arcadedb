@@ -32,7 +32,6 @@ import java.util.*;
 import java.util.stream.*;
 
 public class TraverseStatement extends Statement {
-
   public enum Strategy {
     DEPTH_FIRST, BREADTH_FIRST
   }
@@ -44,12 +43,8 @@ public class TraverseStatement extends Statement {
   protected Strategy                     strategy;
   protected PInteger                     maxDepth;
 
-  public TraverseStatement(int id) {
+  public TraverseStatement(final int id) {
     super(id);
-  }
-
-  public TraverseStatement(SqlParser p, int id) {
-    super(p, id);
   }
 
   public void validate() throws CommandSQLParsingException {
@@ -67,40 +62,40 @@ public class TraverseStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
 
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
 
     return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final TraverseExecutionPlanner planner = new TraverseExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("TRAVERSE ");
     boolean first = true;
-    for (TraverseProjectionItem item : projections) {
+    for (final TraverseProjectionItem item : projections) {
       if (!first) {
         builder.append(", ");
       }
@@ -137,6 +132,8 @@ public class TraverseStatement extends Statement {
       case DEPTH_FIRST:
         builder.append("depth_first");
         break;
+      default:
+        throw new IllegalArgumentException("Strategy " + strategy + " not supported");
       }
     }
 
@@ -144,7 +141,7 @@ public class TraverseStatement extends Statement {
 
   @Override
   public Statement copy() {
-    TraverseStatement result = new TraverseStatement(-1);
+    final TraverseStatement result = new TraverseStatement(-1);
     result.projections = projections == null ? null : projections.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.target = target == null ? null : target.copy();
     result.whileClause = whileClause == null ? null : whileClause.copy();
@@ -155,13 +152,13 @@ public class TraverseStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    TraverseStatement that = (TraverseStatement) o;
+    final TraverseStatement that = (TraverseStatement) o;
 
     if (!Objects.equals(projections, that.projections))
       return false;
@@ -196,7 +193,7 @@ public class TraverseStatement extends Statement {
     return projections;
   }
 
-  public void setProjections(List<TraverseProjectionItem> projections) {
+  public void setProjections(final List<TraverseProjectionItem> projections) {
     this.projections = projections;
   }
 
@@ -204,7 +201,7 @@ public class TraverseStatement extends Statement {
     return target;
   }
 
-  public void setTarget(FromClause target) {
+  public void setTarget(final FromClause target) {
     this.target = target;
   }
 
@@ -212,7 +209,7 @@ public class TraverseStatement extends Statement {
     return whileClause;
   }
 
-  public void setWhileClause(WhereClause whileClause) {
+  public void setWhileClause(final WhereClause whileClause) {
     this.whileClause = whileClause;
   }
 
@@ -220,7 +217,7 @@ public class TraverseStatement extends Statement {
     return strategy;
   }
 
-  public void setStrategy(Strategy strategy) {
+  public void setStrategy(final Strategy strategy) {
     this.strategy = strategy;
   }
 
@@ -228,7 +225,7 @@ public class TraverseStatement extends Statement {
     return maxDepth;
   }
 
-  public void setMaxDepth(PInteger maxDepth) {
+  public void setMaxDepth(final PInteger maxDepth) {
     this.maxDepth = maxDepth;
   }
 
@@ -236,7 +233,7 @@ public class TraverseStatement extends Statement {
     return skip;
   }
 
-  public void setSkip(Skip skip) {
+  public void setSkip(final Skip skip) {
     this.skip = skip;
   }
 }

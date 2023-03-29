@@ -35,26 +35,26 @@ class SQLMethodNormalizeTest {
 
     @Test
     void testNull() {
-        Object result = method.execute(null, null, null, null, null);
+        final Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
     @Test
     void testNormalizeWithDefaultNormalizer() {
-        Object result = method.execute(null, null, null, "À", null);
+        final Object result = method.execute(null, null, null, "À", null);
         assertThat(result).isEqualTo("A");
 
     }
 
     @Test
     void testNormalizeWithNFC() {
-        Object result = method.execute(null, null, null, "À", new Object[]{"NFC"});
+        final Object result = method.execute(null, null, null, "À", new Object[]{"NFC"});
         assertThat(result).isEqualTo("À");
     }
 
     @Test
     void testNormalizeWithNFCAndPattern() {
-        Object result = method.execute(null, null, null, "À", new Object[]{"NFC", ""});
+        final Object result = method.execute(null, null, null, "À", new Object[]{"NFC", ""});
         assertThat(result).isEqualTo("À");
     }
 

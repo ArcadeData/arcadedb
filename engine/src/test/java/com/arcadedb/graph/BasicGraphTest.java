@@ -24,10 +24,10 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
@@ -115,7 +115,7 @@ public class BasicGraphTest extends BaseGraphTest {
 //        edge.save();
 //
 //        Assertions.assertTrue(edge.getIdentity().getPosition() > -1);
-      } catch (IllegalStateException e) {
+      } catch (final IllegalStateException e) {
       }
 
     } finally {
@@ -146,7 +146,7 @@ public class BasicGraphTest extends BaseGraphTest {
       Assertions.assertEquals(v1, e1.getOut());
       Assertions.assertEquals("E1", e1.get("name"));
 
-      Vertex v2 = e1.getInVertex();
+      final Vertex v2 = e1.getInVertex();
       Assertions.assertEquals(VERTEX2_TYPE_NAME, v2.get("name"));
 
       final Iterator<Edge> edges2 = v2.getEdges(Vertex.DIRECTION.OUT, new String[] { EDGE2_TYPE_NAME }).iterator();
@@ -159,7 +159,7 @@ public class BasicGraphTest extends BaseGraphTest {
       Assertions.assertEquals(v2, e2.getOut());
       Assertions.assertEquals("E2", e2.get("name"));
 
-      Vertex v3 = e2.getInVertex();
+      final Vertex v3 = e2.getInVertex();
       Assertions.assertEquals("V3", v3.get("name"));
 
       final Iterator<Edge> edges3 = v1.getEdges(Vertex.DIRECTION.OUT, new String[] { EDGE2_TYPE_NAME }).iterator();
@@ -225,17 +225,17 @@ public class BasicGraphTest extends BaseGraphTest {
     database.begin();
     try {
 
-      Vertex v1 = (Vertex) database.lookupByRID(root, false);
+      final Vertex v1 = (Vertex) database.lookupByRID(root, false);
       Assertions.assertNotNull(v1);
 
       Iterator<Vertex> vertices = v1.getVertices(Vertex.DIRECTION.OUT).iterator();
       Assertions.assertTrue(vertices.hasNext());
-      Vertex v2 = vertices.next();
-      Assertions.assertNotNull(v2);
-
-      Assertions.assertTrue(vertices.hasNext());
       Vertex v3 = vertices.next();
       Assertions.assertNotNull(v3);
+
+      Assertions.assertTrue(vertices.hasNext());
+      Vertex v2 = vertices.next();
+      Assertions.assertNotNull(v2);
 
       final long totalVertices = database.countType(v1.getTypeName(), true);
 
@@ -278,7 +278,7 @@ public class BasicGraphTest extends BaseGraphTest {
       try {
         database.lookupByRID(root, true);
         Assertions.fail("Expected deleted record");
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
       }
 
     } finally {
@@ -292,17 +292,17 @@ public class BasicGraphTest extends BaseGraphTest {
     database.begin();
     try {
 
-      Vertex v1 = (Vertex) database.lookupByRID(root, false);
+      final Vertex v1 = (Vertex) database.lookupByRID(root, false);
       Assertions.assertNotNull(v1);
 
       Iterator<Edge> edges = v1.getEdges(Vertex.DIRECTION.OUT).iterator();
       Assertions.assertTrue(edges.hasNext());
-      Edge e2 = edges.next();
-      Assertions.assertNotNull(e2);
+      final Edge e3 = edges.next();
+      Assertions.assertNotNull(e3);
 
       Assertions.assertTrue(edges.hasNext());
-      Edge e3 = edges.next();
-      Assertions.assertNotNull(e3);
+      final Edge e2 = edges.next();
+      Assertions.assertNotNull(e2);
 
       // DELETE THE EDGE
       // -----------------------
@@ -324,7 +324,7 @@ public class BasicGraphTest extends BaseGraphTest {
       try {
         database.lookupByRID(e2.getIdentity(), true);
         Assertions.fail("Expected deleted record");
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
       }
 
       vOut = e2.getOutVertex();
@@ -349,51 +349,47 @@ public class BasicGraphTest extends BaseGraphTest {
     database.begin();
     try {
 
-      Vertex v1 = (Vertex) database.lookupByRID(root, false);
+      final Vertex v1 = (Vertex) database.lookupByRID(root, false);
       Assertions.assertNotNull(v1);
 
       Iterator<Edge> edges = v1.getEdges(Vertex.DIRECTION.OUT).iterator();
+
       Assertions.assertTrue(edges.hasNext());
-      Edge e2 = edges.next();
+      final Edge e3 = edges.next();
+      Assertions.assertNotNull(e3);
+
+      Assertions.assertTrue(edges.hasNext());
+      final Edge e2 = edges.next();
       Assertions.assertNotNull(e2);
 
       // DELETE THE EDGE
       // -----------------------
       edges.remove();
 
-      Assertions.assertTrue(edges.hasNext());
-      Edge e3 = edges.next();
-      Assertions.assertNotNull(e3);
-
-      Vertex vOut = e2.getOutVertex();
-      edges = vOut.getEdges(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(edges.hasNext());
-
-      edges.next();
       Assertions.assertFalse(edges.hasNext());
 
-      Vertex vIn = e2.getInVertex();
-      edges = vIn.getEdges(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertFalse(edges.hasNext());
+      try {
+        e2.getOutVertex();
+        Assertions.fail();
+      } catch (RecordNotFoundException e) {
+        // EXPECTED
+      }
+
+      try {
+        e2.getInVertex();
+        Assertions.fail();
+      } catch (RecordNotFoundException e) {
+        // EXPECTED
+      }
 
       // RELOAD AND CHECK AGAIN
       // -----------------------
       try {
         database.lookupByRID(e2.getIdentity(), true);
         Assertions.fail("Expected deleted record");
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
+        // EXPECTED
       }
-
-      vOut = e2.getOutVertex();
-      edges = vOut.getEdges(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(edges.hasNext());
-
-      edges.next();
-      Assertions.assertFalse(edges.hasNext());
-
-      vIn = e2.getInVertex();
-      edges = vIn.getEdges(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertFalse(edges.hasNext());
 
     } finally {
       database.commit();
@@ -463,7 +459,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
           final ResultSet result = database.query("sql", "select shortestPath(?,?) as sp", v1, v2);
           Assertions.assertTrue(result.hasNext());
-          Result line = result.next();
+          final Result line = result.next();
 
           Assertions.assertNotNull(line);
           Assertions.assertTrue(line.getPropertyNames().contains("sp"));
@@ -483,9 +479,10 @@ public class BasicGraphTest extends BaseGraphTest {
   public void customFunction() {
     database.begin();
     try {
-      SQLEngine.getInstance().getFunctionFactory().register(new SQLFunctionAbstract("ciao") {
+      ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("ciao") {
         @Override
-        public Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext) {
+        public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+            final CommandContext iContext) {
           return "Ciao";
         }
 
@@ -497,7 +494,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
       final ResultSet result = database.query("sql", "select ciao() as ciao");
       Assertions.assertTrue(result.hasNext());
-      Result line = result.next();
+      final Result line = result.next();
 
       Assertions.assertNotNull(line);
       Assertions.assertTrue(line.getPropertyNames().contains("ciao"));
@@ -516,11 +513,11 @@ public class BasicGraphTest extends BaseGraphTest {
   public void customReflectionFunction() {
     database.begin();
     try {
-      SQLEngine.getInstance().getFunctionFactory().getReflectionFactory().register("test_", getClass());
+      ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().getReflectionFactory().register("test_", getClass());
 
       final ResultSet result = database.query("sql", "select test_testReflectionMethod() as testReflectionMethod");
       Assertions.assertTrue(result.hasNext());
-      Result line = result.next();
+      final Result line = result.next();
 
       Assertions.assertNotNull(line);
       Assertions.assertTrue(line.getPropertyNames().contains("testReflectionMethod"));
@@ -533,7 +530,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
   @Test
   public void rollbackEdge() {
-    AtomicReference<RID> v1RID = new AtomicReference<>();
+    final AtomicReference<RID> v1RID = new AtomicReference<>();
 
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex(VERTEX1_TYPE_NAME).save();
@@ -553,7 +550,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
       //Assertions.fail();
 
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       // EXPECTED
     }
 
@@ -570,7 +567,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
   @Test
   public void reuseRollbackedTx() {
-    AtomicReference<RID> v1RID = new AtomicReference<>();
+    final AtomicReference<RID> v1RID = new AtomicReference<>();
 
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex(VERTEX1_TYPE_NAME).save();
@@ -592,7 +589,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
       Assertions.fail();
 
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       // EXPECTED
     }
 
@@ -615,7 +612,7 @@ public class BasicGraphTest extends BaseGraphTest {
     try {
       database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true));
       Assertions.fail();
-    } catch (DuplicatedKeyException ex) {
+    } catch (final DuplicatedKeyException ex) {
       // EXPECTED
     }
 
@@ -623,7 +620,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
     database.transaction(() -> {
       final Iterable<Edge> edges = v1[0].getEdges(Vertex.DIRECTION.OUT, "OnlyOneBetweenVertices");
-      for (Edge e : edges)
+      for (final Edge e : edges)
         e.delete();
     });
 
@@ -631,7 +628,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
     database.transaction(() -> {
       final Iterable<Edge> edges = v2[0].getEdges(Vertex.DIRECTION.OUT, "OnlyOneBetweenVertices");
-      for (Edge e : edges)
+      for (final Edge e : edges)
         e.delete();
     });
 
@@ -649,21 +646,21 @@ public class BasicGraphTest extends BaseGraphTest {
 
       v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
       v2[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1002).save();
-      ResultSet result = database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]);
+      final ResultSet result = database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]);
       Assertions.assertTrue(result.hasNext());
     });
 
     try {
       database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true));
       Assertions.fail();
-    } catch (DuplicatedKeyException ex) {
+    } catch (final DuplicatedKeyException ex) {
       // EXPECTED
     }
 
     try {
       database.transaction(() -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]));
       Assertions.fail();
-    } catch (DuplicatedKeyException ex) {
+    } catch (final DuplicatedKeyException ex) {
       // EXPECTED
     }
 
@@ -673,18 +670,38 @@ public class BasicGraphTest extends BaseGraphTest {
   // https://github.com/ArcadeData/arcadedb/issues/577
   @Test
   public void testEdgeTypeNotFromVertex() {
-    var vType = database.getSchema().createVertexType("a-vertex");
-    var eType = database.getSchema().createEdgeType("a-edge");
+    final var vType = database.getSchema().createVertexType("a-vertex");
+    final var eType = database.getSchema().createEdgeType("a-edge");
 
     database.begin();
-    var v1 = database.newVertex("a-vertex").save();
-    var v2 = database.newVertex("a-vertex").save();
+    final var v1 = database.newVertex("a-vertex").save();
+    final var v2 = database.newVertex("a-vertex").save();
 
     try {
-      Edge e1 = v1.newEdge("a-vertex", v2, /*= bidirectional */ true); // <-- expect IllegalArgumentException
+      final Edge e1 = v1.newEdge("a-vertex", v2, /*= bidirectional */ true); // <-- expect IllegalArgumentException
       Assertions.fail("Created an edge of vertex type");
-    } catch (ClassCastException e) {
+    } catch (final ClassCastException e) {
       // EXPECTED
     }
+  }
+
+  // https://github.com/ArcadeData/arcadedb/issues/689
+  @Test
+  public void testEdgeDescendantOrder() {
+    final var vType = database.getSchema().createVertexType("testEdgeDescendantOrderVertex");
+    final var eType = database.getSchema().createEdgeType("testEdgeDescendantOrderEdge");
+
+    database.transaction(() -> {
+      final var v1 = database.newVertex("testEdgeDescendantOrderVertex").set("id", -1).save();
+      for (int i = 0; i < 10000; i++) {
+        final var v2 = database.newVertex("testEdgeDescendantOrderVertex").set("id", i).save();
+        v1.newEdge("testEdgeDescendantOrderEdge", v2, true);
+      }
+
+      final Iterator<Vertex> vertices = v1.getVertices(Vertex.DIRECTION.OUT).iterator();
+      for (int i = 10000 - 1; vertices.hasNext(); --i) {
+        Assertions.assertEquals(i, vertices.next().get("id"));
+      }
+    });
   }
 }

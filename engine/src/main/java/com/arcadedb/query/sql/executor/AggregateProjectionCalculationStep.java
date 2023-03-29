@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
@@ -39,21 +38,20 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private final Map<List, ResultInternal> aggregateResults = new LinkedHashMap<>();
   private       List<ResultInternal>      finalResults     = null;
 
-  private int  nextItem = 0;
-  private long cost     = 0;
+  private int nextItem = 0;
 
-  public AggregateProjectionCalculationStep(Projection projection, GroupBy groupBy, long limit, CommandContext ctx, long timeoutMillis,
-      boolean profilingEnabled) {
-    super(projection, ctx, profilingEnabled);
+  public AggregateProjectionCalculationStep(final Projection projection, final GroupBy groupBy, final long limit, final CommandContext context,
+      final long timeoutMillis, final boolean profilingEnabled) {
+    super(projection, context, profilingEnabled);
     this.groupBy = groupBy;
     this.timeoutMillis = timeoutMillis;
     this.limit = limit;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) {
     if (finalResults == null) {
-      executeAggregation(ctx, nRecords);
+      executeAggregation(context, nRecords);
     }
 
     return new ResultSet() {
@@ -67,56 +65,38 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       @Override
       public Result next() {
         if (localNext > nRecords || nextItem >= finalResults.size()) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        Result result = finalResults.get(nextItem);
+        final Result result = finalResults.get(nextItem);
         nextItem++;
         localNext++;
         return result;
       }
-
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private void executeAggregation(CommandContext ctx, int nRecords) {
-    long timeoutBegin = System.currentTimeMillis();
-    if (prev.isEmpty()) {
-      throw new CommandExecutionException("Cannot execute an aggregation or a GROUP BY without a previous result");
-    }
-    ExecutionStepInternal prevStep = prev.get();
-    ResultSet lastRs = prevStep.syncPull(ctx, nRecords);
+  private void executeAggregation(final CommandContext context, final int nRecords) {
+    final long timeoutBegin = System.currentTimeMillis();
+
+    final ExecutionStepInternal prevStep = checkForPrevious("Cannot execute an aggregation or a GROUP BY without a previous result");
+    ResultSet lastRs = prevStep.syncPull(context, nRecords);
     while (lastRs.hasNext()) {
       if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
         sendTimeout();
       }
-      aggregate(lastRs.next(), ctx);
+      aggregate(lastRs.next(), context);
       if (!lastRs.hasNext()) {
-        lastRs = prevStep.syncPull(ctx, nRecords);
+        lastRs = prevStep.syncPull(context, nRecords);
       }
     }
-    finalResults = new ArrayList<>();
-    finalResults.addAll(aggregateResults.values());
+    finalResults = new ArrayList<>(aggregateResults.values());
     aggregateResults.clear();
-    for (ResultInternal item : finalResults) {
+    for (final ResultInternal item : finalResults) {
       if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
         sendTimeout();
       }
-      for (String name : item.getTemporaryProperties()) {
-        Object prevVal = item.getTemporaryProperty(name);
+      for (final String name : item.getTemporaryProperties()) {
+        final Object prevVal = item.getTemporaryProperty(name);
         if (prevVal instanceof AggregationContext) {
           item.setTemporaryProperty(name, ((AggregationContext) prevVal).getFinalValue());
         }
@@ -124,13 +104,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     }
   }
 
-  private void aggregate(Result next, CommandContext ctx) {
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+  private void aggregate(final Result next, final CommandContext context) {
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
-      List<Object> key = new ArrayList<>();
+      final List<Object> key = new ArrayList<>();
       if (groupBy != null) {
-        for (Expression item : groupBy.getItems()) {
-          Object val = item.execute(next, ctx);
+        for (final Expression item : groupBy.getItems()) {
+          final Object val = item.execute(next, context);
           key.add(val);
         }
       }
@@ -141,24 +121,24 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         }
         preAggr = new ResultInternal();
 
-        for (ProjectionItem proj : this.projection.getItems()) {
-          String alias = proj.getProjectionAlias().getStringValue();
-          if (!proj.isAggregate()) {
-            preAggr.setProperty(alias, proj.execute(next, ctx));
+        for (final ProjectionItem proj : this.projection.getItems()) {
+          final String alias = proj.getProjectionAlias().getStringValue();
+          if (!proj.isAggregate(context)) {
+            preAggr.setProperty(alias, proj.execute(next, context));
           }
         }
         aggregateResults.put(key, preAggr);
       }
 
-      for (ProjectionItem proj : this.projection.getItems()) {
-        String alias = proj.getProjectionAlias().getStringValue();
-        if (proj.isAggregate()) {
+      for (final ProjectionItem proj : this.projection.getItems()) {
+        final String alias = proj.getProjectionAlias().getStringValue();
+        if (proj.isAggregate(context)) {
           AggregationContext aggrCtx = (AggregationContext) preAggr.getTemporaryProperty(alias);
           if (aggrCtx == null) {
-            aggrCtx = proj.getAggregationContext(ctx);
+            aggrCtx = proj.getAggregationContext(context);
             preAggr.setTemporaryProperty(alias, aggrCtx);
           }
-          aggrCtx.apply(next, ctx);
+          aggrCtx.apply(next, context);
         }
       }
     } finally {
@@ -169,8 +149,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE AGGREGATE PROJECTIONS";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -179,8 +159,4 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

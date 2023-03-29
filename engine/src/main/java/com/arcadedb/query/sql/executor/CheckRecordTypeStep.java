@@ -22,8 +22,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-
 /**
  * Checks that all the records from the upstream are of a particular type (or subTypes). Throws PCommandExecutionException in case
  * it's not true
@@ -31,16 +29,16 @@ import java.util.*;
 public class CheckRecordTypeStep extends AbstractExecutionStep {
   private final String typez;
 
-  private long cost = 0;
-
-  public CheckRecordTypeStep(CommandContext ctx, String className, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CheckRecordTypeStep(final CommandContext context, final String className, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.typez = className;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = prev.get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    checkForPrevious();
+
+    final ResultSet upstream = prev.syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -49,14 +47,14 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
+        final Result result = upstream.next();
 
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (!result.isElement()) {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }
-          Document record = result.getElement().get();
+          final Document record = result.getElement().get();
           if (record == null) {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }
@@ -76,21 +74,11 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CHECK RECORD TYPE";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -99,8 +87,4 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

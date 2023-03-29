@@ -51,24 +51,6 @@ public class CreateIndexStatement extends DDLStatement {
     super(id);
   }
 
-  public CreateIndexStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
-  @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-    final Long totalIndexed = (Long) execute(ctx);
-
-    final InternalResultSet rs = new InternalResultSet();
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("operation", "create index");
-    result.setProperty("name", name.getValue());
-    result.setProperty("totalIndexed", totalIndexed);
-
-    rs.add(result);
-    return rs;
-  }
-
   @Override
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue();
@@ -82,12 +64,13 @@ public class CreateIndexStatement extends DDLStatement {
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
   }
 
-  Object execute(final CommandContext ctx) {
-    final Database database = ctx.getDatabase();
+  @Override
+  public ResultSet executeDDL(final CommandContext context) {
+    final Database database = context.getDatabase();
 
     if (name == null)
       // GENERATE THE NAME AUTOMATICALLY
-      name = new Identifier(typeName.getStringValue() + propertyList.toString());
+      name = new Identifier(typeName.getStringValue() + propertyList.toString().replaceAll(", ", ","));
 
     if (database.getSchema().existsIndex(name.getValue())) {
       if (ifNotExists) {
@@ -97,7 +80,7 @@ public class CreateIndexStatement extends DDLStatement {
       }
     }
 
-    final String[] fields = calculateProperties(ctx);
+    final String[] fields = calculateProperties(context);
 
     final EmbeddedSchema.INDEX_TYPE indexType;
     boolean unique = false;
@@ -126,7 +109,15 @@ public class CreateIndexStatement extends DDLStatement {
           }
         });
 
-    return total.get();
+    final InternalResultSet rs = new InternalResultSet();
+    final ResultInternal result = new ResultInternal();
+    result.setProperty("operation", "create index");
+    result.setProperty("name", name.getValue());
+    result.setProperty("type", indexType);
+    result.setProperty("totalIndexed", total.get());
+
+    rs.add(result);
+    return rs;
   }
 
   /**
@@ -134,7 +125,7 @@ public class CreateIndexStatement extends DDLStatement {
    *
    * @return Array of property names
    */
-  private String[] calculateProperties(final CommandContext ctx) {
+  private String[] calculateProperties(final CommandContext context) {
     if (propertyList == null) {
       return null;
     }
@@ -153,7 +144,7 @@ public class CreateIndexStatement extends DDLStatement {
       typeName.toString(params, builder);
       builder.append(" (");
       boolean first = true;
-      for (Property prop : propertyList) {
+      for (final Property prop : propertyList) {
         if (!first) {
           builder.append(", ");
         }
@@ -188,7 +179,7 @@ public class CreateIndexStatement extends DDLStatement {
     if (keyTypes != null && keyTypes.size() > 0) {
       boolean first = true;
       builder.append(" ");
-      for (Identifier keyType : keyTypes) {
+      for (final Identifier keyType : keyTypes) {
         if (!first) {
           builder.append(",");
         }
@@ -204,7 +195,7 @@ public class CreateIndexStatement extends DDLStatement {
 
   @Override
   public CreateIndexStatement copy() {
-    CreateIndexStatement result = new CreateIndexStatement(-1);
+    final CreateIndexStatement result = new CreateIndexStatement(-1);
     result.name = name == null ? null : name.copy();
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyList = propertyList == null ? null : propertyList.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -217,42 +208,8 @@ public class CreateIndexStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final CreateIndexStatement that = (CreateIndexStatement) o;
-
-    if (!Objects.equals(name, that.name))
-      return false;
-    if (!Objects.equals(typeName, that.typeName))
-      return false;
-    if (!Objects.equals(propertyList, that.propertyList))
-      return false;
-    if (!Objects.equals(type, that.type))
-      return false;
-    if (!Objects.equals(engine, that.engine))
-      return false;
-    if (!Objects.equals(nullStrategy, that.nullStrategy))
-      return false;
-    if (!Objects.equals(keyTypes, that.keyTypes))
-      return false;
-    return Objects.equals(schema, that.schema);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (typeName != null ? typeName.hashCode() : 0);
-    result = 31 * result + (propertyList != null ? propertyList.hashCode() : 0);
-    result = 31 * result + (type != null ? type.hashCode() : 0);
-    result = 31 * result + (engine != null ? engine.hashCode() : 0);
-    result = 31 * result + (nullStrategy != null ? nullStrategy.hashCode() : 0);
-    result = 31 * result + (keyTypes != null ? keyTypes.hashCode() : 0);
-    result = 31 * result + (schema != null ? schema.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, typeName, propertyList, type, engine, nullStrategy, keyTypes, schema };
   }
 
   public static class Property {
@@ -308,7 +265,7 @@ public class CreateIndexStatement extends DDLStatement {
      * @return
      */
     public String getCompleteKey() {
-      StringBuilder result = new StringBuilder();
+      final StringBuilder result = new StringBuilder();
       if (name != null)
         result.append(name.getStringValue());
       else if (recordAttribute != null)

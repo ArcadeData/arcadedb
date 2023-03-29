@@ -39,20 +39,20 @@ public class CreateVertexExecutionPlanner extends InsertExecutionPlanner {
   }
 
   @Override
-  public InsertExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    final InsertExecutionPlan prev = super.createExecutionPlan(ctx, enableProfiling);
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final InsertExecutionPlan prev = super.createExecutionPlan(context, enableProfiling);
     final List<ExecutionStep> steps = new ArrayList<>(prev.getSteps());
-    final InsertExecutionPlan result = new InsertExecutionPlan(ctx);
+    final InsertExecutionPlan result = new InsertExecutionPlan(context);
 
-    handleCheckType(result, ctx, enableProfiling);
-    for (ExecutionStep step : steps)
+    handleCheckType(result, context, enableProfiling);
+    for (final ExecutionStep step : steps)
       result.chain((ExecutionStepInternal) step);
 
     return result;
   }
 
-  private void handleCheckType(final InsertExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleCheckType(final InsertExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
     if (targetType != null)
-      result.chain(new CheckIsVertexTypeStep(targetType.getStringValue(), ctx, profilingEnabled));
+      result.chain(new CheckIsVertexTypeStep(targetType.getStringValue(), context, profilingEnabled));
   }
 }

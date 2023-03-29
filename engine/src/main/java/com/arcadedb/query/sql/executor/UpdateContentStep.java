@@ -34,19 +34,19 @@ public class UpdateContentStep extends AbstractExecutionStep {
   private Json           json;
   private InputParameter inputParameter;
 
-  public UpdateContentStep(final Json json, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UpdateContentStep(final Json json, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.json = json;
   }
 
-  public UpdateContentStep(final InputParameter inputParameter, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UpdateContentStep(final InputParameter inputParameter, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.inputParameter = inputParameter;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -63,7 +63,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
           if (!(result.getElement().get() instanceof Document))
             return result;
 
-          handleContent(result.getElement().get(), ctx);
+          handleContent(result.getElement().get(), context);
         }
         return result;
       }
@@ -72,27 +72,17 @@ public class UpdateContentStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private boolean handleContent(final Document record, final CommandContext ctx) {
+  private boolean handleContent(final Document record, final CommandContext context) {
     // REPLACE ALL THE CONTENT
     final MutableDocument doc = record.modify();
 
     if (json != null) {
-      doc.fromMap(json.toMap(record, ctx));
+      doc.fromMap(json.toMap(record, context));
     } else if (inputParameter != null) {
-      Object val = inputParameter.getValue(ctx.getInputParameters());
+      final Object val = inputParameter.getValue(context.getInputParameters());
       if (val instanceof Document) {
         doc.fromMap(((Document) val).getRecord().toJSON().toMap());
       } else if (val instanceof Map) {
@@ -106,18 +96,17 @@ public class UpdateContentStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(final int depth,final  int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ UPDATE CONTENT\n");
     result.append(spaces);
     result.append("  ");
-    if (json != null) {
+    if (json != null)
       result.append(json);
-    } else {
+    else
       result.append(inputParameter);
-    }
     return result.toString();
   }
 }

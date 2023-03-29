@@ -22,44 +22,41 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
 import java.util.stream.*;
 
 public class WhereClause extends SimpleNode {
   protected BooleanExpression baseExpression;
+  protected List<AndBlock>    flattened;
 
-  protected List<AndBlock> flattened;
-
-  public WhereClause(int id) {
+  public WhereClause(final int id) {
     super(id);
   }
 
-  public WhereClause(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public boolean matchesFilters(Identifiable currentRecord, CommandContext ctx) {
-    if (baseExpression == null) {
+  public boolean matchesFilters(final Identifiable currentRecord, final CommandContext context) {
+    if (baseExpression == null)
       return true;
-    }
-    return baseExpression.evaluate(currentRecord, ctx);
+
+    return baseExpression.evaluate(currentRecord, context);
   }
 
-  public boolean matchesFilters(Result currentRecord, CommandContext ctx) {
-    if (baseExpression == null) {
+  public boolean matchesFilters(final Result currentRecord, final CommandContext context) {
+    if (baseExpression == null)
       return true;
-    }
-    return baseExpression.evaluate(currentRecord, ctx);
+
+    return baseExpression.evaluate(currentRecord, context);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (baseExpression == null) {
       return;
     }
@@ -74,8 +71,8 @@ public class WhereClause extends SimpleNode {
    * @return an estimation of the number of records of this class returned applying this filter, 0 if and only if sure that no
    * records are returned
    */
-  public long estimate(DocumentType oClass, long threshold, CommandContext ctx) {
-    long count = ctx.getDatabase().countType(oClass.getName(), true);
+  public long estimate(final DocumentType oClass, final long threshold, final CommandContext context) {
+    long count = context.getDatabase().countType(oClass.getName(), true);
     if (count > 1) {
       count = count / 2;
     }
@@ -84,34 +81,34 @@ public class WhereClause extends SimpleNode {
     }
 
     long indexesCount = 0L;
-    List<AndBlock> flattenedConditions = flatten();
-    Collection<TypeIndex> indexes = oClass.getAllIndexes(true);
-    for (AndBlock condition : flattenedConditions) {
+    final List<AndBlock> flattenedConditions = flatten();
+    final Collection<TypeIndex> indexes = oClass.getAllIndexes(true);
+    for (final AndBlock condition : flattenedConditions) {
 
-      List<BinaryCondition> indexedFunctConditions = condition.getIndexedFunctionConditions(oClass, ctx.getDatabase());
+      final List<BinaryCondition> indexedFunctConditions = condition.getIndexedFunctionConditions(oClass, context);
 
       long conditionEstimation = Long.MAX_VALUE;
 
       if (indexedFunctConditions != null) {
-        for (BinaryCondition cond : indexedFunctConditions) {
-          FromClause from = new FromClause(-1);
+        for (final BinaryCondition cond : indexedFunctConditions) {
+          final FromClause from = new FromClause(-1);
           from.item = new FromItem(-1);
           from.item.setIdentifier(new Identifier(oClass.getName()));
-          long newCount = cond.estimateIndexed(from, ctx);
+          final long newCount = cond.estimateIndexed(from, context);
           if (newCount < conditionEstimation) {
             conditionEstimation = newCount;
           }
         }
       } else {
-        Map<String, Object> conditions = getEqualityOperations(condition, ctx);
+        final Map<String, Object> conditions = getEqualityOperations(condition, context);
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index.getType().equals(Schema.INDEX_TYPE.FULL_TEXT))
             continue;
 
           final List<String> indexedFields = index.getPropertyNames();
           int nMatchingKeys = 0;
-          for (String indexedField : indexedFields) {
+          for (final String indexedField : indexedFields) {
             if (conditions.containsKey(indexedField)) {
               nMatchingKeys++;
             } else {
@@ -119,7 +116,7 @@ public class WhereClause extends SimpleNode {
             }
           }
           if (nMatchingKeys > 0) {
-            long newCount = estimateFromIndex(index, conditions, nMatchingKeys);
+            final long newCount = estimateFromIndex(index, conditions, nMatchingKeys);
             if (newCount < conditionEstimation) {
               conditionEstimation = newCount;
             }
@@ -134,41 +131,34 @@ public class WhereClause extends SimpleNode {
     return Math.min(indexesCount, count);
   }
 
-  private long estimateFromIndex(Index index, Map<String, Object> conditions, int nMatchingKeys) {
+  private long estimateFromIndex(final Index index, final Map<String, Object> conditions, final int nMatchingKeys) {
     if (nMatchingKeys < 1) {
       throw new IllegalArgumentException("Cannot estimate from an index with zero keys");
     }
-//    String[] definitionFields = index.getPropertyNames();
-//    Object[] key = new Object[nMatchingKeys];
-//    for (int i = 0; i < nMatchingKeys; i++) {
-//      Object keyValue = convert(conditions.get(definitionFields.get(i)), definition.getTypes()[i]);
-//      key[i] = keyValue;
-//    }
-//    if (key != null) {
-//      if (conditions.size() == definitionFields.size()) {
-//        try (Stream<RID> rids = index.getInternal().getRids(key)) {
-//          return rids.count();
-//        }
-//      } else if (index.supportsOrderedIterations()) {
-//        final Spliterator<ORawPair<Object, RID>> spliterator;
-//
-//        try (Stream<ORawPair<Object, RID>> stream = index.streamEntriesBetween(key, true, key, true, true)) {
-//          spliterator = stream.spliterator();
-//          return spliterator.estimateSize();
-//        }
-//      }
-//    }
+    List<String> definitionFields = index.getPropertyNames();
+    Object[] key = new Object[nMatchingKeys];
+    for (int i = 0; i < nMatchingKeys; i++) {
+      Object keyValue = convert(conditions.get(definitionFields.get(i)), ((IndexInternal) index).getKeyTypes()[i]);
+      key[i] = keyValue;
+    }
+    if (key != null) {
+      if (conditions.size() == definitionFields.size()) {
+        CollectionUtils.countEntries(index.get(key));
+      } else if (index.supportsOrderedIterations()) {
+        return ((TypeIndex) index).range(true, key, true, key, true).estimateSize();
+      }
+    }
     return Long.MAX_VALUE;
   }
 
-  private Map<String, Object> getEqualityOperations(AndBlock condition, CommandContext ctx) {
-    Map<String, Object> result = new HashMap<String, Object>();
-    for (BooleanExpression expression : condition.subBlocks) {
+  private Map<String, Object> getEqualityOperations(final AndBlock condition, final CommandContext context) {
+    final Map<String, Object> result = new HashMap<String, Object>();
+    for (final BooleanExpression expression : condition.subBlocks) {
       if (expression instanceof BinaryCondition) {
-        BinaryCondition b = (BinaryCondition) expression;
+        final BinaryCondition b = (BinaryCondition) expression;
         if (b.operator instanceof EqualsCompareOperator) {
-          if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated()) {
-            result.put(b.left.toString(), b.right.execute((Result) null, ctx));
+          if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated(context)) {
+            result.put(b.left.toString(), b.right.execute((Result) null, context));
           }
         }
       }
@@ -178,17 +168,13 @@ public class WhereClause extends SimpleNode {
 
   public List<AndBlock> flatten() {
     if (this.baseExpression == null)
-      return Collections.EMPTY_LIST;
+      return Collections.emptyList();
 
     if (flattened == null)
       flattened = this.baseExpression.flatten();
 
     // TODO remove false conditions (contradictions)
     return flattened;
-  }
-
-  public boolean needsAliases(final Set<String> aliases) {
-    return this.baseExpression.needsAliases(aliases);
   }
 
   public void setBaseExpression(final BooleanExpression baseExpression) {
@@ -203,24 +189,8 @@ public class WhereClause extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final WhereClause that = (WhereClause) o;
-
-    if (!Objects.equals(baseExpression, that.baseExpression))
-      return false;
-    return Objects.equals(flattened, that.flattened);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = baseExpression != null ? baseExpression.hashCode() : 0;
-    result = 31 * result + (flattened != null ? flattened.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { baseExpression, flattened };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
@@ -230,42 +200,17 @@ public class WhereClause extends SimpleNode {
     flattened = null;
   }
 
-  public boolean refersToParent() {
-    return baseExpression != null && baseExpression.refersToParent();
-  }
-
   public BooleanExpression getBaseExpression() {
     return baseExpression;
   }
 
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (baseExpression != null) {
-      result.setProperty("baseExpression", baseExpression.serialize());
-    }
-    if (flattened != null) {
-      result.setProperty("flattened", flattened.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { baseExpression };
   }
 
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("baseExpression") != null) {
-      baseExpression = BooleanExpression.deserializeFromOResult(fromResult.getProperty("baseExpression"));
-    }
-    if (fromResult.getProperty("flattened") != null) {
-      List<Result> ser = fromResult.getProperty("flattened");
-      flattened = new ArrayList<>();
-      for (Result r : ser) {
-        AndBlock block = new AndBlock(-1);
-        block.deserialize(r);
-        flattened.add(block);
-      }
-    }
-  }
-
-  public boolean isCacheable() {
-    return baseExpression.isCacheable();
+  public static Object convert(final Object o, final Type oType) {
+    return Type.convert(null, o, oType.getDefaultJavaType());
   }
 }
 /* JavaCC - OriginalChecksum=e8015d01ce1ab2bc337062e9e3f2603e (do not edit this line) */

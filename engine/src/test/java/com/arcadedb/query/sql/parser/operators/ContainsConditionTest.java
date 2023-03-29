@@ -32,12 +32,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class ContainsConditionTest {
   @Test
   public void test() {
-    ContainsCondition op = new ContainsCondition(-1);
+    final ContainsCondition op = new ContainsCondition(-1);
 
     assertFalse(op.execute(null, null));
     assertFalse(op.execute(null, "foo"));
 
-    List<Object> left = new ArrayList<Object>();
+    final List<Object> left = new ArrayList<Object>();
     assertFalse(op.execute(left, "foo"));
     assertFalse(op.execute(left, null));
 
@@ -54,7 +54,7 @@ public class ContainsConditionTest {
 
   @Test
   public void testIterable() {
-    Iterable left = new Iterable() {
+    final Iterable left = new Iterable() {
       private final List<Integer> ls = Arrays.asList(3, 1, 2);
 
       @Override
@@ -63,7 +63,7 @@ public class ContainsConditionTest {
       }
     };
 
-    Iterable right = new Iterable() {
+    final Iterable right = new Iterable() {
       private final List<Integer> ls = Arrays.asList(2, 3);
 
       @Override
@@ -72,7 +72,7 @@ public class ContainsConditionTest {
       }
     };
 
-    ContainsCondition op = new ContainsCondition(-1);
+    final ContainsCondition op = new ContainsCondition(-1);
     assertTrue(op.execute(left, right));
   }
 }

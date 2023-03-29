@@ -27,90 +27,42 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class IsNotNullCondition extends BooleanExpression {
-
   protected Expression expression;
 
-  public IsNotNullCondition(int id) {
+  public IsNotNullCondition(final int id) {
     super(id);
   }
 
-  public IsNotNullCondition(SqlParser p, int id) {
-    super(p, id);
+  @Override
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    return expression.execute(currentRecord, context) != null;
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    return expression.execute(currentRecord, ctx) != null;
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    return expression.execute(currentRecord, context) != null;
   }
 
-  @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    return expression.execute(currentRecord, ctx) != null;
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" IS NOT NULL");
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return expression.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    if (!expression.supportsBasicCalculation()) {
-      return 1;
-    }
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    if (!expression.supportsBasicCalculation()) {
-      return Collections.singletonList(expression);
-    }
-    return Collections.EMPTY_LIST;
-  }
-
-  @Override
-  public boolean needsAliases(Set<String> aliases) {
-    return expression.needsAliases(aliases);
-  }
-
-  @Override
   public BooleanExpression copy() {
-    IsNotNullCondition result = new IsNotNullCondition(-1);
+    final IsNotNullCondition result = new IsNotNullCondition(-1);
     result.expression = expression.copy();
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     this.expression.extractSubQueries(collector);
   }
 
   @Override
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    IsNotNullCondition that = (IsNotNullCondition) o;
-
-    return Objects.equals(expression, that.expression);
-  }
-
-  @Override
-  public int hashCode() {
-    return expression != null ? expression.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression };
   }
 
   @Override
@@ -119,9 +71,8 @@ public class IsNotNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return expression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression };
   }
-
 }
 /* JavaCC - OriginalChecksum=a292fa8a629abb7f6fe72a627fc91361 (do not edit this line) */

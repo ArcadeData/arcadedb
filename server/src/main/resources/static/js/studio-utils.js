@@ -120,8 +120,29 @@ function arrayRemoveAll(array, predicate) {
   return removed;
 }
 
+function globalStorageLoad(key, defaultValue){
+  let value = localStorage.getItem(key);
+  return value == null ? defaultValue : value;
+}
+
+function globalStorageSave(key, value){
+  localStorage.setItem(key, value);
+}
+
 function globalToggleCheckbox(element){
   $(element).prop('checked', !$(element).prop('checked') );
+}
+
+function globalToggleCheckboxAndSave(element, storageKey){
+  let checked = !$(element).prop('checked');
+  $(element).prop('checked', checked );
+  globalStorageSave(storageKey, checked);
+}
+
+function globalCheckboxAndSave(element, storageKey){
+  let checked = $(element).prop('checked');
+  $(element).prop('checked', checked );
+  globalStorageSave(storageKey, checked);
 }
 
 function globalTogglePanel(panelId1, panelId2, panelId3, panelId4, panelId5){
@@ -184,4 +205,74 @@ function base64ToBlob(base64Image){
 
   // Return BLOB image after conversion
   return new Blob([uInt8Array], { type: imageType });
+}
+
+function getURLParameter(param) {
+  var sPageURL = window.location.search.substring(1);
+  var sURLVariables = sPageURL.split('&');
+  for (var i = 0; i < sURLVariables.length; i++) {
+    var paramName = sURLVariables[i].split('=');
+    if (paramName[0] == param)
+        return paramName[1];
+  }
+}
+
+function globalFormatDouble(x,decimals) {
+  if (typeof x == 'undefined')
+    return "";
+
+  if (typeof decimals == 'undefined')
+    decimals = 3;
+
+  let transformed = globalFormatDoubleNoCommas(x,decimals);
+
+  let pos = transformed.indexOf(".");
+  let integer = pos > -1 ? transformed.substr( 0, pos ) : transformed;
+  let decimal = pos > -1 ? transformed.substr( pos ) : "";
+
+  return integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + decimal;
+}
+
+function globalFormatDoubleNoCommas(x,decimals) {
+  if (typeof x == 'undefined')
+    return "";
+
+  if( decimals == undefined )
+    decimals = 2;
+
+  x = x.toString();
+  var sep = x.indexOf('.');
+
+  if( decimals > 0 ) {
+    if( sep == -1 )
+      x += ".";
+
+    for( let i = 0; i < decimals; ++i ){
+      x += "0";
+    }
+  }
+
+  sep = x.indexOf('.');
+  if( sep > -1 ){
+    if( decimals == 0 )
+      x = x.substring(0, sep);
+    else
+      x = x.substring(0, sep + decimals + 1);
+  }
+
+  return x;
+}
+
+function globalFormatSpace(value){
+  if (typeof value == 'undefined' || value == "")
+    return "";
+  if( value > 1000000000000)
+    return globalFormatDouble(value/1000000000000) + "TB";
+  if( value > 1000000000)
+    return globalFormatDouble(value/1000000000) + "GB";
+  if( value > 1000000)
+    return globalFormatDouble(value/1000000) + "MB";
+  if( value > 1000)
+    return globalFormatDouble(value/1000) + "KB";
+  return value;
 }

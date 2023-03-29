@@ -41,16 +41,18 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
   private Edge           nextEdge;
   private Iterator<Edge> currentToEdgesIter;
 
-  public FetchEdgesToVerticesStep(String toAlias, Identifier targetType, Identifier targetBucket, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchEdgesToVerticesStep(final String toAlias, final Identifier targetType, final Identifier targetBucket, final CommandContext context,
+      final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.toAlias = toAlias;
     this.targetType = targetType;
     this.targetBucket = targetBucket;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
     init();
 
     return new ResultSet() {
@@ -63,12 +65,12 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        if (!hasNext()) {
-          throw new IllegalStateException();
-        }
-        Edge edge = nextEdge;
+        if (!hasNext())
+          throw new NoSuchElementException();
+
+        final Edge edge = nextEdge;
         fetchNextEdge();
-        ResultInternal result = new ResultInternal();
+        final ResultInternal result = new ResultInternal();
         result.setElement(edge);
         currentBatch++;
         return result;
@@ -79,16 +81,6 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
         if (toIter instanceof ResultSet) {
           ((ResultSet) toIter).close();
         }
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
       }
     };
   }
@@ -103,7 +95,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
 
     Object toValues;
 
-    toValues = ctx.getVariable(toAlias);
+    toValues = context.getVariable(toAlias);
     if (toValues instanceof Iterable && !(toValues instanceof Identifiable)) {
       toValues = ((Iterable) toValues).iterator();
     } else if (!(toValues instanceof Iterator)) {
@@ -139,33 +131,33 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
           return;
         }
       }
-      Edge edge = this.currentToEdgesIter.next();
-      if (matchesClass(edge) && matchesCluster(edge)) {
+      final Edge edge = this.currentToEdgesIter.next();
+      if (matchesType(edge) && matchesBucket(edge)) {
         this.nextEdge = edge;
         return;
       }
     }
   }
 
-  private boolean matchesCluster(Edge edge) {
-    if (targetBucket == null) {
+  private boolean matchesBucket(final Edge edge) {
+    if (targetBucket == null)
       return true;
-    }
-    int bucketId = edge.getIdentity().getBucketId();
-    String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
+
+    final int bucketId = edge.getIdentity().getBucketId();
+    final String bucketName = context.getDatabase().getSchema().getBucketById(bucketId).getName();
     return bucketName.equals(targetBucket.getStringValue());
   }
 
-  private boolean matchesClass(Edge edge) {
-    if (targetType == null) {
+  private boolean matchesType(final Edge edge) {
+    if (targetType == null)
       return true;
-    }
+
     return edge.getTypeName().equals(targetType.getStringValue());
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FOR EACH x in " + toAlias + "\n";
     result += spaces + "       FETCH EDGES TO x";
     if (targetType != null) {

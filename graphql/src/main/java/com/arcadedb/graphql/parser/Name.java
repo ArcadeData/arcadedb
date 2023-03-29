@@ -23,19 +23,8 @@ package com.arcadedb.graphql.parser;
 public class Name extends SimpleNode {
   String value;
 
-  public Name(int id) {
+  public Name(final int id) {
     super(id);
-  }
-
-  public Name(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public String getValue() {

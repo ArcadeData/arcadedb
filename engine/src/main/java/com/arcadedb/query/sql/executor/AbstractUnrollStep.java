@@ -29,88 +29,77 @@ import java.util.*;
  */
 public abstract class AbstractUnrollStep extends AbstractExecutionStep {
 
-
   ResultSet        lastResult      = null;
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
-  public AbstractUnrollStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public AbstractUnrollStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
-  @Override public void reset() {
+  @Override
+  public void reset() {
     this.lastResult = null;
     this.nextSubsequence = null;
     this.nextElement = null;
   }
 
-  @Override public ResultSet syncPull(CommandContext ctx, int nRecords) {
-    if (prev == null || prev.isEmpty()) {
+  @Override
+  public ResultSet syncPull(final CommandContext context, final int nRecords) {
+    if (prev == null)
       throw new CommandExecutionException("Cannot expand without a target");
-    }
+
     return new ResultSet() {
       long localCount = 0;
 
-      @Override public boolean hasNext() {
+      @Override
+      public boolean hasNext() {
         if (localCount >= nRecords) {
           return false;
         }
         if (nextElement == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         return nextElement != null;
       }
 
-      @Override public Result next() {
+      @Override
+      public Result next() {
         if (localCount >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextElement == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         if (nextElement == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
 
-        Result result = nextElement;
+        final Result result = nextElement;
         localCount++;
         nextElement = null;
-        fetchNext(ctx, nRecords);
+        fetchNext(context, nRecords);
         return result;
-      }
-
-      @Override public void close() {
-
-      }
-
-      @Override public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override public Map<String, Long> getQueryStats() {
-        return null;
       }
     };
   }
 
-  private void fetchNext(CommandContext ctx, int n) {
+  private void fetchNext(final CommandContext context, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
         nextElement = nextSubsequence.next();
         break;
       }
 
-      if (nextSubsequence == null || !nextSubsequence.hasNext()) {
-        if (lastResult == null || !lastResult.hasNext()) {
-          lastResult = getPrev().get().syncPull(ctx, n);
-        }
-        if (!lastResult.hasNext()) {
-          return;
-        }
+      if (lastResult == null || !lastResult.hasNext()) {
+        lastResult = getPrev().syncPull(context, n);
+      }
+      if (!lastResult.hasNext()) {
+        return;
       }
 
-      Result nextAggregateItem = lastResult.next();
-      nextSubsequence = unroll(nextAggregateItem, ctx).iterator();
+      final Result nextAggregateItem = lastResult.next();
+      nextSubsequence = unroll(nextAggregateItem, context).iterator();
 
     } while (true);
 

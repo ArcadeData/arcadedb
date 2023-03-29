@@ -22,26 +22,18 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
 public class Limit extends SimpleNode {
-
-  protected PInteger num;
-
+  protected PInteger       num;
   protected InputParameter inputParam;
 
-  public Limit(int id) {
+  public Limit(final int id) {
     super(id);
   }
 
-  public Limit(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (num == null && inputParam == null) {
       return;
     }
@@ -53,12 +45,12 @@ public class Limit extends SimpleNode {
     }
   }
 
-  public int getValue(CommandContext ctx) {
+  public int getValue(final CommandContext context) {
     if (num != null) {
       return num.getValue().intValue();
     }
     if (inputParam != null) {
-      Object paramValue = inputParam.getValue(ctx.getInputParameters());
+      final Object paramValue = inputParam.getValue(context.getInputParameters());
       if (paramValue instanceof Number) {
         return ((Number) paramValue).intValue();
       } else {
@@ -74,20 +66,20 @@ public class Limit extends SimpleNode {
   }
 
   public Limit copy() {
-    Limit result = new Limit(-1);
+    final Limit result = new Limit(-1);
     result.num = num == null ? null : num.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Limit oLimit = (Limit) o;
+    final Limit oLimit = (Limit) o;
 
     if (!Objects.equals(num, oLimit.num))
       return false;
@@ -99,27 +91,6 @@ public class Limit extends SimpleNode {
     int result = num != null ? num.hashCode() : 0;
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     return result;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (num != null) {
-      result.setProperty("num", num.serialize());
-    }
-    if (inputParam != null) {
-      result.setProperty("inputParam", inputParam.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("num") != null) {
-      num = new PInteger(-1);
-      num.deserialize(fromResult.getProperty("num"));
-    }
-    if (fromResult.getProperty("inputParam") != null) {
-      inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
-    }
   }
 }
 /* JavaCC - OriginalChecksum=1063b9489290bb08de6048ba55013171 (do not edit this line) */

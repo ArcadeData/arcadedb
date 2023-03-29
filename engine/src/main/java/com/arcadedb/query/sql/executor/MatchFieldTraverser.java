@@ -26,41 +26,40 @@ import com.arcadedb.query.sql.parser.MatchPathItem;
 import java.util.*;
 
 public class MatchFieldTraverser extends MatchEdgeTraverser {
-  public MatchFieldTraverser(Result lastUpstreamRecord, EdgeTraversal edge) {
+  public MatchFieldTraverser(final Result lastUpstreamRecord, final EdgeTraversal edge) {
     super(lastUpstreamRecord, edge);
   }
 
-  public MatchFieldTraverser(Result lastUpstreamRecord, MatchPathItem item) {
+  public MatchFieldTraverser(final Result lastUpstreamRecord, final MatchPathItem item) {
     super(lastUpstreamRecord, item);
   }
 
-  protected Iterable<ResultInternal> traversePatternEdge(Identifiable startingPoint, CommandContext iCommandContext) {
+  protected Iterable<ResultInternal> traversePatternEdge(final Identifiable startingPoint, final CommandContext iCommandContext) {
+//    Iterable possibleResults = null;
+//    if (this.item.getFilter() != null) {
+//      final String alias = getEndpointAlias();
+//      final Object matchedNodes = iCommandContext.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
+//      if (matchedNodes != null) {
+//        if (matchedNodes instanceof Iterable) {
+//          possibleResults = (Iterable) matchedNodes;
+//        } else {
+//          possibleResults = Collections.singleton(matchedNodes);
+//        }
+//      }
+//    }
 
-    Iterable possibleResults = null;
-    if (this.item.getFilter() != null) {
-      String alias = getEndpointAlias();
-      Object matchedNodes = iCommandContext.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
-      if (matchedNodes != null) {
-        if (matchedNodes instanceof Iterable) {
-          possibleResults = (Iterable) matchedNodes;
-        } else {
-          possibleResults = Collections.singleton(matchedNodes);
-        }
-      }
-    }
-
-    Object prevCurrent = iCommandContext.getVariable("$current");
-    iCommandContext.setVariable("$current", startingPoint);
+    final Object prevCurrent = iCommandContext.getVariable("current");
+    iCommandContext.setVariable("current", startingPoint);
     Object qR;
     try {
       // TODO check possible results!
       qR = ((FieldMatchPathItem) this.item).getExp().execute(startingPoint, iCommandContext);
     } finally {
-      iCommandContext.setVariable("$current", prevCurrent);
+      iCommandContext.setVariable("current", prevCurrent);
     }
 
     if (qR == null) {
-      return Collections.EMPTY_LIST;
+      return Collections.emptyList();
     }
     if (qR instanceof Identifiable) {
       return Collections.singleton(new ResultInternal((Document) ((Identifiable) qR).getRecord()));
@@ -85,31 +84,29 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
             fetchNext();
           }
           if (nextElement == null) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
-          ResultInternal res = nextElement;
+          final ResultInternal res = nextElement;
           nextElement = null;
           return res;
         }
 
         public void fetchNext() {
           while (iter.hasNext()) {
-            Object o = iter.next();
+            final Object o = iter.next();
             if (o instanceof Identifiable) {
               nextElement = new ResultInternal((Identifiable) o);
               break;
             } else if (o instanceof ResultInternal) {
               nextElement = (ResultInternal) o;
               break;
-            } else if (o == null) {
-              continue;
-            } else {
+            } else if (o != null) {
               throw new UnsupportedOperationException();
             }
           }
         }
       };
     }
-    return Collections.EMPTY_LIST;
+    return Collections.emptyList();
   }
 }

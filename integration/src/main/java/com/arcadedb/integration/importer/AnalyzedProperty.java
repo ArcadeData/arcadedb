@@ -60,7 +60,7 @@ public class AnalyzedProperty {
     return index;
   }
 
-  public void setLastContent(String lastContent) {
+  public void setLastContent(final String lastContent) {
     if (!collectingSamples)
       return;
 
@@ -84,7 +84,7 @@ public class AnalyzedProperty {
         if (candidateForInteger) {
           try {
             Long.parseLong(lastContent);
-          } catch (NumberFormatException e) {
+          } catch (final NumberFormatException e) {
             candidateForInteger = false;
           }
         }
@@ -92,7 +92,7 @@ public class AnalyzedProperty {
         if (candidateForDecimal) {
           try {
             Double.parseDouble(lastContent);
-          } catch (NumberFormatException e) {
+          } catch (final NumberFormatException e) {
             candidateForDecimal = false;
           }
         }

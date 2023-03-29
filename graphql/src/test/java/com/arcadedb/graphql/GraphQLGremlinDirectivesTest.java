@@ -25,7 +25,7 @@ public class GraphQLGremlinDirectivesTest extends AbstractGraphQLNativeLanguageD
   @Override
   protected void defineTypes(final Database database) {
     super.defineTypes(database);
-    ResultSet command = database.command("graphql", "type Query {\n" +//
+    final ResultSet command = database.command("graphql", "type Query {\n" +//
             "  bookById(id: String): Book\n" +//
             "  bookByName(bookNameParameter: String): Book @gremlin(statement: \"g.V().has('name', bookNameParameter)\")\n" +//
             "}");

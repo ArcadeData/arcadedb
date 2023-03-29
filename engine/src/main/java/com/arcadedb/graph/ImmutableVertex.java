@@ -20,14 +20,13 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.EmbeddedModifierProperty;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -73,17 +72,6 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public synchronized Object get(final String propertyName) {
-    if (propertyName == null)
-      return null;
-
-    checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
-    return map.get(propertyName);
-  }
-
-  @Override
   public synchronized RID getOutEdgesHeadChunk() {
     checkForLazyLoading();
     return outEdges;
@@ -114,7 +102,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public long countEdges(DIRECTION direction, String edgeType) {
+  public long countEdges(final DIRECTION direction, final String edgeType) {
     return database.getGraphEngine().countEdges(getMostUpdatedVertex(this), direction, edgeType);
   }
 
@@ -154,14 +142,15 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public Vertex asVertex(boolean loadContent) {
+  public Vertex asVertex(final boolean loadContent) {
     return this;
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
-    final Map<String, Object> map = super.toMap();
-    map.put("@cat", "v");
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> map = super.toMap(includeMetadata);
+    if (includeMetadata)
+      map.put("@cat", "v");
     return map;
   }
 

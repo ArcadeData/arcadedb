@@ -25,20 +25,10 @@ import java.util.*;
 public class SelectionSet extends SimpleNode {
   List<Selection> selections = new ArrayList<>();
 
-  public SelectionSet(int id) {
+  public SelectionSet(final int id) {
     super(id);
   }
 
-  public SelectionSet(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public List<Selection> getSelections() {
     return selections;

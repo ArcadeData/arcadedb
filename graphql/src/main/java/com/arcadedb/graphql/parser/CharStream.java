@@ -20,6 +20,8 @@
 /* ParserGeneratorCCOptions:SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import java.io.IOException;
+
 /**
  * This interface describes a character stream that maintains line and
  * column number positions of the characters.  It also has the capability
@@ -42,9 +44,9 @@ interface CharStream {
    * of selecting the input is the responsibility of the class
    * implementing this interface.
    * @return the next character from the selected input
-   * @throws java.io.IOException on IO error
+   * @throws IOException on IO error
    */
-  char readChar() throws java.io.IOException;
+  char readChar() throws IOException;
 
   /**
    * @return the column number of the first character for current token (being
@@ -84,7 +86,7 @@ interface CharStream {
    * All characters must remain in the buffer between two successive calls
    * to this method to implement backup correctly.
    */
-  char beginToken() throws java.io.IOException;
+  char beginToken() throws IOException;
 
   /**
    * @return a string made up of characters from the marked token beginning

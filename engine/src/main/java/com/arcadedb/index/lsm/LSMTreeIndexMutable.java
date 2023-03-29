@@ -50,7 +50,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public static final int                   CURRENT_VERSION     = 1;
   public static final String                UNIQUE_INDEX_EXT    = "umtidx";
   public static final String                NOTUNIQUE_INDEX_EXT = "numtidx";
-  private             int                   subIndexFileId      = -1;
   private             LSMTreeIndexCompacted subIndex            = null;
   private final       AtomicLong            statsAdjacentSteps  = new AtomicLong();
   private             int                   minPagesToScheduleACompaction;
@@ -72,8 +71,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at cloning time.
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final byte[] keyTypes, final int pageSize, final int version, final LSMTreeIndexCompacted subIndex) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize, version);
+      final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize, final int version, final LSMTreeIndexCompacted subIndex) throws IOException {
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, binaryKeyTypes, pageSize, version);
     this.subIndex = subIndex;
     minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
   }
@@ -105,7 +104,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       // TODO: COUNT THE MUTABLE PAGES FROM THE TAIL BACK TO THE HEAD
       currentMutablePages = 1;
 
-      subIndexFileId = currentPage.readInt(pos);
+      final int subIndexFileId = currentPage.readInt(pos);
 
       pos += INT_SERIALIZED_SIZE;
 
@@ -114,15 +113,18 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       for (int i = 0; i < len; ++i)
         this.binaryKeyTypes[i] = currentPage.readByte(pos++);
 
+      this.keyTypes = new Type[len];
+      for (int i = 0; i < len; ++i)
+        this.keyTypes[i] = Type.getByBinaryType(binaryKeyTypes[i]);
+
       minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
 
       if (subIndexFileId > 0) {
         subIndex = (LSMTreeIndexCompacted) database.getSchema().getFileById(subIndexFileId);
         subIndex.mainIndex = mainIndex;
         subIndex.binaryKeyTypes = binaryKeyTypes;
-
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. Please recreate the index from scratch (error=%s)",
           null, name, e.getMessage());
@@ -156,10 +158,11 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   public LSMTreeIndexCompacted createNewForCompaction() throws IOException {
-    int last_ = name.lastIndexOf('_');
+    final int last_ = name.lastIndexOf('_');
     final String newName = name.substring(0, last_) + "_" + System.nanoTime();
 
-    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + File.separator + newName, binaryKeyTypes, pageSize);
+    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + File.separator + newName, keyTypes, binaryKeyTypes,
+        pageSize);
   }
 
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) throws IOException {
@@ -174,17 +177,18 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    */
   public IndexCursor range(final Object[] fromKeys, final boolean beginKeysInclusive, final Object[] toKeys, final boolean endKeysInclusive)
       throws IOException {
-    boolean ascending = true;
-
+    final boolean ascending;
     if (fromKeys != null && toKeys != null)
       ascending = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, fromKeys, toKeys) <= 0;
+    else
+      ascending = true;
 
-    return new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive);
+    return mainIndex.getLock().executeInReadLock(() -> new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive));
   }
 
   public IndexCursor range(final boolean ascending, final Object[] fromKeys, final boolean beginKeysInclusive, final Object[] toKeys,
       final boolean endKeysInclusive) throws IOException {
-    return new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive);
+    return mainIndex.getLock().executeInReadLock(() -> new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive));
   }
 
   public LSMTreeIndexUnderlyingPageCursor newPageIterator(final int pageId, final int currentEntryInPage, final boolean ascendingOrder) throws IOException {
@@ -230,7 +234,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys, int mid, final int count,
       final int purpose) {
 
-    int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
+    final int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
 
     if (result > 0)
       return HIGHER;
@@ -422,7 +426,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     database.checkTransactionIsActive(database.isAutoTransaction());
 
     final int txPageCounter = getTotalPages();
-
     if (txPageCounter < 1)
       throw new IllegalArgumentException("Cannot update the index '" + name + "' because the file is invalid");
 
@@ -448,7 +451,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       final boolean mutablePage = isMutable(currentPage);
 
-      if (!mutablePage || keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE) < keyValueContent.size()) {
+      final int availableSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE));
+      if (!mutablePage || keyValueContent.size() >= availableSpaceInPage - INT_SERIALIZED_SIZE) {
 
         if (mutablePage)
           setMutable(currentPage, false);
@@ -483,10 +487,11 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       setValuesFreePosition(currentPage, keyValueFreePosition);
 
       if (LogManager.instance().isDebugEnabled())
-        LogManager.instance().log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)",  Arrays.toString(keys),
-            Arrays.toString(rids), name, currentPage.getPageId(), count + 1, newPage, Thread.currentThread().getId());
+        LogManager.instance()
+            .log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)", Arrays.toString(keys), Arrays.toString(rids),
+                name, currentPage.getPageId(), count + 1, newPage, Thread.currentThread().getId());
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new DatabaseOperationException(
           "Cannot index key '" + Arrays.toString(keys) + "' with value '" + Arrays.toString(rids) + "' in index '" + name + "'", e);
     }
@@ -607,7 +612,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
             .log(this, Level.FINE, "Put removed entry %s=%s (original=%s) in index '%s' (page=%s countInPage=%d newPage=%s)", null, Arrays.toString(keys),
                 removedRID, rid, name, currentPage.getPageId(), count + 1, newPage);
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot index key '" + Arrays.toString(keys) + "' with value '" + rid + "' in index '" + name + "'", e);
     }
   }

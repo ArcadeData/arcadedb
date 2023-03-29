@@ -58,7 +58,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
     @Override
-    public void execute(AsyncThread async, DatabaseInternal database) {
+    public void execute(final AsyncThread async, final DatabaseInternal database) {
+      // NO ACTIONS
     }
 
     @Override
@@ -69,6 +70,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   private OkCallback    onOkCallback;
   private ErrorCallback onErrorCallback;
+  private AtomicLong    counterScheduledTasks = new AtomicLong();
 
   public class AsyncThread extends Thread {
     public final    BlockingQueue<DatabaseAsyncTask> queue;
@@ -93,6 +95,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         LogManager.instance().log(this, Level.WARNING, "Error on async operation queue implementation setting: %s is not supported", cfgQueueImpl);
         this.queue = new ArrayBlockingQueue<>(queueSize);
       }
+
+      backPressurePercentage = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_BACK_PRESSURE);
     }
 
     public boolean isShutdown() {
@@ -130,7 +134,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                   database.begin();
                 }
 
-              } catch (Throwable e) {
+              } catch (final Throwable e) {
                 onError(e);
               } finally {
                 message.completed();
@@ -140,11 +144,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           } else if (shutdown)
             break;
 
-        } catch (InterruptedException e) {
+        } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           queue.clear();
           break;
-        } catch (Throwable e) {
+        } catch (final Throwable e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on executing asynchronous operation (asyncThread=%s)", e, getName());
         }
       }
@@ -153,7 +157,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         if (database.isTransactionActive())
           database.commit();
         onOk();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         onError(e);
       }
     }
@@ -175,11 +179,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   public DBAsyncStats getStats() {
     final DBAsyncStats stats = new DBAsyncStats();
-    stats.queueSize = 0;
 
+    stats.queueSize = 0;
     if (executorThreads != null)
       for (int i = 0; i < executorThreads.length; ++i)
         stats.queueSize += executorThreads[i].queue.size();
+
+    stats.scheduledTasks = counterScheduledTasks.get();
 
     return stats;
   }
@@ -193,6 +199,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public boolean isTransactionUseWAL() {
     return transactionUseWAL;
+  }
+
+  @Override
+  public WALFile.FLUSH_TYPE getTransactionSync() {
+    return transactionSync;
   }
 
   @Override
@@ -267,7 +278,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       try {
         semaphores[i] = new DatabaseAsyncCompletion();
         executorThreads[i].queue.put(semaphores[i]);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return false;
       }
@@ -287,7 +298,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         if (currentTimeout < 1)
           return false;
 
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return false;
       }
@@ -332,14 +343,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final List<Bucket> buckets = type.getBuckets(polymorphic);
       final CountDownLatch semaphore = new CountDownLatch(buckets.size());
 
-      for (Bucket b : buckets) {
+      for (final Bucket b : buckets) {
         final int slot = getSlot(b.getId());
         scheduleTask(slot, new DatabaseAsyncScanBucket(semaphore, callback, errorRecordCallback, b), true, backPressurePercentage);
       }
 
       semaphore.await();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new DatabaseOperationException("Error on executing parallel scan of type '" + database.getSchema().getType(typeName) + "'", e);
     }
   }
@@ -582,6 +593,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   public static class DBAsyncStats {
     public long queueSize;
+    public long scheduledTasks;
   }
 
   private void createThreads(int parallelLevel) {
@@ -608,7 +620,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           executorThreads[i].queue.put(FORCE_EXIT);
           executorThreads[i].join(10000);
         }
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         // IGNORE IT
         Thread.currentThread().interrupt();
       } finally {
@@ -622,7 +634,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (onOkCallback != null) {
       try {
         onOkCallback.call();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on invoking onOk() callback for asynchronous operation %s", e, this);
       }
     }
@@ -633,7 +645,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (onErrorCallback != null) {
       try {
         onErrorCallback.call(e);
-      } catch (Exception e1) {
+      } catch (final Exception e1) {
         LogManager.instance().log(this, Level.SEVERE, "Error on invoking onError() callback for asynchronous operation %s", e, this);
       }
     }
@@ -680,12 +692,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             }
           }
         }
+
+        counterScheduledTasks.incrementAndGet();
+
         return true;
       }
 
-      return queue.offer(task);
+      final boolean result = queue.offer(task);
+      if (result)
+        counterScheduledTasks.incrementAndGet();
+      return result;
 
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new DatabaseOperationException("Error on executing asynchronous task " + task);
     }

@@ -28,9 +28,8 @@ public class GetReadyHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
-    exchange.setStatusCode(204);
-    exchange.getResponseSender().send("");
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+    return new ExecutionResponse(204, "");
   }
 
   @Override

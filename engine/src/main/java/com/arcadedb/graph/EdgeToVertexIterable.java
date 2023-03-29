@@ -27,13 +27,13 @@ public class EdgeToVertexIterable implements Iterable<Vertex> {
   private final Iterable<Edge>   edges;
   private final Vertex.DIRECTION direction;
 
-  public EdgeToVertexIterable(Iterable<Edge> edges, Vertex.DIRECTION direction) {
+  public EdgeToVertexIterable(final Iterable<Edge> edges, final Vertex.DIRECTION direction) {
     this.edges = edges;
     this.direction = direction;
   }
 
   @Override
   public Iterator<Vertex> iterator() {
-    return new EdgeToVertexIterator(edges.iterator(), direction);
+    return new EdgeToVertexIterator((EdgeIterator) edges.iterator(), direction);
   }
 }

@@ -22,7 +22,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 import java.util.stream.*;
@@ -34,23 +33,19 @@ public class OrderBy extends SimpleNode {
     super(-1);
   }
 
-  public OrderBy(int id) {
+  public OrderBy(final int id) {
     super(id);
-  }
-
-  public OrderBy(SqlParser p, int id) {
-    super(p, id);
   }
 
   public List<OrderByItem> getItems() {
     return items;
   }
 
-  public void setItems(List<OrderByItem> items) {
+  public void setItems(final List<OrderByItem> items) {
     this.items = items;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (items != null && items.size() > 0) {
       builder.append("ORDER BY ");
       for (int i = 0; i < items.size(); i++) {
@@ -62,9 +57,9 @@ public class OrderBy extends SimpleNode {
     }
   }
 
-  public int compare(Result a, Result b, CommandContext ctx) {
-    for (OrderByItem item : items) {
-      int result = item.compare(a, b, ctx);
+  public int compare(final Result a, final Result b, final CommandContext context) {
+    for (final OrderByItem item : items) {
+      final int result = item.compare(a, b, context);
       if (result != 0) {
         return result > 0 ? 1 : -1;
       }
@@ -73,64 +68,25 @@ public class OrderBy extends SimpleNode {
   }
 
   public OrderBy copy() {
-    OrderBy result = new OrderBy(-1);
+    final OrderBy result = new OrderBy(-1);
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    OrderBy oOrderBy = (OrderBy) o;
-
-    return Objects.equals(items, oOrderBy.items);
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
   @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new SimpleNode[items.size()]);
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (items != null) {
-      for (OrderByItem item : items) {
+      for (final OrderByItem item : items) {
         item.extractSubQueries(collector);
-      }
-    }
-  }
-
-  public boolean refersToParent() {
-    if (items != null) {
-      for (OrderByItem item : items) {
-        if (item.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (items != null) {
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-
-    if (fromResult.getProperty("items") != null) {
-      List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (Result r : ser) {
-        OrderByItem exp = new OrderByItem();
-        exp.deserialize(r);
-        items.add(exp);
       }
     }
   }

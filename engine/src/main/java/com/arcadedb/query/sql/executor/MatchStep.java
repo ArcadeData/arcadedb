@@ -34,7 +34,7 @@ public class MatchStep extends AbstractExecutionStep {
   private         MatchEdgeTraverser traverser;
   private         Result             nextResult;
 
-  public MatchStep(CommandContext context, EdgeTraversal edge, boolean profilingEnabled) {
+  public MatchStep(final CommandContext context, final EdgeTraversal edge, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.edge = edge;
   }
@@ -48,7 +48,7 @@ public class MatchStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     return new ResultSet() {
       int localCount = 0;
 
@@ -58,7 +58,7 @@ public class MatchStep extends AbstractExecutionStep {
           return false;
         }
         if (nextResult == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         return nextResult != null;
       }
@@ -66,48 +66,34 @@ public class MatchStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (localCount >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextResult == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         if (nextResult == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        Result result = nextResult;
-        fetchNext(ctx, nRecords);
+        final Result result = nextResult;
+        fetchNext(context, nRecords);
         localCount++;
-        ctx.setVariable("$matched", result);
+        context.setVariable("matched", result);
         return result;
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private void fetchNext(CommandContext ctx, int nRecords) {
+  private void fetchNext(final CommandContext context, final int nRecords) {
     nextResult = null;
     while (true) {
-      if (traverser != null && traverser.hasNext(ctx)) {
-        nextResult = traverser.next(ctx);
+      if (traverser != null && traverser.hasNext(context)) {
+        nextResult = traverser.next(context);
         break;
       }
 
       if (upstream == null || !upstream.hasNext()) {
-        upstream = getPrev().get().syncPull(ctx, nRecords);
+        upstream = getPrev().syncPull(context, nRecords);
       }
       if (!upstream.hasNext()) {
         return;
@@ -118,8 +104,8 @@ public class MatchStep extends AbstractExecutionStep {
       traverser = createTraverser(lastUpstreamRecord);
 
       boolean found = false;
-      while (traverser.hasNext(ctx)) {
-        nextResult = traverser.next(ctx);
+      while (traverser.hasNext(context)) {
+        nextResult = traverser.next(context);
         if (nextResult != null) {
           found = true;
           break;
@@ -131,7 +117,7 @@ public class MatchStep extends AbstractExecutionStep {
     }
   }
 
-  protected MatchEdgeTraverser createTraverser(Result lastUpstreamRecord) {
+  protected MatchEdgeTraverser createTraverser(final Result lastUpstreamRecord) {
     if (edge.edge.item instanceof MultiMatchPathItem) {
       return new MatchMultiEdgeTraverser(lastUpstreamRecord, edge);
     } else if (edge.edge.item instanceof FieldMatchPathItem) {
@@ -144,9 +130,9 @@ public class MatchStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ MATCH ");
     if (edge.out) {

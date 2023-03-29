@@ -26,32 +26,26 @@ import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
-import java.util.stream.*;
 
 public class ArrayConcatExpression extends SimpleNode {
 
   List<ArrayConcatExpressionElement> childExpressions = new ArrayList<>();
 
-  public ArrayConcatExpression(int id) {
+  public ArrayConcatExpression(final int id) {
     super(id);
-  }
-
-  public ArrayConcatExpression(SqlParser p, int id) {
-    super(p, id);
   }
 
   public List<ArrayConcatExpressionElement> getChildExpressions() {
     return childExpressions;
   }
 
-  public void setChildExpressions(List<ArrayConcatExpressionElement> childExpressions) {
+  public void setChildExpressions(final List<ArrayConcatExpressionElement> childExpressions) {
     this.childExpressions = childExpressions;
   }
 
-  public Object apply(Object left, Object right) {
+  public Object apply(final Object left, final Object right) {
 
     if (left == null && right == null) {
       return null;
@@ -73,9 +67,9 @@ public class ArrayConcatExpression extends SimpleNode {
       }
     }
 
-    List<Object> result = new ArrayList<>();
+    final List<Object> result = new ArrayList<>();
     if (MultiValue.isMultiValue(left)) {
-      Iterator<Object> leftIter = MultiValue.getMultiValueIterator(left);
+      final Iterator<Object> leftIter = MultiValue.getMultiValueIterator(left);
       while (leftIter.hasNext()) {
         result.add(leftIter.next());
       }
@@ -84,7 +78,7 @@ public class ArrayConcatExpression extends SimpleNode {
     }
 
     if (MultiValue.isMultiValue(right)) {
-      Iterator<Object> rightIter = MultiValue.getMultiValueIterator(right);
+      final Iterator<Object> rightIter = MultiValue.getMultiValueIterator(right);
       while (rightIter.hasNext()) {
         result.add(rightIter.next());
       }
@@ -95,95 +89,68 @@ public class ArrayConcatExpression extends SimpleNode {
     return result;
   }
 
-  public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
-    Object result = childExpressions.get(0).execute(iCurrentRecord, ctx);
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
+    Object result = childExpressions.get(0).execute(iCurrentRecord, context);
     for (int i = 1; i < childExpressions.size(); i++) {
-      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, ctx));
+      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, context));
     }
     return result;
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
-    Object result = childExpressions.get(0).execute(iCurrentRecord, ctx);
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+    Object result = childExpressions.get(0).execute(iCurrentRecord, context);
     for (int i = 1; i < childExpressions.size(); i++) {
-      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, ctx));
+      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, context));
     }
     return result;
   }
 
-  public boolean isEarlyCalculated() {
-    for (ArrayConcatExpressionElement element : childExpressions) {
-      if (!element.isEarlyCalculated()) {
+  public boolean isEarlyCalculated(final CommandContext context) {
+    for (final ArrayConcatExpressionElement element : childExpressions) {
+      if (!element.isEarlyCalculated(context)) {
         return false;
       }
     }
     return true;
   }
 
-  protected boolean supportsBasicCalculation() {
-    for (ArrayConcatExpressionElement expr : this.childExpressions) {
-      if (!expr.supportsBasicCalculation()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  public boolean needsAliases(Set<String> aliases) {
-    for (ArrayConcatExpressionElement expr : childExpressions) {
-      if (expr.needsAliases(aliases)) {
+  public boolean isAggregate(final CommandContext context) {
+    for (final ArrayConcatExpressionElement expr : this.childExpressions) {
+      if (expr.isAggregate(context)) {
         return true;
       }
     }
     return false;
   }
 
-  public boolean isAggregate() {
-    for (ArrayConcatExpressionElement expr : this.childExpressions) {
-      if (expr.isAggregate()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  public SimpleNode splitForAggregation(AggregateProjectionSplit aggregateProj) {
-    if (isAggregate()) {
+  public SimpleNode splitForAggregation(final CommandContext context) {
+    if (isAggregate(context)) {
       throw new CommandExecutionException("Cannot use aggregate functions in array concatenation");
     } else {
       return this;
     }
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     throw new UnsupportedOperationException("array concatenation expressions do not allow plain aggregation");
   }
 
   public ArrayConcatExpression copy() {
-    ArrayConcatExpression result = new ArrayConcatExpression(-1);
+    final ArrayConcatExpression result = new ArrayConcatExpression(-1);
     this.childExpressions.forEach(x -> result.childExpressions.add(x.copy()));
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
-    for (ArrayConcatExpressionElement expr : this.childExpressions) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    for (final ArrayConcatExpressionElement expr : this.childExpressions) {
       expr.extractSubQueries(collector);
     }
   }
 
-  public boolean refersToParent() {
-    for (ArrayConcatExpressionElement expr : this.childExpressions) {
-      if (expr.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<>();
-    for (ArrayConcatExpressionElement exp : childExpressions) {
-      List<String> x = exp.getMatchPatternInvolvedAliases();
+    final List<String> result = new ArrayList<>();
+    for (final ArrayConcatExpressionElement exp : childExpressions) {
+      final List<String> x = exp.getMatchPatternInvolvedAliases();
       if (x != null) {
         result.addAll(x);
       }
@@ -194,7 +161,7 @@ public class ArrayConcatExpression extends SimpleNode {
     return result;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     for (int i = 0; i < childExpressions.size(); i++) {
       if (i > 0) {
         builder.append(" || ");
@@ -204,50 +171,13 @@ public class ArrayConcatExpression extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    ArrayConcatExpression that = (ArrayConcatExpression) o;
-
-    return Objects.equals(childExpressions, that.childExpressions);
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
   @Override
-  public int hashCode() {
-    return childExpressions != null ? childExpressions.hashCode() : 0;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (childExpressions != null) {
-      result.setProperty("childExpressions", childExpressions.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-
-    if (fromResult.getProperty("childExpressions") != null) {
-      List<Result> ser = fromResult.getProperty("childExpressions");
-      childExpressions = new ArrayList<>();
-      for (Result r : ser) {
-        ArrayConcatExpressionElement exp = new ArrayConcatExpressionElement(-1);
-        exp.deserialize(r);
-        childExpressions.add(exp);
-      }
-    }
-  }
-
-  public boolean isCacheable() {
-    for (ArrayConcatExpressionElement exp : childExpressions) {
-      if (!exp.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  protected SimpleNode[] getCacheableElements() {
+    return childExpressions.toArray(new SimpleNode[childExpressions.size()]);
   }
 }
 /* JavaCC - OriginalChecksum=8d976a02f84460bf21c4304009135345 (do not edit this line) */

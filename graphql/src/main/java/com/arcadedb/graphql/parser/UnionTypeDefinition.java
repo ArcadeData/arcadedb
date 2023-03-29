@@ -26,23 +26,13 @@ public class UnionTypeDefinition extends TypeDefinition {
   protected Directives   directives;
   protected UnionMembers unionMembers;
 
-  public UnionTypeDefinition(int id) {
+  public UnionTypeDefinition(final int id) {
     super(id);
-  }
-
-  public UnionTypeDefinition(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   public String getName() {
     return name != null ? name.value : null;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=e6e65813d48e37395b67db4c66d1b77a (do not edit this line) */

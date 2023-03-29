@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 
@@ -29,17 +31,16 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
-
   boolean served = false;
   long    cost   = 0;
 
-  public FetchFromSchemaDatabaseStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromSchemaDatabaseStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -48,46 +49,48 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 
           if (!served) {
             final ResultInternal result = new ResultInternal();
 
-            final Database db = ctx.getDatabase();
+            final Database db = context.getDatabase();
             result.setProperty("name", db.getName());
             result.setProperty("path", db.getDatabasePath());
             result.setProperty("mode", db.getMode());
-            result.setProperty("settings", db.getConfiguration().getContextKeys());
             result.setProperty("dateFormat", db.getSchema().getDateFormat());
             result.setProperty("dateTimeFormat", db.getSchema().getDateTimeFormat());
             result.setProperty("timezone", db.getSchema().getTimeZone().getDisplayName());
             result.setProperty("encoding", db.getSchema().getEncoding());
 
+            final ContextConfiguration dbCfg = db.getConfiguration();
+            final Set<String> contextKeys = dbCfg.getContextKeys();
+
+            final List<Map<String, Object>> settings = new ArrayList<>();
+            for (GlobalConfiguration cfg : GlobalConfiguration.values()) {
+              if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE) {
+                final Map<String, Object> map = new LinkedHashMap<>();
+                map.put("key", cfg.getKey());
+                map.put("value", convertValue(cfg.getKey(), dbCfg.getValue(cfg)));
+                map.put("description", cfg.getDescription());
+                map.put("overridden", contextKeys.contains(cfg.getKey()));
+                map.put("default", convertValue(cfg.getKey(), cfg.getDefValue()));
+
+                settings.add(map);
+              }
+            }
+            result.setProperty("settings", settings);
+
             served = true;
             return result;
           }
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         } finally {
           if (profilingEnabled) {
             cost += (System.nanoTime() - begin);
           }
         }
-      }
-
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
       }
 
       @Override
@@ -98,8 +101,8 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -107,8 +110,14 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
+  private Object convertValue(final String key, Object value) {
+    if (key.toLowerCase().contains("password"))
+      // MASK SENSITIVE DATA
+      value = "*****";
+
+    if (value instanceof Class)
+      value = ((Class<?>) value).getName();
+
+    return value;
   }
 }

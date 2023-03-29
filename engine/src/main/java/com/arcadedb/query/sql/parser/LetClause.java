@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -34,14 +31,10 @@ public class LetClause extends SimpleNode {
     super(id);
   }
 
-  public LetClause(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("LET ");
     boolean first = true;
-    for (LetItem item : items) {
+    for (final LetItem item : items) {
       if (!first) {
         builder.append(", ");
       }
@@ -65,64 +58,19 @@ public class LetClause extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final LetClause that = (LetClause) o;
-
-    return Objects.equals(items, that.items);
-  }
-
-  @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
-  }
-
-  public boolean refersToParent() {
-    for (LetItem item : items) {
-      if (item.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
-    for (LetItem item : items) {
+    for (final LetItem item : items) {
       item.extractSubQueries(collector);
     }
   }
 
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (items != null) {
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("items") != null) {
-      final List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (Result r : ser) {
-        LetItem exp = new LetItem(-1);
-        exp.deserialize(r);
-        items.add(exp);
-      }
-    }
-  }
-
-  public boolean isCacheable() {
-    for (LetItem item : items) {
-      if (!item.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new LetItem[items.size()]);
   }
 }
 

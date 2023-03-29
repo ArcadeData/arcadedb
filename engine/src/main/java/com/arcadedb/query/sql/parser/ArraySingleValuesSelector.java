@@ -34,17 +34,13 @@ public class ArraySingleValuesSelector extends SimpleNode {
 
   protected List<ArraySelector> items = new ArrayList<>();
 
-  public ArraySingleValuesSelector(int id) {
+  public ArraySingleValuesSelector(final int id) {
     super(id);
   }
 
-  public ArraySingleValuesSelector(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     boolean first = true;
-    for (ArraySelector item : items) {
+    for (final ArraySelector item : items) {
       if (!first) {
         builder.append(",");
       }
@@ -53,10 +49,10 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
   }
 
-  public Object execute(Identifiable iCurrentRecord, Object iResult, CommandContext ctx) {
-    List<Object> result = new ArrayList<>();
-    for (ArraySelector item : items) {
-      Object index = item.getValue(iCurrentRecord, iResult, ctx);
+  public Object execute(final Identifiable iCurrentRecord, final Object iResult, final CommandContext context) {
+    final List<Object> result = new ArrayList<>();
+    for (final ArraySelector item : items) {
+      final Object index = item.getValue(iCurrentRecord, iResult, context);
       if (index == null) {
         return null;
       }
@@ -69,7 +65,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
         } else if (iResult instanceof Result && index instanceof String) {
           result.add(((Result) iResult).getProperty((String) index));
         } else if (MultiValue.isMultiValue(iResult)) {
-          Iterator<Object> iter = MultiValue.getMultiValueIterator(iResult);
+          final Iterator<Object> iter = MultiValue.getMultiValueIterator(iResult);
           while (iter.hasNext()) {
             result.add(calculateValue(iter.next(), index));
           }
@@ -85,10 +81,10 @@ public class ArraySingleValuesSelector extends SimpleNode {
     return result;
   }
 
-  public Object execute(Result iCurrentRecord, Object iResult, CommandContext ctx) {
-    List<Object> result = new ArrayList<>();
-    for (ArraySelector item : items) {
-      Object index = item.getValue(iCurrentRecord, iResult, ctx);
+  public Object execute(final Result iCurrentRecord, final Object iResult, final CommandContext context) {
+    final List<Object> result = new ArrayList<>();
+    for (final ArraySelector item : items) {
+      final Object index = item.getValue(iCurrentRecord, iResult, context);
       if (index == null) {
         return null;
       }
@@ -101,7 +97,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
         } else if (iResult instanceof Result && index instanceof String) {
           result.add(((Result) iResult).getProperty((String) index));
         } else if (MultiValue.isMultiValue(iResult)) {
-          Iterator<Object> iter = MultiValue.getMultiValueIterator(iResult);
+          final Iterator<Object> iter = MultiValue.getMultiValueIterator(iResult);
           while (iter.hasNext()) {
             result.add(calculateValue(iter.next(), index));
           }
@@ -117,7 +113,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
     return result;
   }
 
-  private Object calculateValue(Object item, Object index) {
+  private Object calculateValue(final Object item, final Object index) {
     if (index instanceof Integer) {
       return MultiValue.getValue(item, ((Integer) index).intValue());
     } else if (item instanceof Map) {
@@ -125,8 +121,8 @@ public class ArraySingleValuesSelector extends SimpleNode {
     } else if (item instanceof Result && index instanceof String) {
       return ((Result) item).getProperty((String) index);
     } else if (MultiValue.isMultiValue(item)) {
-      Iterator<Object> iter = MultiValue.getMultiValueIterator(item);
-      List<Object> result = new ArrayList<>();
+      final Iterator<Object> iter = MultiValue.getMultiValueIterator(item);
+      final List<Object> result = new ArrayList<>();
       while (iter.hasNext()) {
         result.add(calculateValue(iter.next(), index));
       }
@@ -136,74 +132,47 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
   }
 
-  public boolean needsAliases(Set<String> aliases) {
-    for (ArraySelector item : items) {
-      if (item.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public ArraySingleValuesSelector copy() {
-    ArraySingleValuesSelector result = new ArraySingleValuesSelector(-1);
+    final ArraySingleValuesSelector result = new ArraySingleValuesSelector(-1);
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    ArraySingleValuesSelector that = (ArraySingleValuesSelector) o;
-
-    return Objects.equals(items, that.items);
+  protected Object[] getIdentityElements() {
+    return new Object[] { items };
   }
 
   @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new ArraySelector[items.size()]);
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (items != null) {
-      for (ArraySelector item : items) {
+      for (final ArraySelector item : items) {
         item.extractSubQueries(collector);
       }
     }
   }
 
-  public boolean refersToParent() {
+  public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {
     if (items != null) {
-      for (ArraySelector item : items) {
-        if (item.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  public void setValue(Result currentRecord, Object target, Object value, CommandContext ctx) {
-    if (items != null) {
-      for (ArraySelector item : items) {
-        item.setValue(currentRecord, target, value, ctx);
+      for (final ArraySelector item : items) {
+        item.setValue(currentRecord, target, value, context);
       }
     }
   }
 
-  public void applyRemove(Object currentValue, ResultInternal originalRecord, CommandContext ctx) {
+  public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext context) {
     if (currentValue == null) {
       return;
     }
-    List values = this.items.stream().map(x -> x.getValue(originalRecord, null, ctx)).collect(Collectors.toList());
+    final List values = this.items.stream().map(x -> x.getValue(originalRecord, null, context)).collect(Collectors.toList());
     if (currentValue instanceof List) {
-      List<Object> list = (List) currentValue;
+      final List<Object> list = (List) currentValue;
       values.sort(this::compareKeysForRemoval);
-      for (Object val : values) {
+      for (final Object val : values) {
         if (val instanceof Integer) {
           list.remove((int) (Integer) val);
         } else {
@@ -211,21 +180,21 @@ public class ArraySingleValuesSelector extends SimpleNode {
         }
       }
     } else if (currentValue instanceof Set) {
-      Set set = (Set) currentValue;
-      Iterator iterator = set.iterator();
-      int count = 0;
+      final Set set = (Set) currentValue;
+      final Iterator iterator = set.iterator();
+      final int count = 0;
       while (iterator.hasNext()) {
-        Object item = iterator.next();
+        final Object item = iterator.next();
         if (values.contains(count) || values.contains(item)) {
           iterator.remove();
         }
       }
     } else if (currentValue instanceof Map) {
-      for (Object val : values) {
+      for (final Object val : values) {
         ((Map) currentValue).remove(val);
       }
     } else if (currentValue instanceof Result) {
-      for (Object val : values) {
+      for (final Object val : values) {
         ((ResultInternal) currentValue).removeProperty("" + val);
       }
     } else {
@@ -233,7 +202,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
   }
 
-  private int compareKeysForRemoval(Object o1, Object o2) {
+  private int compareKeysForRemoval(final Object o1, final Object o2) {
     if (o1 instanceof Integer) {
       if (o2 instanceof Integer) {
         return (int) o2 - (int) o1;
@@ -244,27 +213,6 @@ public class ArraySingleValuesSelector extends SimpleNode {
       return 1;
     } else {
       return 0;
-    }
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (items != null) {
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-
-    if (fromResult.getProperty("items") != null) {
-      List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (Result r : ser) {
-        ArraySelector exp = new ArraySelector(-1);
-        exp.deserialize(r);
-        items.add(exp);
-      }
     }
   }
 }

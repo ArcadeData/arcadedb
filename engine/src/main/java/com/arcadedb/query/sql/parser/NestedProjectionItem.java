@@ -21,34 +21,24 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
 public class NestedProjectionItem extends SimpleNode {
-
-  protected boolean exclude = false;
-
-  protected boolean star = false;
-
-  protected Expression expression;
-  protected boolean    rightWildcard = false;
-
+  protected boolean          exclude       = false;
+  protected boolean          star          = false;
+  protected Expression       expression;
+  protected boolean          rightWildcard = false;
   protected NestedProjection expansion;
   protected Identifier       alias;
 
-  public NestedProjectionItem(int id) {
+  public NestedProjectionItem(final int id) {
     super(id);
-  }
-
-  public NestedProjectionItem(SqlParser p, int id) {
-    super(p, id);
   }
 
   @Override
   public NestedProjectionItem copy() {
-    NestedProjectionItem result = new NestedProjectionItem(-1);
+    final NestedProjectionItem result = new NestedProjectionItem(-1);
     result.exclude = exclude;
     result.star = star;
     result.expression = expression == null ? null : expression.copy();
@@ -70,12 +60,12 @@ public class NestedProjectionItem extends SimpleNode {
    *
    * @return
    */
-  public boolean matches(String propertyName) {
+  public boolean matches(final String propertyName) {
     if (star) {
       return true;
     }
     if (expression != null) {
-      String fieldString = expression.getDefaultAlias().getStringValue();
+      final String fieldString = expression.getDefaultAlias().getStringValue();
       if (fieldString.equals(propertyName)) {
         return true;
       }
@@ -85,7 +75,7 @@ public class NestedProjectionItem extends SimpleNode {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (exclude) {
       builder.append("!");
     }
@@ -108,13 +98,13 @@ public class NestedProjectionItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final  NestedProjectionItem that = (NestedProjectionItem) o;
+    final NestedProjectionItem that = (NestedProjectionItem) o;
 
     if (exclude != that.exclude)
       return false;
@@ -140,43 +130,8 @@ public class NestedProjectionItem extends SimpleNode {
     return result;
   }
 
-  public Object expand(Expression expression, String name, Object value, CommandContext ctx, int recursion) {
-    return expansion.apply(expression, value, ctx);
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("exclude", exclude);
-    result.setProperty("star", star);
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    result.setProperty("rightWildcard", rightWildcard);
-    if (expansion != null) {
-      result.setProperty("expansion", expansion.serialize());
-    }
-    if (alias != null) {
-      result.setProperty("alias", alias.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    exclude = fromResult.getProperty("exclude");
-    star = fromResult.getProperty("star");
-    if (fromResult.getProperty("field") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    rightWildcard = fromResult.getProperty("rightWildcard");
-    if (fromResult.getProperty("expansion") != null) {
-      expansion = new NestedProjection(-1);
-      expansion.deserialize(fromResult.getProperty("expansion"));
-    }
-    if (fromResult.getProperty("alias") != null) {
-      alias = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("alias"));
-    }
+  public Object expand(final Expression expression, final String name, final Object value, final CommandContext context, final int recursion) {
+    return expansion.apply(expression, value, context);
   }
 }
 /* JavaCC - OriginalChecksum=606b3fe37ff952934e3e2e3daa9915f2 (do not edit this line) */

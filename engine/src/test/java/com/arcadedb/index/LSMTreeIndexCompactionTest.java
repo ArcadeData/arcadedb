@@ -54,10 +54,11 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(COMPACTION_RAM_MB);
       GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
 
-      // INSERT DATA AND CHECK WITH LOOKUPS (EVERY 100)
+      // INSERT DATA AND CHECK WITH LOOKUP (EVERY 100)
       LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA AND CHECK WITH LOKUPS (EVERY 100)");
       insertData();
       checkLookups(100, 1);
+      checkRanges(100, 1);
 
       // THIS TIME LOOK UP FOR KEYS WHILE COMPACTION
       LogManager.instance().log(this, Level.FINE, "TEST: THIS TIME LOOK UP FOR KEYS WHILE COMPACTION");
@@ -74,6 +75,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       }, 0);
 
       checkLookups(1, 1);
+      checkRanges(1, 1);
 
       semaphore1.await();
 
@@ -81,8 +83,10 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS");
       insertData();
       checkLookups(1, 2);
+      checkRanges(1, 2);
       compaction();
       checkLookups(1, 2);
+      checkRanges(1, 2);
 
       // INSERT DATA WHILE COMPACTING AND CHECK AGAIN
       LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA WHILE COMPACTING AND CHECK AGAIN");
@@ -100,10 +104,12 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       semaphore2.await();
 
       checkLookups(1, 3);
+      checkRanges(1, 3);
       compaction();
       checkLookups(1, 3);
+      checkRanges(1, 3);
 
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Assertions.fail(e);
     } finally {
       GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(300);
@@ -113,12 +119,12 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
   private void compaction() {
     if (database.isOpen())
-      for (Index index : database.getSchema().getIndexes()) {
+      for (final Index index : database.getSchema().getIndexes()) {
         if (database.isOpen())
           try {
             index.scheduleCompaction();
             ((IndexInternal) index).compact();
-          } catch (Exception e) {
+          } catch (final Exception e) {
             Assertions.fail(e);
           }
       }
@@ -127,10 +133,10 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   private void insertData() {
     database.transaction(() -> {
       if (!database.getSchema().existsType(TYPE_NAME)) {
-        DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
+        final DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
 
         v.createProperty("id", String.class);
-        v.createProperty("number", String.class);
+        v.createProperty("number", Integer.class);
         v.createProperty("relativeName", String.class);
 
         v.createProperty("Name", String.class);
@@ -141,7 +147,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       }
     });
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
     try {
 
       database.setReadYourWrites(false);
@@ -152,7 +158,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
       database.async().onError(new ErrorCallback() {
         @Override
-        public void call(Throwable exception) {
+        public void call(final Throwable exception) {
           LogManager.instance().log(this, Level.SEVERE, "TEST: ERROR: ", exception);
           exception.printStackTrace();
           Assertions.fail(exception);
@@ -175,7 +181,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
             final String randomString = "" + counter;
 
             v.set("id", randomString); // INDEXED
-            v.set("number", "" + counter); // INDEXED
+            v.set("number", counter); // INDEXED
             v.set("relativeName", "/shelf=" + counter + "/slot=1"); // INDEXED
 
             v.set("Name", "1" + counter);
@@ -215,16 +221,19 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       try {
         final IndexCursor records = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { id });
         Assertions.assertNotNull(records);
-        if (records.size() != expectedItems)
-          LogManager.instance().log(this, Level.FINE, "Cannot find key '%s'", null, id);
 
-        Assertions.assertEquals(expectedItems, records.size(), "Wrong result for lookup of key " + id);
-
-        for (Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
+        int count = 0;
+        for (final Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
           final Identifiable rid = it.next();
           final Document record = (Document) rid.getRecord();
           Assertions.assertEquals("" + id, record.get("id"));
+          ++count;
         }
+
+        if (count != expectedItems)
+          LogManager.instance().log(this, Level.FINE, "Cannot find key '%s'", null, id);
+
+        Assertions.assertEquals(expectedItems, count, "Wrong result for lookup of key " + id);
 
         checked++;
 
@@ -235,8 +244,55 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           LogManager.instance().log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
           begin = System.currentTimeMillis();
         }
-      } catch (Exception e) {
+      } catch (final Exception e) {
         Assertions.fail("Error on lookup key " + id, e);
+      }
+    }
+    LogManager.instance().log(this, Level.FINE, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
+  }
+
+  private void checkRanges(final int step, final int expectedItems) {
+    database.transaction(() -> Assertions.assertEquals(TOT * expectedItems, database.countType(TYPE_NAME, false)));
+
+    LogManager.instance().log(this, Level.FINE, "TEST: Range pair of keys...");
+
+    long begin = System.currentTimeMillis();
+
+    int checked = 0;
+
+    final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[number]");
+
+    for (long number = 0; number < TOT - 1; number += step) {
+      try {
+        final IndexCursor records = ((RangeIndex) index).range(true, new Object[] { number }, true, new Object[] { number + 1 }, true);
+        Assertions.assertNotNull(records);
+
+        int count = 0;
+        for (final Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
+          for (int i = 0; i < expectedItems; i++) {
+            final Identifiable rid = it.next();
+            final Document record = (Document) rid.getRecord();
+            Assertions.assertEquals(number + count, record.getLong("number"));
+          }
+          ++count;
+        }
+
+        if (count != 2)
+          LogManager.instance().log(this, Level.FINE, "Cannot find key '%s'", null, number);
+
+        Assertions.assertEquals(2, count, "Wrong result for lookup of key " + number);
+
+        checked++;
+
+        if (checked % 10000 == 0) {
+          long delta = System.currentTimeMillis() - begin;
+          if (delta < 1)
+            delta = 1;
+          LogManager.instance().log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
+          begin = System.currentTimeMillis();
+        }
+      } catch (final Exception e) {
+        Assertions.fail("Error on lookup key " + number, e);
       }
     }
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");

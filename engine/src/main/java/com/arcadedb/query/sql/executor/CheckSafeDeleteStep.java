@@ -20,8 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-
 /**
  * <p>
  * Checks if a record can be safely deleted (throws PCommandExecutionException in case).
@@ -35,15 +33,14 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CheckSafeDeleteStep extends AbstractExecutionStep {
-  private long cost = 0;
 
-  public CheckSafeDeleteStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CheckSafeDeleteStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -52,8 +49,8 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final Result result = upstream.next();
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 //          if (result.isElement()) {
 //
@@ -80,27 +77,13 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK SAFE DELETE");
     if (profilingEnabled) {
@@ -109,8 +92,4 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

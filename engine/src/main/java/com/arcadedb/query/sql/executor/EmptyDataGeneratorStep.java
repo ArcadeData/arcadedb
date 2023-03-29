@@ -26,20 +26,17 @@ import java.util.*;
  * Created by luigidellaquila on 08/07/16.
  */
 public class EmptyDataGeneratorStep extends AbstractExecutionStep {
-
-  private long cost = 0;
-
   final int size;
   int served = 0;
 
-  public EmptyDataGeneratorStep(int size, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public EmptyDataGeneratorStep(final int size, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.size = size;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -48,36 +45,21 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 
           if (served < size) {
             served++;
-            ResultInternal result = new ResultInternal();
-            ctx.setVariable("$current", result);
+            final ResultInternal result = new ResultInternal();
+            context.setVariable("current", result);
             return result;
           }
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         } finally {
           if (profilingEnabled) {
             cost += (System.nanoTime() - begin);
           }
         }
-      }
-
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
       }
 
       @Override
@@ -88,17 +70,12 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ GENERATE " + size + " EMPTY " + (size == 1 ? "RECORD" : "RECORDS");
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
   }
 }

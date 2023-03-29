@@ -38,7 +38,7 @@ public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
   public static final String NAME = "dijkstra";
 
   public SQLFunctionDijkstra() {
-    super(NAME, 3, 4);
+    super(NAME);
   }
 
   public LinkedList<Vertex> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
@@ -46,12 +46,12 @@ public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
     return new SQLFunctionAstar().execute(this, iCurrentRecord, iCurrentResult, toAStarParams(iParams), iContext);
   }
 
-  private Object[] toAStarParams(Object[] iParams) {
-    Object[] result = new Object[4];
+  private Object[] toAStarParams(final Object[] iParams) {
+    final Object[] result = new Object[4];
     result[0] = iParams[0];
     result[1] = iParams[1];
     result[2] = iParams[2];
-    Map<String, Object> options = new HashMap<String, Object>();
+    final Map<String, Object> options = new HashMap<String, Object>();
     options.put("emptyIfMaxDepth", true);
     if (iParams.length > 3) {
       options.put("direction", iParams[3]);

@@ -23,24 +23,13 @@ package com.arcadedb.graphql.parser;
 public class FloatValue extends AbstractValue {
   protected String stringValue;
 
-  public FloatValue(int id) {
+  public FloatValue(final int id) {
     super(id);
-  }
-
-  public FloatValue(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   @Override
   public Object getValue() {
     return stringValue;
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   @Override

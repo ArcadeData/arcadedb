@@ -19,7 +19,7 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.database.Record;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 public class ChangeEvent {
   private final TYPE   type;

@@ -29,8 +29,8 @@ import java.math.*;
  */
 public abstract class SQLFunctionMathAbstract extends SQLFunctionConfigurableAbstract {
 
-  public SQLFunctionMathAbstract(String iName, int iMinParams, int iMaxParams) {
-    super(iName, iMinParams, iMaxParams);
+  protected SQLFunctionMathAbstract(final String iName) {
+    super(iName);
   }
 
   protected Number getContextValue(Object iContext, final Class<? extends Number> iClass) {

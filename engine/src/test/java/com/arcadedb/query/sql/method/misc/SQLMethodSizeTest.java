@@ -39,26 +39,26 @@ class SQLMethodSizeTest {
 
     @Test
     void testNulIsReturnedAsZero() {
-        Object result = method.execute(null, null, null, null, null);
+        final Object result = method.execute(null, null, null, null, null);
         assertThat(result).isInstanceOf(Number.class);
         assertThat(result).isEqualTo(0);
     }
 
     @Test
     void testSizeOfIdentifiable() {
-        Database db = Mockito.mock(Database.class);
-        RID rid = new RID(db, 1, 1);
-        Object result = method.execute(null, null, null, rid, null);
+        final Database db = Mockito.mock(Database.class);
+        final RID rid = new RID(db, 1, 1);
+        final Object result = method.execute(null, null, null, rid, null);
         assertThat(result).isInstanceOf(Number.class);
         assertThat(result).isEqualTo(1);
     }
 
     @Test
     void testSizeOfMultiValue() {
-        Database db = Mockito.mock(Database.class);
-        RID rid = new RID(db, 1, 1);
-        Collection<RID> multiValue = List.of(rid, rid, rid);
-        Object result = method.execute(null, null, null, multiValue, null);
+        final Database db = Mockito.mock(Database.class);
+        final RID rid = new RID(db, 1, 1);
+        final Collection<RID> multiValue = List.of(rid, rid, rid);
+        final Object result = method.execute(null, null, null, multiValue, null);
         assertThat(result).isInstanceOf(Number.class);
         assertThat(result).isEqualTo(3);
     }

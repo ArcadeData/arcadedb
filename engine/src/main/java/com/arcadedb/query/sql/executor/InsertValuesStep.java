@@ -32,19 +32,18 @@ import java.util.*;
 public class InsertValuesStep extends AbstractExecutionStep {
   private final List<Identifier>       identifiers;
   private final List<List<Expression>> values;
+  private       int                    nextValueSet = 0;
 
-  int nextValueSet = 0;
-
-  public InsertValuesStep(List<Identifier> identifierList, List<List<Expression>> valueExpressions, CommandContext ctx,
-      boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public InsertValuesStep(final List<Identifier> identifierList, final List<List<Expression>> valueExpressions, final CommandContext context,
+      final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.identifiers = identifierList;
     this.values = valueExpressions;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -60,16 +59,15 @@ public class InsertValuesStep extends AbstractExecutionStep {
           }
           result = new UpdatableResult((MutableDocument) result.getElement().get());
         }
-        List<Expression> currentValues = values.get(nextValueSet++);
+        final List<Expression> currentValues = values.get(nextValueSet++);
         if (currentValues.size() != identifiers.size()) {
           throw new CommandExecutionException(
-              "Cannot execute INSERT, the number of fields is different from the number of expressions: " + identifiers + " "
-                  + currentValues);
+              "Cannot execute INSERT, the number of fields is different from the number of expressions: " + identifiers + " " + currentValues);
         }
         nextValueSet %= values.size();
         for (int i = 0; i < currentValues.size(); i++) {
-          Identifier identifier = identifiers.get(i);
-          Object value = currentValues.get(i).execute(result, ctx);
+          final Identifier identifier = identifiers.get(i);
+          final Object value = currentValues.get(i).execute(result, context);
           ((ResultInternal) result).setProperty(identifier.getStringValue(), value);
         }
         return result;
@@ -79,23 +77,13 @@ public class InsertValuesStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ SET VALUES \n");
     result.append(spaces);
@@ -115,7 +103,7 @@ public class InsertValuesStep extends AbstractExecutionStep {
       if (c > 0) {
         result.append("\n");
       }
-      List<Expression> exprs = this.values.get(c);
+      final List<Expression> exprs = this.values.get(c);
       result.append(spaces);
       result.append("  (");
       for (int i = 0; i < exprs.size() && i < 3; i++) {

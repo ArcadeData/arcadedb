@@ -62,14 +62,14 @@ public class MongoDBQueryTest {
   @Test
   public void testOrderBy() {
     int i = 0;
-    for (ResultSet resultset = database.query("mongo",
+    for (final ResultSet resultset = database.query("mongo",
         "{ collection: 'MongoDBCollection', query: { $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: 1 } } }"); resultset.hasNext(); ++i) {
       final Result doc = resultset.next();
       assertEquals(i, (Integer) doc.getProperty("id"));
     }
 
     i = 9;
-    for (ResultSet resultset = database.query("mongo",
+    for (final ResultSet resultset = database.query("mongo",
         "{ collection: 'MongoDBCollection', query: { $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: -1 } } }"); resultset.hasNext(); --i) {
       final Result doc = resultset.next();
       assertEquals(i, (Integer) doc.getProperty("id"));

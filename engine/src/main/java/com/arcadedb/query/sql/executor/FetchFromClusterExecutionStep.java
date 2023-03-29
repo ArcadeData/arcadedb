@@ -19,19 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.parser.BinaryCompareOperator;
-import com.arcadedb.query.sql.parser.BinaryCondition;
-import com.arcadedb.query.sql.parser.BooleanExpression;
-import com.arcadedb.query.sql.parser.GeOperator;
-import com.arcadedb.query.sql.parser.GtOperator;
-import com.arcadedb.query.sql.parser.LeOperator;
-import com.arcadedb.query.sql.parser.LtOperator;
-import com.arcadedb.query.sql.parser.Rid;
 
 import java.util.*;
 
@@ -44,35 +33,35 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   public static final Object            ORDER_DESC = "DESC";
   private final       QueryPlanningInfo queryPlanning;
 
-  private int    bucketId;
-  private Object order;
+  private final int    bucketId;
+  private       Object order;
 
   private Iterator<Record> iterator;
-  private long             cost = 0;
 
-  public FetchFromClusterExecutionStep(int bucketId, CommandContext ctx, boolean profilingEnabled) {
-    this(bucketId, null, ctx, profilingEnabled);
+  public FetchFromClusterExecutionStep(final int bucketId, final CommandContext context, final boolean profilingEnabled) {
+    this(bucketId, null, context, profilingEnabled);
   }
 
-  public FetchFromClusterExecutionStep(int bucketId, QueryPlanningInfo queryPlanning, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final CommandContext context,
+      final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.bucketId = bucketId;
     this.queryPlanning = queryPlanning;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
-        iterator = ctx.getDatabase().getSchema().getBucketById(bucketId).iterator();
+        iterator = context.getDatabase().getSchema().getBucketById(bucketId).iterator();
 
         //TODO check how to support ranges and DESC
 //        long minClusterPosition = calculateMinClusterPosition();
 //        long maxClusterPosition = calculateMaxClusterPosition();
-//            new ORecordIteratorCluster((ODatabaseDocumentInternal) ctx.getDatabase(),
-//            (ODatabaseDocumentInternal) ctx.getDatabase(), bucketId, minClusterPosition, maxClusterPosition);
+//            new ORecordIteratorCluster((ODatabaseDocumentInternal) context.getDatabase(),
+//            (ODatabaseDocumentInternal) context.getDatabase(), bucketId, minClusterPosition, maxClusterPosition);
 //        if (ORDER_DESC == order) {
 //          iterator.last();
 //        }
@@ -83,7 +72,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
         @Override
         public boolean hasNext() {
-          long begin1 = profilingEnabled ? System.nanoTime() : 0;
+          final long begin1 = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nFetched >= nRecords) {
               return false;
@@ -103,16 +92,16 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
         @Override
         public Result next() {
-          long begin1 = profilingEnabled ? System.nanoTime() : 0;
+          final long begin1 = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nFetched >= nRecords) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
 //            if (ORDER_DESC == order && !iterator.hasPrevious()) {
-//              throw new IllegalStateException();
+//              throw new NoSuchElementException();
 //            } else
             if (!iterator.hasNext()) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
 
             Record record = null;
@@ -122,9 +111,9 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             record = iterator.next();
 //            }
             nFetched++;
-            ResultInternal result = new ResultInternal();
+            final ResultInternal result = new ResultInternal();
             result.element = (Document) record;
-            ctx.setVariable("$current", result);
+            context.setVariable("current", result);
             return result;
           } finally {
             if (profilingEnabled) {
@@ -132,95 +121,78 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             }
           }
         }
-
-        @Override
-        public void close() {
-
-        }
-
-        @Override
-        public Optional<ExecutionPlan> getExecutionPlan() {
-          return Optional.empty();
-        }
-
-        @Override
-        public Map<String, Long> getQueryStats() {
-          return null;
-        }
-
       };
     } finally {
       if (profilingEnabled) {
         cost += (System.nanoTime() - begin);
       }
     }
-
   }
 
-  private long calculateMinClusterPosition() {
-    if (queryPlanning == null || queryPlanning.ridRangeConditions == null || queryPlanning.ridRangeConditions.isEmpty()) {
-      return -1;
-    }
-
-    long maxValue = -1;
-
-    for (BooleanExpression ridRangeCondition : queryPlanning.ridRangeConditions.getSubBlocks()) {
-      if (ridRangeCondition instanceof BinaryCondition) {
-        BinaryCondition cond = (BinaryCondition) ridRangeCondition;
-        Rid condRid = cond.getRight().getRid();
-        BinaryCompareOperator operator = cond.getOperator();
-        if (condRid != null) {
-          if (condRid.getBucket().getValue().intValue() != this.bucketId) {
-            continue;
-          }
-          if (operator instanceof GtOperator || operator instanceof GeOperator) {
-            maxValue = Math.max(maxValue, condRid.getPosition().getValue().longValue());
-          }
-        }
-      }
-    }
-
-    return maxValue;
-  }
-
-  private long calculateMaxClusterPosition() {
-    if (queryPlanning == null || queryPlanning.ridRangeConditions == null || queryPlanning.ridRangeConditions.isEmpty()) {
-      return -1;
-    }
-    long minValue = Long.MAX_VALUE;
-
-    for (BooleanExpression ridRangeCondition : queryPlanning.ridRangeConditions.getSubBlocks()) {
-      if (ridRangeCondition instanceof BinaryCondition) {
-        BinaryCondition cond = (BinaryCondition) ridRangeCondition;
-        RID conditionRid;
-
-        Object obj;
-        if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null) {
-          obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, ctx);
-        } else {
-          obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, ctx);
-        }
-
-        conditionRid = ((Identifiable) obj).getIdentity();
-        BinaryCompareOperator operator = cond.getOperator();
-        if (conditionRid != null) {
-          if (conditionRid.getBucketId() != this.bucketId) {
-            continue;
-          }
-          if (operator instanceof LtOperator || operator instanceof LeOperator) {
-            minValue = Math.min(minValue, conditionRid.getPosition());
-          }
-        }
-      }
-    }
-
-    return minValue == Long.MAX_VALUE ? -1 : minValue;
-  }
+//  private long calculateMinClusterPosition() {
+//    if (queryPlanning == null || queryPlanning.ridRangeConditions == null || queryPlanning.ridRangeConditions.isEmpty()) {
+//      return -1;
+//    }
+//
+//    long maxValue = -1;
+//
+//    for (final BooleanExpression ridRangeCondition : queryPlanning.ridRangeConditions.getSubBlocks()) {
+//      if (ridRangeCondition instanceof BinaryCondition) {
+//        final BinaryCondition cond = (BinaryCondition) ridRangeCondition;
+//        final Rid condRid = cond.getRight().getRid();
+//        final BinaryCompareOperator operator = cond.getOperator();
+//        if (condRid != null) {
+//          if (condRid.getBucket().getValue().intValue() != this.bucketId) {
+//            continue;
+//          }
+//          if (operator instanceof GtOperator || operator instanceof GeOperator) {
+//            maxValue = Math.max(maxValue, condRid.getPosition().getValue().longValue());
+//          }
+//        }
+//      }
+//    }
+//
+//    return maxValue;
+//  }
+//
+//  private long calculateMaxClusterPosition() {
+//    if (queryPlanning == null || queryPlanning.ridRangeConditions == null || queryPlanning.ridRangeConditions.isEmpty()) {
+//      return -1;
+//    }
+//    long minValue = Long.MAX_VALUE;
+//
+//    for (final BooleanExpression ridRangeCondition : queryPlanning.ridRangeConditions.getSubBlocks()) {
+//      if (ridRangeCondition instanceof BinaryCondition) {
+//        final BinaryCondition cond = (BinaryCondition) ridRangeCondition;
+//        final RID conditionRid;
+//
+//        final Object obj;
+//        if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null) {
+//          obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, context);
+//        } else {
+//          obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, context);
+//        }
+//
+//        conditionRid = ((Identifiable) obj).getIdentity();
+//        final BinaryCompareOperator operator = cond.getOperator();
+//        if (conditionRid != null) {
+//          if (conditionRid.getBucketId() != this.bucketId) {
+//            continue;
+//          }
+//          if (operator instanceof LtOperator || operator instanceof LeOperator) {
+//            minValue = Math.min(minValue, conditionRid.getPosition());
+//          }
+//        }
+//      }
+//    }
+//
+//    return minValue == Long.MAX_VALUE ? -1 : minValue;
+//  }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result =
-        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + ctx.getDatabase().getSchema().getBucketById(bucketId)
+        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + context.getDatabase().getSchema().getBucketById(bucketId)
             .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC");
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -228,35 +200,8 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
     return result;
   }
 
-  public void setOrder(Object order) {
+  public void setOrder(final Object order) {
     this.order = order;
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
-  }
-
-  @Override
-  public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    result.setProperty("bucketId", bucketId);
-    result.setProperty("order", order);
-    return result;
-  }
-
-  @Override
-  public void deserialize(Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      this.bucketId = fromResult.getProperty("bucketId");
-      Object orderProp = fromResult.getProperty("order");
-      if (orderProp != null) {
-        this.order = ORDER_ASC.equals(fromResult.getProperty("order")) ? ORDER_ASC : ORDER_DESC;
-      }
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
   }
 
   @Override
@@ -265,8 +210,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), ctx,
-        profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), context, profilingEnabled);
   }
 }

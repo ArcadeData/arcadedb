@@ -18,6 +18,8 @@
  */
 package com.arcadedb.integration.exporter;
 
+import com.arcadedb.utility.FileUtils;
+
 import java.text.*;
 import java.util.*;
 
@@ -27,6 +29,8 @@ public class ExporterSettings {
   public       String              file;
   public       boolean             overwriteFile = false;
   public       int                 verboseLevel  = 2;
+  public       Set<String>         includeTypes;
+  public       Set<String>         excludeTypes;
   public final Map<String, String> options       = new HashMap<>();
 
   public ExporterSettings() {
@@ -36,6 +40,9 @@ public class ExporterSettings {
     if (args != null)
       for (int i = 0; i < args.length - 1; )
         i += parseParameter(args[i].substring(1), args[i + 1]);
+
+    if (includeTypes != null && excludeTypes != null)
+      throw new IllegalArgumentException("Both includeTypes and excludeTypes were defined, but they are mutual exclusive");
 
     if (format == null)
       throw new IllegalArgumentException("Missing export format");
@@ -57,17 +64,25 @@ public class ExporterSettings {
     }
   }
 
-  public int parseParameter(final String name, final String value) {
+  public int parseParameter(String name, final String value) {
+    name = FileUtils.getStringContent(name);
+
     if ("format".equals(name))
       format = value.toLowerCase();
-    else if ("f".equals(name))
+    else if ("f".equals(name) || "file".equals(name))
       file = value;
     else if ("d".equals(name))
       databaseURL = value;
+    else if ("overwrite".equals(name))
+      overwriteFile = true;
     else if ("o".equals(name)) {
       overwriteFile = true;
       return 1;
-    } else
+    } else if ("includeTypes".equals(name))
+      includeTypes = Set.of(value.split(","));
+    else if ("excludeTypes".equals(name))
+      excludeTypes = Set.of(value.split(","));
+    else
       // ADDITIONAL OPTIONS
       options.put(name, value);
     return 2;

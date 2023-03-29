@@ -79,33 +79,33 @@ public class SystemVariableResolver implements VariableParserListener {
 
   public static void setEnv(final Map<String, String> newenv) {
     try {
-      Class<?> processEnvironmentClass = Class.forName("java.lang.ProcessEnvironment");
-      Field theEnvironmentField = processEnvironmentClass.getDeclaredField("theEnvironment");
+      final Class<?> processEnvironmentClass = Class.forName("java.lang.ProcessEnvironment");
+      final Field theEnvironmentField = processEnvironmentClass.getDeclaredField("theEnvironment");
       theEnvironmentField.setAccessible(true);
-      Map<String, String> env = (Map<String, String>) theEnvironmentField.get(null);
+      final Map<String, String> env = (Map<String, String>) theEnvironmentField.get(null);
       env.putAll(newenv);
-      Field theCaseInsensitiveEnvironmentField = processEnvironmentClass.getDeclaredField("theCaseInsensitiveEnvironment");
+      final Field theCaseInsensitiveEnvironmentField = processEnvironmentClass.getDeclaredField("theCaseInsensitiveEnvironment");
       theCaseInsensitiveEnvironmentField.setAccessible(true);
-      Map<String, String> cienv = (Map<String, String>) theCaseInsensitiveEnvironmentField.get(null);
+      final Map<String, String> cienv = (Map<String, String>) theCaseInsensitiveEnvironmentField.get(null);
       cienv.putAll(newenv);
-    } catch (NoSuchFieldException ignore) {
+    } catch (final NoSuchFieldException ignore) {
       try {
-        Class[] classes = Collections.class.getDeclaredClasses();
-        Map<String, String> env = System.getenv();
-        for (Class cl : classes) {
+        final Class[] classes = Collections.class.getDeclaredClasses();
+        final Map<String, String> env = System.getenv();
+        for (final Class cl : classes) {
           if ("java.util.Collections$UnmodifiableMap".equals(cl.getName())) {
-            Field field = cl.getDeclaredField("m");
+            final Field field = cl.getDeclaredField("m");
             field.setAccessible(true);
-            Object obj = field.get(env);
-            Map<String, String> map = (Map<String, String>) obj;
+            final Object obj = field.get(env);
+            final Map<String, String> map = (Map<String, String>) obj;
             map.clear();
             map.putAll(newenv);
           }
         }
-      } catch (Exception e2) {
+      } catch (final Exception e2) {
         LogManager.instance().log(SystemVariableResolver.class, Level.SEVERE, "", e2);
       }
-    } catch (Exception e1) {
+    } catch (final Exception e1) {
       LogManager.instance().log(SystemVariableResolver.class, Level.SEVERE, "", e1);
     }
   }

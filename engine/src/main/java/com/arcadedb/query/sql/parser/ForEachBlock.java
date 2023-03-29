@@ -23,7 +23,9 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.LetExpressionStep;
+import com.arcadedb.query.sql.executor.ForEachExecutionPlan;
+import com.arcadedb.query.sql.executor.ForEachStep;
+import com.arcadedb.query.sql.executor.GlobalLetExpressionStep;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
@@ -34,61 +36,56 @@ import java.util.stream.*;
 //import com.orientechnologies.orient.core.sql.executor.LetExpressionStep;
 
 public class ForEachBlock extends Statement {
+  protected static final AtomicInteger   FOREACH_VARIABLE_PROGR = new AtomicInteger();
+  protected              Identifier      loopVariable;
+  protected              Expression      loopValues;
+  protected              List<Statement> statements             = new ArrayList<>();
 
-  protected static AtomicInteger   FOREACH_VARIABLE_PROGR = new AtomicInteger();
-  protected        Identifier      loopVariable;
-  protected        Expression      loopValues;
-  protected        List<Statement> statements             = new ArrayList<>();
-
-  public ForEachBlock(int id) {
+  public ForEachBlock(final int id) {
     super(id);
   }
 
-  public ForEachBlock(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    UpdateExecutionPlan plan = new UpdateExecutionPlan(ctx);
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    ForEachExecutionPlan plan = new ForEachExecutionPlan(context);
     int nextProg = FOREACH_VARIABLE_PROGR.incrementAndGet();
-    if (FOREACH_VARIABLE_PROGR.get() < 0) {
+    if (nextProg < 0)
       FOREACH_VARIABLE_PROGR.set(0);
-    }
-    Identifier varName = new Identifier("__ARCADEDB_FOREACH_VAR_" + nextProg);
-    plan.chain(new LetExpressionStep(varName, loopValues, ctx, enableProfiling));
-//    ForEachStep step = new ForEachStep(loopVariable, new OExpression(varName), ctx);//TODO
+
+    Identifier varName = new Identifier("$__ARCADEDB_FOREACH_VAR_" + nextProg);
+    plan.chain(new GlobalLetExpressionStep(varName, loopValues, context, enableProfiling));
+    plan.chain(new ForEachStep(loopVariable, new Expression(varName), statements, context, enableProfiling));
     return plan;
   }
 
   @Override
   public Statement copy() {
-    ForEachBlock result = new ForEachBlock(-1);
+    final ForEachBlock result = new ForEachBlock(-1);
     result.loopVariable = loopVariable.copy();
     result.loopValues = loopValues.copy();
     result.statements = statements.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -96,20 +93,19 @@ public class ForEachBlock extends Statement {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final  ForEachBlock that = (ForEachBlock) o;
+    final ForEachBlock that = (ForEachBlock) o;
 
     if (!Objects.equals(loopVariable, that.loopVariable))
       return false;
     if (!Objects.equals(loopValues, that.loopValues))
       return false;
     return Objects.equals(statements, that.statements);
-
   }
 
   @Override
@@ -120,8 +116,22 @@ public class ForEachBlock extends Statement {
     return result;
   }
 
+  @Override
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("FOREACH (");
+    loopVariable.toString(params, builder);
+    builder.append(" IN ");
+    loopValues.toString(params, builder);
+    builder.append(") {\n");
+    for (Statement stm : statements) {
+      stm.toString(params, builder);
+      builder.append("\n");
+    }
+    builder.append("}");
+  }
+
   public boolean containsReturn() {
-    for (Statement stm : this.statements) {
+    for (final Statement stm : this.statements) {
       if (stm instanceof ReturnStatement) {
         return true;
       }

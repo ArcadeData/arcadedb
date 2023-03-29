@@ -31,17 +31,13 @@ public class TruncateBucketStatement extends DDLStatement {
   public PInteger   bucketNumber;
   public boolean    unsafe = false;
 
-  public TruncateBucketStatement(int id) {
+  public TruncateBucketStatement(final int id) {
     super(id);
   }
 
-  public TruncateBucketStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-//    ODatabaseDocumentAbstract database = (ODatabaseDocumentAbstract) ctx.getDatabase();
+  public ResultSet executeDDL(final CommandContext context) {
+//    ODatabaseDocumentAbstract database = (ODatabaseDocumentAbstract) context.getDatabase();
 //    OInternalResultSet rs = new OInternalResultSet();
 //
 //    Integer bucketId = null;
@@ -89,7 +85,7 @@ public class TruncateBucketStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("TRUNCATE BUCKET ");
     if (bucketName != null) {
       bucketName.toString(params, builder);
@@ -103,7 +99,7 @@ public class TruncateBucketStatement extends DDLStatement {
 
   @Override
   public TruncateBucketStatement copy() {
-    TruncateBucketStatement result = new TruncateBucketStatement(-1);
+    final TruncateBucketStatement result = new TruncateBucketStatement(-1);
     result.bucketName = bucketName == null ? null : bucketName.copy();
     result.bucketNumber = bucketNumber == null ? null : bucketNumber.copy();
     result.unsafe = unsafe;
@@ -111,13 +107,13 @@ public class TruncateBucketStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    TruncateBucketStatement that = (TruncateBucketStatement) o;
+    final TruncateBucketStatement that = (TruncateBucketStatement) o;
 
     if (unsafe != that.unsafe)
       return false;

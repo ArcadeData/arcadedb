@@ -21,12 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 public class CompareOperator extends SimpleNode {
-  public CompareOperator(int id) {
+  public CompareOperator(final int id) {
     super(id);
-  }
-
-  public CompareOperator(SqlParser p, int id) {
-    super(p, id);
   }
 
 }

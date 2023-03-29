@@ -21,17 +21,13 @@
 package com.arcadedb.query.sql.parser;
 
 public class ArrayConcatExpressionElement extends Expression {
-  public ArrayConcatExpressionElement(int id) {
+  public ArrayConcatExpressionElement(final int id) {
     super(id);
-  }
-
-  public ArrayConcatExpressionElement(SqlParser p, int id) {
-    super(p, id);
   }
 
   @Override
   public ArrayConcatExpressionElement copy() {
-    ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);
+    final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);
     result.singleQuotes = singleQuotes;
     result.doubleQuotes = doubleQuotes;
     result.isNull = isNull;

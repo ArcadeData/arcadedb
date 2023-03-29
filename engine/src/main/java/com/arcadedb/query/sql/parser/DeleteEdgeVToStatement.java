@@ -21,17 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 public class DeleteEdgeVToStatement extends DeleteEdgeStatement {
-  public DeleteEdgeVToStatement(int id) {
+  public DeleteEdgeVToStatement(final int id) {
     super(id);
-  }
-
-  public DeleteEdgeVToStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  @Override
-  public DeleteEdgeStatement copy() {
-    return super.copy();
   }
 }
 /* JavaCC - OriginalChecksum=c5435be513de4871657bae94ae2a126b (do not edit this line) */

@@ -62,12 +62,12 @@ public class NullValuesIndexTest extends TestHelper {
         database.commit();
         database.begin();
 
-        for (Index index : ((TypeIndex) indexes).getIndexesOnBuckets()) {
+        for (final Index index : ((TypeIndex) indexes).getIndexesOnBuckets()) {
           Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
         }
       });
       Assertions.fail();
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof IllegalArgumentException);
       Assertions.assertTrue(e.getCause().getMessage().startsWith("Indexed key V[name] cannot be NULL"));
     }

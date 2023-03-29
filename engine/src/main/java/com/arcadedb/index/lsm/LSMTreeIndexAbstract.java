@@ -51,6 +51,9 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
  * HEADER ROOT PAGE (1st) = [offsetFreeKeyValueContent(int:4),numberOfEntries(int:4),mutable(boolean:1),compactedPageNumberOfSeries(int:4),subIndexFileId(int:4),numberOfKeys(byte:1),keyType(byte:1)*]
  * <br>
  * HEADER Nst PAGE        = [offsetFreeKeyValueContent(int:4),numberOfEntries(int:4),mutable(boolean:1),compactedPageNumberOfSeries(int:4)]
+ * <p>
+ * <p>
+ * The page content size and available space API are not valid in the index pages, because the whole page is used from start to end.
  */
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   public enum NULL_STRATEGY {ERROR, SKIP}
@@ -90,7 +93,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   /**
    * Called at creation time.
    */
-  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
+  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final String ext, final PaginatedFile.MODE mode, final Type[] keyTypes, final int pageSize, final int version, final NULL_STRATEGY nullStrategy)
       throws IOException {
     super(database, name, filePath, ext, mode, pageSize, version);
@@ -115,21 +118,22 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   /**
    * Called at cloning time.
    */
-  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
-      final String ext, final byte[] keyTypes, final int pageSize, final int version) throws IOException {
+  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
+      final String ext, final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, TEMP_EXT + ext, PaginatedFile.MODE.READ_WRITE, pageSize, version);
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
-    this.binaryKeyTypes = keyTypes;
+    this.keyTypes = keyTypes;
+    this.binaryKeyTypes = binaryKeyTypes;
     REMOVED_ENTRY_RID = new RID(database, -1, -1L);
   }
 
   /**
    * Called at load time (1st page only).
    */
-  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
+  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     this.mainIndex = mainIndex;
@@ -166,7 +170,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return name + "(" + getFileId() + ")";
   }
 
-  public byte[] getKeyTypes() {
+  public Type[] getKeyTypes() {
+    return keyTypes;
+  }
+
+  public byte[] getBinaryKeyTypes() {
     return binaryKeyTypes;
   }
 
@@ -183,7 +191,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       try {
         file.rename(newFileName);
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new IndexException(
             "Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "' (exists=" + (new File(file.getFilePath()).exists())
                 + ")", e);
@@ -325,24 +333,25 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected Object[] convertKeys(final Object[] keys, final byte[] keyTypes) {
-    if (keys != null) {
-      final Object[] convertedKeys = new Object[keys.length];
-      for (int i = 0; i < keys.length; ++i) {
-        if (keys[i] == null)
-          continue;
+    if (keys == null)
+      return null;
 
-        convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+    final Object[] convertedKeys = new Object[keys.length];
+    for (int i = 0; i < keys.length; ++i) {
+      if (keys[i] == null)
+        continue;
 
-        if (convertedKeys[i] instanceof String)
-          // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
-          convertedKeys[i] = ((String) convertedKeys[i]).getBytes(DatabaseFactory.getDefaultCharset());
-      }
-      return convertedKeys;
+      convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+
+      if (convertedKeys[i] instanceof String)
+        // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
+        convertedKeys[i] = ((String) convertedKeys[i]).getBytes(DatabaseFactory.getDefaultCharset());
     }
-    return keys;
+    return convertedKeys;
   }
 
-  protected Object[] getPageBound(final BasePage currentPage, final Binary currentPageBuffer) {
+  protected Object[] getPageKeyRange(final BasePage currentPage) {
+    final Binary currentPageBuffer = new Binary(currentPage.slice());
     final Object[] min = getKeyInPagePosition(currentPage.getPageId().getPageNumber(), currentPageBuffer, 0);
 
     final int count = getCount(currentPage);

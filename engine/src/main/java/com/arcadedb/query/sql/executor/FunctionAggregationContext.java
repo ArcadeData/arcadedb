@@ -31,12 +31,11 @@ public class FunctionAggregationContext implements AggregationContext {
   private final SQLFunction      aggregateFunction;
   private       List<Expression> params;
 
-  public FunctionAggregationContext(SQLFunction function, List<Expression> params) {
+  public FunctionAggregationContext(final SQLFunction function, final List<Expression> params) {
     this.aggregateFunction = function;
     this.params = params;
-    if (this.params == null) {
+    if (this.params == null)
       this.params = new ArrayList<>();
-    }
   }
 
   @Override
@@ -45,11 +44,11 @@ public class FunctionAggregationContext implements AggregationContext {
   }
 
   @Override
-  public void apply(Result next, CommandContext ctx) {
-    List<Object> paramValues = new ArrayList<>();
-    for (Expression expr : params) {
-      paramValues.add(expr.execute(next, ctx));
-    }
-    aggregateFunction.execute(next, null, null, paramValues.toArray(), ctx);
+  public void apply(final Result next, final CommandContext context) {
+    final List<Object> paramValues = new ArrayList<>(params.size());
+    for (final Expression expr : params)
+      paramValues.add(expr.execute(next, context));
+
+    aggregateFunction.execute(next, null, null, paramValues.toArray(), context);
   }
 }

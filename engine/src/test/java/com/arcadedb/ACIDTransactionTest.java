@@ -22,14 +22,17 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.WALException;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -83,12 +86,12 @@ public class ACIDTransactionTest extends TestHelper {
 
       try {
         Thread.sleep(500);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         // IGNORE IT
       }
 
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof IOException);
     }
 
@@ -149,7 +152,7 @@ public class ACIDTransactionTest extends TestHelper {
 
       Assertions.fail("Expected commit to fail");
 
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof WALException);
     }
     ((DatabaseInternal) db).kill();
@@ -181,14 +184,14 @@ public class ACIDTransactionTest extends TestHelper {
 
     try {
       ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, new Callable<>() {
-          @Override
-          public Void call() throws IOException {
-              if (commits.incrementAndGet() > TOT - 1) {
-                  LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
-                  throw new IOException("Test IO Exception");
-              }
-              return null;
+        @Override
+        public Void call() throws IOException {
+          if (commits.incrementAndGet() > TOT - 1) {
+            LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
+            throw new IOException("Test IO Exception");
           }
+          return null;
+        }
       });
 
       for (; total.get() < TOT; total.incrementAndGet()) {
@@ -204,14 +207,14 @@ public class ACIDTransactionTest extends TestHelper {
 
       try {
         Thread.sleep(500);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         // IGNORE IT
       }
 
       Assertions.assertEquals(1, errors.get());
 
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof IOException);
     }
     ((DatabaseInternal) db).kill();
@@ -230,12 +233,20 @@ public class ACIDTransactionTest extends TestHelper {
     final int TOT = 100000;
 
     final AtomicInteger total = new AtomicInteger(0);
-
     final AtomicInteger errors = new AtomicInteger(0);
 
     db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    Assertions.assertEquals(WALFile.FLUSH_TYPE.YES_NOMETADATA, db.async().getTransactionSync());
+
     db.async().setTransactionUseWAL(true);
+    Assertions.assertTrue(db.async().isTransactionUseWAL());
+
     db.async().setCommitEvery(1000000);
+    Assertions.assertEquals(1000000, db.async().getCommitEvery());
+
+    db.async().setBackPressure(1);
+    Assertions.assertEquals(1, db.async().getBackPressure());
+
     db.async().onError(exception -> errors.incrementAndGet());
 
     try {
@@ -258,7 +269,7 @@ public class ACIDTransactionTest extends TestHelper {
 
       Assertions.assertTrue(errors.get() > 0);
 
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof IOException);
     }
     ((DatabaseInternal) db).kill();
@@ -320,9 +331,10 @@ public class ACIDTransactionTest extends TestHelper {
             now.add(Calendar.DAY_OF_YEAR, +1);
           }
 
-        } catch (Exception e) {
+        } catch (final Exception e) {
           errors.incrementAndGet();
-          LogManager.instance().log(this, Level.SEVERE, "Error on saving stockId=%d", e, id);
+          System.err.printf("\nError on saving stockId=%d", id);
+          e.printStackTrace(System.err);
         }
       });
     }
@@ -349,6 +361,63 @@ public class ACIDTransactionTest extends TestHelper {
     });
   }
 
+  @Test
+  public void testAsyncEdges() {
+    final Database db = database;
+
+    final int TOT = 10000;
+
+    final AtomicInteger total = new AtomicInteger(0);
+    final AtomicInteger errors = new AtomicInteger(0);
+
+    db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    Assertions.assertEquals(WALFile.FLUSH_TYPE.YES_NOMETADATA, db.async().getTransactionSync());
+
+    db.async().setTransactionUseWAL(true);
+    Assertions.assertTrue(db.async().isTransactionUseWAL());
+
+    db.async().setCommitEvery(TOT);
+    Assertions.assertEquals(TOT, db.async().getCommitEvery());
+
+    db.async().setBackPressure(1);
+    Assertions.assertEquals(1, db.async().getBackPressure());
+
+    db.async().onError(exception -> errors.incrementAndGet());
+
+    final VertexType type = database.getSchema().getOrCreateVertexType("Node");
+    type.getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
+
+    database.getSchema().getOrCreateEdgeType("Arc");
+
+    for (; total.get() < TOT; total.incrementAndGet()) {
+      final MutableVertex v = db.newVertex("Node");
+      v.set("id", total.get());
+      v.set("name", "Crash");
+      v.set("surname", "Test");
+      db.async().createRecord(v, null);
+    }
+    db.async().waitCompletion();
+
+    Assertions.assertEquals(0, errors.get());
+
+    for (int i = 1; i < TOT; ++i) {
+      db.async().newEdgeByKeys("Node", "id", i, "Node", "id", i - 1, false, "Arc", true, false, null, "id", i);
+    }
+    db.async().waitCompletion();
+
+    Assertions.assertEquals(0, errors.get());
+
+    ((DatabaseInternal) db).kill();
+
+    verifyWALFilesAreStillPresent();
+
+    verifyDatabaseWasNotClosedProperly();
+
+    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("Node", true)));
+    database.transaction(() -> Assertions.assertEquals(TOT - 1, database.countType("Arc", true)));
+  }
+
   private void verifyDatabaseWasNotClosedProperly() {
     final AtomicBoolean dbNotClosedCaught = new AtomicBoolean(false);
 
@@ -363,10 +432,10 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   private void verifyWALFilesAreStillPresent() {
-    File dbDir = new File(getDatabasePath());
+    final File dbDir = new File(getDatabasePath());
     Assertions.assertTrue(dbDir.exists());
     Assertions.assertTrue(dbDir.isDirectory());
-    File[] files = dbDir.listFiles((dir, name) -> name.endsWith("wal"));
+    final File[] files = dbDir.listFiles((dir, name) -> name.endsWith("wal"));
     Assertions.assertTrue(files.length > 0);
   }
 }

@@ -18,6 +18,10 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.query.sql.parser.Statement;
+
+import java.util.*;
+
 /**
  * Created by luigidellaquila on 06/07/16.
  */
@@ -25,7 +29,9 @@ public interface InternalExecutionPlan extends ExecutionPlan {
 
   String JAVA_TYPE = "javaType";
 
-  void close();
+  default void close() {
+    // NO ACTION
+  }
 
   /**
    * if the execution can still return N elements, then the result will contain them all. If the execution contains less than N
@@ -37,19 +43,13 @@ public interface InternalExecutionPlan extends ExecutionPlan {
    */
   ResultSet fetchNext(int n);
 
-  void reset(CommandContext ctx);
+  void reset(CommandContext context);
 
-  long getCost();
-
-  default Result serialize() {
-    throw new UnsupportedOperationException();
+  default long getCost() {
+    return -1;
   }
 
-  default void deserialize(Result serializedExecutionPlan) {
-    throw new UnsupportedOperationException();
-  }
-
-  default InternalExecutionPlan copy(CommandContext ctx) {
+  default InternalExecutionPlan copy(final CommandContext context) {
     throw new UnsupportedOperationException();
   }
 
@@ -59,6 +59,7 @@ public interface InternalExecutionPlan extends ExecutionPlan {
     return null;
   }
 
-  default void setStatement(String stm) {
+  default void setStatements(final List<Statement> stm) {
+    // NO ACTIONS
   }
 }

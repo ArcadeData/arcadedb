@@ -23,8 +23,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -56,7 +56,7 @@ public class SecurityGroupFileRepository {
     if (!file.exists())
       file.getParentFile().mkdirs();
 
-    try (FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
+    try (final FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
       writer.write(configuration.toString(2));
       latestGroupConfiguration = configuration;
     }
@@ -79,10 +79,10 @@ public class SecurityGroupFileRepository {
       file.getParentFile().mkdirs();
 
     try {
-      try (FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
+      try (final FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
         writer.write(latestGroupConfiguration.toString());
       }
-    } catch (Exception e2) {
+    } catch (final Exception e2) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving configuration in error in config/security-error.json", e2);
     }
   }
@@ -91,7 +91,7 @@ public class SecurityGroupFileRepository {
     if (latestGroupConfiguration == null) {
       try {
         load();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading file '%s', using default configuration", e, FILE_NAME);
         saveInError(e);
         latestGroupConfiguration = createDefault();
@@ -117,7 +117,7 @@ public class SecurityGroupFileRepository {
                 if (reloadCallback != null)
                   reloadCallback.call(latestGroupConfiguration);
               }
-            } catch (Throwable e) {
+            } catch (final Throwable e) {
               LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
             }
         }
@@ -128,7 +128,7 @@ public class SecurityGroupFileRepository {
     if (file.exists()) {
       fileLastUpdated = file.lastModified();
 
-      try (FileInputStream fis = new FileInputStream(file)) {
+      try (final FileInputStream fis = new FileInputStream(file)) {
         json = new JSONObject(FileUtils.readStreamAsString(fis, "UTF-8"));
       }
       if (!json.has("version"))
@@ -151,7 +151,7 @@ public class SecurityGroupFileRepository {
     final JSONObject defaultDatabase = new JSONObject()//
         .put("groups", new JSONObject()//
             .put("admin", new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L)//
-                .put("access", new JSONArray(new String[] { "updateSecurity", "updateSchema" }))//
+                .put("access", new JSONArray(new String[] { "updateSecurity", "updateSchema", "updateDatabaseSettings" }))//
                 .put("types", new JSONObject().put(SecurityManager.ANY,
                     new JSONObject().put("access", new JSONArray(new String[] { "createRecord", "readRecord", "updateRecord", "deleteRecord" })))))//
             .put(SecurityManager.ANY, new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L)//
@@ -162,7 +162,7 @@ public class SecurityGroupFileRepository {
 
     try {
       save(json);
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving default group configuration to file '%s'", e, FILE_NAME);
     }
 

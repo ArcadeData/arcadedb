@@ -28,10 +28,6 @@ import java.util.*;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public interface CommandContext {
-  enum TIMEOUT_STRATEGY {
-    RETURN, EXCEPTION
-  }
-
   Object getVariable(String iName);
 
   Object getVariable(String iName, Object iDefaultValue);
@@ -47,30 +43,6 @@ public interface CommandContext {
   CommandContext setParent(CommandContext iParentContext);
 
   CommandContext setChild(CommandContext context);
-
-  /**
-   * Updates a counter. Used to record metrics.
-   *
-   * @param iName  Metric's name
-   * @param iValue delta to add or subtract
-   *
-   * @return
-   */
-  long updateMetric(String iName, long iValue);
-
-  boolean isRecordingMetrics();
-
-  CommandContext setRecordingMetrics(boolean recordMetrics);
-
-  void beginExecution(long timeoutMs, TIMEOUT_STRATEGY iStrategy);
-
-  /**
-   * Check if timeout is elapsed, if defined.
-   *
-   * @return false if it the timeout is elapsed and strategy is "return"
-   * if the strategy is "exception" (default)
-   */
-  boolean checkTimeout();
 
   Map<String, Object> getInputParameters();
 

@@ -23,8 +23,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-
 /**
  * <p>Reads an upstream result set and returns a new result set that contains copies of the original OResult instances
  * </p>
@@ -36,16 +34,15 @@ import java.util.*;
 public class CopyDocumentStep extends AbstractExecutionStep {
 
   private final String targetType;
-  private       long   cost = 0;
 
-  public CopyDocumentStep(CommandContext ctx, String targetType, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CopyDocumentStep(final CommandContext context, final String targetType, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetType = targetType;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -54,13 +51,13 @@ public class CopyDocumentStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result toCopy = upstream.next();
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final Result toCopy = upstream.next();
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           Record resultDoc = null;
           if (toCopy.isElement()) {
 
-            Record docToCopy = toCopy.getElement().get().getRecord();
+            final Record docToCopy = toCopy.getElement().get().getRecord();
 
             if (docToCopy instanceof Document) {
               if (targetType != null) {
@@ -68,7 +65,7 @@ public class CopyDocumentStep extends AbstractExecutionStep {
               } else {
                 resultDoc = getContext().getDatabase().newDocument(((Document) docToCopy).getTypeName());
               }
-              ((MutableDocument) resultDoc).set(((Document) docToCopy).propertiesAsMap());
+              ((MutableDocument) resultDoc).set(((Document) docToCopy).toMap(false));
             }
           } else {
             resultDoc = toCopy.toElement().getRecord();
@@ -86,22 +83,13 @@ public class CopyDocumentStep extends AbstractExecutionStep {
         upstream.close();
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COPY DOCUMENT");
     if (profilingEnabled) {
@@ -110,8 +98,4 @@ public class CopyDocumentStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

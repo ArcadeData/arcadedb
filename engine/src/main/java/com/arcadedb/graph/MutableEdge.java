@@ -25,7 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.BinaryTypes;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -40,13 +40,13 @@ public class MutableEdge extends MutableDocument implements Edge {
   protected RID out;
   protected RID in;
 
-  public MutableEdge(final Database graph, final EdgeType type, final RID out, RID in) {
+  public MutableEdge(final Database graph, final EdgeType type, final RID out, final RID in) {
     super(graph, type, null);
     this.out = out;
     this.in = in;
   }
 
-  public MutableEdge(final Database graph, final EdgeType type, final RID edgeRID, final RID out, RID in) {
+  public MutableEdge(final Database graph, final EdgeType type, final RID edgeRID, final RID out, final RID in) {
     super(graph, type, edgeRID);
     this.out = out;
     this.in = in;
@@ -69,6 +69,15 @@ public class MutableEdge extends MutableDocument implements Edge {
   public synchronized void reload() {
     super.reload();
     init();
+  }
+
+  @Override
+  public synchronized Object get(final String propertyName) {
+    if (propertyName.equals("@in"))
+      return in;
+    else if (propertyName.equals("@out"))
+      return out;
+    return super.get(propertyName);
   }
 
   @Override
@@ -176,11 +185,13 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
-    final Map<String, Object> map = super.toMap();
-    map.put("@cat", "e");
-    map.put("@in", in);
-    map.put("@out", out);
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> map = super.toMap(includeMetadata);
+    if (includeMetadata) {
+      map.put("@cat", "e");
+      map.put("@in", in);
+      map.put("@out", out);
+    }
     return map;
   }
 

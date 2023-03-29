@@ -21,25 +21,13 @@
 package com.arcadedb.graphql.parser;
 
 public class FragmentDefinition extends Definition {
-
   protected FragmentName  name;
   protected TypeCondition type;
   protected Directives    directives;
   protected SelectionSet  selectionSet;
 
-  public FragmentDefinition(int id) {
+  public FragmentDefinition(final int id) {
     super(id);
-  }
-
-  public FragmentDefinition(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=588294b34a10e410fa87ff81f52b5be4 (do not edit this line) */

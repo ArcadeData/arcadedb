@@ -32,12 +32,13 @@ import java.util.*;
  * <br>
  * Immutable class.
  */
-public class RID implements Identifiable, Comparable<Identifiable>, Serializable {
-  private transient final Database database;
-  protected final         int      bucketId;
-  protected final         long     offset;
+public class RID implements Identifiable, Comparable<Object>, Serializable {
+  private transient final BasicDatabase database;
+  protected final         int           bucketId;
+  protected final         long          offset;
+  private                 int           cachedHashCode = 0; // BOOST PERFORMANCE BECAUSE RID.HASHCODE() IS ONE OF THE HOTSPOTS FOR ANY USE CASES
 
-  public RID(final Database database, final int bucketId, final long offset) {
+  public RID(final BasicDatabase database, final int bucketId, final long offset) {
     if (database == null)
       // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
       this.database = DatabaseContext.INSTANCE.getActiveDatabase();
@@ -48,7 +49,7 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
     this.offset = offset;
   }
 
-  public RID(final Database database, String value) {
+  public RID(final BasicDatabase database, String value) {
     if (database == null)
       // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
       this.database = DatabaseContext.INSTANCE.getActiveDatabase();
@@ -73,9 +74,7 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
       final String valueAsString = value.toString();
       if (valueAsString.length() > 3 && valueAsString.charAt(0) == '#') {
         final String[] parts = valueAsString.substring(1).split(":");
-        if (parts.length == 2 && NumberUtils.isIntegerNumber(parts[0]) && NumberUtils.isIntegerNumber(parts[1])) {
-          return true;
-        }
+        return parts.length == 2 && NumberUtils.isIntegerNumber(parts[0]) && NumberUtils.isIntegerNumber(parts[1]);
       }
     }
 
@@ -130,13 +129,13 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
   public Vertex asVertex(final boolean loadContent) {
     try {
       return (Vertex) database.lookupByRID(this, loadContent);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new RecordNotFoundException("Record " + this + " not found", this, e);
     }
   }
 
   public Edge asEdge() {
-    return asEdge(true);
+    return asEdge(false);
   }
 
   public Edge asEdge(final boolean loadContent) {
@@ -152,17 +151,30 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
       return false;
 
     final RID o = ((Identifiable) obj).getIdentity();
-    return Objects.equals(database, o.getDatabase()) && bucketId == o.bucketId && offset == o.offset;
+    return bucketId == o.bucketId && offset == o.offset && Objects.equals(database, o.getDatabase());
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(database, bucketId, offset);
+    if (cachedHashCode == 0) {
+      cachedHashCode = database != null ? database.hashCode() : 0;
+      cachedHashCode = 31 * cachedHashCode + bucketId;
+      cachedHashCode = 31 * cachedHashCode + (int) offset;
+    }
+    return cachedHashCode;
   }
 
   @Override
-  public int compareTo(final Identifiable o) {
-    final Database otherDb = o.getIdentity().getDatabase();
+  public int compareTo(final Object o) {
+    RID otherRID;
+    if (o instanceof RID)
+      otherRID = (RID) o;
+    else if (o instanceof String)
+      otherRID = new RID(database, (String) o);
+    else
+      return -1;
+
+    final BasicDatabase otherDb = otherRID.getDatabase();
     if (database != null) {
       if (otherDb != null) {
         final int res = database.getName().compareTo(otherDb.getName());
@@ -173,21 +185,20 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
     } else if (otherDb != null)
       return 1;
 
-    final RID other = o.getIdentity();
-    if (bucketId > other.bucketId)
+    if (bucketId > otherRID.bucketId)
       return 1;
-    else if (bucketId < other.bucketId)
+    else if (bucketId < otherRID.bucketId)
       return -1;
 
-    if (offset > other.offset)
+    if (offset > otherRID.offset)
       return 1;
-    else if (offset < other.offset)
+    else if (offset < otherRID.offset)
       return -1;
 
     return 0;
   }
 
-  public Database getDatabase() {
+  public BasicDatabase getDatabase() {
     return database;
   }
 

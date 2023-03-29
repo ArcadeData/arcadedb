@@ -19,7 +19,7 @@
 package com.arcadedb.graphql;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
@@ -50,7 +50,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
       database.command("graphql", types);
 
       RID rid = null;
-      try (ResultSet resultSet = database.query("graphql", "{ bookById(id: \"book-1\"){" +//
+      try (final ResultSet resultSet = database.query("graphql", "{ bookById(id: \"book-1\"){" +//
           "  rid @rid" +//
           "  id" +//
           "  name" +//
@@ -69,7 +69,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         rid = record.getIdentity().get();
         Assertions.assertNotNull(rid);
 
-        Assertions.assertEquals(5, record.getPropertyNames().size());
+        Assertions.assertEquals(8, record.getPropertyNames().size());
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
 
         Assertions.assertFalse(resultSet.hasNext());
@@ -84,19 +84,19 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
     executeTest((database) -> {
       defineTypes(database);
 
-      try (ResultSet resultSet = database.query("graphql", "{ bookByName(name: \"Harry Potter and the Philosopher's Stone\")}")) {
+      try (final ResultSet resultSet = database.query("graphql", "{ bookByName(name: \"Harry Potter and the Philosopher's Stone\")}")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(7, record.getPropertyNames().size());
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
         Assertions.assertEquals("Harry Potter and the Philosopher's Stone", record.getProperty("name"));
         Assertions.assertFalse(resultSet.hasNext());
       }
 
-      try (ResultSet resultSet = database.query("graphql", "{ bookByName(name: \"Mr. brain\") }")) {
+      try (final ResultSet resultSet = database.query("graphql", "{ bookByName(name: \"Mr. brain\") }")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(7, record.getPropertyNames().size());
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
         Assertions.assertEquals("Mr. brain", record.getProperty("name"));
         Assertions.assertFalse(resultSet.hasNext());
@@ -114,9 +114,8 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
       try {
         database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }");
         Assertions.fail();
-      } catch (QueryParsingException e) {
+      } catch (final CommandParsingException e) {
         // EXPECTED
-        Assertions.assertEquals(QueryParsingException.class, e.getCause().getClass());
       }
 
       return null;
@@ -144,15 +143,15 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
 
       database.command("graphql", types);
 
-      try (ResultSet resultSet = database.query("graphql", "{ books }")) {
+      try (final ResultSet resultSet = database.query("graphql", "{ books }")) {
         Assertions.assertTrue(resultSet.hasNext());
         Result record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(7, record.getPropertyNames().size());
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
 
         Assertions.assertTrue(resultSet.hasNext());
         record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(7, record.getPropertyNames().size());
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
 
         Assertions.assertFalse(resultSet.hasNext());
@@ -183,15 +182,15 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
 
       database.command("graphql", types);
 
-      try (ResultSet resultSet = database.query("graphql", "{ books { id\n name\n pageCount\n authors @relationship(type: \"WRONG\", direction: IN)} }")) {
+      try (final ResultSet resultSet = database.query("graphql", "{ books { id\n name\n pageCount\n authors @relationship(type: \"WRONG\", direction: IN)} }")) {
         Assertions.assertTrue(resultSet.hasNext());
         Result record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(7, record.getPropertyNames().size());
         Assertions.assertEquals(0, countIterable(record.getProperty("authors")));
 
         Assertions.assertTrue(resultSet.hasNext());
         record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(7, record.getPropertyNames().size());
         Assertions.assertEquals(0, countIterable(record.getProperty("authors")));
 
         Assertions.assertFalse(resultSet.hasNext());
@@ -222,10 +221,10 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
 
       database.command("graphql", types);
 
-      try (ResultSet resultSet = database.query("graphql", "{ books( where: \"name = 'Mr. brain'\" ) }")) {
+      try (final ResultSet resultSet = database.query("graphql", "{ books( where: \"name = 'Mr. brain'\" ) }")) {
         Assertions.assertTrue(resultSet.hasNext());
-        Result record = resultSet.next();
-        Assertions.assertEquals(4, record.getPropertyNames().size());
+        final Result record = resultSet.next();
+        Assertions.assertEquals(7, record.getPropertyNames().size());
 
         Assertions.assertEquals("book-2", record.getProperty("id"));
         Assertions.assertEquals("Mr. brain", record.getProperty("name"));

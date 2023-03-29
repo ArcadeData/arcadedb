@@ -21,7 +21,7 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
-import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
+import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1;
@@ -39,7 +39,7 @@ public class GremlinServerTest extends BaseGraphServerTest {
   @Test
   public void getAllVertices() {
     final GraphTraversalSource g = traversal();
-    var vertices = g.V().limit(3).toList();
+    final var vertices = g.V().limit(3).toList();
     Assertions.assertEquals(3, vertices.size());
   }
 
@@ -62,7 +62,7 @@ public class GremlinServerTest extends BaseGraphServerTest {
 
       GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       Assertions.fail(e);
     }
   }

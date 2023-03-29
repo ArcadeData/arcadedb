@@ -27,22 +27,26 @@ import java.util.*;
 
 /**
  * Opens a database on the server. This command is useful when a database has been closed for a restore.
+ *
+ * @Deprecated Use the generic @see PostServerCommandHandler
  */
+@Deprecated
 public class PostOpenDatabaseHandler extends DatabaseAbstractHandler {
   public PostOpenDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
+    checkRootUser(user);
+
     httpServer.getServer().getServerMetrics().meter("http.open-database").mark();
 
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
 
     httpServer.getServer().getDatabase(databaseName.getFirst());
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+    return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
   }
 
   @Override

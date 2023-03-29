@@ -25,13 +25,12 @@ import com.arcadedb.server.ha.HAServer;
 import java.util.*;
 
 public class ReplicaConnectFullResyncResponse extends HAAbstractCommand {
-  private long        lastMessageNumber;
   private Set<String> databases;
 
   public ReplicaConnectFullResyncResponse() {
   }
 
-  public ReplicaConnectFullResyncResponse(final long lastMessageNumber, final Set<String> databases) {
+  public ReplicaConnectFullResyncResponse(final Set<String> databases) {
     this.databases = databases;
   }
 
@@ -42,23 +41,17 @@ public class ReplicaConnectFullResyncResponse extends HAAbstractCommand {
 
   @Override
   public void toStream(final Binary stream) {
-    stream.putLong(lastMessageNumber);
     stream.putUnsignedNumber(databases.size());
-    for (String db : databases)
+    for (final String db : databases)
       stream.putString(db);
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
-    lastMessageNumber = stream.getLong();
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     databases = new HashSet<>();
     final int fileCount = (int) stream.getUnsignedNumber();
     for (int i = 0; i < fileCount; ++i)
       databases.add(stream.getString());
-  }
-
-  public long getLastMessageNumber() {
-    return lastMessageNumber;
   }
 
   public Set<String> getDatabases() {
@@ -67,6 +60,6 @@ public class ReplicaConnectFullResyncResponse extends HAAbstractCommand {
 
   @Override
   public String toString() {
-    return "fullResync(lastMessageNumber=" + lastMessageNumber + " dbs=" + databases + ")";
+    return "fullResync(dbs=" + databases + ")";
   }
 }

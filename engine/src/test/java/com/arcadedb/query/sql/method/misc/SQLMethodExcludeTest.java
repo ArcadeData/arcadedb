@@ -40,11 +40,11 @@ class SQLMethodExcludeTest {
   @Test
   void testFieldValue() {
 
-    ResultInternal resultInternal = new ResultInternal();
+    final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("name", "Foo");
     resultInternal.setProperty("surname", "Bar");
 
-    Object result = method.execute(resultInternal, null, null, null, new Object[] { "name" });
+    final Object result = method.execute(resultInternal, null, null, null, new Object[] { "name" });
     Assertions.assertNotNull(result);
     Assertions.assertTrue(((Map) result).containsKey("surname"));
     Assertions.assertFalse(((Map) result).containsKey("name"));

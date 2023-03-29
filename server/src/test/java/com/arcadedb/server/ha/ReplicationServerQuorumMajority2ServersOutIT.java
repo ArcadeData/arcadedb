@@ -71,7 +71,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     try {
       super.testReplication();
       Assertions.fail("Replication is supposed to fail without enough online servers");
-    } catch (QuorumNotReachedException e) {
+    } catch (final QuorumNotReachedException e) {
       // CATCH IT
     }
   }
@@ -86,7 +86,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     try {
       Assertions.assertTrue(1 + getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + s);
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       e.printStackTrace();
       Assertions.fail("Error on checking on server" + s);
     }

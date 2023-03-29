@@ -28,12 +28,12 @@ import java.util.*;
 public class ContainsValueOperatorTest {
   @Test
   public void test() {
-    ContainsValueOperator op = new ContainsValueOperator(-1);
+    final ContainsValueOperator op = new ContainsValueOperator(-1);
 
     Assertions.assertFalse(op.execute(null,null, null));
     Assertions.assertFalse(op.execute(null,null, "foo"));
 
-    Map<Object, Object> originMap = new HashMap<Object, Object>();
+    final Map<Object, Object> originMap = new HashMap<Object, Object>();
     Assertions.assertFalse(op.execute(null,originMap, "bar"));
     Assertions.assertFalse(op.execute(null,originMap, null));
 

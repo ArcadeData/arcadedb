@@ -26,22 +26,13 @@ import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOperator {
   boolean doubleEquals = false;
 
-  public EqualsCompareOperator(int id) {
+  public EqualsCompareOperator(final int id) {
     super(id);
   }
 
-  public EqualsCompareOperator(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
+  public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     return QueryOperatorEquals.equals(iLeft, iRight);
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override
@@ -55,7 +46,7 @@ public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOp
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass()) && ((EqualsCompareOperator) obj).doubleEquals == doubleEquals;
   }
 

@@ -19,7 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.utility.SystemVariableResolver;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -68,7 +68,7 @@ public class ContextConfiguration implements Serializable {
     final JSONObject json = new JSONObject(input);
 
     final JSONObject cfg = json.getJSONObject("configuration");
-    for (String k : cfg.keySet()) {
+    for (final String k : cfg.keySet()) {
       final GlobalConfiguration cfgEntry = GlobalConfiguration.findByKey(GlobalConfiguration.PREFIX + k);
       if (cfgEntry != null) {
         config.put(GlobalConfiguration.PREFIX + k, cfg.get(k));
@@ -82,7 +82,7 @@ public class ContextConfiguration implements Serializable {
     final JSONObject cfg = new JSONObject();
     json.put("configuration", cfg);
 
-    for (Map.Entry<String, Object> entry : config.entrySet()) {
+    for (final Map.Entry<String, Object> entry : config.entrySet()) {
       cfg.put(entry.getKey().substring(GlobalConfiguration.PREFIX.length()), entry.getValue());
     }
 
@@ -103,9 +103,9 @@ public class ContextConfiguration implements Serializable {
     return config.put(iName, iValue);
   }
 
-  public Object getValue(final GlobalConfiguration iConfig) {
+  public <T> T getValue(final GlobalConfiguration iConfig) {
     if (config.containsKey(iConfig.getKey()))
-      return config.get(iConfig.getKey());
+      return (T) config.get(iConfig.getKey());
     return iConfig.getValue();
   }
 
@@ -119,7 +119,7 @@ public class ContextConfiguration implements Serializable {
    * @throws IllegalArgumentException if value associated with configuration parameter is a string bug can not be converted to
    *                                  instance of passed in enumeration class.
    */
-  public <T extends Enum<T>> T getValueAsEnum(final GlobalConfiguration config, Class<T> enumType) {
+  public <T extends Enum<T>> T getValueAsEnum(final GlobalConfiguration config, final Class<T> enumType) {
     final Object value;
     if (this.config.containsKey(config.getKey())) {
       value = this.config.get(config.getKey());
@@ -133,7 +133,7 @@ public class ContextConfiguration implements Serializable {
     if (enumType.isAssignableFrom(value.getClass())) {
       return enumType.cast(value);
     } else if (value instanceof String) {
-      final String presentation = value.toString();
+      final String presentation = value.toString().toUpperCase();
       return Enum.valueOf(enumType, presentation);
     } else {
       throw new ClassCastException("Value " + value + " can not be cast to enumeration " + enumType.getSimpleName());
@@ -196,15 +196,11 @@ public class ContextConfiguration implements Serializable {
     return v instanceof Float ? (Float) v : Float.parseFloat(v.toString());
   }
 
-  public int getContextSize() {
-    return config.size();
-  }
-
-  public java.util.Set<String> getContextKeys() {
+  public Set<String> getContextKeys() {
     return config.keySet();
   }
 
-  public void merge(ContextConfiguration contextConfiguration) {
+  public void merge(final ContextConfiguration contextConfiguration) {
     this.config.putAll(contextConfiguration.config);
   }
 

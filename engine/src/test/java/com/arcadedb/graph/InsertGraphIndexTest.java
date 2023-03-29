@@ -21,7 +21,6 @@ package com.arcadedb.graph;
 import com.arcadedb.NullLogger;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.async.ErrorCallback;
-import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
@@ -40,7 +39,7 @@ public class InsertGraphIndexTest extends TestHelper {
   private static final int    PARALLEL         = 3;
 
   @Test
-  public void testGraph() {
+  public void testGraph() throws Exception {
     // PHASE 1
     {
       createSchema();
@@ -51,7 +50,7 @@ public class InsertGraphIndexTest extends TestHelper {
 
     // PHASE 2
     {
-      Vertex[] cachedVertices = loadVertices();
+      final Vertex[] cachedVertices = loadVertices();
       checkGraph(cachedVertices);
     }
 
@@ -134,7 +133,7 @@ public class InsertGraphIndexTest extends TestHelper {
   private void createVertices() {
     //System.out.println("Start inserting " + VERTICES + " vertices...");
 
-    long startOfTest = System.currentTimeMillis();
+    final long startOfTest = System.currentTimeMillis();
 
     try {
       //database.setEdgeListSize(256);
@@ -144,7 +143,7 @@ public class InsertGraphIndexTest extends TestHelper {
       database.async().setCommitEvery(5000);
       database.async().onError(new ErrorCallback() {
         @Override
-        public void call(Throwable exception) {
+        public void call(final Throwable exception) {
           LogManager.instance().log(this, Level.SEVERE, "ERROR: " + exception, exception);
           System.exit(1);
         }
@@ -175,12 +174,23 @@ public class InsertGraphIndexTest extends TestHelper {
     final VertexType vertex = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
     vertex.createProperty("id", Integer.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
-    vertex.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
+
+    Assertions.assertEquals("round-robin", vertex.getBucketSelectionStrategy().getName());
 
     database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
+
+    final VertexType vertexNotInUse = database.getSchema().createVertexType("NotInUse");
+    vertexNotInUse.createProperty("id", Integer.class);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "NotInUse", "id");
+
+    Assertions.assertEquals("round-robin", vertexNotInUse.getBucketSelectionStrategy().getName());
+
+    vertexNotInUse.setBucketSelectionStrategy("partitioned('id')");
+    Assertions.assertEquals("partitioned", vertexNotInUse.getBucketSelectionStrategy().getName());
+
   }
 
-  private void checkGraph(Vertex[] cachedVertices) {
+  private void checkGraph(final Vertex[] cachedVertices) {
     //System.out.println("Checking graph with " + VERTICES + " vertices");
 
     final int expectedEdges = Math.min(VERTICES, EDGES_PER_VERTEX);

@@ -40,9 +40,9 @@ public class SQLFunctionConvertTest {
     TestHelper.executeInNewDatabase("testSQLConvert", (db) -> db.transaction(() -> {
       db.command("sql", "create document type TestConversion");
 
-      db.command("sql", "insert into TestConversion set string = 'Jay', date = sysdate(), number = 33, dateAsString = '2011-12-03T10:15:30.388724'");
+      db.command("sql", "insert into TestConversion set string = 'Jay', date = sysdate(), number = 33, dateAsString = '2011-12-03T10:15:30.388'");
 
-      Document doc = db.query("sql", "select from TestConversion limit 1").next().toElement();
+      final Document doc = db.query("sql", "select from TestConversion limit 1").next().toElement();
 
       db.command("sql", "update TestConversion set selfrid = 'foo" + doc.getIdentity() + "'");
 
@@ -54,7 +54,7 @@ public class SQLFunctionConvertTest {
       assertNotNull(results);
       assertTrue(results.next().getProperty("convert") instanceof Date);
 
-      results = db.query("sql", "select dateAsString.asDate(\"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\") as convert from TestConversion");
+      results = db.query("sql", "select dateAsString.asDate(\"yyyy-MM-dd'T'HH:mm:ss.SSS\") as convert from TestConversion");
       assertNotNull(results);
       assertTrue(results.next().getProperty("convert") instanceof Date);
 
@@ -62,7 +62,7 @@ public class SQLFunctionConvertTest {
       assertNotNull(results);
       assertTrue(results.next().getProperty("convert") instanceof Date);
 
-      results = db.query("sql", "select dateAsString.asDateTime(\"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\") as convert from TestConversion");
+      results = db.query("sql", "select dateAsString.asDateTime(\"yyyy-MM-dd'T'HH:mm:ss.SSS\") as convert from TestConversion");
       assertNotNull(results);
       assertTrue(results.next().getProperty("convert") instanceof Date);
 

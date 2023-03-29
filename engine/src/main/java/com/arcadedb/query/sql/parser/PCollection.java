@@ -24,26 +24,21 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 import java.util.stream.*;
 
 public class PCollection extends SimpleNode {
-  protected List<Expression> expressions = new ArrayList<Expression>();
+  protected List<Expression> expressions = new ArrayList<>();
 
-  public PCollection(int id) {
+  public PCollection(final int id) {
     super(id);
   }
 
-  public PCollection(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("[");
     boolean first = true;
-    for (Expression expr : expressions) {
+    for (final Expression expr : expressions) {
       if (!first) {
         builder.append(", ");
       }
@@ -53,50 +48,41 @@ public class PCollection extends SimpleNode {
     builder.append("]");
   }
 
-  public void add(Expression exp) {
+  public void add(final Expression exp) {
     this.expressions.add(exp);
   }
 
-  public Object execute(Record iCurrentRecord, CommandContext ctx) {
-    List<Object> result = new ArrayList<Object>();
-    for (Expression exp : expressions) {
-      result.add(exp.execute(iCurrentRecord, ctx));
+  public Object execute(final Record iCurrentRecord, final CommandContext context) {
+    final List<Object> result = new ArrayList<Object>();
+    for (final Expression exp : expressions) {
+      result.add(exp.execute(iCurrentRecord, context));
     }
     return result;
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
-    List<Object> result = new ArrayList<Object>();
-    for (Expression exp : expressions) {
-      result.add(exp.execute(iCurrentRecord, ctx));
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+    final List<Object> result = new ArrayList<Object>();
+    for (final Expression exp : expressions) {
+      result.add(exp.execute(iCurrentRecord, context));
     }
     return result;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
-    for (Expression expr : this.expressions) {
-      if (expr.needsAliases(aliases)) {
+  public boolean isAggregate(final CommandContext context) {
+    for (final Expression exp : this.expressions) {
+      if (exp.isAggregate(context)) {
         return true;
       }
     }
     return false;
   }
 
-  public boolean isAggregate() {
-    for (Expression exp : this.expressions) {
-      if (exp.isAggregate()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  public PCollection splitForAggregation(AggregateProjectionSplit aggregateProj) {
-    if (isAggregate()) {
-      PCollection result = new PCollection(-1);
-      for (Expression exp : this.expressions) {
-        if (exp.isAggregate() || exp.isEarlyCalculated()) {
-          result.expressions.add(exp.splitForAggregation(aggregateProj));
+  public PCollection splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
+      final PCollection result = new PCollection(-1);
+      for (final Expression exp : this.expressions) {
+        if (exp.isAggregate(context) || exp.isEarlyCalculated(context)) {
+          result.expressions.add(exp.splitForAggregation(aggregateProj, context));
         } else {
           throw new CommandExecutionException("Cannot mix aggregate and non-aggregate operations in a collection: " + this);
         }
@@ -107,9 +93,9 @@ public class PCollection extends SimpleNode {
     }
   }
 
-  public boolean isEarlyCalculated() {
-    for (Expression exp : expressions) {
-      if (!exp.isEarlyCalculated()) {
+  public boolean isEarlyCalculated(final CommandContext context) {
+    for (final Expression exp : expressions) {
+      if (!exp.isEarlyCalculated(context)) {
         return false;
       }
     }
@@ -117,66 +103,19 @@ public class PCollection extends SimpleNode {
   }
 
   public PCollection copy() {
-    PCollection result = new PCollection(-1);
+    final PCollection result = new PCollection(-1);
     result.expressions = expressions == null ? null : expressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    PCollection that = (PCollection) o;
-
-    return Objects.equals(expressions, that.expressions);
+  protected Object[] getIdentityElements() {
+    return new Object[] { expressions };
   }
 
   @Override
-  public int hashCode() {
-    return expressions != null ? expressions.hashCode() : 0;
-  }
-
-  public boolean refersToParent() {
-    if (expressions != null) {
-      for (Expression exp : expressions) {
-        if (exp != null && exp.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (expressions != null) {
-      result.setProperty("expressions", expressions.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("expressions") != null) {
-      expressions = new ArrayList<>();
-      List<Result> ser = fromResult.getProperty("expressions");
-      for (Result item : ser) {
-        Expression exp = new Expression(-1);
-        exp.deserialize(item);
-        expressions.add(exp);
-      }
-    }
-  }
-
-  public boolean isCacheable() {
-    for (Expression exp : expressions) {
-      if (!exp.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  protected SimpleNode[] getCacheableElements() {
+    return expressions.toArray(new SimpleNode[expressions.size()]);
   }
 
   public List<Expression> getExpressions() {

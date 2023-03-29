@@ -19,11 +19,17 @@
 package com.arcadedb.database;
 
 import com.arcadedb.schema.DocumentType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.*;
+import java.time.*;
 import java.util.*;
 
+/**
+ * Document interface. Vertex and Edge both extend the Document interface.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public interface Document extends Record {
   byte RECORD_TYPE = 0;
 
@@ -57,6 +63,41 @@ public interface Document extends Record {
 
   Date getDate(String propertyName);
 
+  /**
+   * Returns a java.util.Calendar object from a datetime property.
+   *
+   * @since 23.1.1
+   */
+  Calendar getCalendar(String propertyName);
+
+  /**
+   * Returns a java.time.LocalDate object from a date property.
+   *
+   * @since 23.1.1
+   */
+  LocalDate getLocalDate(String propertyName);
+
+  /**
+   * Returns a java.time.LocalDateTime object from a datetime property.
+   *
+   * @since 23.1.1
+   */
+  LocalDateTime getLocalDateTime(String propertyName);
+
+  /**
+   * Returns a java.time.ZonedDateTime object from a datetime property.
+   *
+   * @since 23.1.1
+   */
+  ZonedDateTime getZonedDateTime(String propertyName);
+
+  /**
+   * Returns a java.time.Instant object from a datetime property.
+   *
+   * @since 23.1.1
+   */
+  Instant getInstant(String propertyName);
+
   EmbeddedDocument getEmbedded(String propertyName);
 
   Set<String> getPropertyNames();
@@ -67,7 +108,19 @@ public interface Document extends Record {
 
   JSONObject toJSON();
 
-  Map<String, Object> toMap();
+  /**
+   * Returns a map containing the document properties, including metadata such as `@rid`, `@type` and `@cat`.
+   */
+  default Map<String, Object> toMap() {
+    return toMap(true);
+  }
+
+  /**
+   * Returns a map containing the document properties.
+   *
+   * @param includeMetadata true to include metadata such as `@rid`, `@type` and `@cat`, otherwise only the document properties
+   */
+  Map<String, Object> toMap(boolean includeMetadata);
 
   Map<String, Object> propertiesAsMap();
 

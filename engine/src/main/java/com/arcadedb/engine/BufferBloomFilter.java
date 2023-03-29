@@ -34,19 +34,18 @@ public class BufferBloomFilter {
   }
 
   public void add(final int value) {
-    final byte[] b = new byte[] { (byte) (value >>> 24), (byte) (value >>> 16), (byte) (value >>> 8), (byte) value };
-    final int hash = MurmurHash.hash32(b, 4, hashSeed);
-    final int h = hash != Integer.MIN_VALUE ? Math.abs(hash) : Integer.MAX_VALUE;
-
-    final int bit2change = h > capacity ? h % capacity : h;
-    final int byte2change = bit2change / 8;
-    final int bitInByte2change = bit2change % 8;
-
-    final byte v = buffer.getByte(byte2change);
-    buffer.putByte(byte2change, (byte) (v | (1 << bitInByte2change)));
+    final int[] result = compute(value);
+    final byte v = buffer.getByte(result[0]);
+    buffer.putByte(result[0], (byte) (v | (1 << result[1])));
   }
 
   public boolean mightContain(final int value) {
+    final int[] result = compute(value);
+    final byte v = buffer.getByte(result[0]);
+    return ((v >> result[1]) & 1) == 1;
+  }
+
+  private int[] compute(final int value) {
     final byte[] b = new byte[] { (byte) (value >>> 24), (byte) (value >>> 16), (byte) (value >>> 8), (byte) value };
     final int hash = MurmurHash.hash32(b, 4, hashSeed);
     final int h = hash != Integer.MIN_VALUE ? Math.abs(hash) : Integer.MAX_VALUE;
@@ -55,7 +54,6 @@ public class BufferBloomFilter {
     final int byte2change = bit2change / 8;
     final int bitInByte2change = bit2change % 8;
 
-    final byte v = buffer.getByte(byte2change);
-    return ((v >> bitInByte2change) & 1) == 1;
+    return new int[] { byte2change, bitInByte2change };
   }
 }

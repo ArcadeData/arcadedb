@@ -15,10 +15,10 @@ public class DocumentValidationTest extends TestHelper {
 
   @Test
   public void testReadOnly() {
-    DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
+    final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setReadonly(true);
 
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setReadonly(true);
     clazz.createProperty("long", Type.LONG).setReadonly(true);
     clazz.createProperty("float", Type.FLOAT).setReadonly(true);
@@ -35,7 +35,7 @@ public class DocumentValidationTest extends TestHelper {
     clazz.createProperty("embeddedList", Type.LIST).setReadonly(true);
     clazz.createProperty("embeddedMap", Type.MAP).setReadonly(true);
 
-    MutableDocument d = database.newDocument("Validation");
+    final MutableDocument d = database.newDocument("Validation");
     d.set("int", 10);
     d.set("long", 10);
     d.set("float", 10);
@@ -51,17 +51,17 @@ public class DocumentValidationTest extends TestHelper {
     d.set("embeddedList", new ArrayList<RID>());
     d.set("embeddedMap", new HashMap<String, RID>());
 
-    MutableDocument embedded = d.newEmbeddedDocument("EmbeddedValidation", "embedded");
+    final MutableDocument embedded = d.newEmbeddedDocument("EmbeddedValidation", "embedded");
     embedded.set("int", 20);
     embedded.set("long", 20);
 
-    MutableDocument embeddedInList = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
+    final MutableDocument embeddedInList = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
     embeddedInList.set("int", 30);
     embeddedInList.set("long", 30);
     final ArrayList<Document> embeddedList = new ArrayList<Document>();
     embeddedList.add(embeddedInList);
 
-    MutableDocument embeddedInMap = d.newEmbeddedDocument("EmbeddedValidation", "embeddedMap", "key");
+    final MutableDocument embeddedInMap = d.newEmbeddedDocument("EmbeddedValidation", "embeddedMap", "key");
     embeddedInMap.set("int", 30);
     embeddedInMap.set("long", 30);
     final Map<String, Document> embeddedMap = new HashMap<>();
@@ -90,10 +90,10 @@ public class DocumentValidationTest extends TestHelper {
 
   @Test
   public void testRequiredValidationAPI() {
-    DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
+    final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
 
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMandatory(true);
     clazz.createProperty("long", Type.LONG).setMandatory(true);
     clazz.createProperty("float", Type.FLOAT).setMandatory(true);
@@ -111,7 +111,7 @@ public class DocumentValidationTest extends TestHelper {
     clazz.createProperty("embeddedList", Type.LIST).setMandatory(true);
     clazz.createProperty("embeddedMap", Type.MAP).setMandatory(true);
 
-    MutableDocument d = database.newDocument("Validation");
+    final MutableDocument d = database.newDocument("Validation");
     d.set("int", 10);
     d.set("long", 10);
     d.set("float", 10);
@@ -128,17 +128,17 @@ public class DocumentValidationTest extends TestHelper {
     d.set("embeddedList", new ArrayList<RID>());
     d.set("embeddedMap", new HashMap<String, RID>());
 
-    MutableDocument embedded = d.newEmbeddedDocument("EmbeddedValidation", "embedded");
+    final MutableDocument embedded = d.newEmbeddedDocument("EmbeddedValidation", "embedded");
     embedded.set("int", 20);
     embedded.set("long", 20);
 
-    MutableDocument embeddedInList = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
+    final MutableDocument embeddedInList = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
     embeddedInList.set("int", 30);
     embeddedInList.set("long", 30);
     final ArrayList<Document> embeddedList = new ArrayList<Document>();
     embeddedList.add(embeddedInList);
 
-    MutableDocument embeddedInMap = d.newEmbeddedDocument("EmbeddedValidation", "embeddedMap", "key");
+    final MutableDocument embeddedInMap = d.newEmbeddedDocument("EmbeddedValidation", "embeddedMap", "key");
     embeddedInMap.set("int", 30);
     embeddedInMap.set("long", 30);
     final Map<String, Document> embeddedMap = new HashMap<>();
@@ -164,14 +164,51 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
+  public void testDefaultValueIsSetWithSQL() {
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
+
+    database.command("sql", "create property Validation.long LONG (default 1)");
+    database.command("sql", "create property Validation.string STRING (default \"1\")");
+    database.command("sql", "create property Validation.dat DATETIME (default sysdate('YYYY-MM-DD HH:MM:SS'))");
+
+    Assertions.assertEquals(1L, clazz.getProperty("long").getDefaultValue());
+    Assertions.assertEquals("1", clazz.getProperty("string").getDefaultValue());
+    Assertions.assertTrue(clazz.getProperty("dat").getDefaultValue() instanceof Date);
+
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Validation");
+      d.save();
+      Assertions.assertEquals(1L, d.get("long"));
+      Assertions.assertEquals("1", d.get("string"));
+      Assertions.assertTrue(d.get("dat") instanceof Date);
+    });
+  }
+
+
+  @Test
+  public void testDefaultNotNullValueIsSetWithSQL() {
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
+
+    database.command("sql", "create property Validation.string STRING (notnull, default \"1\")");
+
+    Assertions.assertEquals("1", clazz.getProperty("string").getDefaultValue());
+
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Validation");
+      d.save();
+      Assertions.assertEquals("1", d.get("string"));
+    });
+  }
+
+  @Test
   public void testRequiredValidationSQL() {
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.int INTEGER (mandatory true)");
 
     Assertions.assertTrue(clazz.getProperty("int").isMandatory());
 
-    MutableDocument d = database.newDocument("Validation");
+    final MutableDocument d = database.newDocument("Validation");
     d.set("int", 10);
 
     d.validate();
@@ -181,98 +218,98 @@ public class DocumentValidationTest extends TestHelper {
 
   @Test
   public void testValidationNotValidEmbedded() {
-    DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
+    final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
 
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMandatory(true);
     clazz.createProperty("long", Type.LONG).setMandatory(true);
     clazz.createProperty("embedded", Type.EMBEDDED).setMandatory(true);
 
-    MutableDocument d = database.newDocument("Validation");
+    final MutableDocument d = database.newDocument("Validation");
     d.set("int", 30);
     d.set("long", 30);
 
-    MutableDocument embedded = d.newEmbeddedDocument("EmbeddedValidation", "embedded");
+    final MutableDocument embedded = d.newEmbeddedDocument("EmbeddedValidation", "embedded");
     embedded.set("test", "test");
     try {
       d.validate();
       Assertions.fail("Validation doesn't throw exception");
-    } catch (ValidationException e) {
+    } catch (final ValidationException e) {
       Assertions.assertTrue(e.toString().contains("int"));
     }
   }
 
   @Test
   public void testValidationNotValidEmbeddedList() {
-    DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
+    final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
     embeddedClazz.createProperty("long", Type.LONG).setMandatory(true);
 
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMandatory(true);
     clazz.createProperty("long", Type.LONG).setMandatory(true);
     clazz.createProperty("embeddedList", Type.LIST).setMandatory(true);
 
-    MutableDocument d = database.newDocument(clazz.getName());
+    final MutableDocument d = database.newDocument(clazz.getName());
     d.set("int", 30);
     d.set("long", 30);
 
     final ArrayList<Document> embeddedList = new ArrayList<>();
     d.set("embeddedList", embeddedList);
 
-    MutableDocument embeddedInList = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
+    final MutableDocument embeddedInList = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
     embeddedInList.set("int", 30);
     embeddedInList.set("long", 30);
 
-    MutableDocument embeddedInList2 = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
+    final MutableDocument embeddedInList2 = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
     embeddedInList2.set("int", 30);
 
     try {
       d.validate();
       Assertions.fail("Validation doesn't throw exception");
-    } catch (ValidationException e) {
+    } catch (final ValidationException e) {
       Assertions.assertTrue(e.toString().contains("long"));
     }
   }
 
   @Test
   public void testValidationNotValidEmbeddedMap() {
-    DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
+    final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
     embeddedClazz.createProperty("long", Type.LONG).setMandatory(true);
 
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMandatory(true);
     clazz.createProperty("long", Type.LONG).setMandatory(true);
     clazz.createProperty("embeddedMap", Type.MAP).setMandatory(true);
 
-    MutableDocument d = database.newDocument(clazz.getName());
+    final MutableDocument d = database.newDocument(clazz.getName());
     d.set("int", 30);
     d.set("long", 30);
     final Map<String, Document> embeddedMap = new HashMap<String, Document>();
     d.set("embeddedMap", embeddedMap);
 
-    MutableDocument embeddedInMap = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
+    final MutableDocument embeddedInMap = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
     embeddedInMap.set("int", 30);
     embeddedInMap.set("long", 30);
     embeddedMap.put("1", embeddedInMap);
 
-    MutableDocument embeddedInMap2 = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
+    final MutableDocument embeddedInMap2 = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
     embeddedInMap2.set("int", 30);
     embeddedMap.put("2", embeddedInMap2);
 
     try {
       d.validate();
       Assertions.fail("Validation doesn't throw exception");
-    } catch (ValidationException e) {
+    } catch (final ValidationException e) {
       Assertions.assertTrue(e.toString().contains("long"));
     }
   }
 
   @Test
   public void testMaxValidation() {
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMax("11");
     clazz.createProperty("long", Type.LONG).setMax("11");
     clazz.createProperty("float", Type.FLOAT).setMax("11");
@@ -294,7 +331,7 @@ public class DocumentValidationTest extends TestHelper {
     clazz.createProperty("embeddedList", Type.LIST).setMax("2");
     clazz.createProperty("embeddedMap", Type.MAP).setMax("2");
 
-    MutableDocument d = database.newDocument(clazz.getName());
+    final MutableDocument d = database.newDocument(clazz.getName());
     d.set("int", 11);
     d.set("long", 11);
     d.set("float", 11);
@@ -307,7 +344,7 @@ public class DocumentValidationTest extends TestHelper {
     d.set("short", 10);
     d.set("string", "yeah");
     d.set("embeddedList", Arrays.asList("a", "b"));
-    HashMap<String, String> cont = new HashMap<String, String>();
+    final HashMap<String, String> cont = new HashMap<String, String>();
     cont.put("one", "one");
     cont.put("two", "one");
     d.set("embeddedMap", cont);
@@ -329,7 +366,7 @@ public class DocumentValidationTest extends TestHelper {
     checkFieldValue(d, "short", 20);
     checkFieldValue(d, "string", "0123456789101112");
     checkFieldValue(d, "embeddedList", Arrays.asList("a", "b", "d"));
-    HashMap<String, String> con1 = new HashMap<>();
+    final HashMap<String, String> con1 = new HashMap<>();
     con1.put("one", "one");
     con1.put("two", "one");
     con1.put("three", "one");
@@ -339,7 +376,7 @@ public class DocumentValidationTest extends TestHelper {
 
   @Test
   public void testMinValidation() {
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMin("11");
     clazz.createProperty("long", Type.LONG).setMin("11");
     clazz.createProperty("float", Type.FLOAT).setMin("11");
@@ -363,7 +400,7 @@ public class DocumentValidationTest extends TestHelper {
     clazz.createProperty("embeddedList", Type.LIST).setMin("1");
     clazz.createProperty("embeddedMap", Type.MAP).setMin("1");
 
-    MutableDocument d = database.newDocument(clazz.getName());
+    final MutableDocument d = database.newDocument(clazz.getName());
     d.set("int", 11);
     d.set("long", 11);
     d.set("float", 11);
@@ -379,7 +416,7 @@ public class DocumentValidationTest extends TestHelper {
     d.set("short", 12);
     d.set("string", "yeahyeahyeah");
     d.set("embeddedList", Arrays.asList("a"));
-    Map<String, String> map = new HashMap<>();
+    final Map<String, String> map = new HashMap<>();
     map.put("some", "value");
     d.set("embeddedMap", map);
 
@@ -407,7 +444,7 @@ public class DocumentValidationTest extends TestHelper {
   public void testNotNullValidation() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setNotNull(true);
     clazz.createProperty("long", Type.LONG).setNotNull(true);
     clazz.createProperty("float", Type.FLOAT).setNotNull(true);
@@ -425,7 +462,7 @@ public class DocumentValidationTest extends TestHelper {
     clazz.createProperty("embeddedList", Type.LIST).setNotNull(true);
     clazz.createProperty("embeddedMap", Type.MAP).setNotNull(true);
 
-    MutableDocument d = database.newDocument(clazz.getName());
+    final MutableDocument d = database.newDocument(clazz.getName());
     d.set("int", 12);
     d.set("long", 12);
     d.set("float", 12);
@@ -465,7 +502,7 @@ public class DocumentValidationTest extends TestHelper {
   public void testNotNullSave() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setNotNull(true);
     clazz.createProperty("long", Type.LONG).setNotNull(true);
     clazz.createProperty("float", Type.FLOAT).setNotNull(true);
@@ -483,7 +520,7 @@ public class DocumentValidationTest extends TestHelper {
     clazz.createProperty("embeddedList", Type.LIST).setNotNull(true);
     clazz.createProperty("embeddedMap", Type.MAP).setNotNull(true);
 
-    MutableDocument d = database.newDocument(clazz.getName());
+    final MutableDocument d = database.newDocument(clazz.getName());
     d.set("int", 12);
     d.set("long", 12);
     d.set("float", 12);
@@ -523,10 +560,10 @@ public class DocumentValidationTest extends TestHelper {
 
   @Test
   public void testRegExpValidation() {
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
-    clazz.createProperty("string", Type.STRING).setRegexp("[^Z]*");
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
+    clazz.getOrCreateProperty("string", Type.STRING).setRegexp("[^Z]*");
 
-    MutableDocument d = database.newDocument(clazz.getName());
+    final MutableDocument d = database.newDocument(clazz.getName());
     d.set("string", "yeah");
     d.validate();
 
@@ -534,13 +571,31 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
+  public void testRegExpValidationFromSQL() {
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
+
+    database.command("sql", "create property Validation.anychars string (regexp '.*')");
+
+    final MutableDocument d = database.newDocument(clazz.getName());
+    d.set("anychars", "yeah");
+    d.validate();
+
+    // CHECK ALTER PROPERTY
+    database.command("sql", "alter property Validation.anychars regexp '[^Z]*'");
+    d.set("anychars", "yeah");
+    d.validate();
+
+    checkFieldValue(d, "anychars", "yaZah");
+  }
+
+  @Test
   public void testPropertyMetadataAreSavedAndReloadded() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
-    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("string", Type.STRING).setNotNull(true).setReadonly(true).setMandatory(true);
 
-    MutableDocument d = database.newDocument(clazz.getName());
+    final MutableDocument d = database.newDocument(clazz.getName());
     d.set("string", "yeah");
 
     database.transaction(() -> {
@@ -554,40 +609,58 @@ public class DocumentValidationTest extends TestHelper {
     database.close();
     database = factory.open();
 
-    DocumentType clazzLoaded = database.getSchema().getType("Validation");
-    final Property property = clazzLoaded.getProperty("string");
+    final DocumentType clazzLoaded = database.getSchema().getType("Validation");
+    final Property property = clazzLoaded.getPropertyIfExists("string");
 
     Assertions.assertTrue(property.isMandatory());
     Assertions.assertTrue(property.isReadonly());
     Assertions.assertTrue(property.isNotNull());
   }
 
-  private void checkFieldValue(Document toCheck, String field, Object newValue) {
+  @Test
+  public void testMinMaxNotApplicable() {
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
     try {
-      MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
+      clazz.createProperty("invString", Type.STRING).setMin("-1");
+      Assertions.fail();
+    } catch (IllegalArgumentException e) {
+      // EXPECTED
+    }
+
+    try {
+      clazz.createProperty("invBinary", Type.LIST).setMax("-1");
+      Assertions.fail();
+    } catch (IllegalArgumentException e) {
+      // EXPECTED
+    }
+  }
+
+  private void checkFieldValue(final Document toCheck, final String field, final Object newValue) {
+    try {
+      final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
       newD.set(field, newValue);
       newD.validate();
       Assertions.fail();
-    } catch (ValidationException v) {
+    } catch (final ValidationException v) {
     }
   }
 
-  private void checkRequireField(MutableDocument toCheck, String fieldName) {
+  private void checkRequireField(final MutableDocument toCheck, final String fieldName) {
     try {
-      MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
+      final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
       newD.remove(fieldName);
       newD.validate();
       Assertions.fail();
-    } catch (ValidationException v) {
+    } catch (final ValidationException v) {
     }
   }
 
-  private void checkReadOnlyField(MutableDocument toCheck, String fieldName) {
+  private void checkReadOnlyField(final MutableDocument toCheck, final String fieldName) {
     try {
       toCheck.remove(fieldName);
       toCheck.validate();
       Assertions.fail();
-    } catch (ValidationException v) {
+    } catch (final ValidationException v) {
     }
   }
 }

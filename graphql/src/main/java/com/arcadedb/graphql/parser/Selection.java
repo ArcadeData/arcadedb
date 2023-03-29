@@ -21,7 +21,6 @@
 package com.arcadedb.graphql.parser;
 
 public class Selection extends SimpleNode {
-
   protected Name           name;
   protected FieldWithAlias fieldWithAlias;
   protected Field          field;
@@ -29,20 +28,10 @@ public class Selection extends SimpleNode {
   protected FragmentSpread fragmentSpread;
   protected InlineFragment inlineFragment;
 
-  public Selection(int id) {
+  public Selection(final int id) {
     super(id);
   }
 
-  public Selection(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public String getName() {
     return name != null ? name.value : null;

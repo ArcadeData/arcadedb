@@ -25,7 +25,7 @@ import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -37,70 +37,88 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
 
+  @Override
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     final String payload = parseRequestPayload(exchange);
-    if (payload == null || payload.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Command text is null\"}");
-      return;
-    }
+    if (payload == null || payload.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
     final JSONObject json = new JSONObject(payload);
 
     final Map<String, Object> requestMap = json.toMap();
 
     final String language = (String) requestMap.get("language");
-    final String command = decode((String) requestMap.get("command"));
+    String command = decode((String) requestMap.get("command"));
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
     final String serializer = (String) requestMap.getOrDefault("serializer", "record");
+    final String profileExecution = (String) requestMap.getOrDefault("profileExecution", null);
 
-    if (command == null || command.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Command text is null\"}");
-      return;
-    }
+    if (command == null || command.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
-    final Map<String, Object> paramMap = (Map<String, Object>) requestMap.get("params");
+    Map<String, Object> paramMap = (Map<String, Object>) requestMap.get("params");
+    if (paramMap == null)
+      paramMap = new HashMap<>();
 
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.command");
 
     try {
+      if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
+        final String commandLC = command.toLowerCase().trim();
+        if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
+          if (!commandLC.contains(" limit ")) {
+            command += " limit " + limit;
+          } else {
+            final String[] words = commandLC.split(" ");
+            if (!"limit".equals(words[words.length - 2]))
+              command += " limit " + limit;
+          }
+        }
+
+        if ("detailed".equalsIgnoreCase(profileExecution))
+          paramMap.put("$profileExecution", true);
+      }
 
       final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
-          executeScript(database, language, command, paramMap) :
+          executeScript(database, command, paramMap) :
           executeCommand(database, language, command, paramMap);
 
       if (qResult == null)
         throw new CommandExecutionException("Error on executing command");
 
-      final JSONObject response = createResult(user);
+      final JSONObject response = createResult(user, database);
 
       serializeResultSet(database, serializer, limit, response, qResult);
 
+      if (profileExecution != null && qResult.getExecutionPlan().isPresent())
+        qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
+
       final String responseAsString = response.toString();
 
-      exchange.setStatusCode(200);
-      exchange.getResponseSender().send(responseAsString);
+      return new ExecutionResponse(200, responseAsString);
 
     } finally {
       timer.stop();
     }
   }
 
-  private ResultSet executeScript(final Database database, final String language, String command, final Map<String, Object> paramMap) {
+  private ResultSet executeScript(final Database database, String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
     if (!command.endsWith(";"))
       command += ";";
 
     if (params instanceof Object[])
-      return database.execute(language, command, (Object[]) params);
+      return database.command("sqlscript", command, (Object[]) params);
 
-    return database.execute(language, command, (Map<String, Object>) params);
+    return database.command("sqlscript", command, (Map<String, Object>) params);
   }
 
-  private ResultSet executeCommand(final Database database, final String language, String command, final Map<String, Object> paramMap) {
+  protected ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
     if (params instanceof Object[])

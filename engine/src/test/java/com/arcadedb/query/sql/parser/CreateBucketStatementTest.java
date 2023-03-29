@@ -26,6 +26,7 @@ public class CreateBucketStatementTest extends ParserTestAbstract {
   public void testPlain() {
     checkRightSyntax("CREATE BUCKET Foo");
     checkRightSyntax("create bucket Foo");
+    checkRightSyntax("CREATE Bucket Foo if not exists");
 
     checkWrongSyntax("CREATE Bucket");
     checkWrongSyntax("CREATE Bucket foo bar");

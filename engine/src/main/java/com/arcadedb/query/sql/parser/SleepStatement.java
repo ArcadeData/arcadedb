@@ -28,28 +28,23 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class SleepStatement extends SimpleExecStatement {
-
   protected PInteger millis;
 
-  public SleepStatement(int id) {
+  public SleepStatement(final int id) {
     super(id);
   }
 
-  public SleepStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
 
-    InternalResultSet result = new InternalResultSet();
-    ResultInternal item = new ResultInternal();
+    final InternalResultSet result = new InternalResultSet();
+    final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "sleep");
     try {
       Thread.sleep(millis.getValue().intValue());
       item.setProperty("result", "OK");
       item.setProperty("millis", millis.getValue().intValue());
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       item.setProperty("result", "failure");
       item.setProperty("errorType", e.getClass().getSimpleName());
@@ -57,30 +52,29 @@ public class SleepStatement extends SimpleExecStatement {
     }
     result.add(item);
     return result;
-
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("SLEEP ");
     millis.toString(params, builder);
   }
 
   @Override
   public SleepStatement copy() {
-    SleepStatement result = new SleepStatement(-1);
+    final SleepStatement result = new SleepStatement(-1);
     result.millis = millis == null ? null : millis.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    SleepStatement that = (SleepStatement) o;
+    final SleepStatement that = (SleepStatement) o;
 
     return Objects.equals(millis, that.millis);
   }

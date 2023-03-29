@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.network.binary.NetworkProtocolException;
@@ -64,7 +64,7 @@ public class FileContentRequest extends HAAbstractCommand {
 
       for (int i = fromPageInclusive; i <= toPageInclusive && pages < CHUNK_MAX_PAGES; ++i) {
         final PageId pageId = new PageId(fileId, i);
-        final BasePage page = db.getPageManager().getPage(pageId, pageSize, false, false).createImmutableView();
+        final ImmutablePage page = db.getPageManager().getPage(pageId, pageSize, false, false);
         pagesContent.putByteArray(page.getContent().array(), pageSize);
 
         ++pages;
@@ -76,7 +76,7 @@ public class FileContentRequest extends HAAbstractCommand {
 
       return new FileContentResponse(databaseName, fileId, file.getFileName(), fromPageInclusive, pagesContent, pages, last);
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new NetworkProtocolException("Cannot load pages", e);
     }
   }
@@ -90,7 +90,7 @@ public class FileContentRequest extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     databaseName = stream.getString();
     fileId = stream.getInt();
     fromPageInclusive = stream.getInt();

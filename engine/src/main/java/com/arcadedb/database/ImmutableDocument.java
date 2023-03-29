@@ -20,7 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -43,9 +43,7 @@ public class ImmutableDocument extends BaseDocument {
       return false;
 
     checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
-    return map.containsKey(propertyName);
+    return database.getSerializer().hasProperty(database, buffer, propertyName);
   }
 
   @Override
@@ -54,9 +52,7 @@ public class ImmutableDocument extends BaseDocument {
       return null;
 
     checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
-    return map.get(propertyName);
+    return database.getSerializer().deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, type);
   }
 
   @Override
@@ -73,7 +69,7 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public synchronized JSONObject toJSON() {
     checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+    final Map<String, Object> map = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
 
     final JSONObject result = new JSONSerializer(database).map2json(map);
     result.put("@cat", "d");
@@ -87,17 +83,25 @@ public class ImmutableDocument extends BaseDocument {
   public Map<String, Object> propertiesAsMap() {
     if (database == null || buffer == null)
       return Collections.emptyMap();
-    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+    buffer.position(propertiesStartingPosition);
+    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
   }
 
   @Override
   public synchronized Map<String, Object> toMap() {
+    return toMap(true);
+  }
+
+  @Override
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
-    final Map<String, Object> result = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
-    result.put("@cat", "d");
-    result.put("@type", type.getName());
-    if (getIdentity() != null)
-      result.put("@rid", getIdentity().toString());
+    final Map<String, Object> result = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
+    if (includeMetadata) {
+      result.put("@cat", "d");
+      result.put("@type", type.getName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
     return result;
   }
 
@@ -113,12 +117,12 @@ public class ImmutableDocument extends BaseDocument {
       final int currPosition = buffer.position();
 
       buffer.position(propertiesStartingPosition);
-      final Map<String, Object> map = this.database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+      final Map<String, Object> map = this.database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
 
       buffer.position(currPosition);
 
       int i = 0;
-      for (Map.Entry<String, Object> entry : map.entrySet()) {
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
         if (i > 0)
           output.append(',');
 

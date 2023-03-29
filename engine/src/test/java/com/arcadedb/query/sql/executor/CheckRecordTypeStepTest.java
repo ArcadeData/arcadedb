@@ -30,19 +30,19 @@ public class CheckRecordTypeStepTest {
   @Test
   public void shouldCheckRecordsOfOneType() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      String className = TestHelper.createRandomType(db).getName();
+      final String className = TestHelper.createRandomType(db).getName();
 
-      CommandContext context = new BasicCommandContext();
-      CheckRecordTypeStep step = new CheckRecordTypeStep(context, className, false);
-      AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CommandContext context = new BasicCommandContext();
+      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, className, false);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
         boolean done = false;
 
         @Override
-        public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-          InternalResultSet result = new InternalResultSet();
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+          final InternalResultSet result = new InternalResultSet();
           if (!done) {
             for (int i = 0; i < 10; i++) {
-              ResultInternal item = new ResultInternal();
+              final ResultInternal item = new ResultInternal();
               item.setElement(db.newDocument(className));
               result.add(item);
             }
@@ -53,7 +53,7 @@ public class CheckRecordTypeStepTest {
       };
 
       step.setPrevious(previous);
-      ResultSet result = step.syncPull(context, 20);
+      final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(10, result.stream().count());
       Assertions.assertFalse(result.hasNext());
     });
@@ -62,19 +62,19 @@ public class CheckRecordTypeStepTest {
   @Test
   public void shouldCheckRecordsOfSubclasses() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      CommandContext context = new BasicCommandContext();
-      DocumentType parentClass = TestHelper.createRandomType(db);
-      DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
-      CheckRecordTypeStep step = new CheckRecordTypeStep(context, parentClass.getName(), false);
-      AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CommandContext context = new BasicCommandContext();
+      final DocumentType parentClass = TestHelper.createRandomType(db);
+      final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
+      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, parentClass.getName(), false);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
         boolean done = false;
 
         @Override
-        public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-          InternalResultSet result = new InternalResultSet();
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+          final InternalResultSet result = new InternalResultSet();
           if (!done) {
             for (int i = 0; i < 10; i++) {
-              ResultInternal item = new ResultInternal();
+              final ResultInternal item = new ResultInternal();
               item.setElement(db.newDocument(i % 2 == 0 ? parentClass.getName() : childClass.getName()));
               result.add(item);
             }
@@ -85,7 +85,7 @@ public class CheckRecordTypeStepTest {
       };
 
       step.setPrevious(previous);
-      ResultSet result = step.syncPull(context, 20);
+      final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(10, result.stream().count());
       Assertions.assertFalse(result.hasNext());
     });
@@ -95,19 +95,19 @@ public class CheckRecordTypeStepTest {
   public void shouldThrowExceptionWhenTypeIsDifferent() throws Exception {
     try {
       TestHelper.executeInNewDatabase((db) -> {
-        CommandContext context = new BasicCommandContext();
-        String firstClassName = TestHelper.createRandomType(db).getName();
-        String secondClassName = TestHelper.createRandomType(db).getName();
-        CheckRecordTypeStep step = new CheckRecordTypeStep(context, firstClassName, false);
-        AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+        final CommandContext context = new BasicCommandContext();
+        final String firstClassName = TestHelper.createRandomType(db).getName();
+        final String secondClassName = TestHelper.createRandomType(db).getName();
+        final CheckRecordTypeStep step = new CheckRecordTypeStep(context, firstClassName, false);
+        final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
           boolean done = false;
 
           @Override
-          public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-            InternalResultSet result = new InternalResultSet();
+          public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+            final InternalResultSet result = new InternalResultSet();
             if (!done) {
               for (int i = 0; i < 10; i++) {
-                ResultInternal item = new ResultInternal();
+                final ResultInternal item = new ResultInternal();
                 item.setElement(db.newDocument(i % 2 == 0 ? firstClassName : secondClassName));
                 result.add(item);
               }
@@ -118,14 +118,14 @@ public class CheckRecordTypeStepTest {
         };
 
         step.setPrevious(previous);
-        ResultSet result = step.syncPull(context, 20);
+        final ResultSet result = step.syncPull(context, 20);
         while (result.hasNext()) {
           result.next();
         }
       });
       Assertions.fail("Expected CommandExecutionException");
 
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       // OK
     }
   }

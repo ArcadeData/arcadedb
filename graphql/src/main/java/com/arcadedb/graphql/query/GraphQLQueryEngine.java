@@ -18,7 +18,7 @@
  */
 package com.arcadedb.graphql.query;
 
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -27,7 +27,7 @@ import com.arcadedb.utility.FileUtils;
 import java.util.*;
 
 public class GraphQLQueryEngine implements QueryEngine {
-  public static final String ENGINE_NAME = "graphql-engine";
+  public static final String        ENGINE_NAME = "graphql";
   private final       GraphQLSchema graphQLSchema;
 
   protected GraphQLQueryEngine(final GraphQLSchema graphQLSchema) {
@@ -35,7 +35,12 @@ public class GraphQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public AnalyzedQuery analyze(String query) {
+  public String getLanguage() {
+    return ENGINE_NAME;
+  }
+
+  @Override
+  public AnalyzedQuery analyze(final String query) {
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -62,12 +67,12 @@ public class GraphQLQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final Map<String, Object> parameters) {
     try {
-
       final ResultSet resultSet = graphQLSchema.execute(query);
-
       return resultSet;
-    } catch (Exception e) {
-      throw new QueryParsingException("Error on executing GraphQL query:\n" + FileUtils.printWithLineNumbers(query), e);
+    } catch (final CommandParsingException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new CommandParsingException("Error on executing GraphQL query:\n" + FileUtils.printWithLineNumbers(query), e);
     }
   }
 

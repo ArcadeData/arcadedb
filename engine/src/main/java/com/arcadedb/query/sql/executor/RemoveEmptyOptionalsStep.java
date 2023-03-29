@@ -19,27 +19,19 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.parser.Identifier;
-
-import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
 
-  public RemoveEmptyOptionalsStep(CommandContext ctx, Identifier bucket, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
-
-  }
-
-  public RemoveEmptyOptionalsStep(CommandContext ctx, boolean profilingEnabled) {
-    this(ctx, null, profilingEnabled);
+  public RemoveEmptyOptionalsStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -48,8 +40,8 @@ public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        ResultInternal result = (ResultInternal) upstream.next();
-        for (String s : result.getPropertyNames()) {
+        final ResultInternal result = (ResultInternal) upstream.next();
+        for (final String s : result.getPropertyNames()) {
           if (OptionalMatchEdgeTraverser.isEmptyOptional(result.getProperty(s))) {
             result.setProperty(s, null);
           }
@@ -61,23 +53,13 @@ public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ REMOVE EMPTY OPTIONALS";
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String result = spaces + "+ REMOVE EMPTY OPTIONALS";
     return result;
   }
 }

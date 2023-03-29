@@ -38,7 +38,7 @@ public class Neo4jImporterFormat extends AbstractImporterFormat {
     context.parsed.set(0);
 
     try {
-      new Neo4jImporter(database) {
+      new Neo4jImporter(database, context) {
         @Override
         public InputStream openInputStream() throws IOException {
           sourceSchema.getSource().reset();
@@ -46,7 +46,7 @@ public class Neo4jImporterFormat extends AbstractImporterFormat {
         }
       }.run();
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing Neo4j database", e);
     }
   }

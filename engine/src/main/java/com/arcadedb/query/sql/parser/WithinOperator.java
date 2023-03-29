@@ -27,23 +27,14 @@ public class WithinOperator extends SimpleNode implements BinaryCompareOperator 
     super(id);
   }
 
-  public WithinOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean execute(final DatabaseInternal database, final Object left,final Object right) {
+  public boolean execute(final DatabaseInternal database, final Object left, final Object right) {
     throw new UnsupportedOperationException(this + " operator cannot be evaluated in this context");
   }
 
   @Override
   public String toString() {
     return "WITHIN";
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

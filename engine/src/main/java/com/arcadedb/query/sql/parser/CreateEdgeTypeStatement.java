@@ -20,20 +20,13 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
-
 public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
-  public CreateEdgeTypeStatement(int id) {
+  public CreateEdgeTypeStatement(final int id) {
     super(id);
-  }
-
-  public CreateEdgeTypeStatement(SqlParser p, int id) {
-    super(p, id);
   }
 
   @Override
@@ -42,7 +35,7 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   }
 
   @Override
-  protected DocumentType createType(Schema schema) {
+  protected DocumentType createType(final Schema schema) {
     final EdgeType type;
     if (totalBucketNo != null)
       type = schema.createEdgeType(name.getStringValue(), totalBucketNo.getValue().intValue());
@@ -51,11 +44,7 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
         type = schema.createEdgeType(name.getStringValue());
       else {
         // CHECK THE BUCKETS FIRST
-        final List<Bucket> bucketInstances = new ArrayList<>();
-        for (BucketIdentifier b : buckets)
-          bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
-
-        type = schema.createEdgeType(name.getStringValue(), bucketInstances);
+        type = schema.createEdgeType(name.getStringValue(), getBuckets(schema));
       }
     }
     return type;

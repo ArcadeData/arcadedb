@@ -31,59 +31,54 @@ import java.util.*;
 import java.util.stream.*;
 
 public class WhileBlock extends Statement {
-
   protected BooleanExpression condition;
   protected List<Statement>   statements = new ArrayList<>();
 
-  public WhileBlock(int id) {
+  public WhileBlock(final int id) {
     super(id);
   }
 
-  public WhileBlock(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx,final  boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null)
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null)
+      context.setParentWithoutOverridingChild(parentcontext);
 
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
+    context.setDatabase(db);
+    context.setInputParameters(args);
     final UpdateExecutionPlan executionPlan;
     if (usePlanCache)
-      executionPlan = createExecutionPlan(ctx, false);
-     else
-      executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(ctx, false);
+      executionPlan = createExecutionPlan(context, false);
+    else
+      executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(context, false);
 
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
+    context.setDatabase(db);
+    context.setInputParameters(params);
 
     final UpdateExecutionPlan executionPlan;
     if (usePlanCache) {
-      executionPlan = createExecutionPlan(ctx, false);
+      executionPlan = createExecutionPlan(context, false);
     } else {
-      executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(ctx, false);
+      executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(context, false);
     }
 
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx,final  boolean enableProfiling) {
-    final ForEachExecutionPlan plan = new ForEachExecutionPlan(ctx);
-    plan.chain(new WhileStep(condition, statements, ctx, enableProfiling));
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final ForEachExecutionPlan plan = new ForEachExecutionPlan(context);
+    plan.chain(new WhileStep(condition, statements, context, enableProfiling));
     return plan;
   }
 
@@ -96,19 +91,18 @@ public class WhileBlock extends Statement {
   }
 
   public boolean containsReturn() {
-    for (Statement stm : this.statements) {
-      if (stm instanceof ReturnStatement) {
+    for (final Statement stm : this.statements) {
+      if (stm instanceof ReturnStatement)
         return true;
-      }
-      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn()) {
+
+      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn())
         return true;
-      }
-      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn()) {
+
+      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn())
         return true;
-      }
-      if (stm instanceof WhileBlock && ((WhileBlock) stm).containsReturn()) {
+
+      if (stm instanceof WhileBlock && ((WhileBlock) stm).containsReturn())
         return true;
-      }
     }
     return false;
   }
@@ -134,11 +128,11 @@ public class WhileBlock extends Statement {
     return result;
   }
 
-  public void toString(final Map<String, Object> params,final  StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("WHILE (");
     condition.toString(params, builder);
     builder.append(") {\n");
-    for (Statement stm : statements) {
+    for (final Statement stm : statements) {
       stm.toString(params, builder);
       builder.append("\n");
     }

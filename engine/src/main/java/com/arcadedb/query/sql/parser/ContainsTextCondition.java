@@ -28,25 +28,20 @@ import java.util.*;
 
 @SuppressWarnings("ALL")
 public class ContainsTextCondition extends BooleanExpression {
-
   protected Expression left;
   protected Expression right;
 
-  public ContainsTextCondition( final int id) {
+  public ContainsTextCondition(final int id) {
     super(id);
   }
 
-  public ContainsTextCondition( final SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (!(leftValue instanceof String))
       return false;
 
-    final Object rightValue = right.execute(currentRecord, ctx);
+    final Object rightValue = right.execute(currentRecord, context);
     if (!(rightValue instanceof String))
       return false;
 
@@ -54,12 +49,12 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord,final  CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (!(leftValue instanceof String))
       return false;
 
-    final Object rightValue = right.execute(currentRecord, ctx);
+    final Object rightValue = right.execute(currentRecord, context);
     if (!(rightValue instanceof String))
       return false;
 
@@ -70,43 +65,6 @@ public class ContainsTextCondition extends BooleanExpression {
     left.toString(params, builder);
     builder.append(" CONTAINSTEXT ");
     right.toString(params, builder);
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (!left.supportsBasicCalculation()) {
-      total++;
-    }
-    if (!right.supportsBasicCalculation()) {
-      total++;
-    }
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<Object>();
-    if (!left.supportsBasicCalculation()) {
-      result.add(left);
-    }
-    if (!right.supportsBasicCalculation()) {
-      result.add(right);
-    }
-    return result;
-  }
-
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    if (!left.needsAliases(aliases)) {
-      return true;
-    }
-    return !right.needsAliases(aliases);
   }
 
   @Override
@@ -124,53 +82,28 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return left.refersToParent() || right.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ContainsTextCondition that = (ContainsTextCondition) o;
-
-    if (left != null ? !left.equals(that.left) : that.left != null)
-      return false;
-    return right != null ? right.equals(that.right) : that.right == null;
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, right };
   }
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    final  List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
-    final  List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
+    final List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
+    final List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
 
     final List<String> result = new ArrayList<String>();
-    if (leftX != null) {
+    if (leftX != null)
       result.addAll(leftX);
-    }
-    if (rightX != null) {
+
+    if (rightX != null)
       result.addAll(rightX);
-    }
 
     return result.isEmpty() ? null : result;
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
-      return false;
-    }
-    return right == null || right.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, right };
   }
 
   public void setLeft(Expression left) {

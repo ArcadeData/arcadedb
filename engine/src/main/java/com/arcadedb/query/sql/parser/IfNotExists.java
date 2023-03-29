@@ -21,13 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 public class IfNotExists extends SimpleNode {
-  public IfNotExists(int id) {
+  public IfNotExists(final int id) {
     super(id);
   }
-
-  public IfNotExists(SqlParser p, int id) {
-    super(p, id);
-  }
-
 }
 /* JavaCC - OriginalChecksum=5990db905ac7259f864fa5c62f123bcc (do not edit this line) */

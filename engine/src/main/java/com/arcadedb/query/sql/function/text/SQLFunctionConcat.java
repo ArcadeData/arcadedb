@@ -27,12 +27,12 @@ public class SQLFunctionConcat extends SQLFunctionConfigurableAbstract {
   private             StringBuilder sb;
 
   public SQLFunctionConcat() {
-    super(NAME, 1, 2);
+    super(NAME);
   }
 
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, Object iCurrentResult,
-      Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (sb == null) {
       sb = new StringBuilder();
     } else {
@@ -57,5 +57,4 @@ public class SQLFunctionConcat extends SQLFunctionConfigurableAbstract {
   public boolean aggregateResults() {
     return true;
   }
-
 }

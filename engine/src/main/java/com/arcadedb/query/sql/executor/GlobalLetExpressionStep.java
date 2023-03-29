@@ -31,30 +31,32 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public GlobalLetExpressionStep(Identifier varName, Expression expression, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public GlobalLetExpressionStep(final Identifier varName, final Expression expression, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.varname = varName;
     this.expression = expression;
   }
 
-  @Override public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    calculate(ctx);
+  @Override
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
+    calculate(context);
     return new InternalResultSet();
   }
 
-  private void calculate(CommandContext ctx) {
+  private void calculate(final CommandContext context) {
     if (executed) {
       return;
     }
-    Object value = expression.execute((Result) null, ctx);
-    ctx.setVariable(varname.getStringValue(), value);
+    final Object value = expression.execute((Result) null, context);
+    context.setVariable(varname.getStringValue(), value);
     executed = true;
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (once)\n" +
-        spaces + "  " + varname + " = " + expression;
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    return spaces + "+ LET (once)\n" + spaces + "  " + varname + " = " + expression;
   }
 }

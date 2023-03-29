@@ -23,7 +23,7 @@ public class TransactionException extends ArcadeDBException {
     super(s);
   }
 
-  public TransactionException(String s, Throwable e) {
+  public TransactionException(final String s, final Throwable e) {
     super(s, e);
   }
 }

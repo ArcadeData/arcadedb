@@ -26,8 +26,10 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
+import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -75,14 +77,14 @@ public abstract class TestServerHelper {
 
   public static void stopServers(final ArcadeDBServer[] servers) {
     if (servers != null) {
-      for (ArcadeDBServer server : servers)
+      for (final ArcadeDBServer server : servers)
         if (server != null)
           server.stop();
     }
   }
 
   public static ArcadeDBServer getServerByName(final ArcadeDBServer[] servers, final String serverName) {
-    for (ArcadeDBServer s : servers) {
+    for (final ArcadeDBServer s : servers) {
       if (s.getServerName().equals(serverName))
         return s;
     }
@@ -90,7 +92,7 @@ public abstract class TestServerHelper {
   }
 
   public static ArcadeDBServer getLeaderServer(final ArcadeDBServer[] servers) {
-    for (ArcadeDBServer server : servers)
+    for (final ArcadeDBServer server : servers)
       if (server.isStarted()) {
         final String leaderName = server.getHA().getLeaderName();
         return getServerByName(servers, leaderName);
@@ -116,7 +118,7 @@ public abstract class TestServerHelper {
     try {
       callback.call();
       Assertions.fail();
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       if (e.getClass().equals(expectedException))
         // EXPECTED
         return;
@@ -134,9 +136,17 @@ public abstract class TestServerHelper {
     if (!activeDatabases.isEmpty())
       LogManager.instance().log(TestServerHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
 
-    for (Database db : activeDatabases)
+    for (final Database db : activeDatabases)
       db.close();
 
     Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
+  }
+
+  public static void deleteDatabaseFolders(final int totalServers) {
+    FileUtils.deleteRecursively(new File("./target/databases/"));
+    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + File.separator));
+    for (int i = 0; i < totalServers; ++i)
+      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.separator));
+    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.separator + "replication"));
   }
 }

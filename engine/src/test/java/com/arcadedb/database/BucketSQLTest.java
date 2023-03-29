@@ -31,6 +31,7 @@ import java.util.*;
 public class BucketSQLTest extends TestHelper {
   @Test
   public void testPopulate() {
+    // CALL POPULATE
   }
 
   @Override
@@ -38,7 +39,9 @@ public class BucketSQLTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
 
     database.transaction(() -> {
-      database.command("sql", "CREATE BUCKET Customer_Europe");
+      database.command("sql", "CREATE BUCKET Customer_Europe if not exists");
+      database.command("sql", "CREATE BUCKET Customer_Europe if not exists");
+
       database.command("sql", "CREATE BUCKET Customer_Americas");
       database.command("sql", "CREATE BUCKET Customer_Asia");
       database.command("sql", "CREATE BUCKET Customer_Other");
@@ -46,30 +49,30 @@ public class BucketSQLTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE Customer BUCKET Customer_Europe,Customer_Americas,Customer_Asia,Customer_Other");
 
       final DocumentType customer = database.getSchema().getType("Customer");
-      List<Bucket> buckets = customer.getBuckets(true);
+      final List<Bucket> buckets = customer.getBuckets(true);
       Assertions.assertEquals(4, buckets.size());
 
       ResultSet resultset = database.command("sql", "INSERT INTO BUCKET:Customer_Europe CONTENT { firstName: 'Enzo', lastName: 'Ferrari' }");
       Assertions.assertTrue(resultset.hasNext());
-      Document enzo = resultset.next().getRecord().get().asDocument();
+      final Document enzo = resultset.next().getRecord().get().asDocument();
       Assertions.assertFalse(resultset.hasNext());
       Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Europe").getId(), enzo.getIdentity().bucketId);
 
       resultset = database.command("sql", "INSERT INTO BUCKET:Customer_Americas CONTENT { firstName: 'Jack', lastName: 'Tramiel' }");
       Assertions.assertTrue(resultset.hasNext());
-      Document jack = resultset.next().getRecord().get().asDocument();
+      final Document jack = resultset.next().getRecord().get().asDocument();
       Assertions.assertFalse(resultset.hasNext());
       Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Americas").getId(), jack.getIdentity().bucketId);
 
       resultset = database.command("sql", "INSERT INTO BUCKET:Customer_Asia CONTENT { firstName: 'Bruce', lastName: 'Lee' }");
       Assertions.assertTrue(resultset.hasNext());
-      Document bruce = resultset.next().getRecord().get().asDocument();
+      final Document bruce = resultset.next().getRecord().get().asDocument();
       Assertions.assertFalse(resultset.hasNext());
       Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Asia").getId(), bruce.getIdentity().bucketId);
 
       resultset = database.command("sql", "INSERT INTO BUCKET:Customer_Other CONTENT { firstName: 'Penguin', lastName: 'Hungry' }");
       Assertions.assertTrue(resultset.hasNext());
-      Document penguin = resultset.next().getRecord().get().asDocument();
+      final Document penguin = resultset.next().getRecord().get().asDocument();
       Assertions.assertFalse(resultset.hasNext());
       Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Other").getId(), penguin.getIdentity().bucketId);
     });

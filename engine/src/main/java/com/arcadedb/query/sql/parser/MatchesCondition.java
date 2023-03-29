@@ -32,45 +32,41 @@ public class MatchesCondition extends BooleanExpression {
   public    Expression     rightExpression;
   protected InputParameter rightParam;
 
-  public MatchesCondition(int id) {
+  public MatchesCondition(final int id) {
     super(id);
   }
 
-  public MatchesCondition(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     String regex = right;
     if (regex != null) {
       regex = regex.substring(1, regex.length() - 1);
     } else if (rightExpression != null) {
-      Object val = rightExpression.execute(currentRecord, ctx);
+      final Object val = rightExpression.execute(currentRecord, context);
       if (val instanceof String) {
         regex = (String) val;
       } else {
         return false;
       }
     } else {
-      Object paramVal = rightParam.getValue(ctx.getInputParameters());
+      final Object paramVal = rightParam.getValue(context.getInputParameters());
       if (paramVal instanceof String) {
         regex = (String) paramVal;
       } else {
         return false;
       }
     }
-    Object value = expression.execute(currentRecord, ctx);
+    final Object value = expression.execute(currentRecord, context);
 
-    return matches(value, regex, ctx);
+    return matches(value, regex, context);
   }
 
-  private boolean matches(Object value, String regex, CommandContext ctx) {
+  private boolean matches(final Object value, final String regex, final CommandContext context) {
     final String key = "MATCHES_" + regex.hashCode();
-    java.util.regex.Pattern p = (java.util.regex.Pattern) ctx.getVariable(key);
+    java.util.regex.Pattern p = (java.util.regex.Pattern) context.getVariable(key);
     if (p == null) {
       p = java.util.regex.Pattern.compile(regex);
-      ctx.setVariable(key, p);
+      context.setVariable(key, p);
     }
 
     if (value instanceof CharSequence) {
@@ -81,31 +77,31 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     String regex = right;
     if (regex != null) {
       regex = regex.substring(1, regex.length() - 1);
     } else if (rightExpression != null) {
-      Object val = rightExpression.execute(currentRecord, ctx);
+      final Object val = rightExpression.execute(currentRecord, context);
       if (val instanceof String) {
         regex = (String) val;
       } else {
         return false;
       }
     } else {
-      Object paramVal = rightParam.getValue(ctx.getInputParameters());
+      final Object paramVal = rightParam.getValue(context.getInputParameters());
       if (paramVal instanceof String) {
         regex = (String) paramVal;
       } else {
         return false;
       }
     }
-    Object value = expression.execute(currentRecord, ctx);
+    final Object value = expression.execute(currentRecord, context);
 
-    return matches(value, regex, ctx);
+    return matches(value, regex, context);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" MATCHES ");
     if (right != null) {
@@ -118,48 +114,8 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    if (!expression.supportsBasicCalculation()) {
-      return false;
-    }
-    return rightExpression == null || rightExpression.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int result = 0;
-    if (expression != null && !expression.supportsBasicCalculation()) {
-      result++;
-    }
-    if (rightExpression != null && !rightExpression.supportsBasicCalculation()) {
-      result++;
-    }
-    return result;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<>();
-    if (expression != null && !expression.supportsBasicCalculation()) {
-      result.add(expression);
-    }
-    if (rightExpression != null && !rightExpression.supportsBasicCalculation()) {
-      result.add(rightExpression);
-    }
-    return result;
-  }
-
-  @Override
-  public boolean needsAliases(Set<String> aliases) {
-    if (expression.needsAliases(aliases)) {
-      return true;
-    }
-    return rightExpression.needsAliases(aliases);
-  }
-
-  @Override
   public MatchesCondition copy() {
-    MatchesCondition result = new MatchesCondition(-1);
+    final MatchesCondition result = new MatchesCondition(-1);
     result.expression = expression == null ? null : expression.copy();
     result.right = right;
     result.rightParam = rightParam == null ? null : rightParam.copy();
@@ -168,7 +124,7 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     expression.extractSubQueries(collector);
     if (rightExpression != null) {
       rightExpression.extractSubQueries(collector);
@@ -176,43 +132,13 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (expression != null && expression.refersToParent()) {
-      return true;
-    }
-    return rightExpression != null && rightExpression.refersToParent();
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final MatchesCondition that = (MatchesCondition) o;
-
-    if (!Objects.equals(expression, that.expression))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    if (!Objects.equals(rightExpression, that.rightExpression))
-      return false;
-    return Objects.equals(rightParam, that.rightParam);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = expression != null ? expression.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightExpression != null ? rightExpression.hashCode() : 0);
-    result = 31 * result + (rightParam != null ? rightParam.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression, right, rightExpression, rightParam };
   }
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-      List<String> result = new ArrayList<>(expression.getMatchPatternInvolvedAliases());
+    final List<String> result = new ArrayList<>(expression.getMatchPatternInvolvedAliases());
     if (rightExpression != null) {
       result.addAll(rightExpression.getMatchPatternInvolvedAliases());
     }
@@ -220,12 +146,8 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (!expression.isCacheable()) {
-      return false;
-    }
-    return rightExpression == null || rightExpression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression, rightExpression };
   }
-
 }
 /* JavaCC - OriginalChecksum=68712f476e2e633c2bbfc34cb6c39356 (do not edit this line) */

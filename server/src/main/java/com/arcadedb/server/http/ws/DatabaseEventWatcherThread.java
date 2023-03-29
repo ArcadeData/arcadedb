@@ -58,10 +58,6 @@ final public class DatabaseEventWatcherThread extends Thread {
     }
   }
 
-  public boolean isRunning() {
-    return running;
-  }
-
   /**
    * Sends the shutdown signal to the thread and waits for termination.
    */
@@ -72,7 +68,7 @@ final public class DatabaseEventWatcherThread extends Thread {
     this.running = false;
     try {
       runningLock.await();
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       // IGNORE IT
     }
   }
@@ -81,13 +77,13 @@ final public class DatabaseEventWatcherThread extends Thread {
   public void run() {
     try {
       while (this.running) {
-        var event = this.eventQueue.poll(500, TimeUnit.MILLISECONDS);
+        final var event = this.eventQueue.poll(500, TimeUnit.MILLISECONDS);
         if (event == null)
           continue;
         this.eventBus.publish(event);
       }
 
-    } catch (InterruptedException ignored) {
+    } catch (final InterruptedException ignored) {
     } finally {
       try {
         this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener).unregisterListener((AfterRecordUpdateListener) listener)

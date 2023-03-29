@@ -66,7 +66,7 @@ public class MVCCTest extends TestHelper {
         }
       });
 
-      long begin = System.currentTimeMillis();
+      final long begin = System.currentTimeMillis();
 
       try {
         final Random rnd = new Random();
@@ -88,7 +88,7 @@ public class MVCCTest extends TestHelper {
 
             Assertions.assertTrue(accounts.hasNext());
 
-            Identifiable account = accounts.next();
+            final Identifiable account = accounts.next();
 
             ((MutableVertex) doc).newEdge("PurchasedBy", account, true, "date", new Date());
           }, 0);
@@ -116,7 +116,7 @@ public class MVCCTest extends TestHelper {
 
   private void populateDatabase() {
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     try {
       database.transaction(() -> {

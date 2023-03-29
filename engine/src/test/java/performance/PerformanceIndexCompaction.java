@@ -33,7 +33,7 @@ import java.io.*;
 import java.util.logging.*;
 
 public class PerformanceIndexCompaction {
-  public static void main(String[] args) throws Exception {
+  public static void main(final String[] args) throws Exception {
     new PerformanceIndexCompaction().run();
   }
 
@@ -47,13 +47,13 @@ public class PerformanceIndexCompaction {
       System.out.println("Compacting all indexes...");
 
       final long total = database.countType("Device", true);
-      long totalIndexed = countIndexedItems(database);
+      final long totalIndexed = countIndexedItems(database);
       LogManager.instance().log(this, Level.INFO, "Total indexes items %d", totalIndexed);
 
-      for (Index index : database.getSchema().getIndexes())
+      for (final Index index : database.getSchema().getIndexes())
         Assertions.assertTrue(((IndexInternal) index).compact());
 
-      long totalIndexed2 = countIndexedItems(database);
+      final long totalIndexed2 = countIndexedItems(database);
 
       Assertions.assertEquals(total, totalIndexed);
       Assertions.assertEquals(totalIndexed, totalIndexed2);
@@ -67,10 +67,10 @@ public class PerformanceIndexCompaction {
 
   }
 
-  private long countIndexedItems(Database database) throws IOException {
+  private long countIndexedItems(final Database database) throws IOException {
     long totalIndexed = 0;
-    for (Index index : database.getSchema().getIndexes()) {
-      IndexCursor it = ((RangeIndex) index).iterator(true);
+    for (final Index index : database.getSchema().getIndexes()) {
+      final IndexCursor it = ((RangeIndex) index).iterator(true);
       while (it.hasNext()) {
         it.next();
         ++totalIndexed;

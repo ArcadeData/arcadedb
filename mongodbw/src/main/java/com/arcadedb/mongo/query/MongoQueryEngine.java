@@ -18,7 +18,7 @@
  */
 package com.arcadedb.mongo.query;
 
-import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
 import com.arcadedb.query.QueryEngine;
@@ -28,7 +28,7 @@ import java.util.*;
 import java.util.logging.*;
 
 public class MongoQueryEngine implements QueryEngine {
-  public static final String                 ENGINE_NAME = "mongo-engine";
+  public static final String                 ENGINE_NAME = "mongo";
   private final       MongoDBDatabaseWrapper mongoDBWrapper;
 
   protected MongoQueryEngine(final MongoDBDatabaseWrapper mongoDBWrapper) {
@@ -36,7 +36,12 @@ public class MongoQueryEngine implements QueryEngine {
   }
 
   @Override
-  public AnalyzedQuery analyze(String query) {
+  public String getLanguage() {
+    return ENGINE_NAME;
+  }
+
+  @Override
+  public AnalyzedQuery analyze(final String query) {
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -54,9 +59,9 @@ public class MongoQueryEngine implements QueryEngine {
   public ResultSet query(final String query, final Map<String, Object> parameters) {
     try {
       return mongoDBWrapper.query(query);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing Mongo query engine", e);
-      throw new QueryParsingException("Error on initializing Mongo query engine", e);
+      throw new CommandParsingException("Error on initializing Mongo query engine", e);
     }
   }
 
@@ -71,7 +76,7 @@ public class MongoQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet command(String query, Object... parameters) {
+  public ResultSet command(final String query, final Object... parameters) {
     return null;
   }
 }

@@ -28,23 +28,12 @@ public class InterfaceTypeDefinition extends TypeDefinition {
   protected Directives            directives;
   protected List<FieldDefinition> fieldDefinitions = new ArrayList<>();
 
-  public InterfaceTypeDefinition(int id) {
+  public InterfaceTypeDefinition(final int id) {
     super(id);
-  }
-
-  public InterfaceTypeDefinition(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   public String getName() {
     return name != null ? name.value : null;
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=f67913a71b0a0ce7fd7cf20494bf7fdd (do not edit this line) */

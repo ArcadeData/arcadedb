@@ -25,8 +25,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.RecordInternal;
 import com.arcadedb.serializer.BinaryTypes;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
@@ -70,6 +70,15 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     return RECORD_TYPE;
   }
 
+  /**
+   * If there is room in the current segment, adds the RID at the beginning of the list. This allows to maintain the list of edges always ordered
+   * by descending insertion time.
+   *
+   * @param edgeRID
+   * @param vertexRID
+   *
+   * @return
+   */
   @Override
   public boolean add(final RID edgeRID, final RID vertexRID) {
     final Binary ridSerialized = database.getContext().getTemporaryBuffer1();
@@ -78,12 +87,15 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
     final int used = getUsed();
 
-    if (used + ridSerialized.size() <= bufferSize) {
-      // APPEND AT THE END OF THE CURRENT CHUNK
-      buffer.putByteArray(used, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(), ridSerialized.size());
+    final int ridSerializedSize = ridSerialized.size();
+
+    if (used + ridSerializedSize <= bufferSize) {
+      // APPEND AT THE BEGINNING OF THE CURRENT CHUNK
+      buffer.move(CONTENT_START_POSITION, CONTENT_START_POSITION + ridSerializedSize, used - CONTENT_START_POSITION);
+      buffer.putByteArray(CONTENT_START_POSITION, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(), ridSerializedSize);
 
       // UPDATE USED BYTES
-      buffer.putInt(Binary.BYTE_SERIALIZED_SIZE, used + ridSerialized.size());
+      buffer.putInt(Binary.BYTE_SERIALIZED_SIZE, used + ridSerializedSize);
       return true;
     }
 
@@ -172,7 +184,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   @Override
   public boolean removeEntry(final int currentPosition, final int nextItemPosition) {
     int used = getUsed();
-    if (used == 0)
+    if (used <= CONTENT_START_POSITION)
       return false;
 
     if (currentPosition > used)
@@ -192,7 +204,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   @Override
   public int removeEdge(final RID rid) {
     int used = getUsed();
-    if (used == 0)
+    if (used <= CONTENT_START_POSITION)
       return 0;
 
     final int bucketId = rid.getBucketId();
@@ -228,7 +240,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   @Override
   public int removeVertex(final RID rid) {
     int used = getUsed();
-    if (used == 0)
+    if (used <= CONTENT_START_POSITION)
       return 0;
 
     final int bucketId = rid.getBucketId();
@@ -288,7 +300,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
-  public EdgeSegment getNext() {
+  public EdgeSegment getPrevious() {
     buffer.position(Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE);
 
     final RID nextRID = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_RID, null); // NEXT
@@ -300,8 +312,8 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
-  public void setNext(final EdgeSegment next) {
-    final RID nextRID = next.getIdentity();
+  public void setPrevious(final EdgeSegment previous) {
+    final RID nextRID = previous.getIdentity();
     if (nextRID == null)
       throw new IllegalArgumentException("Next chunk is not persistent");
     buffer.position(Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE);
@@ -344,5 +356,6 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public void unsetDirty() {
+    // IGNORE THIS FLAG
   }
 }

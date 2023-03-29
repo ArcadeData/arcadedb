@@ -31,7 +31,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -59,7 +59,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     }
 
     if (database.isTransactionActive())
-      throw new ExportException("Transaction in progress found");
+      database.getTransaction().rollback();
 
     logger.logLine(0, "Exporting database to '%s'...", settings.file);
 
@@ -72,7 +72,8 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     if (!exportFile.getParentFile().exists())
       exportFile.getParentFile().mkdirs();
 
-    try (OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)), DatabaseFactory.getDefaultCharset())) {
+    try (final OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)),
+        DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 
       writeJsonLine("info", new JSONObject().put("description", "ArcadeDB Database Export").put("exporterVersion", VERSION)//
@@ -88,13 +89,20 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       final List<String> edgeTypes = new ArrayList<>();
       final List<String> documentTypes = new ArrayList<>();
 
-      for (DocumentType type : database.getSchema().getTypes()) {
+      for (final DocumentType type : database.getSchema().getTypes()) {
+        final String typeName = type.getName();
+
+        if (settings.includeTypes != null && !settings.includeTypes.contains(typeName))
+          continue;
+        if (settings.excludeTypes != null && settings.excludeTypes.contains(typeName))
+          continue;
+
         if (type instanceof VertexType)
-          vertexTypes.add(type.getName());
+          vertexTypes.add(typeName);
         else if (type instanceof EdgeType)
-          edgeTypes.add(type.getName());
+          edgeTypes.add(typeName);
         else
-          documentTypes.add(type.getName());
+          documentTypes.add(typeName);
       }
 
       final JSONObject recordJson = new JSONObject();
@@ -112,27 +120,27 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     return NAME;
   }
 
-  private void exportVertices(List<String> vertexTypes, JsonGraphSerializer graphSerializer) throws IOException {
-    for (String type : vertexTypes) {
-      for (Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
+  private void exportVertices(final List<String> vertexTypes, final JsonGraphSerializer graphSerializer) throws IOException {
+    for (final String type : vertexTypes) {
+      for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
         writeJsonLine("v", graphSerializer.serializeGraphElement(cursor.next().asVertex(true)));
         context.vertices.incrementAndGet();
       }
     }
   }
 
-  private void exportEdges(List<String> edgeTypes, JsonGraphSerializer graphSerializer) throws IOException {
-    for (String type : edgeTypes) {
-      for (Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
+  private void exportEdges(final List<String> edgeTypes, final JsonGraphSerializer graphSerializer) throws IOException {
+    for (final String type : edgeTypes) {
+      for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
         writeJsonLine("e", graphSerializer.serializeGraphElement(cursor.next().asEdge(true)));
         context.edges.incrementAndGet();
       }
     }
   }
 
-  private void exportDocuments(List<String> documentTypes, JsonGraphSerializer graphSerializer) throws IOException {
-    for (String type : documentTypes) {
-      for (Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
+  private void exportDocuments(final List<String> documentTypes, final JsonGraphSerializer graphSerializer) throws IOException {
+    for (final String type : documentTypes) {
+      for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
         writeJsonLine("d", graphSerializer.serializeGraphElement(cursor.next().asDocument(true)));
         context.documents.incrementAndGet();
       }

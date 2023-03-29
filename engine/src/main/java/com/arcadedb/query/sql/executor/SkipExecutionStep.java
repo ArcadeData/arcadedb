@@ -28,20 +28,22 @@ public class SkipExecutionStep extends AbstractExecutionStep {
   private       int     skipped = 0;
   private       boolean finished;
 
-  public SkipExecutionStep(Skip skip, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public SkipExecutionStep(final Skip skip, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.skip = skip;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) {
-    if (finished) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) {
+    if (finished)
       return new InternalResultSet();//empty
-    }
-    int skipValue = skip.getValue(ctx);
+
+    checkForPrevious();
+
+    final int skipValue = skip.getValue(context);
     while (skipped < skipValue) {
       //fetch and discard
-      ResultSet rs = prev.get().syncPull(ctx, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
+      final ResultSet rs = prev.syncPull(context, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
       if (!rs.hasNext()) {
         finished = true;
         return new InternalResultSet();//empty
@@ -52,23 +54,22 @@ public class SkipExecutionStep extends AbstractExecutionStep {
       }
     }
 
-    return prev.get().syncPull(ctx, nRecords);
-
+    return prev.syncPull(context, nRecords);
   }
 
   @Override
   public void sendTimeout() {
-
+    // IGNORE THE TIMEOUT
   }
 
   @Override
   public void close() {
-    prev.ifPresent(x -> x.close());
+    if (prev != null)
+      prev.close();
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ SKIP (" + skip.toString() + ")";
   }
-
 }

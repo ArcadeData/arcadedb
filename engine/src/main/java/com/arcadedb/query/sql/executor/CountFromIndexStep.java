@@ -33,25 +33,24 @@ public class CountFromIndexStep extends AbstractExecutionStep {
   private final IndexIdentifier target;
   private final String          alias;
 
-  private long count = 0;
-
   private boolean executed = false;
+  private int     cost     = -1;
 
   /**
    * @param targetIndex      the index name as it is parsed by the SQL parsed
    * @param alias            the name of the property returned in the result-set
-   * @param ctx              the query context
+   * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromIndexStep(IndexIdentifier targetIndex, String alias, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CountFromIndexStep(final IndexIdentifier targetIndex, final String alias, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.target = targetIndex;
     this.alias = alias;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
 
     return new ResultSet() {
       @Override
@@ -62,34 +61,19 @@ public class CountFromIndexStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (executed) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          Index idx = ctx.getDatabase().getSchema().getIndexByName(target.getIndexName());
-          long size = idx.countEntries();
+          final Index idx = context.getDatabase().getSchema().getIndexByName(target.getIndexName());
+          final long size = idx.countEntries();
           executed = true;
-          ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal();
           result.setProperty(alias, size);
           return result;
         } finally {
-          count += (System.nanoTime() - begin);
+          cost += (System.nanoTime() - begin);
         }
-      }
-
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
       }
 
       @Override
@@ -105,8 +89,8 @@ public class CountFromIndexStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ CALCULATE INDEX SIZE: " + target;
   }
 }

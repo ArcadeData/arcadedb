@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 02/07/15.
@@ -32,12 +33,12 @@ public class MathExpressionTest {
   @Test
   public void testTypes() {
 
-    MathExpression expr = new MathExpression(-1);
+    final MathExpression expr = new MathExpression(-1);
 
-    MathExpression.Operator[] basicOps = new MathExpression.Operator[] { MathExpression.Operator.PLUS, MathExpression.Operator.MINUS,
+    final MathExpression.Operator[] basicOps = new MathExpression.Operator[] { MathExpression.Operator.PLUS, MathExpression.Operator.MINUS,
         MathExpression.Operator.STAR, MathExpression.Operator.SLASH, MathExpression.Operator.REM };
 
-    for (MathExpression.Operator op : basicOps) {
+    for (final MathExpression.Operator op : basicOps) {
       Assertions.assertEquals(op.apply(1, 1).getClass(), Integer.class);
 
       Assertions.assertEquals(op.apply((short) 1, (short) 1).getClass(), Integer.class);
@@ -64,7 +65,7 @@ public class MathExpressionTest {
 
   @Test
   public void testPriority() {
-    MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(10));
     exp.operators.add(MathExpression.Operator.PLUS);
     exp.childExpressions.add(integer(5));
@@ -77,14 +78,14 @@ public class MathExpressionTest {
     exp.operators.add(MathExpression.Operator.PLUS);
     exp.childExpressions.add(integer(1));
 
-    Object result = exp.execute((Result) null, null);
+    final Object result = exp.execute((Result) null, null);
     Assertions.assertTrue(result instanceof Integer);
     Assertions.assertEquals(208, result);
   }
 
   @Test
   public void testPriority2() {
-    MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(1));
     exp.operators.add(MathExpression.Operator.PLUS);
     exp.childExpressions.add(integer(2));
@@ -103,106 +104,96 @@ public class MathExpressionTest {
     exp.operators.add(MathExpression.Operator.PLUS);
     exp.childExpressions.add(integer(1));
 
-    Object result = exp.execute((Result) null, null);
+    final Object result = exp.execute((Result) null, null);
     Assertions.assertTrue(result instanceof Integer);
     Assertions.assertEquals(16, result);
   }
 
   @Test
   public void testPriority3() {
-    MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(3));
     exp.operators.add(MathExpression.Operator.RSHIFT);
     exp.childExpressions.add(integer(1));
     exp.operators.add(MathExpression.Operator.LSHIFT);
     exp.childExpressions.add(integer(1));
 
-    Object result = exp.execute((Result) null, null);
+    final Object result = exp.execute((Result) null, null);
     Assertions.assertTrue(result instanceof Integer);
     Assertions.assertEquals(2, result);
   }
 
   @Test
   public void testPriority4() {
-    MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(3));
     exp.operators.add(MathExpression.Operator.LSHIFT);
     exp.childExpressions.add(integer(1));
     exp.operators.add(MathExpression.Operator.RSHIFT);
     exp.childExpressions.add(integer(1));
 
-    Object result = exp.execute((Result) null, null);
+    final Object result = exp.execute((Result) null, null);
     Assertions.assertTrue(result instanceof Integer);
     Assertions.assertEquals(3, result);
   }
 
   @Test
   public void testAnd() {
-    MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(5));
     exp.operators.add(MathExpression.Operator.BIT_AND);
     exp.childExpressions.add(integer(1));
 
-    Object result = exp.execute((Result) null, null);
+    final Object result = exp.execute((Result) null, null);
     Assertions.assertTrue(result instanceof Integer);
     Assertions.assertEquals(1, result);
   }
 
   @Test
   public void testAnd2() {
-    MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(5));
     exp.operators.add(MathExpression.Operator.BIT_AND);
     exp.childExpressions.add(integer(4));
 
-    Object result = exp.execute((Result) null, null);
+    final Object result = exp.execute((Result) null, null);
     Assertions.assertTrue(result instanceof Integer);
     Assertions.assertEquals(4, result);
   }
 
   @Test
-  public void testOr() {
-    MathExpression exp = new MathExpression(-1);
+  public void testDivide() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(integer(20));
+    exp.operators.add(MathExpression.Operator.SLASH);
     exp.childExpressions.add(integer(4));
-    exp.operators.add(MathExpression.Operator.BIT_OR);
-    exp.childExpressions.add(integer(1));
 
-    Object result = exp.execute((Result) null, null);
+    final Object result = exp.execute((Result) null, null);
     Assertions.assertTrue(result instanceof Integer);
     Assertions.assertEquals(5, result);
   }
 
-  private MathExpression integer(Number i) {
-    BaseExpression exp = new BaseExpression(-1);
-    PInteger integer = new PInteger(-1);
-    integer.setValue(i);
-    exp.number = integer;
-    return exp;
+  @Test
+  public void testDivideByNull() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(integer(20));
+    exp.operators.add(MathExpression.Operator.SLASH);
+    exp.childExpressions.add(nullValue());
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertNull(result);
   }
 
-  private MathExpression str(String value) {
-    final BaseExpression exp = new BaseExpression(-1);
-    exp.string = "'" + value + "'";
-    return exp;
-  }
+  @Test
+  public void testOr() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(integer(4));
+    exp.operators.add(MathExpression.Operator.BIT_OR);
+    exp.childExpressions.add(integer(1));
 
-  private MathExpression nullExpr() {
-    return new BaseExpression(-1);
-  }
-
-  private MathExpression list(Number... values) {
-    BaseExpression exp = new BaseExpression(-1);
-    exp.identifier = new BaseIdentifier(-1);
-    exp.identifier.levelZero = new LevelZeroIdentifier(-1);
-    PCollection coll = new PCollection(-1);
-    exp.identifier.levelZero.collection = coll;
-
-    for (Number val : values) {
-      Expression sub = new Expression(-1);
-      sub.mathExpression = integer(val);
-      coll.expressions.add(sub);
-    }
-    return exp;
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertTrue(result instanceof Integer);
+    Assertions.assertEquals(5, result);
   }
 
   @Test
@@ -214,14 +205,105 @@ public class MathExpressionTest {
     testNullCoalescingGeneric(nullExpr(), str("3"), "3");
   }
 
-  private void testNullCoalescingGeneric(MathExpression left, MathExpression right, Object expected) {
-    MathExpression exp = new MathExpression(-1);
+  @Test
+  public void testAddListOfNumbers() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(list(1, 2, 3));
+    exp.operators.add(MathExpression.Operator.PLUS);
+    exp.childExpressions.add(integer(5));
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertTrue(result instanceof List<?>);
+    Assertions.assertEquals(5, ((List<Object>) result).get(3));
+  }
+
+  @Test
+  public void testAddListOfStrings() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(list("this", "is", "a"));
+    exp.operators.add(MathExpression.Operator.PLUS);
+    exp.childExpressions.add(str("test"));
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertTrue(result instanceof List<?>);
+    Assertions.assertEquals("test", ((List<Object>) result).get(3));
+  }
+
+  @Test
+  public void testRemoveListOfStrings() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(list("this", "is", "a", "test"));
+    exp.operators.add(MathExpression.Operator.MINUS);
+    exp.childExpressions.add(str("a"));
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertTrue(result instanceof List<?>);
+    Assertions.assertEquals(3, ((List<?>) result).size());
+    Assertions.assertFalse(((List<Object>) result).contains("a"));
+  }
+
+  private void testNullCoalescingGeneric(final MathExpression left, final MathExpression right, final Object expected) {
+    final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(left);
     exp.operators.add(MathExpression.Operator.NULL_COALESCING);
     exp.childExpressions.add(right);
 
-    Object result = exp.execute((Result) null, null);
+    final Object result = exp.execute((Result) null, null);
     //    Assertions.assertTrue(result instanceof Integer);
     Assertions.assertEquals(expected, result);
+  }
+
+  private MathExpression integer(final Number i) {
+    final BaseExpression exp = new BaseExpression(-1);
+    final PInteger integer = new PInteger(-1);
+    integer.setValue(i);
+    exp.number = integer;
+    return exp;
+  }
+
+  private BaseExpression nullValue() {
+    final BaseExpression exp = new BaseExpression(-1);
+    exp.isNull = true;
+    return exp;
+  }
+
+  private MathExpression str(final String value) {
+    final BaseExpression exp = new BaseExpression(-1);
+    exp.string = "'" + value + "'";
+    return exp;
+  }
+
+  private MathExpression nullExpr() {
+    return new BaseExpression(-1);
+  }
+
+  private MathExpression list(final Number... values) {
+    final BaseExpression exp = new BaseExpression(-1);
+    exp.identifier = new BaseIdentifier(-1);
+    exp.identifier.levelZero = new LevelZeroIdentifier(-1);
+    final PCollection coll = new PCollection(-1);
+    exp.identifier.levelZero.collection = coll;
+
+    for (final Number val : values) {
+      final Expression sub = new Expression(-1);
+      sub.mathExpression = integer(val);
+      coll.expressions.add(sub);
+    }
+    return exp;
+  }
+
+  private MathExpression list(final String... values) {
+    final BaseExpression exp = new BaseExpression(-1);
+    exp.identifier = new BaseIdentifier(-1);
+    exp.identifier.levelZero = new LevelZeroIdentifier(-1);
+    final PCollection coll = new PCollection(-1);
+    exp.identifier.levelZero.collection = coll;
+
+    for (final String val : values) {
+      final Expression sub = new Expression(-1);
+      sub.mathExpression = str(val);
+      coll.expressions.add(sub);
+    }
+    return exp;
   }
 }

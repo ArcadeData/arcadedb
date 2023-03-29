@@ -34,11 +34,15 @@ public interface IndexCursor extends Cursor {
 
   int getScore();
 
-  void close();
+  default void close() {
+    // NO ACTIONS
+  }
 
-  String dumpStats();
+  default String dumpStats() {
+    return "no-stats";
+  }
 
   BinaryComparator getComparator();
 
-  byte[] getKeyTypes();
+  byte[] getBinaryKeyTypes();
 }

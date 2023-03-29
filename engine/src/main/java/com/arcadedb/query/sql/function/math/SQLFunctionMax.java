@@ -36,24 +36,24 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
   private Object context;
 
   public SQLFunctionMax() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
-  public Object execute(Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
-
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     // calculate max value for current record
     // consider both collection of parameters and collection in each parameter
     Object max = null;
     for (Object item : iParams) {
       if (item instanceof Collection<?>) {
-        for (Object subitem : ((Collection<?>) item)) {
+        for (final Object subitem : ((Collection<?>) item)) {
           if (max == null || subitem != null && ((Comparable) subitem).compareTo(max) > 0)
             max = subitem;
         }
       } else {
         if ((item instanceof Number) && (max instanceof Number)) {
-          Number[] converted = Type.castComparableNumber((Number) item, (Number) max);
+          final Number[] converted = Type.castComparableNumber((Number) item, (Number) max);
           item = converted[0];
           max = converted[1];
         }
@@ -88,7 +88,7 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
 
   public boolean aggregateResults() {
     // LET definitions (contain $current) does not require results aggregation
-    return  configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString().contains("$current"));
+    return configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString().contains("$current"));
   }
 
   public String getSyntax() {

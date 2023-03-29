@@ -21,25 +21,21 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.*;
-import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 22/07/16.
  */
 public class FetchFromRidsStep extends AbstractExecutionStep {
-  private final Collection<RID> rids;
+  private final Iterable<RID> rids;
+  private       Iterator<RID> iterator;
+  private       Result        nextResult = null;
 
-  private Iterator<RID> iterator;
-
-  private Result nextResult = null;
-
-  public FetchFromRidsStep(Collection<RID> rids, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromRidsStep(final Iterable<RID> rids, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.rids = rids;
     reset();
   }
@@ -50,8 +46,8 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
     return new ResultSet() {
       int internalNext = 0;
 
@@ -60,91 +56,53 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           return;
         }
         while (iterator.hasNext()) {
-          RID nextRid = iterator.next();
-          if (nextRid == null) {
+          final RID nextRid = iterator.next();
+          if (nextRid == null)
             continue;
-          }
+
           Identifiable nextDoc = null;
           try {
-            nextDoc = ctx.getDatabase().lookupByRID(nextRid, true);
-          } catch (RecordNotFoundException e) {
+            nextDoc = context.getDatabase().lookupByRID(nextRid, false);
+          } catch (final RecordNotFoundException e) {
             // IGNORE HERE< HANDLED BELOW
           }
-          if (nextDoc == null) {
+
+          if (nextDoc == null)
             continue;
-          }
+
           nextResult = new ResultInternal();
           ((ResultInternal) nextResult).setElement((Document) nextDoc);
-          return;
+          break;
         }
       }
 
       @Override
       public boolean hasNext() {
-        if (internalNext >= nRecords) {
+        if (internalNext >= nRecords)
           return false;
-        }
-        if (nextResult == null) {
+
+        if (nextResult == null)
           fetchNext();
-        }
+
         return nextResult != null;
       }
 
       @Override
       public Result next() {
-        if (!hasNext()) {
-          throw new IllegalStateException();
-        }
+        if (!hasNext())
+          throw new NoSuchElementException();
 
         internalNext++;
-        Result result = nextResult;
+        final Result result = nextResult;
         nextResult = null;
         return result;
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM RIDs\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + rids;
-  }
-
-  @Override
-  public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (rids != null) {
-      result.setProperty("rids", rids.stream().map(x -> x.toString()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  @Override
-  public void deserialize(Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      if (fromResult.getProperty("rids") != null) {
-//        List<String> ser = fromResult.getProperty("rids");
-        throw new UnsupportedOperationException();
-//        rids = ser.stream().map(x -> new PRID(x)).collect(Collectors.toList());
-      }
-      reset();
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
   }
 }

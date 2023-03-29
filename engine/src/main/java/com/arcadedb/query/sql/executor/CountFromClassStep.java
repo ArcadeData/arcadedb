@@ -35,25 +35,24 @@ public class CountFromClassStep extends AbstractExecutionStep {
   private final Identifier target;
   private final String     alias;
 
-  private long cost = 0;
-
   private boolean executed = false;
 
   /**
    * @param targetClass      An identifier containing the name of the class to count
    * @param alias            the name of the property returned in the result-set
-   * @param ctx              the query context
+   * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromClassStep(Identifier targetClass, String alias, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CountFromClassStep(final Identifier targetClass, final String alias, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.target = targetClass;
     this.alias = alias;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -63,18 +62,18 @@ public class CountFromClassStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (executed) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          DocumentType typez = ctx.getDatabase().getSchema().getType(target.getStringValue());
+          final DocumentType typez = context.getDatabase().getSchema().getType(target.getStringValue());
           if (typez == null) {
             throw new CommandExecutionException("Type " + target.getStringValue() + " does not exist in the database schema");
           }
 
-          long size = ctx.getDatabase().countType(target.getStringValue(), true);
+          final long size = context.getDatabase().countType(target.getStringValue(), true);
           executed = true;
-          ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal();
           result.setProperty(alias, size);
           return result;
 
@@ -83,21 +82,6 @@ public class CountFromClassStep extends AbstractExecutionStep {
             cost += (System.nanoTime() - begin);
           }
         }
-      }
-
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
       }
 
       @Override
@@ -113,18 +97,12 @@ public class CountFromClassStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE USERTYPE SIZE: " + target;
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;
   }
-
-  @Override
-  public long getCost() {
-    return cost;
-  }
-
 }

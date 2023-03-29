@@ -26,30 +26,30 @@ import java.util.*;
 public class OptionalMatchEdgeTraverser extends MatchEdgeTraverser {
   public static final Result EMPTY_OPTIONAL = new ResultInternal();
 
-  public OptionalMatchEdgeTraverser(Result lastUpstreamRecord, EdgeTraversal edge) {
+  public OptionalMatchEdgeTraverser(final Result lastUpstreamRecord, final EdgeTraversal edge) {
     super(lastUpstreamRecord, edge);
   }
 
-  protected void init(CommandContext ctx) {
+  protected void init(final CommandContext context) {
     if (downstream == null) {
-      super.init(ctx);
+      super.init(context);
       if (!downstream.hasNext()) {
-        List x = new ArrayList();
+        final List x = new ArrayList();
         x.add(EMPTY_OPTIONAL);
         downstream = x.iterator();
       }
     }
   }
 
-  public Result next(CommandContext ctx) {
-    init(ctx);
+  public Result next(final CommandContext context) {
+    init(context);
     if (!downstream.hasNext()) {
-      throw new IllegalStateException();
+      throw new NoSuchElementException();
     }
 
-    String endPointAlias = getEndpointAlias();
-    Object prevValue = sourceRecord.getProperty(endPointAlias);
-    ResultInternal next = downstream.next();
+    final String endPointAlias = getEndpointAlias();
+    final Object prevValue = sourceRecord.getProperty(endPointAlias);
+    final ResultInternal next = downstream.next();
 
     if (isEmptyOptional(prevValue)) {
       return sourceRecord;
@@ -60,15 +60,15 @@ public class OptionalMatchEdgeTraverser extends MatchEdgeTraverser {
       }
     }
 
-    ResultInternal result = new ResultInternal();
-    for (String prop : sourceRecord.getPropertyNames()) {
+    final ResultInternal result = new ResultInternal();
+    for (final String prop : sourceRecord.getPropertyNames()) {
       result.setProperty(prop, sourceRecord.getProperty(prop));
     }
     result.setProperty(endPointAlias, next.getElement().map(x -> toResult(x)).orElse(null));
     return result;
   }
 
-  public static boolean isEmptyOptional(Object elem) {
+  public static boolean isEmptyOptional(final Object elem) {
     if (elem == EMPTY_OPTIONAL) {
       return true;
     }

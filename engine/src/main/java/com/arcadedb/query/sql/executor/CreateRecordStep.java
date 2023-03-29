@@ -30,21 +30,20 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CreateRecordStep extends AbstractExecutionStep {
-
-  private       long   cost    = 0;
   private       int    created = 0;
   private final int    total;
   private final String typeName;
 
-  public CreateRecordStep(final String typeName, final CommandContext ctx, final int total, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CreateRecordStep(final String typeName, final CommandContext context, final int total, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.typeName = typeName;
     this.total = total;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
     return new ResultSet() {
       int locallyCreated = 0;
 
@@ -58,23 +57,23 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (!hasNext()) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           created++;
           locallyCreated++;
 
-          final DocumentType type = ctx.getDatabase().getSchema().getType(typeName);
+          final DocumentType type = context.getDatabase().getSchema().getType(typeName);
 
           final MutableDocument instance;
           if (type instanceof VertexType)
-            instance = ctx.getDatabase().newVertex(typeName);
+            instance = context.getDatabase().newVertex(typeName);
           else if (type instanceof EdgeType)
             throw new IllegalArgumentException("Cannot instantiate an edge");
           else
-            instance = ctx.getDatabase().newDocument(typeName);
+            instance = context.getDatabase().newDocument(typeName);
 
           return new UpdatableResult(instance);
         } finally {
@@ -84,19 +83,6 @@ public class CreateRecordStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
@@ -119,8 +105,4 @@ public class CreateRecordStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

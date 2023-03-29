@@ -23,37 +23,26 @@ package com.arcadedb.graphql.parser;
 import java.util.*;
 
 public class ObjectTypeDefinition extends TypeDefinition {
-
   protected Name                  name;
   protected ImplementsInterface   implementsInterface;
   protected Directives            directives;
   protected List<FieldDefinition> fieldDefinitions = new ArrayList<>();
 
-  public ObjectTypeDefinition(int id) {
+  public ObjectTypeDefinition(final int id) {
     super(id);
-  }
-
-  public ObjectTypeDefinition(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   public String getName() {
     return name != null ? name.value : null;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public List<FieldDefinition> getFieldDefinitions() {
     return fieldDefinitions;
   }
 
   public FieldDefinition getFieldDefinitionByName(final String fieldName) {
-    for (FieldDefinition f : fieldDefinitions) {
+    for (final FieldDefinition f : fieldDefinitions) {
       if (f.getName().equals(fieldName))
         return f;
     }

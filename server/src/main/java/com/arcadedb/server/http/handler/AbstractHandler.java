@@ -20,9 +20,10 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -30,6 +31,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.security.SecurityUser;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -38,7 +40,6 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
-import org.json.JSONObject;
 
 import java.util.*;
 import java.util.logging.*;
@@ -51,11 +52,16 @@ public abstract class AbstractHandler implements HttpHandler {
     this.httpServer = httpServer;
   }
 
-  protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
+  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) {
+    if (!e.isInIoThread() && !e.isBlocking())
+      e.startBlocking();
+
+    if (!mustExecuteOnWorkerThread())
+      LogManager.instance().log(this, Level.SEVERE, "Error: handler must return true at mustExecuteOnWorkerThread() to read payload from request");
+
     final StringBuilder result = new StringBuilder();
-    //e.startBlocking();
     e.getRequestReceiver().receiveFullBytes(
         // OK
         (exchange, data) -> result.append(new String(data, DatabaseFactory.getDefaultCharset())),
@@ -70,9 +76,14 @@ public abstract class AbstractHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
-    LogManager.instance().setContext(httpServer.getServer().getServerName());
+    if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
+      exchange.dispatch(this);
+      return;
+    }
 
     try {
+      LogManager.instance().setContext(httpServer.getServer().getServerName());
+
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
@@ -84,64 +95,77 @@ public abstract class AbstractHandler implements HttpHandler {
 
       ServerSecurityUser user = null;
       if (authorization != null) {
-        final String auth = authorization.getFirst();
-        if (!auth.startsWith(AUTHORIZATION_BASIC)) {
-          sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
-          return;
+        try {
+          final String auth = authorization.getFirst();
+          if (!auth.startsWith(AUTHORIZATION_BASIC)) {
+            sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
+            return;
+          }
+
+          final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
+
+          final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
+
+          final String[] authPair = authPairClear.split(":");
+
+          if (authPair.length != 2) {
+            sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+            return;
+          }
+
+          user = authenticate(authPair[0], authPair[1]);
+        } catch (ServerSecurityException e) {
+          // PASS THROUGH
+          throw e;
+        } catch (Exception e) {
+          throw new ServerSecurityException("Authentication error");
         }
-
-        final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
-
-        final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
-
-        final String[] authPair = authPairClear.split(":");
-
-        if (authPair.length != 2) {
-          sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
-          return;
-        }
-
-        user = authenticate(authPair[0], authPair[1]);
       }
 
       final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.request");
       try {
-        execute(exchange, user);
+        final ExecutionResponse response = execute(exchange, user);
+        if (response != null)
+          response.send(exchange);
 
       } finally {
         timer.stop();
       }
 
-    } catch (ServerSecurityException e) {
-      LogManager.instance().log(this, getErrorLogLevel(), "Security error on command execution (%s)", e, getClass().getSimpleName());
+    } catch (final ServerSecurityException e) {
+      // PASS SecurityException TO THE CLIENT
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s)", e, SecurityException.class.getSimpleName());
       sendErrorResponse(exchange, 403, "Security error", e, null);
-    } catch (ServerIsNotTheLeaderException e) {
-      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+    } catch (final ServerIsNotTheLeaderException e) {
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 400, "Cannot execute command", e, e.getLeaderAddress());
-    } catch (NeedRetryException e) {
-      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+    } catch (final NeedRetryException e) {
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
-    } catch (DuplicatedKeyException e) {
-      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+    } catch (final DuplicatedKeyException e) {
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 503, "Found duplicate key in index", e, e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID());
-    } catch (RecordNotFoundException e) {
-      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+    } catch (final RecordNotFoundException e) {
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 404, "Record not found", e, null);
-    } catch (CommandExecutionException | CommandSQLParsingException e) {
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      sendErrorResponse(exchange, 400, "Cannot execute command", e, null);
+    } catch (final CommandExecutionException | CommandParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance().log(this, getErrorLogLevel(), "Error on transaction execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
-    } catch (Exception e) {
+    } catch (final Throwable e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
@@ -160,8 +184,17 @@ public abstract class AbstractHandler implements HttpHandler {
     return httpServer.getServer().getSecurity().authenticate(userName, userPassword, null);
   }
 
-  protected JSONObject createResult(final SecurityUser user) {
-    return new JSONObject().put("user", user.getName()).put("version", Constants.getVersion());
+  protected static void checkRootUser(ServerSecurityUser user) {
+    if (!"root".equals(user.getName()))
+      throw new ServerSecurityException("Only root user is authorized to execute server commands");
+  }
+
+  protected JSONObject createResult(final SecurityUser user, final Database database) {
+    final JSONObject json = new JSONObject();
+    if (database != null)
+      json.setDateFormat(database.getSchema().getDateTimeFormat());
+    json.put("user", user.getName()).put("version", Constants.getVersion()).put("serverName", httpServer.getServer().getServerName());
+    return json;
   }
 
   protected String decode(final String command) {
@@ -182,11 +215,31 @@ public abstract class AbstractHandler implements HttpHandler {
     return json.toString();
   }
 
+  /**
+   * Returns true if the handler is reading the payload in the request. In this case, the execution is delegated to the worker thread.
+   */
+  protected boolean mustExecuteOnWorkerThread() {
+    return false;
+  }
+
   protected String encodeError(final String message) {
     return message.replaceAll("\\\\", " ").replaceAll("\n", " ");//.replaceAll("\"", "'");
   }
 
+  protected String getQueryParameter(final HttpServerExchange exchange, final String name) {
+    return getQueryParameter(exchange, name, null);
+  }
+
+  protected String getQueryParameter(final HttpServerExchange exchange, final String name, final String defaultValue) {
+    final Deque<String> par = exchange.getQueryParameters().get(name);
+    return par == null || par.isEmpty() ? defaultValue : par.getFirst();
+  }
+
   private Level getErrorLogLevel() {
+    return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ? Level.SEVERE : Level.FINE;
+  }
+
+  private Level getUserSevereErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ? Level.INFO : Level.FINE;
   }
 

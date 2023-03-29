@@ -20,14 +20,19 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
 
+/***
+ * Interface for asynchronous tasks.
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public interface DatabaseAsyncTask {
 
-    void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database);
+  void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database);
 
-    default void completed() {
-    }
+  default void completed() {
+    // DEFAULT IMPLEMENTATION
+  }
 
-    default boolean requiresActiveTx() {
-        return true;
-    }
+  default boolean requiresActiveTx() {
+    return true;
+  }
 }

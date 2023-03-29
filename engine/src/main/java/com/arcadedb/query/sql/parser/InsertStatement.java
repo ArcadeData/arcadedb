@@ -34,7 +34,6 @@ public class InsertStatement extends Statement {
   Identifier      targetType;
   Identifier      targetBucketName;
   Bucket          targetBucket;
-  IndexIdentifier targetIndex;
   InsertBody      insertBody;
   Projection      returnStatement;
   SelectStatement selectStatement;
@@ -42,12 +41,8 @@ public class InsertStatement extends Statement {
   boolean         selectWithFrom      = false;
   boolean         unsafe              = false;
 
-  public InsertStatement(int id) {
+  public InsertStatement(final int id) {
     super(id);
-  }
-
-  public InsertStatement(SqlParser p, int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -61,9 +56,6 @@ public class InsertStatement extends Statement {
     }
     if (targetBucket != null) {
       targetBucket.toString(params, builder);
-    }
-    if (targetIndex != null) {
-      targetIndex.toString(params, builder);
     }
     if (insertBody != null) {
       builder.append(" ");
@@ -98,7 +90,6 @@ public class InsertStatement extends Statement {
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
     result.targetBucket = targetBucket == null ? null : targetBucket.copy();
-    result.targetIndex = targetIndex == null ? null : targetIndex.copy();
     result.insertBody = insertBody == null ? null : insertBody.copy();
     result.returnStatement = returnStatement == null ? null : returnStatement.copy();
     result.selectStatement = selectStatement == null ? null : selectStatement.copy();
@@ -109,34 +100,34 @@ public class InsertStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null)
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null)
+      context.setParentWithoutOverridingChild(parentcontext);
 
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    final InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null)
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null)
+      context.setParentWithoutOverridingChild(parentcontext);
 
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public InsertExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final InsertExecutionPlanner planner = new InsertExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   @Override
@@ -160,8 +151,6 @@ public class InsertStatement extends Statement {
       return false;
     if (!Objects.equals(targetBucket, that.targetBucket))
       return false;
-    if (!Objects.equals(targetIndex, that.targetIndex))
-      return false;
     if (!Objects.equals(insertBody, that.insertBody))
       return false;
     if (!Objects.equals(returnStatement, that.returnStatement))
@@ -174,7 +163,6 @@ public class InsertStatement extends Statement {
     int result = targetType != null ? targetType.hashCode() : 0;
     result = 31 * result + (targetBucketName != null ? targetBucketName.hashCode() : 0);
     result = 31 * result + (targetBucket != null ? targetBucket.hashCode() : 0);
-    result = 31 * result + (targetIndex != null ? targetIndex.hashCode() : 0);
     result = 31 * result + (insertBody != null ? insertBody.hashCode() : 0);
     result = 31 * result + (returnStatement != null ? returnStatement.hashCode() : 0);
     result = 31 * result + (selectStatement != null ? selectStatement.hashCode() : 0);
@@ -194,10 +182,6 @@ public class InsertStatement extends Statement {
 
   public Bucket getTargetBucket() {
     return targetBucket;
-  }
-
-  public IndexIdentifier getTargetIndex() {
-    return targetIndex;
   }
 
   public InsertBody getInsertBody() {

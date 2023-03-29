@@ -23,7 +23,7 @@ public class DatabaseMetadataException extends ArcadeDBException {
     super(s);
   }
 
-  public DatabaseMetadataException(String s, Exception e) {
+  public DatabaseMetadataException(final String s, final Exception e) {
     super(s, e);
   }
 }

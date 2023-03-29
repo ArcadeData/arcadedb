@@ -27,17 +27,17 @@ import java.util.*;
  */
 public class ReturnMatchPathElementsStep extends AbstractUnrollStep {
 
-  public ReturnMatchPathElementsStep(CommandContext context, boolean profilingEnabled) {
+  public ReturnMatchPathElementsStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
   }
 
   @Override
-  protected Collection<Result> unroll(Result doc, CommandContext iContext) {
-    List<Result> result = new ArrayList<>();
-    for (String s : doc.getPropertyNames()) {
+  protected Collection<Result> unroll(final Result doc, final CommandContext iContext) {
+    final List<Result> result = new ArrayList<>();
+    for (final String s : doc.getPropertyNames()) {
       Object elem = doc.getProperty(s);
       if (elem instanceof Identifiable) {
-        ResultInternal newelem = new ResultInternal();
+        final ResultInternal newelem = new ResultInternal();
         newelem.setElement(((Identifiable) elem).asDocument());
         elem = newelem;
       }
@@ -50,8 +50,8 @@ public class ReturnMatchPathElementsStep extends AbstractUnrollStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ UNROLL $pathElements";
   }
 }

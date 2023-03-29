@@ -25,7 +25,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 import java.util.stream.*;
@@ -34,18 +33,14 @@ public class Json extends SimpleNode {
 
   protected List<JsonItem> items = new ArrayList<JsonItem>();
 
-  public Json(int id) {
+  public Json(final int id) {
     super(id);
   }
 
-  public Json(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("{");
     boolean first = true;
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       if (!first) {
         builder.append(", ");
       }
@@ -56,24 +51,24 @@ public class Json extends SimpleNode {
     builder.append("}");
   }
 
-  public Document toDocument(final Identifiable source, final CommandContext ctx) {
-    final String className = getClassNameForDocument(ctx, source);
+  public Document toDocument(final Identifiable source, final CommandContext context) {
+    final String className = getClassNameForDocument(context, source);
     final MutableDocument doc;
     if (className != null) {
-      doc = ctx.getDatabase().newDocument(className);
+      doc = context.getDatabase().newDocument(className);
     } else {
-      doc = ctx.getDatabase().newDocument(null);
+      doc = context.getDatabase().newDocument(null);
     }
-    for (JsonItem item : items) {
-      String name = item.getLeftValue();
+    for (final JsonItem item : items) {
+      final String name = item.getLeftValue();
       if (name == null) {
         continue;
       }
-      Object value;
+      final Object value;
       if (item.right.value instanceof Json) {
-        value = ((Json) item.right.value).toDocument(source, ctx);
+        value = ((Json) item.right.value).toDocument(source, context);
       } else {
-        value = item.right.execute(source, ctx);
+        value = item.right.execute(source, context);
       }
       doc.set(name, value);
     }
@@ -81,74 +76,65 @@ public class Json extends SimpleNode {
     return doc;
   }
 
-  public Map<String, Object> toMap(final Identifiable source, final CommandContext ctx) {
+  public Map<String, Object> toMap(final Identifiable source, final CommandContext context) {
     final Map<String, Object> doc = new HashMap<String, Object>();
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       final String name = item.getLeftValue();
       if (name == null) {
         continue;
       }
-      final Object value = item.right.execute(source, ctx);
+      final Object value = item.right.execute(source, context);
       doc.put(name, value);
     }
 
     return doc;
   }
 
-  public Map<String, Object> toMap(final Result source, final CommandContext ctx) {
+  public Map<String, Object> toMap(final Result source, final CommandContext context) {
     final Map<String, Object> doc = new HashMap<String, Object>();
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       final String name = item.getLeftValue();
       if (name == null) {
         continue;
       }
-      final Object value = item.right.execute(source, ctx);
+      final Object value = item.right.execute(source, context);
       doc.put(name, value);
     }
 
     return doc;
   }
 
-  private String getClassNameForDocument(final CommandContext ctx, final Identifiable record) {
+  private String getClassNameForDocument(final CommandContext context, final Identifiable record) {
     if (record != null) {
       final Document doc = record.asDocument();
       if (doc != null)
         return doc.getTypeName();
     }
 
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       final String left = item.getLeftValue();
       if (left != null && left.toLowerCase(Locale.ENGLISH).equals("@type")) {
-        return "" + item.right.execute((Result) null, ctx);
+        return "" + item.right.execute((Result) null, context);
       }
     }
 
     return null;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    for (JsonItem item : items) {
-      if (item.needsAliases(aliases)) {
+  public boolean isAggregate(final CommandContext context) {
+    for (final JsonItem item : items) {
+      if (item.isAggregate(context)) {
         return true;
       }
     }
     return false;
   }
 
-  public boolean isAggregate() {
-    for (JsonItem item : items) {
-      if (item.isAggregate()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  public Json splitForAggregation(AggregateProjectionSplit aggregateSplit) {
-    if (isAggregate()) {
-      Json result = new Json(-1);
-      for (JsonItem item : items) {
-        result.items.add(item.splitForAggregation(aggregateSplit));
+  public Json splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
+    if (isAggregate(context)) {
+      final Json result = new Json(-1);
+      for (final JsonItem item : items) {
+        result.items.add(item.splitForAggregation(aggregateSplit, context));
       }
       return result;
     } else {
@@ -163,60 +149,19 @@ public class Json extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final Json oJson = (Json) o;
-
-    return Objects.equals(items, oJson.items);
+  protected Object[] getIdentityElements() {
+    return new Object[] { items };
   }
 
-  @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
-  }
-
-  public void extractSubQueries( final SubQueryCollector collector) {
-    for (JsonItem item : items) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    for (final JsonItem item : items) {
       item.extractSubQueries(collector);
     }
   }
 
-  public boolean refersToParent() {
-    for (JsonItem item : items) {
-      if (item.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (items != null) {
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-
-    if (fromResult.getProperty("items") != null) {
-      List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (Result r : ser) {
-        JsonItem exp = new JsonItem();
-        exp.deserialize(r);
-        items.add(exp);
-      }
-    }
-  }
-
-  public boolean isCacheable() {
-    return false;//TODO optimize
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new SimpleNode[items.size()]);
   }
 }
 /* JavaCC - OriginalChecksum=3beec9f6db486de944498588b51a505d (do not edit this line) */

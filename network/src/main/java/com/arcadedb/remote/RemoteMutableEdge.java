@@ -22,10 +22,11 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.JSONSerializer;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 public class RemoteMutableEdge extends MutableEdge {
   protected final RemoteDatabase remoteDatabase;
@@ -65,9 +66,10 @@ public class RemoteMutableEdge extends MutableEdge {
     dirty = false;
     return this;
   }
+
   @Override
   public void delete() {
-    remoteDatabase.command("sql", "delete from " + rid);
+    remoteDatabase.deleteRecord(this);
   }
 
   @Override
@@ -79,7 +81,8 @@ public class RemoteMutableEdge extends MutableEdge {
       map.clear();
       map.putAll(document.propertiesAsMap());
       dirty = false;
-    }
+    } else
+      throw new RecordNotFoundException("Record " + rid + " not found", rid);
   }
 
   @Override
@@ -108,12 +111,13 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  public synchronized void setBuffer(Binary buffer) {
+  public synchronized void setBuffer(final Binary buffer) {
     throw new UnsupportedOperationException("Raw buffer API not supported in remote database");
   }
 
   @Override
   protected void checkForLazyLoadingProperties() {
+    // NO ACTIONS
   }
 
   @Override
@@ -123,5 +127,6 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   protected void checkForUpgradeLightWeight() {
+    // NO ACTIONS
   }
 }

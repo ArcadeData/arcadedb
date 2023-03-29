@@ -24,6 +24,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -46,7 +48,44 @@ public class SQLLocalExporterTest {
       Assertions.assertEquals(500, database.countType("Person", false));
       Assertions.assertEquals(10000, database.countType("Friend", false));
 
-      database.command("sql", "export database file://export.jsonl.tgz");
+      final ResultSet result = database.command("sql", "export database file://export.jsonl.tgz with `overwrite` = true");
+
+      final Result stats = result.next();
+      Assertions.assertEquals(500L, (long) stats.getProperty("vertices"));
+      Assertions.assertEquals(10000L, (long) stats.getProperty("edges"));
+      Assertions.assertEquals(0L, (long) stats.getProperty("documents"));
+
+      final File exportFile = new File("./exports/export.jsonl.tgz");
+      Assertions.assertTrue(exportFile.exists());
+      Assertions.assertTrue(exportFile.length() > 50_000);
+      exportFile.delete();
+    }
+
+    TestHelper.checkActiveDatabases();
+
+    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
+  }
+
+  @Test
+  public void importAndExportPartialDatabase() {
+    final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
+
+    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
+
+    try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
+      database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
+
+      database.command("sql", "import database file://" + inputFile.getFile());
+
+      Assertions.assertEquals(500, database.countType("Person", false));
+      Assertions.assertEquals(10000, database.countType("Friend", false));
+
+      final ResultSet result = database.command("sql", "export database file://export.jsonl.tgz with `overwrite` = true, includeTypes = Person");
+
+      final Result stats = result.next();
+      Assertions.assertEquals(500L, (long) stats.getProperty("vertices"));
+      Assertions.assertEquals(0L, (long) stats.getProperty("edges"));
+      Assertions.assertEquals(0L, (long) stats.getProperty("documents"));
 
       final File exportFile = new File("./exports/export.jsonl.tgz");
       Assertions.assertTrue(exportFile.exists());

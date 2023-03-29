@@ -21,13 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 public class MultiMatchPathItemArrows extends MultiMatchPathItem {
-  public MultiMatchPathItemArrows(int id) {
+  public MultiMatchPathItemArrows(final int id) {
     super(id);
   }
-
-  public MultiMatchPathItemArrows(SqlParser p, int id) {
-    super(p, id);
-  }
-
 }
 /* JavaCC - OriginalChecksum=75506ca75aab9f66ab24c9f1b1cfe3ac (do not edit this line) */

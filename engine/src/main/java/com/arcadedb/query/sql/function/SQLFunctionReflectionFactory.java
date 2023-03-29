@@ -43,22 +43,18 @@ public class SQLFunctionReflectionFactory {
     final Map<String, List<Method>> methodsMap = Arrays.stream(clazz.getMethods()).filter(m -> Modifier.isStatic(m.getModifiers()))
         .collect(Collectors.groupingBy(Method::getName));
 
-    for (Map.Entry<String, List<Method>> entry : methodsMap.entrySet()) {
+    for (final Map.Entry<String, List<Method>> entry : methodsMap.entrySet()) {
       final String name = prefix + entry.getKey();
       if (factory.getFunctionNames().contains(name)) {
         LogManager.instance().log(this, Level.WARNING, "Unable to register reflective function with name '%s'", name);
       } else {
-        List<Method> methodsList = methodsMap.get(entry.getKey());
-        Method[] methods = new Method[methodsList.size()];
+        final List<Method> methodsList = methodsMap.get(entry.getKey());
+        final Method[] methods = new Method[methodsList.size()];
         int i = 0;
-        int minParams = 0;
-        int maxParams = 0;
-        for (Method m : methodsList) {
+        for (final Method m : methodsList) {
           methods[i++] = m;
-          minParams = minParams < m.getParameterTypes().length ? minParams : m.getParameterTypes().length;
-          maxParams = maxParams > m.getParameterTypes().length ? maxParams : m.getParameterTypes().length;
         }
-        factory.register(name.toLowerCase(Locale.ENGLISH), new SQLStaticReflectiveFunction(name, minParams, maxParams, methods));
+        factory.register(name.toLowerCase(Locale.ENGLISH), new SQLStaticReflectiveFunction(name, methods));
       }
     }
   }

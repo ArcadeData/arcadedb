@@ -27,15 +27,15 @@ import java.util.*;
  */
 public class RidSetIterator implements Iterator<RID> {
 
-  final CommandContext ctx;
+  final CommandContext context;
 
   private final RidSet set;
   int  currentCluster = -1;
   long currentId      = -1;
 
-  RidSetIterator(CommandContext ctx, RidSet set) {
+  RidSetIterator(final CommandContext context, final RidSet set) {
     this.set = set;
-    this.ctx = ctx;
+    this.context = context;
     fetchNext();
   }
 
@@ -47,9 +47,9 @@ public class RidSetIterator implements Iterator<RID> {
   @Override
   public RID next() {
     if (!hasNext()) {
-      throw new IllegalStateException();
+      throw new NoSuchElementException();
     }
-    RID result = new RID(ctx.getDatabase(), currentCluster, currentId);
+    final RID result = new RID(context.getDatabase(), currentCluster, currentId);
     currentId++;
     fetchNext();
     return result;
@@ -74,7 +74,7 @@ public class RidSetIterator implements Iterator<RID> {
             currentArrayPos++;
             continue;
           }
-          if (set.contains(new RID(ctx.getDatabase(), currentCluster, currentArrayPos * 63 + currentBit))) {
+          if (set.contains(new RID(context.getDatabase(), currentCluster, currentArrayPos * 63 + currentBit))) {
             currentId = currentArrayPos * 63 + currentBit;
             return;
           } else {

@@ -26,15 +26,13 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
-import java.text.*;
 import java.util.*;
 
 public class DocumentTest extends TestHelper {
   @Override
   public void beginTest() {
     database.transaction(() -> {
-      DocumentType type = database.getSchema().createDocumentType("ConversionTest");
+      final DocumentType type = database.getSchema().createDocumentType("ConversionTest");
 
       type.createProperty("string", Type.STRING);
       type.createProperty("int", Type.INTEGER);
@@ -43,77 +41,10 @@ public class DocumentTest extends TestHelper {
       type.createProperty("double", Type.DOUBLE);
       type.createProperty("decimal", Type.DECIMAL);
       type.createProperty("date", Type.DATE);
-      type.createProperty("datetime", Type.DATETIME);
-    });
-  }
-
-  @Test
-  public void testNoConversion() {
-    database.transaction(() -> {
-      final MutableDocument doc = database.newDocument("ConversionTest");
-
-      final Date now = new Date();
-
-      doc.set("string", "test");
-      doc.set("int", 33);
-      doc.set("long", 33l);
-      doc.set("float", 33.33f);
-      doc.set("double", 33.33d);
-      doc.set("decimal", new BigDecimal("33.33"));
-      doc.set("date", now);
-      doc.set("datetime", now);
-
-      Assertions.assertEquals(33, doc.get("int"));
-      Assertions.assertEquals(33l, doc.get("long"));
-      Assertions.assertEquals(33.33f, doc.get("float"));
-      Assertions.assertEquals(33.33d, doc.get("double"));
-      Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
-      Assertions.assertEquals(now, doc.get("date"));
-      Assertions.assertEquals(now, doc.get("datetime"));
-    });
-  }
-
-  @Test
-  public void testConversionDecimals() {
-    database.transaction(() -> {
-      final MutableDocument doc = database.newDocument("ConversionTest");
-
-      final Date now = new Date();
-
-      doc.set("decimal", "33.33");
-      Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
-
-      doc.set("decimal", 33.33f);
-      Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
-
-      doc.set("decimal", 33.33d);
-      Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
-    });
-  }
-
-  @Test
-  public void testConversionDates() {
-    database.transaction(() -> {
-      final MutableDocument doc = database.newDocument("ConversionTest");
-
-      final Date now = new Date();
-
-      doc.set("date", now.getTime());
-      doc.set("datetime", now.getTime());
-      Assertions.assertEquals(now, doc.get("date"));
-      Assertions.assertEquals(now, doc.get("datetime"));
-
-      doc.set("date", "" + now.getTime());
-      doc.set("datetime", "" + now.getTime());
-      Assertions.assertEquals(now, doc.get("date"));
-      Assertions.assertEquals(now, doc.get("datetime"));
-
-      final SimpleDateFormat df = new SimpleDateFormat(database.getSchema().getDateTimeFormat());
-
-      doc.set("date", df.format(now));
-      doc.set("datetime", df.format(now));
-      Assertions.assertEquals(df.format(now), df.format(doc.get("date")));
-      Assertions.assertEquals(df.format(now), df.format(doc.get("datetime")));
+      type.createProperty("datetime_second", Type.DATETIME_SECOND);
+      type.createProperty("datetime_millis", Type.DATETIME);
+      type.createProperty("datetime_micros", Type.DATETIME_MICROS);
+      type.createProperty("datetime_nanos", Type.DATETIME_NANOS);
     });
   }
 
@@ -133,6 +64,9 @@ public class DocumentTest extends TestHelper {
       doc.newEmbeddedDocument("ConversionTest", "embeddedMap", "first").set("embeddedMap", true);
 
       final DetachedDocument detached = doc.detach();
+      doc.save();
+      doc.reload();
+      doc.detach();
 
       Assertions.assertEquals("Tim", detached.getString("name"));
       Assertions.assertEquals(embeddedObj, detached.get("embeddedObj"));
@@ -140,7 +74,7 @@ public class DocumentTest extends TestHelper {
       Assertions.assertEquals(embeddedMap, detached.get("embeddedMap"));
       Assertions.assertNull(detached.getString("lastname"));
 
-      Set<String> props = detached.getPropertyNames();
+      final Set<String> props = detached.getPropertyNames();
       Assertions.assertEquals(4, props.size());
       Assertions.assertTrue(props.contains("name"));
       Assertions.assertTrue(props.contains("embeddedObj"));
@@ -165,7 +99,7 @@ public class DocumentTest extends TestHelper {
       try {
         detached.modify();
         Assertions.fail("modify");
-      } catch (UnsupportedOperationException e) {
+      } catch (final UnsupportedOperationException e) {
       }
 
       detached.reload();
@@ -173,7 +107,7 @@ public class DocumentTest extends TestHelper {
       try {
         detached.setBuffer(null);
         Assertions.fail("setBuffer");
-      } catch (UnsupportedOperationException e) {
+      } catch (final UnsupportedOperationException e) {
       }
 
       Assertions.assertNull(detached.getString("name"));

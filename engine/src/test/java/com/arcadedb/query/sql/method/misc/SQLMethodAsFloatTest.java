@@ -35,34 +35,34 @@ class SQLMethodAsFloatTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testStringToFloat() {
-    Object result = method.execute(null, null, null, "10.0", null);
+    final Object result = method.execute(null, null, null, "10.0", null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
   void testLongToFloat() {
-    Object result = method.execute(null, null, null, 10l, null);
+    final Object result = method.execute(null, null, null, 10l, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
   void testFloatToFloat() {
-    Object result = method.execute(null, null, null, 10.0f, null);
+    final Object result = method.execute(null, null, null, 10.0f, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
   void testIntegerToFloat() {
-    Object result = method.execute(null, null, null, 10, null);
+    final Object result = method.execute(null, null, null, 10, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }

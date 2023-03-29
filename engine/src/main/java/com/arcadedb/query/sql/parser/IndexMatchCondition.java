@@ -35,31 +35,27 @@ public class IndexMatchCondition extends BooleanExpression {
   protected List<Expression> leftExpressions;
   protected List<Expression> rightExpressions;
 
-  public IndexMatchCondition(int id) {
+  public IndexMatchCondition(final int id) {
     super(id);
   }
 
-  public IndexMatchCondition(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("KEY ");
     if (operator != null) {
       builder.append(operator);
       builder.append(" [");
       boolean first = true;
-      for (Expression x : leftExpressions) {
+      for (final Expression x : leftExpressions) {
         if (!first) {
           builder.append(", ");
         }
@@ -70,7 +66,7 @@ public class IndexMatchCondition extends BooleanExpression {
     } else if (Boolean.TRUE.equals(between)) {
       builder.append(" BETWEEN [");
       boolean first = true;
-      for (Expression x : leftExpressions) {
+      for (final Expression x : leftExpressions) {
         if (!first) {
           builder.append(", ");
         }
@@ -79,7 +75,7 @@ public class IndexMatchCondition extends BooleanExpression {
       }
       builder.append("] AND [");
       first = true;
-      for (Expression x : rightExpressions) {
+      for (final Expression x : rightExpressions) {
         if (!first) {
           builder.append(", ");
         }
@@ -91,111 +87,27 @@ public class IndexMatchCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return false;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return 1;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
-    result.add(this);
-    return result;
-  }
-
-  @Override
-  public boolean needsAliases(Set<String> aliases) {
-    if (leftExpressions != null) {
-      for (Expression exp : leftExpressions) {
-        if (exp.needsAliases(aliases)) {
-          return true;
-        }
-      }
-    }
-    if (rightExpressions != null) {
-      for (Expression exp : rightExpressions) {
-        if (exp.needsAliases(aliases)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  @Override
   public IndexMatchCondition copy() {
-    IndexMatchCondition result = new IndexMatchCondition(-1);
+    final IndexMatchCondition result = new IndexMatchCondition(-1);
     result.operator = operator == null ? null : operator.copy();
     result.between = between;
-
     result.leftExpressions = leftExpressions == null ? null : leftExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.rightExpressions = rightExpressions == null ? null : rightExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
-
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (leftExpressions != null) {
-      for (Expression exp : leftExpressions) {
+      for (final Expression exp : leftExpressions) {
         exp.extractSubQueries(collector);
       }
     }
     if (rightExpressions != null) {
-      for (Expression exp : rightExpressions) {
+      for (final Expression exp : rightExpressions) {
         exp.extractSubQueries(collector);
       }
     }
-  }
-
-  @Override
-  public boolean refersToParent() {
-    if (leftExpressions != null) {
-      for (Expression exp : leftExpressions) {
-        if (exp != null && exp.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    if (rightExpressions != null) {
-      for (Expression exp : rightExpressions) {
-        if (exp != null && exp.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final   IndexMatchCondition that = (IndexMatchCondition) o;
-
-    if (!Objects.equals(operator, that.operator))
-      return false;
-    if (!Objects.equals(between, that.between))
-      return false;
-    if (!Objects.equals(leftExpressions, that.leftExpressions))
-      return false;
-    return Objects.equals(rightExpressions, that.rightExpressions);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = operator != null ? operator.hashCode() : 0;
-    result = 31 * result + (between != null ? between.hashCode() : 0);
-    result = 31 * result + (leftExpressions != null ? leftExpressions.hashCode() : 0);
-    result = 31 * result + (rightExpressions != null ? rightExpressions.hashCode() : 0);
-    return result;
   }
 
   @Override
@@ -204,24 +116,13 @@ public class IndexMatchCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-
-    if (leftExpressions != null) {
-      for (Expression exp : leftExpressions) {
-        if (!exp.isCacheable()) {
-          return false;
-        }
-      }
-    }
-    if (rightExpressions != null) {
-      for (Expression exp : rightExpressions) {
-        if (!exp.isCacheable()) {
-          return false;
-        }
-      }
-    }
-    return true;
+  protected Object[] getIdentityElements() {
+    return new Object[] { operator, between, leftExpressions, rightExpressions };
   }
 
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return Stream.concat(Arrays.stream(leftExpressions.toArray()), Arrays.stream(rightExpressions.toArray())).toArray(SimpleNode[]::new);
+  }
 }
 /* JavaCC - OriginalChecksum=702e9ab959e87b043b519844a7d31224 (do not edit this line) */

@@ -25,7 +25,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -49,14 +49,14 @@ public class OrientDBImporterIT {
       Assertions.assertTrue(databaseDirectory.exists());
 
       try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
-        try (Database database = factory.open()) {
-          DocumentType personType = database.getSchema().getType("Person");
+        try (final Database database = factory.open()) {
+          final DocumentType personType = database.getSchema().getType("Person");
           Assertions.assertNotNull(personType);
           Assertions.assertEquals(Type.INTEGER, personType.getProperty("id").getType());
           Assertions.assertEquals(500, database.countType("Person", true));
           Assertions.assertEquals(Schema.INDEX_TYPE.LSM_TREE, database.getSchema().getIndexByName("Person[id]").getType());
 
-          DocumentType friendType = database.getSchema().getType("Friend");
+          final DocumentType friendType = database.getSchema().getType("Friend");
           Assertions.assertNotNull(friendType);
           Assertions.assertEquals(Type.INTEGER, friendType.getProperty("id").getType());
           Assertions.assertEquals(10_000, database.countType("Friend", true));
@@ -65,7 +65,8 @@ public class OrientDBImporterIT {
           final File securityFile = new File("./server-users.jsonl");
           Assertions.assertTrue(securityFile.exists());
 
-          final JSONObject security = new JSONObject(FileUtils.readFileAsString(securityFile, "UTF8"));
+          final String fileContent = FileUtils.readFileAsString(securityFile, "UTF8");
+          final JSONObject security = new JSONObject(fileContent.substring(0, fileContent.indexOf("\n")));
           Assertions.assertEquals("admin", security.getString("name"));
         }
       }
@@ -82,7 +83,7 @@ public class OrientDBImporterIT {
     try {
       importer.run();
       Assertions.fail("Expected File Not Found Exception");
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
     }
     Assertions.assertTrue(importer.isError());
   }

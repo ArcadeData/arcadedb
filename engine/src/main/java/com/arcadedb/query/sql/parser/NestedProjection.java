@@ -35,31 +35,27 @@ public class NestedProjection extends SimpleNode {
   protected NestedProjectionItem       starItem;
   private   PInteger                   recursion; //not used for now
 
-  public NestedProjection(int id) {
+  public NestedProjection(final int id) {
     super(id);
-  }
-
-  public NestedProjection(SqlParser p, int id) {
-    super(p, id);
   }
 
   /**
    * @param expression
    * @param input
-   * @param ctx
+   * @param context
    */
-  public Object apply(Expression expression, Object input, CommandContext ctx) {
+  public Object apply(final Expression expression, final Object input, final CommandContext context) {
     if (input instanceof Result) {
-      return apply(expression, (Result) input, ctx, recursion == null ? 0 : recursion.getValue().intValue());
+      return apply(expression, (Result) input, context, recursion == null ? 0 : recursion.getValue().intValue());
     }
     if (input instanceof Identifiable) {
-      return apply(expression, (Document) ((Identifiable) input).getRecord(), ctx, recursion == null ? 0 : recursion.getValue().intValue());
+      return apply(expression, (Document) ((Identifiable) input).getRecord(), context, recursion == null ? 0 : recursion.getValue().intValue());
     }
     if (input instanceof Map) {
-      return apply(expression, (Map) input, ctx, recursion == null ? 0 : recursion.getValue().intValue());
+      return apply(expression, (Map) input, context, recursion == null ? 0 : recursion.getValue().intValue());
     }
     if (input instanceof Collection) {
-      return ((Collection) input).stream().map(x -> apply(expression, x, ctx)).collect(Collectors.toList());
+      return ((Collection) input).stream().map(x -> apply(expression, x, context)).collect(Collectors.toList());
     }
     Iterator iter = null;
     if (input instanceof Iterable) {
@@ -69,32 +65,32 @@ public class NestedProjection extends SimpleNode {
       iter = (Iterator) input;
     }
     if (iter != null) {
-      List result = new ArrayList();
+      final List result = new ArrayList();
       while (iter.hasNext()) {
-        result.add(apply(expression, iter.next(), ctx));
+        result.add(apply(expression, iter.next(), context));
       }
       return result;
     }
     return input;
   }
 
-  private Object apply(Expression expression, Result elem, CommandContext ctx, int recursion) {
-    ResultInternal result = new ResultInternal();
+  private Object apply(final Expression expression, final Result elem, final CommandContext context, final int recursion) {
+    final ResultInternal result = new ResultInternal();
     if (starItem != null || includeItems.size() == 0) {
-      for (String property : elem.getPropertyNames()) {
+      for (final String property : elem.getPropertyNames()) {
         if (isExclude(property)) {
           continue;
         }
-        result.setProperty(property, convert(tryExpand(expression, property, elem.getProperty(property), ctx, recursion)));
+        result.setProperty(property, convert(tryExpand(expression, property, elem.getProperty(property), context, recursion)));
       }
     }
     if (includeItems.size() > 0) {
       //TODO manage wildcards!
-      for (NestedProjectionItem item : includeItems) {
-        String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
-        Object value = item.expression.execute(elem, ctx);
+      for (final NestedProjectionItem item : includeItems) {
+        final String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
+        Object value = item.expression.execute(elem, context);
         if (item.expansion != null) {
-          value = item.expand(expression, alias, value, ctx, recursion - 1);
+          value = item.expand(expression, alias, value, context, recursion - 1);
         }
         result.setProperty(alias, convert(value));
       }
@@ -102,8 +98,8 @@ public class NestedProjection extends SimpleNode {
     return result;
   }
 
-  private boolean isExclude(String propertyName) {
-    for (NestedProjectionItem item : excludeItems) {
+  private boolean isExclude(final String propertyName) {
+    for (final NestedProjectionItem item : excludeItems) {
       if (item.matches(propertyName)) {
         return true;
       }
@@ -111,33 +107,33 @@ public class NestedProjection extends SimpleNode {
     return false;
   }
 
-  private Object tryExpand(Expression rootExpr, String propName, Object propValue, CommandContext ctx, int recursion) {
-    for (NestedProjectionItem item : includeItems) {
+  private Object tryExpand(final Expression rootExpr, final String propName, final Object propValue, final CommandContext context, final int recursion) {
+    for (final NestedProjectionItem item : includeItems) {
       if (item.matches(propName) && item.expansion != null) {
-        return item.expand(rootExpr, propName, propValue, ctx, recursion);
+        return item.expand(rootExpr, propName, propValue, context, recursion);
       }
     }
     return propValue;
   }
 
-  private Object apply(Expression expression, Document input, CommandContext ctx, int recursion) {
-    Document elem = input;
-    ResultInternal result = new ResultInternal();
+  private Object apply(final Expression expression, final Document input, final CommandContext context, final int recursion) {
+    final Document elem = input;
+    final ResultInternal result = new ResultInternal();
     if (starItem != null || includeItems.size() == 0) {
-      for (String property : elem.getPropertyNames()) {
+      for (final String property : elem.getPropertyNames()) {
         if (isExclude(property)) {
           continue;
         }
-        result.setProperty(property, convert(tryExpand(expression, property, elem.get(property), ctx, recursion)));
+        result.setProperty(property, convert(tryExpand(expression, property, elem.get(property), context, recursion)));
       }
     }
     if (includeItems.size() > 0) {
       //TODO manage wildcards!
-      for (NestedProjectionItem item : includeItems) {
-        String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
-        Object value = item.expression.execute(elem, ctx);
+      for (final NestedProjectionItem item : includeItems) {
+        final String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
+        Object value = item.expression.execute(elem, context);
         if (item.expansion != null) {
-          value = item.expand(expression, alias, value, ctx, recursion - 1);
+          value = item.expand(expression, alias, value, context, recursion - 1);
         }
         result.setProperty(alias, convert(value));
       }
@@ -145,26 +141,26 @@ public class NestedProjection extends SimpleNode {
     return result;
   }
 
-  private Object apply(Expression expression, Map<String, Object> input, CommandContext ctx, int recursion) {
-    ResultInternal result = new ResultInternal();
+  private Object apply(final Expression expression, final Map<String, Object> input, final CommandContext context, final int recursion) {
+    final ResultInternal result = new ResultInternal();
 
     if (starItem != null || includeItems.size() == 0) {
-      for (Map.Entry<String, Object> entry : input.entrySet()) {
+      for (final Map.Entry<String, Object> entry : input.entrySet()) {
         if (isExclude(entry.getKey())) {
           continue;
         }
-        result.setProperty(entry.getKey(), convert(tryExpand(expression, entry.getKey(), entry.getValue(), ctx, recursion)));
+        result.setProperty(entry.getKey(), convert(tryExpand(expression, entry.getKey(), entry.getValue(), context, recursion)));
       }
     }
     if (includeItems.size() > 0) {
       //TODO manage wildcards!
-      for (NestedProjectionItem item : includeItems) {
-        String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
-        ResultInternal elem = new ResultInternal();
+      for (final NestedProjectionItem item : includeItems) {
+        final String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
+        final ResultInternal elem = new ResultInternal();
         input.entrySet().forEach(x -> elem.setProperty(x.getKey(), x.getValue()));
-        Object value = item.expression.execute(elem, ctx);
+        Object value = item.expression.execute(elem, context);
         if (item.expansion != null) {
-          value = item.expand(expression, alias, value, ctx, recursion - 1);
+          value = item.expand(expression, alias, value, context, recursion - 1);
         }
         result.setProperty(alias, convert(value));
       }
@@ -173,21 +169,21 @@ public class NestedProjection extends SimpleNode {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(":{");
     boolean first = true;
     if (starItem != null) {
       starItem.toString(params, builder);
       first = false;
     }
-    for (NestedProjectionItem item : includeItems) {
+    for (final NestedProjectionItem item : includeItems) {
       if (!first) {
         builder.append(", ");
       }
       item.toString(params, builder);
       first = false;
     }
-    for (NestedProjectionItem item : excludeItems) {
+    for (final NestedProjectionItem item : excludeItems) {
       if (!first) {
         builder.append(", ");
       }
@@ -204,7 +200,7 @@ public class NestedProjection extends SimpleNode {
   }
 
   public NestedProjection copy() {
-    NestedProjection result = new NestedProjection(-1);
+    final NestedProjection result = new NestedProjection(-1);
     result.includeItems = includeItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.excludeItems = excludeItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.starItem = starItem == null ? null : starItem.copy();
@@ -213,13 +209,13 @@ public class NestedProjection extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final    NestedProjection that = (NestedProjection) o;
+    final NestedProjection that = (NestedProjection) o;
 
     if (!Objects.equals(includeItems, that.includeItems))
       return false;
@@ -239,55 +235,13 @@ public class NestedProjection extends SimpleNode {
     return result;
   }
 
-  private Object convert(Object value) {
+  private Object convert(final Object value) {
 //    if (value instanceof ORidBag) {
 //      List result = new ArrayList();
 //      ((ORidBag) value).forEach(x -> result.add(x));
 //      return result;
 //    }
     return value;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (includeItems != null) {
-      result.setProperty("includeItems", includeItems.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (excludeItems != null) {
-      result.setProperty("excludeItems", excludeItems.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (starItem != null) {
-      result.setProperty("starItem", starItem.serialize());
-    }
-    result.setProperty("recursion", recursion);
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("includeItems") != null) {
-      includeItems = new ArrayList<>();
-      List<Result> ser = fromResult.getProperty("includeItems");
-      for (Result x : ser) {
-        NestedProjectionItem item = new NestedProjectionItem(-1);
-        item.deserialize(x);
-        includeItems.add(item);
-      }
-    }
-    if (fromResult.getProperty("excludeItems") != null) {
-      excludeItems = new ArrayList<>();
-      List<Result> ser = fromResult.getProperty("excludeItems");
-      for (Result x : ser) {
-        NestedProjectionItem item = new NestedProjectionItem(-1);
-        item.deserialize(x);
-        excludeItems.add(item);
-      }
-    }
-    if (fromResult.getProperty("starItem") != null) {
-      starItem = new NestedProjectionItem(-1);
-      starItem.deserialize(fromResult.getProperty("starItem"));
-    }
-    recursion = fromResult.getProperty("recursion");
-
   }
 }
 /* JavaCC - OriginalChecksum=a7faf9beb3c058e28999b17cb43b26f6 (do not edit this line) */

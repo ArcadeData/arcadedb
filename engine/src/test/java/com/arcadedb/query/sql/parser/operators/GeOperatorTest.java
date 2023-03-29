@@ -30,7 +30,7 @@ import java.math.*;
 public class GeOperatorTest {
   @Test
   public void test() {
-    GeOperator op = new GeOperator(-1);
+    final GeOperator op = new GeOperator(-1);
     Assertions.assertTrue(op.execute(null, 1, 1));
     Assertions.assertTrue(op.execute(null, 1, 0));
     Assertions.assertFalse(op.execute(null, 0, 1));
@@ -55,7 +55,7 @@ public class GeOperatorTest {
     try {
       Assertions.assertFalse(op.execute(null, new Object(), new Object()));
       Assertions.fail();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       Assertions.assertTrue(e instanceof ClassCastException);
     }
   }

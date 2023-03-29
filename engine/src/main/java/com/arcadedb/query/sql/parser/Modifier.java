@@ -31,7 +31,6 @@ import java.lang.reflect.*;
 import java.util.*;
 
 public class Modifier extends SimpleNode {
-
   boolean                   squareBrackets = false;
   ArrayRangeSelector        arrayRange;
   OrBlock                   condition;
@@ -39,18 +38,13 @@ public class Modifier extends SimpleNode {
   RightBinaryCondition      rightBinaryCondition;
   MethodCall                methodCall;
   SuffixIdentifier          suffix;
+  Modifier                  next;
 
-  Modifier next;
-
-  public Modifier(int id) {
+  public Modifier(final int id) {
     super(id);
   }
 
-  public Modifier(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     if (squareBrackets) {
       builder.append("[");
@@ -77,55 +71,55 @@ public class Modifier extends SimpleNode {
     }
   }
 
-  public Object execute(Identifiable iCurrentRecord, Object result, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, Object result, final CommandContext context) {
     if (methodCall != null) {
-      result = methodCall.execute(result, ctx);
+      result = methodCall.execute(result, context);
     } else if (suffix != null) {
-      result = suffix.execute(result, ctx);
+      result = suffix.execute(result, context);
     } else if (arrayRange != null) {
-      result = arrayRange.execute(iCurrentRecord, result, ctx);
+      result = arrayRange.execute(iCurrentRecord, result, context);
     } else if (condition != null) {
-      result = filterByCondition(result, ctx);
+      result = filterByCondition(result, context);
     } else if (arraySingleValues != null) {
-      result = arraySingleValues.execute(iCurrentRecord, result, ctx);
+      result = arraySingleValues.execute(iCurrentRecord, result, context);
     } else if (rightBinaryCondition != null) {
-      result = rightBinaryCondition.execute(iCurrentRecord, result, ctx);
+      result = rightBinaryCondition.execute(iCurrentRecord, result, context);
     }
     if (next != null) {
-      result = next.execute(iCurrentRecord, result, ctx);
+      result = next.execute(iCurrentRecord, result, context);
     }
     return result;
   }
 
-  public Object execute(Result iCurrentRecord, Object result, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, Object result, final CommandContext context) {
     if (methodCall != null) {
-      result = methodCall.execute(result, ctx);
+      result = methodCall.execute(result, context);
     } else if (suffix != null) {
-      result = suffix.execute(result, ctx);
+      result = suffix.execute(result, context);
     } else if (arrayRange != null) {
-      result = arrayRange.execute(iCurrentRecord, result, ctx);
+      result = arrayRange.execute(iCurrentRecord, result, context);
     } else if (condition != null) {
-      result = filterByCondition(result, ctx);
+      result = filterByCondition(result, context);
     } else if (arraySingleValues != null) {
-      result = arraySingleValues.execute(iCurrentRecord, result, ctx);
+      result = arraySingleValues.execute(iCurrentRecord, result, context);
     } else if (rightBinaryCondition != null) {
-      result = rightBinaryCondition.execute(iCurrentRecord, result, ctx);
+      result = rightBinaryCondition.execute(iCurrentRecord, result, context);
     }
     if (next != null) {
-      result = next.execute(iCurrentRecord, result, ctx);
+      result = next.execute(iCurrentRecord, result, context);
     }
     return result;
   }
 
-  private Object filterByCondition(Object iResult, CommandContext ctx) {
+  private Object filterByCondition(Object iResult, final CommandContext context) {
     if (iResult == null) {
       return null;
     }
-    List<Object> result = new ArrayList<Object>();
+    final List<Object> result = new ArrayList<Object>();
     if (iResult.getClass().isArray()) {
       for (int i = 0; i < Array.getLength(iResult); i++) {
-        Object item = Array.get(iResult, i);
-        if (condition.evaluate(item, ctx)) {
+        final Object item = Array.get(iResult, i);
+        if (condition.evaluate(item, context)) {
           result.add(item);
         }
       }
@@ -139,8 +133,8 @@ public class Modifier extends SimpleNode {
     }
     if (iResult instanceof Iterator) {
       while (((Iterator) iResult).hasNext()) {
-        Object item = ((Iterator) iResult).next();
-        if (condition.evaluate(item, ctx)) {
+        final Object item = ((Iterator) iResult).next();
+        if (condition.evaluate(item, context)) {
           result.add(item);
         }
       }
@@ -148,33 +142,8 @@ public class Modifier extends SimpleNode {
     return result;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
-    if (condition != null && condition.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (arraySingleValues != null && arraySingleValues.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (arrayRange != null && arrayRange.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (rightBinaryCondition != null && rightBinaryCondition.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (methodCall != null && methodCall.needsAliases(aliases)) {
-      return true;
-    }
-
-    return next != null && next.needsAliases(aliases);
-
-  }
-
   public Modifier copy() {
-    Modifier result = new Modifier(-1);
+    final Modifier result = new Modifier(-1);
     result.squareBrackets = squareBrackets;
     result.arrayRange = arrayRange == null ? null : arrayRange.copy();
     result.condition = condition == null ? null : condition.copy();
@@ -188,45 +157,11 @@ public class Modifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final Modifier oModifier = (Modifier) o;
-
-    if (squareBrackets != oModifier.squareBrackets)
-      return false;
-    if (!Objects.equals(arrayRange, oModifier.arrayRange))
-      return false;
-    if (!Objects.equals(condition, oModifier.condition))
-      return false;
-    if (!Objects.equals(arraySingleValues, oModifier.arraySingleValues))
-      return false;
-    if (!Objects.equals(rightBinaryCondition, oModifier.rightBinaryCondition))
-      return false;
-    if (!Objects.equals(methodCall, oModifier.methodCall))
-      return false;
-    if (!Objects.equals(suffix, oModifier.suffix))
-      return false;
-    return Objects.equals(next, oModifier.next);
+  protected Object[] getIdentityElements() {
+    return new Object[] { squareBrackets, arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix, next };
   }
 
-  @Override
-  public int hashCode() {
-    int result = (squareBrackets ? 1 : 0);
-    result = 31 * result + (arrayRange != null ? arrayRange.hashCode() : 0);
-    result = 31 * result + (condition != null ? condition.hashCode() : 0);
-    result = 31 * result + (arraySingleValues != null ? arraySingleValues.hashCode() : 0);
-    result = 31 * result + (rightBinaryCondition != null ? rightBinaryCondition.hashCode() : 0);
-    result = 31 * result + (methodCall != null ? methodCall.hashCode() : 0);
-    result = 31 * result + (suffix != null ? suffix.hashCode() : 0);
-    result = 31 * result + (next != null ? next.hashCode() : 0);
-    return result;
-  }
-
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (arrayRange != null) {
       arrayRange.extractSubQueries(collector);
     }
@@ -248,75 +183,59 @@ public class Modifier extends SimpleNode {
     if (next != null) {
       next.extractSubQueries(collector);
     }
-
   }
 
-  public boolean refersToParent() {
-    if (arrayRange != null && arrayRange.refersToParent()) {
-      return true;
-    }
-    if (condition != null && condition.refersToParent()) {
-      return true;
-    }
-
-    if (arraySingleValues != null && arraySingleValues.refersToParent()) {
-      return true;
-    }
-    if (rightBinaryCondition != null && rightBinaryCondition.refersToParent()) {
-      return true;
-    }
-    if (methodCall != null && methodCall.refersToParent()) {
-      return true;
-    }
-    return suffix != null && suffix.refersToParent();
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix };
   }
 
-  protected void setValue(Result currentRecord, Object target, Object value, CommandContext ctx) {
+  protected void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {
     if (next == null) {
-      doSetValue(currentRecord, target, value, ctx);
+      doSetValue(currentRecord, target, value, context);
     } else {
-      Object newTarget = calculateLocal(currentRecord, target, ctx);
+      final Object newTarget = calculateLocal(currentRecord, target, context);
       if (newTarget != null) {
-        next.setValue(currentRecord, newTarget, value, ctx);
+        next.setValue(currentRecord, newTarget, value, context);
       }
     }
   }
 
-  private void doSetValue(Result currentRecord, Object target, Object value, CommandContext ctx) {
+  private void doSetValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {
     if (methodCall != null) {
       //do nothing
     } else if (suffix != null) {
-      suffix.setValue(target, value, ctx);
+      suffix.setValue(target, value, context);
     } else if (arrayRange != null) {
-      arrayRange.setValue(target, value, ctx);
+      arrayRange.setValue(target, value, context);
     } else if (condition != null) {
       //TODO
       throw new UnsupportedOperationException("SET value on conditional filtering will be supported soon");
     } else if (arraySingleValues != null) {
-      arraySingleValues.setValue(currentRecord, target, value, ctx);
+      arraySingleValues.setValue(currentRecord, target, value, context);
     } else if (rightBinaryCondition != null) {
       throw new UnsupportedOperationException("SET value on conditional filtering will be supported soon");
     }
   }
 
-  private Object calculateLocal(Result currentRecord, Object target, CommandContext ctx) {
+  private Object calculateLocal(final Result currentRecord, final Object target, final CommandContext context) {
     if (methodCall != null) {
-      return methodCall.execute(target, ctx);
+      return methodCall.execute(target, context);
     } else if (suffix != null) {
-      return suffix.execute(target, ctx);
+      return suffix.execute(target, context);
     } else if (arrayRange != null) {
-      return arrayRange.execute(currentRecord, target, ctx);
+      return arrayRange.execute(currentRecord, target, context);
     } else if (condition != null) {
       if (target instanceof Result || target instanceof Identifiable || target instanceof Map) {
-        if (condition.evaluate(target, ctx)) {
+        if (condition.evaluate(target, context)) {
           return target;
         } else {
           return null;
         }
       } else if (MultiValue.isMultiValue(target)) {
-        List<Object> result = new ArrayList<>();
-        for (Object o : MultiValue.getMultiValueIterable(target)) {
-          if (condition.evaluate(target, ctx)) {
+        final List<Object> result = new ArrayList<>();
+        for (final Object o : MultiValue.getMultiValueIterable(target)) {
+          if (condition.evaluate(target, context)) {
             result.add(o);
           }
         }
@@ -325,113 +244,33 @@ public class Modifier extends SimpleNode {
         return null;
       }
     } else if (arraySingleValues != null) {
-      return arraySingleValues.execute(currentRecord, target, ctx);
+      return arraySingleValues.execute(currentRecord, target, context);
     } else if (rightBinaryCondition != null) {
-      return rightBinaryCondition.execute(currentRecord, target, ctx);
+      return rightBinaryCondition.execute(currentRecord, target, context);
     }
     return null;
-
   }
 
-  public void applyRemove(Object currentValue, ResultInternal originalRecord, CommandContext ctx) {
+  public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext context) {
     if (next != null) {
-      Object val = calculateLocal(originalRecord, currentValue, ctx);
-      next.applyRemove(val, originalRecord, ctx);
+      final Object val = calculateLocal(originalRecord, currentValue, context);
+      next.applyRemove(val, originalRecord, context);
     } else {
       if (arrayRange != null) {
-        arrayRange.applyRemove(currentValue, originalRecord, ctx);
+        arrayRange.applyRemove(currentValue, originalRecord, context);
       } else if (condition != null) {
 //TODO
         throw new UnsupportedOperationException("Remove on conditional filtering will be supported soon");
       } else if (arraySingleValues != null) {
-        arraySingleValues.applyRemove(currentValue, originalRecord, ctx);
+        arraySingleValues.applyRemove(currentValue, originalRecord, context);
       } else if (rightBinaryCondition != null) {
         throw new UnsupportedOperationException("Remove on conditional filtering will be supported soon");
       } else if (suffix != null) {
-        suffix.applyRemove(currentValue, ctx);
+        suffix.applyRemove(currentValue, context);
       } else {
         throw new CommandExecutionException("cannot apply REMOVE " + this);
       }
     }
-
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("squareBrackets", squareBrackets);
-    if (arrayRange != null) {
-      result.setProperty("arrayRange", arrayRange.serialize());
-    }
-    if (condition != null) {
-      result.setProperty("condition", condition.serialize());
-    }
-    if (arraySingleValues != null) {
-      result.setProperty("arraySingleValues", arraySingleValues.serialize());
-    }
-    if (rightBinaryCondition != null) {
-      result.setProperty("rightBinaryCondition", rightBinaryCondition.serialize());
-    }
-    if (methodCall != null) {
-      result.setProperty("methodCall", methodCall.serialize());
-    }
-    if (suffix != null) {
-      result.setProperty("suffix", suffix.serialize());
-    }
-    if (next != null) {
-      result.setProperty("next", next.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    squareBrackets = fromResult.getProperty("squareBrackets");
-
-    if (fromResult.getProperty("arrayRange") != null) {
-      arrayRange = new ArrayRangeSelector(-1);
-      arrayRange.deserialize(fromResult.getProperty("arrayRange"));
-    }
-    if (fromResult.getProperty("condition") != null) {
-      condition = new OrBlock(-1);
-      condition.deserialize(fromResult.getProperty("condition"));
-    }
-    if (fromResult.getProperty("arraySingleValues") != null) {
-      arraySingleValues = new ArraySingleValuesSelector(-1);
-      arraySingleValues.deserialize(fromResult.getProperty("arraySingleValues"));
-    }
-    if (fromResult.getProperty("rightBinaryCondition") != null) {
-      rightBinaryCondition = new RightBinaryCondition(-1);
-      rightBinaryCondition.deserialize(fromResult.getProperty("arraySingleValues"));
-    }
-    if (fromResult.getProperty("methodCall") != null) {
-      methodCall = new MethodCall(-1);
-      methodCall.deserialize(fromResult.getProperty("methodCall"));
-    }
-    if (fromResult.getProperty("suffix") != null) {
-      suffix = new SuffixIdentifier(-1);
-      suffix.deserialize(fromResult.getProperty("suffix"));
-    }
-
-    if (fromResult.getProperty("next") != null) {
-      next = new Modifier(-1);
-      next.deserialize(fromResult.getProperty("next"));
-    }
-  }
-
-  public boolean isCacheable() {
-    if (arrayRange != null || arraySingleValues != null || rightBinaryCondition != null) {
-      return false;//TODO enhance a bit
-    }
-    if (condition != null && !condition.isCacheable()) {
-      return false;
-    }
-    if (methodCall != null && !methodCall.isCacheable()) {
-      return false;
-    }
-    if (suffix != null && !suffix.isCacheable()) {
-      return false;
-    }
-    return next == null || next.isCacheable();
-
   }
 }
 /* JavaCC - OriginalChecksum=39c21495d02f9b5007b4a2d6915496e1 (do not edit this line) */

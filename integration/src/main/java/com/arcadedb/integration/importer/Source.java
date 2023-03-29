@@ -46,7 +46,7 @@ public class Source {
     if (resetCallback != null)
       try {
         resetCallback.call(this);
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on resetting source %s", e, this);
       }
   }
@@ -54,7 +54,7 @@ public class Source {
   public void close() {
     try {
       closeCallback.call();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing source %s", e, this);
     }
   }

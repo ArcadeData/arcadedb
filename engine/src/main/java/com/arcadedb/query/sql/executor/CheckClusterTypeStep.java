@@ -32,66 +32,56 @@ import com.arcadedb.schema.DocumentType;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CheckClusterTypeStep extends AbstractExecutionStep {
-  final   Bucket bucket;
-  final   String bucketName;
-  final   String targetType;
-  private long   cost = 0;
+  final Bucket bucket;
+  final String bucketName;
+  final String targetType;
   boolean found = false;
 
-  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.bucketName = targetBucketName;
     this.bucket = null;
     this.targetType = typez;
   }
 
-  public CheckClusterTypeStep(final Bucket targetBucket, final String typez, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
-    this.bucketName = null;
-    this.bucket = targetBucket;
-    this.targetType = typez;
-  }
-
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
-      if (found) {
+      if (found)
         return new InternalResultSet();
-      }
-      final Database db = ctx.getDatabase();
-      com.arcadedb.engine.Bucket bucketObj;
-      if (bucketName != null) {
+
+      final Database db = context.getDatabase();
+      final com.arcadedb.engine.Bucket bucketObj;
+
+      if (bucketName != null)
         bucketObj = db.getSchema().getBucketByName(bucketName);
-      } else if (bucket.getBucketName() != null) {
+      else if (bucket.getBucketName() != null)
         bucketObj = db.getSchema().getBucketByName(bucket.getBucketName());
-      } else {
+      else
         bucketObj = db.getSchema().getBucketById(bucket.getBucketNumber());
-      }
-      if (bucketObj == null) {
+
+      if (bucketObj == null)
         throw new CommandExecutionException("Bucket not found: " + bucketName);
-      }
 
       final DocumentType typez = db.getSchema().getType(targetType);
-      if (typez == null) {
+      if (typez == null)
         throw new CommandExecutionException("Type not found: " + targetType);
-      }
 
-      for (com.arcadedb.engine.Bucket bucket : typez.getBuckets(true)) {
-        if (bucket.getId() == bucketObj.getId()) {
+      for (final Integer bucketId : typez.getBucketIds(true)) {
+        if (bucketId == bucketObj.getId()) {
           found = true;
           break;
         }
       }
-      if (!found) {
+      if (!found)
         throw new CommandExecutionException("Bucket " + bucketObj.getId() + " does not belong to the type " + targetType);
-      }
+
       return new InternalResultSet();
     } finally {
-      if (profilingEnabled) {
+      if (profilingEnabled)
         cost += (System.nanoTime() - begin);
-      }
     }
   }
 
@@ -101,17 +91,12 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK TARGET BUCKET FOR USERTYPE");
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result.append(" (").append(getCostFormatted()).append(")");
-    }
+
     result.append("\n");
     result.append(spaces);
     result.append("  ").append(this.targetType);
     return result.toString();
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
   }
 }

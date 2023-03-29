@@ -38,18 +38,13 @@ public class LeaderNetworkListener extends Thread {
   private final static int                 protocolVersion = -1;
   private final        String              hostName;
   private              int                 port;
-  private              ClientConnected     callback;
-
-  public interface ClientConnected {
-    void connected();
-  }
 
   public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
     super(ha.getServerName() + " replication listen at " + iHostName + ":" + iHostPortRange);
 
     this.ha = ha;
     this.hostName = iHostName;
-    this.socketFactory = iSocketFactory == null ? ServerSocketFactory.getDefault() : iSocketFactory;
+    this.socketFactory = iSocketFactory;
 
     listen(iHostName, iHostPortRange);
 
@@ -69,16 +64,18 @@ public class LeaderNetworkListener extends Thread {
           socket.setPerformancePreferences(0, 2, 1);
           handleConnection(socket);
 
-        } catch (Exception e) {
-          if (active)
-            LogManager.instance().log(this, Level.WARNING, "Error on connection from another server (error=%s)", e.getMessage());
+        } catch (final Exception e) {
+          if (active) {
+            final String message = e.getMessage() != null ? e.getMessage() : e.toString();
+            LogManager.instance().log(this, Level.FINE, "Error on connection from another server (error=%s)", message);
+          }
         }
       }
     } finally {
       try {
         if (serverSocket != null && !serverSocket.isClosed())
           serverSocket.close();
-      } catch (IOException ioe) {
+      } catch (final IOException ioe) {
         // IGNORE EXCEPTION FROM CLOSE
       }
     }
@@ -98,13 +95,9 @@ public class LeaderNetworkListener extends Thread {
     if (serverSocket != null)
       try {
         serverSocket.close();
-      } catch (IOException e) {
+      } catch (final IOException e) {
         // IGNORE IT
       }
-  }
-
-  public void setCallback(final ClientConnected callback) {
-    this.callback = callback;
   }
 
   @Override
@@ -117,7 +110,7 @@ public class LeaderNetworkListener extends Thread {
    */
   private void listen(final String hostName, final String hostPortRange) {
 
-    for (int tryPort : getPorts(hostPortRange)) {
+    for (final int tryPort : getPorts(hostPortRange)) {
       final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {
         serverSocket = socketFactory.createServerSocket(tryPort, 0, InetAddress.getByName(hostName));
@@ -134,12 +127,12 @@ public class LeaderNetworkListener extends Thread {
 
           return;
         }
-      } catch (BindException be) {
+      } catch (final BindException be) {
         LogManager.instance().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
-      } catch (SocketException se) {
+      } catch (final SocketException se) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
         throw new ArcadeDBException(se);
-      } catch (IOException ioe) {
+      } catch (final IOException ioe) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
         throw new ArcadeDBException(ioe);
       }
@@ -154,17 +147,23 @@ public class LeaderNetworkListener extends Thread {
   private void handleConnection(final Socket socket) throws IOException {
     final ChannelBinaryServer channel = new ChannelBinaryServer(socket, ha.getServer().getConfiguration());
 
-    final long mn = channel.readLong();
+    long mn = 0;
+    try {
+      mn = channel.readLong();
+    } catch (EOFException e) {
+      // IGNORE IT, TREAT IT AS BAD PROTOCOL
+    }
+
     if (mn != ReplicationProtocol.MAGIC_NUMBER) {
       // INVALID PROTOCOL, WAIT (TO AVOID SPOOFING) AND CLOSE THE SOCKET
       try {
         Thread.sleep(500);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         // IGNORE IT
       }
       socket.close();
-      throw new ConnectionException(socket.getInetAddress().toString(), "Bad protocol");
+      throw new ConnectionException(socket.getInetAddress().toString(), "Bad replication protocol. The connected server is not an ArcadeDB Server");
     }
 
     readProtocolVersion(socket, channel);
@@ -194,7 +193,7 @@ public class LeaderNetworkListener extends Thread {
     }
   }
 
-  private void electionComplete(ChannelBinaryServer channel, String remoteServerName, String remoteServerAddress) throws IOException {
+  private void electionComplete(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress) throws IOException {
     final long voteTurn = channel.readLong();
 
     ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
@@ -202,7 +201,7 @@ public class LeaderNetworkListener extends Thread {
 
     LogManager.instance().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
 
-    if (ha.connectToLeader(remoteServerAddress))
+    if (ha.connectToLeader(remoteServerAddress, null))
       // ELECTION FINISHED, THE SERVER IS A REPLICA
       ha.setElectionStatus(HAServer.ELECTION_STATUS.DONE);
     else
@@ -210,7 +209,7 @@ public class LeaderNetworkListener extends Thread {
       ha.startElection();
   }
 
-  private void voteForMe(ChannelBinaryServer channel, String remoteServerName) throws IOException {
+  private void voteForMe(final ChannelBinaryServer channel, final String remoteServerName) throws IOException {
     final long voteTurn = channel.readLong();
     final long lastReplicationMessage = channel.readLong();
 
@@ -247,7 +246,8 @@ public class LeaderNetworkListener extends Thread {
     channel.flush();
   }
 
-  private void connect(ChannelBinaryServer channel, String remoteServerName, String remoteServerAddress, String remoteServerHTTPAddress) throws IOException {
+  private void connect(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress, final String remoteServerHTTPAddress)
+      throws IOException {
     if (remoteServerName.equals(ha.getServerName())) {
       channel.writeBoolean(false);
       channel.writeByte(ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME);
@@ -263,12 +263,9 @@ public class LeaderNetworkListener extends Thread {
     ha.registerIncomingConnection(connection.getRemoteServerName(), connection);
 
     connection.start();
-
-    if (callback != null)
-      callback.connected();
   }
 
-  private void readClusterName(Socket socket, ChannelBinaryServer channel) throws IOException {
+  private void readClusterName(final Socket socket, final ChannelBinaryServer channel) throws IOException {
     final String remoteClusterName = channel.readString();
     if (!remoteClusterName.equals(ha.getClusterName())) {
       channel.writeBoolean(false);
@@ -279,7 +276,7 @@ public class LeaderNetworkListener extends Thread {
     }
   }
 
-  private void readProtocolVersion(Socket socket, ChannelBinaryServer channel) throws IOException {
+  private void readProtocolVersion(final Socket socket, final ChannelBinaryServer channel) throws IOException {
     final short remoteProtocolVersion = channel.readShort();
     if (remoteProtocolVersion != ReplicationProtocol.PROTOCOL_VERSION) {
       channel.writeBoolean(false);
@@ -292,20 +289,20 @@ public class LeaderNetworkListener extends Thread {
   }
 
   private static int[] getPorts(final String iHostPortRange) {
-    int[] ports;
+    final int[] ports;
 
     if (iHostPortRange.contains(",")) {
       // MULTIPLE ENUMERATED PORTS
-      String[] portValues = iHostPortRange.split(",");
+      final String[] portValues = iHostPortRange.split(",");
       ports = new int[portValues.length];
       for (int i = 0; i < portValues.length; ++i)
         ports[i] = Integer.parseInt(portValues[i]);
 
     } else if (iHostPortRange.contains("-")) {
       // MULTIPLE RANGE PORTS
-      String[] limits = iHostPortRange.split("-");
-      int lowerLimit = Integer.parseInt(limits[0]);
-      int upperLimit = Integer.parseInt(limits[1]);
+      final String[] limits = iHostPortRange.split("-");
+      final int lowerLimit = Integer.parseInt(limits[0]);
+      final int upperLimit = Integer.parseInt(limits[1]);
       ports = new int[upperLimit - lowerLimit + 1];
       for (int i = 0; i < upperLimit - lowerLimit + 1; ++i)
         ports[i] = lowerLimit + i;

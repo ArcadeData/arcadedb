@@ -34,11 +34,11 @@ public class SQLFunctionFormat extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, Object iCurrentResult,
-      final Object[] params, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] params,
+      final CommandContext iContext) {
     final Object[] args = new Object[params.length - 1];
 
-      System.arraycopy(params, 1, args, 0, args.length);
+    System.arraycopy(params, 1, args, 0, args.length);
 
     return String.format((String) params[0], args);
   }

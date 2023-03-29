@@ -30,26 +30,22 @@ import java.util.*;
  * Created by luigidellaquila on 08/07/16.
  */
 public class DistinctExecutionStep extends AbstractExecutionStep {
-
   final Set<Result> pastItems = new HashSet<>();
   final RidSet      pastRids  = new RidSet();
-
   ResultSet lastResult = null;
   Result    nextValue;
-
-  private       long cost = 0;
   private final long maxElementsAllowed;
 
-  public DistinctExecutionStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
-    Database db = ctx == null ? null : ctx.getDatabase();
+  public DistinctExecutionStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
+    final Database db = context == null ? null : context.getDatabase();
     maxElementsAllowed = db == null ?
         GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
         db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
 
     return new ResultSet() {
       int nextLocal = 0;
@@ -69,49 +65,35 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (nextLocal >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextValue == null) {
           fetchNext(nRecords);
         }
         if (nextValue == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        Result result1 = nextValue;
+        final Result result1 = nextValue;
         nextValue = null;
         nextLocal++;
         return result1;
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private void fetchNext(int nRecords) {
+  private void fetchNext(final int nRecords) {
     while (true) {
       if (nextValue != null) {
         return;
       }
       if (lastResult == null || !lastResult.hasNext()) {
-        lastResult = getPrev().get().syncPull(ctx, nRecords);
+        lastResult = getPrev().syncPull(context, nRecords);
       }
       if (lastResult == null || !lastResult.hasNext()) {
         return;
       }
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         nextValue = lastResult.next();
         if (alreadyVisited(nextValue)) {
@@ -127,11 +109,11 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     }
   }
 
-  private void markAsVisited(Result nextValue) {
+  private void markAsVisited(final Result nextValue) {
     if (nextValue.isElement()) {
-      RID identity = nextValue.getElement().get().getIdentity();
-      int bucket = identity.getBucketId();
-      long pos = identity.getPosition();
+      final RID identity = nextValue.getElement().get().getIdentity();
+      final int bucket = identity.getBucketId();
+      final long pos = identity.getPosition();
       if (bucket >= 0 && pos >= 0) {
         pastRids.add(identity);
         return;
@@ -146,11 +128,11 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     }
   }
 
-  private boolean alreadyVisited(Result nextValue) {
+  private boolean alreadyVisited(final Result nextValue) {
     if (nextValue.isElement()) {
-      RID identity = nextValue.getElement().get().getIdentity();
-      int bucket = identity.getBucketId();
-      long pos = identity.getPosition();
+      final RID identity = nextValue.getElement().get().getIdentity();
+      final int bucket = identity.getBucketId();
+      final long pos = identity.getPosition();
       if (bucket >= 0 && pos >= 0) {
         return pastRids.contains(identity);
       }
@@ -160,16 +142,17 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void sendTimeout() {
-
+    // DO NOT PROPAGATE TIMEOUT
   }
 
   @Override
   public void close() {
-    prev.ifPresent(x -> x.close());
+    if (prev != null)
+      prev.close();
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ DISTINCT";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -177,8 +160,4 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

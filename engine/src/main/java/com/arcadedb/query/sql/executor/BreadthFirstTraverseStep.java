@@ -31,26 +31,26 @@ import java.util.*;
  */
 public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
-  public BreadthFirstTraverseStep(List<TraverseProjectionItem> projections, WhereClause whileClause, PInteger maxDepth, CommandContext ctx,
-      boolean profilingEnabled) {
-    super(projections, whileClause, maxDepth, ctx, profilingEnabled);
+  public BreadthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
+      final CommandContext context, final boolean profilingEnabled) {
+    super(projections, whileClause, maxDepth, context, profilingEnabled);
   }
 
   @Override
-  protected void fetchNextEntryPoints(CommandContext ctx, int nRecords) {
-    ResultSet nextN = getPrev().get().syncPull(ctx, nRecords);
+  protected void fetchNextEntryPoints(final CommandContext context, final int nRecords) {
+    final ResultSet nextN = getPrev().syncPull(context, nRecords);
     while (nextN.hasNext()) {
-      Result item = toTraverseResult(nextN.next());
+      final Result item = toTraverseResult(nextN.next());
       if (item == null) {
         continue;
       }
       ((ResultInternal) item).setMetadata("$depth", 0);
 
-      List stack = new ArrayList();
+      final List stack = new ArrayList();
       item.getIdentity().ifPresent(x -> stack.add(x));
       ((ResultInternal) item).setMetadata("$stack", stack);
 
-      List<Identifiable> path = new ArrayList<>();
+      final List<Identifiable> path = new ArrayList<>();
       if (item.getIdentity().isPresent()) {
         path.add(item.getIdentity().get());
       } else if (item.getProperty("@rid") != null) {
@@ -59,16 +59,16 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       ((ResultInternal) item).setMetadata("$path", path);
 
       if (item.isElement() && !traversed.contains(item.getElement().get().getIdentity())) {
-        tryAddEntryPointAtTheEnd(item, ctx);
+        tryAddEntryPointAtTheEnd(item, context);
         traversed.add(item.getElement().get().getIdentity());
       } else if (item.getProperty("@rid") != null && item.getProperty("@rid") instanceof Identifiable) {
-        tryAddEntryPointAtTheEnd(item, ctx);
+        tryAddEntryPointAtTheEnd(item, context);
         traversed.add(((Identifiable) item.getProperty("@rid")).getIdentity());
       }
     }
   }
 
-  private Result toTraverseResult(Result item) {
+  private Result toTraverseResult(final Result item) {
     TraverseResult res = null;
     if (item instanceof TraverseResult) {
       res = (TraverseResult) item;
@@ -77,7 +77,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       res.setElement(item.getElement().get());
       res.depth = 0;
     } else if (item.getPropertyNames().size() == 1) {
-      Object val = item.getProperty(item.getPropertyNames().iterator().next());
+      final Object val = item.getProperty(item.getPropertyNames().iterator().next());
       if (val instanceof Document) {
         res = new TraverseResult();
         res.setElement((Document) val);
@@ -86,10 +86,10 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       }
     } else {
       res = new TraverseResult();
-      for (String key : item.getPropertyNames()) {
+      for (final String key : item.getPropertyNames()) {
         res.setProperty(key, item.getProperty(key));
       }
-      for (String md : item.getMetadataKeys()) {
+      for (final String md : item.getMetadataKeys()) {
         res.setMetadata(md, item.getMetadata(md));
       }
     }
@@ -98,52 +98,55 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   }
 
   @Override
-  protected void fetchNextResults(CommandContext ctx, int nRecords) {
+  protected void fetchNextResults(final CommandContext context, final int nRecords) {
     if (!this.entryPoints.isEmpty()) {
-      TraverseResult item = (TraverseResult) this.entryPoints.remove(0);
+      final TraverseResult item = (TraverseResult) this.entryPoints.remove(0);
       this.results.add(item);
-      for (TraverseProjectionItem proj : projections) {
-        Object nextStep = proj.execute(item, ctx);
-        Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
+      for (final TraverseProjectionItem proj : projections) {
+        final Object nextStep = proj.execute(item, context);
+        final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
         if (this.maxDepth == null || this.maxDepth.getValue().intValue() > depth) {
-          addNextEntryPoints(nextStep, depth + 1, (List) item.getMetadata("$path"), (List) item.getMetadata("$stack"), ctx);
+          addNextEntryPoints(nextStep, depth + 1, (List) item.getMetadata("$path"), (List) item.getMetadata("$stack"), context);
         }
       }
     }
   }
 
-  private void addNextEntryPoints(Object nextStep, int depth, List<Identifiable> path, List<Identifiable> stack, CommandContext ctx) {
+  private void addNextEntryPoints(final Object nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
+      final CommandContext context) {
     if (nextStep instanceof Identifiable) {
-      addNextEntryPoint(((Identifiable) nextStep), depth, path, stack, ctx);
+      addNextEntryPoint(((Identifiable) nextStep), depth, path, stack, context);
     } else if (nextStep instanceof Iterable) {
-      addNextEntryPoints(((Iterable) nextStep).iterator(), depth, path, stack, ctx);
+      addNextEntryPoints(((Iterable) nextStep).iterator(), depth, path, stack, context);
     } else if (nextStep instanceof Map) {
-      addNextEntryPoints(((Map) nextStep).values().iterator(), depth, path, stack, ctx);
+      addNextEntryPoints(((Map) nextStep).values().iterator(), depth, path, stack, context);
     } else if (nextStep instanceof Result) {
-      addNextEntryPoint(((Result) nextStep), depth, path, stack, ctx);
+      addNextEntryPoint(((Result) nextStep), depth, path, stack, context);
     }
   }
 
-  private void addNextEntryPoints(Iterator nextStep, int depth, List<Identifiable> path, List<Identifiable> stack, CommandContext ctx) {
+  private void addNextEntryPoints(final Iterator nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
+      final CommandContext context) {
     while (nextStep.hasNext()) {
-      addNextEntryPoints(nextStep.next(), depth, path, stack, ctx);
+      addNextEntryPoints(nextStep.next(), depth, path, stack, context);
     }
   }
 
-  private void addNextEntryPoint(Identifiable nextStep, int depth, List<Identifiable> path, List<Identifiable> stack, CommandContext ctx) {
+  private void addNextEntryPoint(final Identifiable nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
+      final CommandContext context) {
     if (this.traversed.contains(nextStep.getIdentity())) {
       return;
     }
-    TraverseResult res = new TraverseResult();
+    final TraverseResult res = new TraverseResult();
     res.setElement((Document) nextStep.getRecord());
     res.depth = depth;
     res.setMetadata("$depth", depth);
 
-    List<Identifiable> newPath = new ArrayList<>(path);
+    final List<Identifiable> newPath = new ArrayList<>(path);
     newPath.add(res.getIdentity().get());
     res.setMetadata("$path", newPath);
 
-    List newStack = new ArrayList();
+    final List newStack = new ArrayList();
     newStack.add(res.getIdentity().get());
     newStack.addAll(stack);
     //    for (int i = 0; i < newPath.size(); i++) {
@@ -151,11 +154,11 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     //    }
     res.setMetadata("$stack", newStack);
 
-    tryAddEntryPoint(res, ctx);
+    tryAddEntryPoint(res, context);
   }
 
   private void addNextEntryPoint(final Result nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
-      final CommandContext ctx) {
+      final CommandContext context) {
     if (!nextStep.isElement())
       return;
 
@@ -174,26 +177,26 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       final List newStack = new ArrayList(reverseStack);
       ((TraverseResult) nextStep).setMetadata("$stack", newStack);
 
-      tryAddEntryPoint(nextStep, ctx);
+      tryAddEntryPoint(nextStep, context);
     } else {
       final TraverseResult res = new TraverseResult();
       res.setElement(nextStep.getElement().get());
       res.depth = depth;
       res.setMetadata("$depth", depth);
-      List<Identifiable> newPath = new ArrayList<>(path);
+      final List<Identifiable> newPath = new ArrayList<>(path);
       nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
       res.setMetadata("$path", newPath);
 
-      List reverseStack = new ArrayList(newPath);
+      final List reverseStack = new ArrayList(newPath);
       Collections.reverse(reverseStack);
-      List newStack = new ArrayList(reverseStack);
+      final List newStack = new ArrayList(reverseStack);
       res.setMetadata("$stack", newStack);
-      tryAddEntryPoint(res, ctx);
+      tryAddEntryPoint(res, context);
     }
   }
 
-  private void tryAddEntryPoint(Result res, CommandContext ctx) {
-    if (whileClause == null || whileClause.matchesFilters(res, ctx)) {
+  private void tryAddEntryPoint(final Result res, final CommandContext context) {
+    if (whileClause == null || whileClause.matchesFilters(res, context)) {
       this.entryPoints.add(0, res);
     }
 
@@ -204,8 +207,8 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     }
   }
 
-  private void tryAddEntryPointAtTheEnd(Result res, CommandContext ctx) {
-    if (whileClause == null || whileClause.matchesFilters(res, ctx)) {
+  private void tryAddEntryPointAtTheEnd(final Result res, final CommandContext context) {
+    if (whileClause == null || whileClause.matchesFilters(res, context)) {
       this.entryPoints.add(res);
     }
 
@@ -217,9 +220,9 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ DEPTH-FIRST TRAVERSE \n");
     result.append(spaces);

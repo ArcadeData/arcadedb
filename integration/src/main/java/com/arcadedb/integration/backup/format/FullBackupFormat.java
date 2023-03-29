@@ -65,23 +65,23 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     logger.logLine(0, "Executing full backup of database to '%s'...", settings.file);
 
-    try (ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
+    try (final ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
       zipFile.setLevel(9);
 
       // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
       database.executeInReadLock(() -> {
-        // AVOID FLUSHING OF DATA PAGES TO DISK
-        database.getPageManager().suspendPageFlushing(true);
-        try {
+        // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
+        database.getPageManager().suspendFlushAndExecute(() -> {
+
           final long beginTime = System.currentTimeMillis();
 
           long databaseOrigSize = 0L;
-          databaseOrigSize += compressFile(zipFile, ((EmbeddedDatabase) database).getConfigurationFile());
+          databaseOrigSize += compressFile(zipFile, ((EmbeddedDatabase) database.getEmbedded()).getConfigurationFile());
           databaseOrigSize += compressFile(zipFile, ((EmbeddedSchema) database.getSchema()).getConfigurationFile());
 
           final Collection<PaginatedFile> files = database.getFileManager().getFiles();
 
-          for (PaginatedFile paginatedFile : files)
+          for (final PaginatedFile paginatedFile : files)
             if (paginatedFile != null)
               databaseOrigSize += compressFile(zipFile, paginatedFile.getOSFile());
 
@@ -94,10 +94,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
           logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs, FileUtils.getSizeAsString(databaseOrigSize),
               FileUtils.getSizeAsString((databaseCompressedSize)),
               databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
-
-        } finally {
-          database.getPageManager().suspendPageFlushing(false);
-        }
+        });
         return null;
       });
     }

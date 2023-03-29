@@ -34,28 +34,28 @@ public class SelectStatementExecutionTestIT extends TestHelper {
 
     @Test
     public void stressTest() {
-        String className = "stressTestNew";
+        final String className = "stressTestNew";
         database.getSchema().createDocumentType(className);
         for (int i = 0; i < 1000000; i++) {
-            MutableDocument doc = database.newDocument(className);
+            final MutableDocument doc = database.newDocument(className);
             doc.set("name", "name" + i);
             doc.set("surname", "surname" + i);
             doc.save();
         }
 
         for (int run = 0; run < 5; run++) {
-            long begin = System.nanoTime();
-            ResultSet result = database.query("sql", "select name from " + className + " where name <> 'name1' ");
+            final long begin = System.nanoTime();
+            final ResultSet result = database.query("sql", "select name from " + className + " where name <> 'name1' ");
             for (int i = 0; i < 999999; i++) {
                 //        Assertions.assertTrue(result.hasNext());
-                Result item = result.next();
+                final Result item = result.next();
                 //        Assertions.assertNotNull(item);
-                Object name = item.getProperty("name");
+                final Object name = item.getProperty("name");
                 Assertions.assertFalse("name1".equals(name));
             }
             Assertions.assertFalse(result.hasNext());
             result.close();
-            long end = System.nanoTime();
+            final long end = System.nanoTime();
         }
     }
 

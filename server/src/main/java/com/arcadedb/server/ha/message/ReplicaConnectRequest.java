@@ -44,16 +44,16 @@ public class ReplicaConnectRequest extends HAAbstractCommand {
     }
 
     // IN ANY OTHER CASE EXECUTE FULL SYNC
-    return new ReplicaConnectFullResyncResponse(server.getReplicationLogFile().getLastMessageNumber(), server.getServer().getDatabaseNames());
+    return new ReplicaConnectFullResyncResponse(server.getServer().getDatabaseNames());
   }
 
   @Override
-  public void toStream(Binary stream) {
+  public void toStream(final Binary stream) {
     stream.putLong(lastReplicationMessageNumber);
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     lastReplicationMessageNumber = stream.getLong();
   }
 

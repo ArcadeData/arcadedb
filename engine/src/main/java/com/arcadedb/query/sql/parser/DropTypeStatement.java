@@ -39,23 +39,19 @@ public class DropTypeStatement extends DDLStatement {
   public boolean        ifExists = false;
   public boolean        unsafe   = false;
 
-  public DropTypeStatement(int id) {
+  public DropTypeStatement(final int id) {
     super(id);
   }
 
-  public DropTypeStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-    final Schema schema = ctx.getDatabase().getSchema();
+  public ResultSet executeDDL(final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
 
-    String typeName;
+    final String typeName;
     if (name != null) {
       typeName = name.getStringValue();
     } else {
-      typeName = String.valueOf(nameParam.getValue(ctx.getInputParameters()));
+      typeName = String.valueOf(nameParam.getValue(context.getInputParameters()));
     }
 
     if (ifExists && !schema.existsType(typeName))
@@ -66,7 +62,7 @@ public class DropTypeStatement extends DDLStatement {
       throw new CommandExecutionException("Type '" + typeName + "' does not exist");
     }
 
-    if (!unsafe && ctx.getDatabase().countType(typez.getName(), false) > 0) {
+    if (!unsafe && context.getDatabase().countType(typez.getName(), false) > 0) {
       //check vertex or edge
       if (typez.getType() == Vertex.RECORD_TYPE) {
         throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName
@@ -89,7 +85,7 @@ public class DropTypeStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DROP TYPE ");
     if (name != null) {
       name.toString(params, builder);
@@ -106,7 +102,7 @@ public class DropTypeStatement extends DDLStatement {
 
   @Override
   public DropTypeStatement copy() {
-    DropTypeStatement result = new DropTypeStatement(-1);
+    final DropTypeStatement result = new DropTypeStatement(-1);
     result.name = name == null ? null : name.copy();
     result.nameParam = nameParam == null ? null : nameParam.copy();
     result.ifExists = ifExists;
@@ -115,24 +111,8 @@ public class DropTypeStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final DropTypeStatement that = (DropTypeStatement) o;
-
-    if (unsafe != that.unsafe)
-      return false;
-    if (ifExists != that.ifExists)
-      return false;
-    return ifExists == that.ifExists && unsafe == that.unsafe && Objects.equals(name, that.name) && Objects.equals(nameParam, that.nameParam);
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hash(name, nameParam, ifExists, unsafe);
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, nameParam, ifExists, unsafe };
   }
 }
 /* JavaCC - OriginalChecksum=8c475e1225074f68be37fce610987d54 (do not edit this line) */

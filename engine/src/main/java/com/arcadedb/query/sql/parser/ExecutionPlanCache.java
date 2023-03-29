@@ -32,7 +32,6 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ExecutionPlanCache {
-
   private final DatabaseInternal                   db;
   private final Map<String, InternalExecutionPlan> map;
   private final int                                mapSize;
@@ -73,18 +72,18 @@ public class ExecutionPlanCache {
    * returns an already prepared SQL execution plan, taking it from the cache if it exists or creating a new one if it doesn't
    *
    * @param statement the SQL statement
-   * @param ctx
+   * @param context
    *
    * @return a statement executor from the cache
    */
-  public ExecutionPlan get(final String statement, final CommandContext ctx) {
+  public ExecutionPlan get(final String statement, final CommandContext context) {
     InternalExecutionPlan result;
     synchronized (map) {
       //LRU
       result = map.remove(statement);
       if (result != null) {
         map.put(statement, result);
-        result = result.copy(ctx);
+        result = result.copy(context);
       }
     }
 
@@ -109,12 +108,10 @@ public class ExecutionPlanCache {
   }
 
   public static ExecutionPlanCache instance(final DatabaseInternal db) {
-    if (db == null) {
+    if (db == null)
       throw new IllegalArgumentException("DB cannot be null");
-    }
 
-    final ExecutionPlanCache resource = db.getExecutionPlanCache();
-    return resource;
+    return db.getExecutionPlanCache();
   }
 
 }

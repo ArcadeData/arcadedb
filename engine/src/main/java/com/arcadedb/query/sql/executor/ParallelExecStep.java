@@ -32,14 +32,15 @@ public class ParallelExecStep extends AbstractExecutionStep {
   int current = 0;
   private ResultSet currentResultSet = null;
 
-  public ParallelExecStep(List<InternalExecutionPlan> subExecutionPlans, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public ParallelExecStep(final List<InternalExecutionPlan> subExecutionPlans, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.subExecutionPlans = subExecutionPlans;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
     return new ResultSet() {
       int localCount = 0;
 
@@ -49,7 +50,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
           return false;
         }
         while (currentResultSet == null || !currentResultSet.hasNext()) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
           if (currentResultSet == null) {
             return false;
           }
@@ -60,36 +61,22 @@ public class ParallelExecStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (localCount >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         while (currentResultSet == null || !currentResultSet.hasNext()) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
           if (currentResultSet == null) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
         }
         localCount++;
         return currentResultSet.next();
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  void fetchNext(CommandContext ctx, int nRecords) {
+  void fetchNext(final CommandContext context, final int nRecords) {
     do {
       if (current >= subExecutionPlans.size()) {
         currentResultSet = null;
@@ -103,21 +90,21 @@ public class ParallelExecStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = "";
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
 
-    int[] blockSizes = new int[subExecutionPlans.size()];
+    final int[] blockSizes = new int[subExecutionPlans.size()];
 
     for (int i = 0; i < subExecutionPlans.size(); i++) {
-      InternalExecutionPlan currentPlan = subExecutionPlans.get(subExecutionPlans.size() - 1 - i);
-      String partial = currentPlan.prettyPrint(0, indent);
+      final InternalExecutionPlan currentPlan = subExecutionPlans.get(subExecutionPlans.size() - 1 - i);
+      final String partial = currentPlan.prettyPrint(0, indent);
 
-      String[] partials = partial.split("\n");
+      final String[] partials = partial.split("\n");
       blockSizes[subExecutionPlans.size() - 1 - i] = partials.length + 2;
       result = "+-------------------------\n" + result;
       for (int j = 0; j < partials.length; j++) {
-        String p = partials[partials.length - 1 - j];
+        final String p = partials[partials.length - 1 - j];
         if (result.length() > 0) {
           result = appendPipe(p) + "\n" + result;
         } else {
@@ -134,12 +121,12 @@ public class ParallelExecStep extends AbstractExecutionStep {
     return result;
   }
 
-  private String addArrows(String input, int[] blockSizes) {
+  private String addArrows(final String input, final int[] blockSizes) {
     String result = "";
-    String[] rows = input.split("\n");
+    final String[] rows = input.split("\n");
     int rowNum = 0;
     for (int block = 0; block < blockSizes.length; block++) {
-      int blockSize = blockSizes[block];
+      final int blockSize = blockSizes[block];
       for (int subRow = 0; subRow < blockSize; subRow++) {
         for (int col = 0; col < blockSizes.length * 3; col++) {
           if (isHorizontalRow(col, subRow, block, blockSize)) {
@@ -160,21 +147,21 @@ public class ParallelExecStep extends AbstractExecutionStep {
     return result;
   }
 
-  private boolean isHorizontalRow(int col, int subRow, int block, int blockSize) {
+  private boolean isHorizontalRow(final int col, final int subRow, final int block, final int blockSize) {
     if (col < block * 3 + 2) {
       return false;
     }
     return subRow == blockSize / 2;
   }
 
-  private boolean isPlus(int col, int subRow, int block, int blockSize) {
+  private boolean isPlus(final int col, final int subRow, final int block, final int blockSize) {
     if (col == block * 3 + 1) {
       return subRow == blockSize / 2;
     }
     return false;
   }
 
-  private boolean isVerticalRow(int col, int subRow, int block, int blockSize) {
+  private boolean isVerticalRow(final int col, final int subRow, final int block, final int blockSize) {
     if (col == block * 3 + 1) {
       return subRow > blockSize / 2;
     } else
@@ -182,12 +169,12 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
   }
 
-  private String head(int depth, int indent, int nItems) {
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+  private String head(final int depth, final int indent, final int nItems) {
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
     return ind + "+ PARALLEL";
   }
 
-  private String foot(int[] blockSizes) {
+  private String foot(final int[] blockSizes) {
     String result = "";
     for (int i = 0; i < blockSizes.length; i++) {
       result += " V ";//TODO
@@ -195,7 +182,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
     return result;
   }
 
-//  private String spaces(int num) {
+  //  private String spaces(int num) {
 //    StringBuilder result = new StringBuilder();
 //    for (int i = 0; i < num; i++) {
 //      result.append(" ");
@@ -203,7 +190,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
 //    return result.toString();
 //  }
 //
-  private String appendPipe(String p) {
+  private String appendPipe(final String p) {
     return "| " + p;
   }
 
@@ -213,7 +200,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
   @Override
   public boolean canBeCached() {
-    for (InternalExecutionPlan plan : subExecutionPlans) {
+    for (final InternalExecutionPlan plan : subExecutionPlans) {
       if (!plan.canBeCached()) {
         return false;
       }
@@ -222,8 +209,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(ctx)).collect(Collectors.toList()), ctx,
-        profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(context)).collect(Collectors.toList()), context, profilingEnabled);
   }
 }

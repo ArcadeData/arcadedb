@@ -20,8 +20,9 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,11 +45,11 @@ public class ServerSecurityIT {
     security.loadUsers();
 
     final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
-    File securityConf = securityConfPath.toFile();
+    final File securityConf = securityConfPath.toFile();
 
     Assertions.assertTrue(securityConf.exists());
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final List<JSONObject> jsonl = repository.load();
 
@@ -75,11 +76,11 @@ public class ServerSecurityIT {
     security.startService();
     security.loadUsers();
 
-    File securityConf = securityConfPath.toFile();
+    final File securityConf = securityConfPath.toFile();
 
     Assertions.assertTrue(securityConf.exists());
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final List<JSONObject> jsonl = repository.load();
 
@@ -92,7 +93,7 @@ public class ServerSecurityIT {
   void shouldLoadProvidedSecurityConfiguration() throws IOException {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
 
@@ -114,12 +115,12 @@ public class ServerSecurityIT {
   void shouldReloadSecurityConfiguration() throws IOException {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
 
     final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
-        .put("databases", new JSONObject());
+        .put("databases", new JSONObject().put("dbtest", new JSONObject()));
 
     repository.save(Collections.singletonList(json));
 
@@ -128,6 +129,10 @@ public class ServerSecurityIT {
     security.loadUsers();
 
     Assertions.assertTrue(security.existsUser("providedUser"));
+
+    ServerSecurityUser user2 = security.getUser("providedUser");
+    Assertions.assertEquals("providedUser", user2.getName());
+
     Assertions.assertFalse(security.existsUser("root"));
     passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
 
@@ -136,7 +141,7 @@ public class ServerSecurityIT {
 
     try {
       Thread.sleep(5_500);
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       e.printStackTrace();
     }
 
@@ -160,7 +165,7 @@ public class ServerSecurityIT {
     security.stopService();
   }
 
-  private void passwordShouldMatch(final ServerSecurity security, String password, String expectedHash) {
+  private void passwordShouldMatch(final ServerSecurity security, final String password, final String expectedHash) {
     Assertions.assertTrue(security.passwordMatch(password, expectedHash));
   }
 
@@ -179,5 +184,9 @@ public class ServerSecurityIT {
 
     FileUtils.deleteRecursively(new File("./target/config"));
     FileUtils.deleteRecursively(new File("./target/databases"));
+
+    TestServerHelper.checkActiveDatabases();
+    TestServerHelper.deleteDatabaseFolders(1);
+    GlobalConfiguration.resetAll();
   }
 }

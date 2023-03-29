@@ -66,7 +66,7 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
         userCallback.onComplete();
       }
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (userCallback != null)
         userCallback.onError(e);
     }

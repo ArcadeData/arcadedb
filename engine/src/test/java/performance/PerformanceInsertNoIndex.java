@@ -33,7 +33,7 @@ public class PerformanceInsertNoIndex extends TestHelper {
   private static final String TYPE_NAME = "Person";
   private static final int    PARALLEL  = 3;
 
-  public static void main(String[] args) {
+  public static void main(final String[] args) {
     PerformanceTest.clean();
     new PerformanceInsertNoIndex().run();
   }
@@ -64,7 +64,7 @@ public class PerformanceInsertNoIndex extends TestHelper {
 
       database.commit();
 
-      long begin = System.currentTimeMillis();
+      final long begin = System.currentTimeMillis();
 
       try {
 
@@ -75,7 +75,7 @@ public class PerformanceInsertNoIndex extends TestHelper {
         database.async().setCommitEvery(5000);
         database.async().onError(new ErrorCallback() {
           @Override
-          public void call(Throwable exception) {
+          public void call(final Throwable exception) {
             LogManager.instance().log(this, Level.SEVERE, "ERROR: " + exception, exception);
             System.exit(1);
           }

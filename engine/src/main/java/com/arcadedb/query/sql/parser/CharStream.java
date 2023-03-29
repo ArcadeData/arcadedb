@@ -20,6 +20,8 @@
 /* JavaCCOptions:STATIC=false,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import java.io.IOException;
+
 /**
  * This interface describes a character stream that maintains line and
  * column number positions of the characters.  It also has the capability
@@ -42,7 +44,7 @@ public interface CharStream {
    * of selecting the input is the responsibility of the class
    * implementing this interface.  Can throw any java.io.IOException.
    */
-  char readChar() throws java.io.IOException;
+  char readChar() throws IOException;
 
   @Deprecated
   /**
@@ -97,7 +99,7 @@ public interface CharStream {
    * All characters must remain in the buffer between two successive calls
    * to this method to implement backup correctly.
    */
-  char beginToken() throws java.io.IOException;
+  char BeginToken() throws IOException;
 
   /**
    * Returns a string made up of characters from the marked token beginning
@@ -105,7 +107,7 @@ public interface CharStream {
    * anything that they want to. For example, for efficiency, one might decide
    * to just return null, which is a valid implementation.
    */
-  String getImage();
+  String GetImage();
 
   /**
    * Returns an array of characters that make up the suffix of length 'len' for
@@ -118,7 +120,7 @@ public interface CharStream {
    * return t.substring(t.length() - len, t.length()).toCharArray();
    * }
    */
-  char[] getSuffix(int len);
+  char[] GetSuffix(int len);
 
   /**
    * The lexer calls this function to indicate that it is done with the stream
@@ -126,7 +128,7 @@ public interface CharStream {
    * Again, the body of this function can be just empty and it will not
    * affect the lexer's operation.
    */
-  void done();
+  void Done();
 
 }
 /* JavaCC - OriginalChecksum=8356b3d537c263ca36ca197ba64d7402 (do not edit this line) */

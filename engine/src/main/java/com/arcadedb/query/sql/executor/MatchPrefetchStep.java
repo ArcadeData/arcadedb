@@ -34,8 +34,8 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public MatchPrefetchStep(CommandContext ctx, InternalExecutionPlan prefetchExecPlan, String alias, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public MatchPrefetchStep(final CommandContext context, final InternalExecutionPlan prefetchExecPlan, final String alias, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.prefetchExecutionPlan = prefetchExecPlan;
     this.alias = alias;
   }
@@ -43,16 +43,16 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
   @Override
   public void reset() {
     executed = false;
-    prefetchExecutionPlan.reset(ctx);
+    prefetchExecutionPlan.reset(context);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (!executed) {
-      getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+      pullPrevious(context, nRecords);
 
       ResultSet nextBlock = prefetchExecutionPlan.fetchNext(nRecords);
-      List<Result> prefetched = new ArrayList<>();
+      final List<Result> prefetched = new ArrayList<>();
       while (nextBlock.hasNext()) {
         while (nextBlock.hasNext()) {
           prefetched.add(nextBlock.next());
@@ -60,16 +60,16 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
         nextBlock = prefetchExecutionPlan.fetchNext(nRecords);
       }
       prefetchExecutionPlan.close();
-      ctx.setVariable(PREFETCHED_MATCH_ALIAS_PREFIX + alias, prefetched);
+      context.setVariable(PREFETCHED_MATCH_ALIAS_PREFIX + alias, prefetched);
       executed = true;
     }
     return new InternalResultSet();
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ PREFETCH " + alias + "\n" + prefetchExecutionPlan.prettyPrint(depth + 1, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String result = spaces + "+ PREFETCH " + alias + "\n" + prefetchExecutionPlan.prettyPrint(depth + 1, indent);
     return result;
   }
 }

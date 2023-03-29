@@ -62,16 +62,16 @@ public class MatchExecutionPlanner {
   protected final List<Expression>       returnItems;
   protected final List<Identifier>       returnAliases;
   protected final List<NestedProjection> returnNestedProjections;
-  boolean returnElements;
-  boolean returnPaths;
-  boolean returnPatterns;
-  boolean returnPathElements;
-  boolean returnDistinct;
-  protected final Skip    skip;
-  private final   GroupBy groupBy;
-  private final   OrderBy orderBy;
-  private final   Unwind  unwind;
-  protected final Limit   limit;
+  final           boolean                returnElements;
+  final           boolean                returnPaths;
+  final           boolean                returnPatterns;
+  final           boolean                returnPathElements;
+  final           boolean                returnDistinct;
+  protected final Skip                   skip;
+  private final   GroupBy                groupBy;
+  private final   OrderBy                orderBy;
+  private final   Unwind                 unwind;
+  protected final Limit                  limit;
 
   //post-parsing
   private Pattern                  pattern;
@@ -83,7 +83,7 @@ public class MatchExecutionPlanner {
   boolean foundOptional = false;
   private static final long threshold = 100;
 
-  public MatchExecutionPlanner(MatchStatement stm) {
+  public MatchExecutionPlanner(final MatchStatement stm) {
     this.matchExpressions = stm.getMatchExpressions().stream().map(x -> x.copy()).collect(Collectors.toList());
     this.notMatchExpressions = stm.getNotMatchExpressions().stream().map(x -> x.copy()).collect(Collectors.toList());
     this.returnItems = stm.getReturnItems().stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -102,14 +102,14 @@ public class MatchExecutionPlanner {
     this.unwind = stm.getUnwind() == null ? null : stm.getUnwind().copy();
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext context, boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
 
     buildPatterns(context);
     splitDisjointPatterns(context);
 
-    SelectExecutionPlan result = new SelectExecutionPlan(context);
-    Map<String, Long> estimatedRootEntries = estimateRootEntries(aliasTypes, aliasBuckets, aliasRids, aliasFilters, context);
-    Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream().filter(x -> x.getValue() < threshold).map(x -> x.getKey())
+    final SelectExecutionPlan result = new SelectExecutionPlan(context);
+    final Map<String, Long> estimatedRootEntries = estimateRootEntries(aliasTypes, aliasBuckets, aliasRids, aliasFilters, context);
+    final Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream().filter(x -> x.getValue() < threshold).map(x -> x.getKey())
         .collect(Collectors.toSet());
     if (estimatedRootEntries.containsValue(0L)) {
       result.chain(new EmptyStep(context, enableProfiling));
@@ -119,14 +119,14 @@ public class MatchExecutionPlanner {
     addPrefetchSteps(result, aliasesToPrefetch, context, enableProfiling);
 
     if (subPatterns.size() > 1) {
-      CartesianProductStep step = new CartesianProductStep(context, enableProfiling);
-      for (Pattern subPattern : subPatterns) {
+      final CartesianProductStep step = new CartesianProductStep(context, enableProfiling);
+      for (final Pattern subPattern : subPatterns) {
         step.addSubPlan(createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch, enableProfiling));
       }
       result.chain(step);
     } else {
-      InternalExecutionPlan plan = createPlanForPattern(pattern, context, estimatedRootEntries, aliasesToPrefetch, enableProfiling);
-      for (ExecutionStep step : plan.getSteps()) {
+      final InternalExecutionPlan plan = createPlanForPattern(pattern, context, estimatedRootEntries, aliasesToPrefetch, enableProfiling);
+      for (final ExecutionStep step : plan.getSteps()) {
         result.chain((ExecutionStepInternal) step);
       }
     }
@@ -162,10 +162,10 @@ public class MatchExecutionPlanner {
         result.chain(new LimitExecutionStep(limit, context, enableProfiling));
       }
     } else {
-      QueryPlanningInfo info = new QueryPlanningInfo();
-      List<ProjectionItem> items = new ArrayList<>();
+      final QueryPlanningInfo info = new QueryPlanningInfo();
+      final List<ProjectionItem> items = new ArrayList<>();
       for (int i = 0; i < this.returnItems.size(); i++) {
-        ProjectionItem item = new ProjectionItem(returnItems.get(i), this.returnAliases.get(i), returnNestedProjections.get(i));
+        final ProjectionItem item = new ProjectionItem(returnItems.get(i), this.returnAliases.get(i), returnNestedProjections.get(i));
         items.add(item);
       }
       info.projection = new Projection(items, returnDistinct);
@@ -182,7 +182,7 @@ public class MatchExecutionPlanner {
       info.skip = this.skip;
       info.limit = this.limit;
 
-      SelectExecutionPlanner.optimizeQuery(info);
+      SelectExecutionPlanner.optimizeQuery(info, context);
       SelectExecutionPlanner.handleProjectionsBlock(result, info, context, enableProfiling);
     }
 
@@ -190,9 +190,9 @@ public class MatchExecutionPlanner {
 
   }
 
-  private void manageNotPatterns(SelectExecutionPlan result, Pattern pattern, List<MatchExpression> notMatchExpressions, CommandContext context,
-      boolean enableProfiling) {
-    for (MatchExpression exp : notMatchExpressions) {
+  private void manageNotPatterns(final SelectExecutionPlan result, final Pattern pattern, final List<MatchExpression> notMatchExpressions,
+      final CommandContext context, final boolean enableProfiling) {
+    for (final MatchExpression exp : notMatchExpressions) {
       if (pattern.aliasToNode.get(exp.getOrigin().getAlias()) == null) {
         throw new CommandExecutionException(
             "This kind of NOT expression is not supported (yet). " + "The first alias in a NOT expression has to be present in the positive pattern");
@@ -204,19 +204,19 @@ public class MatchExecutionPlanner {
       }
 
       MatchFilter lastFilter = exp.getOrigin();
-      List<AbstractExecutionStep> steps = new ArrayList<>();
-      for (MatchPathItem item : exp.getItems()) {
+      final List<AbstractExecutionStep> steps = new ArrayList<>();
+      for (final MatchPathItem item : exp.getItems()) {
         if (item instanceof MultiMatchPathItem) {
           throw new CommandExecutionException("This kind of NOT expression is not supported (yet): " + item);
         }
-        PatternEdge edge = new PatternEdge();
+        final PatternEdge edge = new PatternEdge();
         edge.item = item;
         edge.out = new PatternNode();
         edge.out.alias = lastFilter.getAlias();
         edge.in = new PatternNode();
         edge.in.alias = item.getFilter().getAlias();
-        EdgeTraversal traversal = new EdgeTraversal(edge, true);
-        MatchStep step = new MatchStep(context, traversal, enableProfiling);
+        final EdgeTraversal traversal = new EdgeTraversal(edge, true);
+        final MatchStep step = new MatchStep(context, traversal, enableProfiling);
         steps.add(step);
         lastFilter = item.getFilter();
       }
@@ -224,7 +224,7 @@ public class MatchExecutionPlanner {
     }
   }
 
-  private void addReturnStep(SelectExecutionPlan result, CommandContext context, boolean profilingEnabled) {
+  private void addReturnStep(final SelectExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
     if (returnElements) {
       result.chain(new ReturnMatchElementsStep(context, profilingEnabled));
     } else if (returnPaths) {
@@ -234,10 +234,10 @@ public class MatchExecutionPlanner {
     } else if (returnPathElements) {
       result.chain(new ReturnMatchPathElementsStep(context, profilingEnabled));
     } else {
-      Projection projection = new Projection(-1);
+      final Projection projection = new Projection(-1);
       projection.setItems(new ArrayList<>());
       for (int i = 0; i < returnAliases.size(); i++) {
-        ProjectionItem item = new ProjectionItem(-1);
+        final ProjectionItem item = new ProjectionItem(-1);
         item.setExpression(returnItems.get(i));
         item.setAlias(returnAliases.get(i));
         item.setNestedProjection(returnNestedProjections.get(i));
@@ -247,14 +247,14 @@ public class MatchExecutionPlanner {
     }
   }
 
-  private InternalExecutionPlan createPlanForPattern(Pattern pattern, CommandContext context, Map<String, Long> estimatedRootEntries,
-      Set<String> prefetchedAliases, boolean profilingEnabled) {
-    SelectExecutionPlan plan = new SelectExecutionPlan(context);
-    List<EdgeTraversal> sortedEdges = getTopologicalSortedSchedule(estimatedRootEntries, pattern);
+  private InternalExecutionPlan createPlanForPattern(final Pattern pattern, final CommandContext context, final Map<String, Long> estimatedRootEntries,
+      final Set<String> prefetchedAliases, final boolean profilingEnabled) {
+    final SelectExecutionPlan plan = new SelectExecutionPlan(context);
+    final List<EdgeTraversal> sortedEdges = getTopologicalSortedSchedule(estimatedRootEntries, pattern);
 
     boolean first = true;
     if (sortedEdges.size() > 0) {
-      for (EdgeTraversal edge : sortedEdges) {
+      for (final EdgeTraversal edge : sortedEdges) {
         if (edge.edge.out.alias != null) {
           edge.setLeftClass(aliasTypes.get(edge.edge.out.alias));
           edge.setLeftCluster(aliasBuckets.get(edge.edge.out.alias));
@@ -266,17 +266,17 @@ public class MatchExecutionPlanner {
         first = false;
       }
     } else {
-      PatternNode node = pattern.getAliasToNode().values().iterator().next();
+      final PatternNode node = pattern.getAliasToNode().values().iterator().next();
       if (prefetchedAliases.contains(node.alias)) {
         //from prefetch
         plan.chain(new MatchFirstStep(context, node, profilingEnabled));
       } else {
         //from actual execution plan
-        String typez = aliasTypes.get(node.alias);
-        String bucket = aliasBuckets.get(node.alias);
-        Rid rid = aliasRids.get(node.alias);
-        WhereClause filter = aliasFilters.get(node.alias);
-        SelectStatement select = createSelectStatement(typez, bucket, rid, filter);
+        final String typez = aliasTypes.get(node.alias);
+        final String bucket = aliasBuckets.get(node.alias);
+        final Rid rid = aliasRids.get(node.alias);
+        final WhereClause filter = aliasFilters.get(node.alias);
+        final SelectStatement select = createSelectStatement(typez, bucket, rid, filter);
         plan.chain(new MatchFirstStep(context, node, select.createExecutionPlan(context, profilingEnabled), profilingEnabled));
       }
     }
@@ -286,22 +286,22 @@ public class MatchExecutionPlanner {
   /**
    * sort edges in the order they will be matched
    */
-  private List<EdgeTraversal> getTopologicalSortedSchedule(Map<String, Long> estimatedRootEntries, Pattern pattern) {
-    List<EdgeTraversal> resultingSchedule = new ArrayList<>();
-    Map<String, Set<String>> remainingDependencies = getDependencies(pattern);
-    Set<PatternNode> visitedNodes = new HashSet<>();
-    Set<PatternEdge> visitedEdges = new HashSet<>();
+  private List<EdgeTraversal> getTopologicalSortedSchedule(final Map<String, Long> estimatedRootEntries, final Pattern pattern) {
+    final List<EdgeTraversal> resultingSchedule = new ArrayList<>();
+    final Map<String, Set<String>> remainingDependencies = getDependencies(pattern);
+    final Set<PatternNode> visitedNodes = new HashSet<>();
+    final Set<PatternEdge> visitedEdges = new HashSet<>();
 
     // Sort the possible root vertices in order of estimated size, since we want to start with a small vertex set.
-    List<Pair<Long, String>> rootWeights = new ArrayList<>();
-    for (Map.Entry<String, Long> root : estimatedRootEntries.entrySet()) {
+    final List<Pair<Long, String>> rootWeights = new ArrayList<>();
+    for (final Map.Entry<String, Long> root : estimatedRootEntries.entrySet()) {
       rootWeights.add(new Pair<>(root.getValue(), root.getKey()));
     }
     rootWeights.sort(Comparator.comparing(Pair::getFirst));
 
     // Add the starting vertices, in the correct order, to an ordered set.
-    Set<String> remainingStarts = new LinkedHashSet<>();
-    for (Pair<Long, String> item : rootWeights) {
+    final Set<String> remainingStarts = new LinkedHashSet<>();
+    for (final Pair<Long, String> item : rootWeights) {
       remainingStarts.add(item.getSecond());
     }
     // Add all the remaining aliases after all the suggested start points.
@@ -311,9 +311,9 @@ public class MatchExecutionPlanner {
       // Start a new depth-first pass, adding all nodes with satisfied dependencies.
       // 1. Find a starting vertex for the depth-first pass.
       PatternNode startingNode = null;
-      List<String> startsToRemove = new ArrayList<>();
-      for (String currentAlias : remainingStarts) {
-        PatternNode currentNode = pattern.aliasToNode.get(currentAlias);
+      final List<String> startsToRemove = new ArrayList<>();
+      for (final String currentAlias : remainingStarts) {
+        final PatternNode currentNode = pattern.aliasToNode.get(currentAlias);
 
         if (visitedNodes.contains(currentNode)) {
           // If a previous traversal already visited this alias, remove it from further consideration.
@@ -358,8 +358,8 @@ public class MatchExecutionPlanner {
    *                              function)
    * @param resultingSchedule     the schedule being computed i.e. appended to (mutated in this function)
    */
-  private void updateScheduleStartingAt(PatternNode startNode, Set<PatternNode> visitedNodes, Set<PatternEdge> visitedEdges,
-      Map<String, Set<String>> remainingDependencies, List<EdgeTraversal> resultingSchedule) {
+  private void updateScheduleStartingAt(final PatternNode startNode, final Set<PatternNode> visitedNodes, final Set<PatternEdge> visitedEdges,
+      final Map<String, Set<String>> remainingDependencies, final List<EdgeTraversal> resultingSchedule) {
     // Arcadedb requires the schedule to contain all edges present in the query, which is a stronger condition
     // than simply visiting all nodes in the query. Consider the following example query:
     //     MATCH {
@@ -382,22 +382,22 @@ public class MatchExecutionPlanner {
     //   recurse into the neighboring node;
     // - for unvisited neighboring nodes with satisfied dependencies, add their edge and recurse into them.
     visitedNodes.add(startNode);
-    for (Set<String> dependencies : remainingDependencies.values()) {
+    for (final Set<String> dependencies : remainingDependencies.values()) {
       dependencies.remove(startNode.alias);
     }
 
-    Map<PatternEdge, Boolean> edges = new LinkedHashMap<>();
-    for (PatternEdge outEdge : startNode.out) {
+    final Map<PatternEdge, Boolean> edges = new LinkedHashMap<>();
+    for (final PatternEdge outEdge : startNode.out) {
       edges.put(outEdge, true);
     }
-    for (PatternEdge inEdge : startNode.in) {
+    for (final PatternEdge inEdge : startNode.in) {
       edges.put(inEdge, false);
     }
 
-    for (Map.Entry<PatternEdge, Boolean> edgeData : edges.entrySet()) {
-      PatternEdge edge = edgeData.getKey();
-      boolean isOutbound = edgeData.getValue();
-      PatternNode neighboringNode = isOutbound ? edge.in : edge.out;
+    for (final Map.Entry<PatternEdge, Boolean> edgeData : edges.entrySet()) {
+      final PatternEdge edge = edgeData.getKey();
+      final boolean isOutbound = edgeData.getValue();
+      final PatternNode neighboringNode = isOutbound ? edge.in : edge.out;
 
       if (!remainingDependencies.get(neighboringNode.alias).isEmpty()) {
         // Unsatisfied dependencies, ignore this neighboring node.
@@ -420,7 +420,7 @@ public class MatchExecutionPlanner {
           //
           // The only exception to the above is when we have edges with "while" conditions. We are not allowed
           // to flip their directionality, so we leave them as-is.
-          boolean traversalDirection;
+          final boolean traversalDirection;
           if (startNode.optional || edge.item.isBidirectional()) {
             traversalDirection = !isOutbound;
           } else {
@@ -452,15 +452,15 @@ public class MatchExecutionPlanner {
    *
    * @return map of alias to the set of aliases it depends on
    */
-  private Map<String, Set<String>> getDependencies(Pattern pattern) {
-    Map<String, Set<String>> result = new HashMap<>();
+  private Map<String, Set<String>> getDependencies(final Pattern pattern) {
+    final Map<String, Set<String>> result = new HashMap<>();
 
-    for (PatternNode node : pattern.aliasToNode.values()) {
-      Set<String> currentDependencies = new HashSet<>();
+    for (final PatternNode node : pattern.aliasToNode.values()) {
+      final Set<String> currentDependencies = new HashSet<>();
 
-      WhereClause filter = aliasFilters.get(node.alias);
+      final WhereClause filter = aliasFilters.get(node.alias);
       if (filter != null && filter.getBaseExpression() != null) {
-        List<String> involvedAliases = filter.getBaseExpression().getMatchPatternInvolvedAliases();
+        final List<String> involvedAliases = filter.getBaseExpression().getMatchPatternInvolvedAliases();
         if (involvedAliases != null) {
           currentDependencies.addAll(involvedAliases);
         }
@@ -472,7 +472,7 @@ public class MatchExecutionPlanner {
     return result;
   }
 
-  private void splitDisjointPatterns(CommandContext context) {
+  private void splitDisjointPatterns(final CommandContext context) {
     if (this.subPatterns != null) {
       return;
     }
@@ -480,14 +480,15 @@ public class MatchExecutionPlanner {
     this.subPatterns = pattern.getDisjointPatterns();
   }
 
-  private void addStepsFor(SelectExecutionPlan plan, EdgeTraversal edge, CommandContext context, boolean first, boolean profilingEnabled) {
+  private void addStepsFor(final SelectExecutionPlan plan, final EdgeTraversal edge, final CommandContext context, final boolean first,
+      final boolean profilingEnabled) {
     if (first) {
-      PatternNode patternNode = edge.out ? edge.edge.out : edge.edge.in;
-      String typez = this.aliasTypes.get(patternNode.alias);
-      String bucket = this.aliasBuckets.get(patternNode.alias);
-      Rid rid = this.aliasRids.get(patternNode.alias);
-      WhereClause where = aliasFilters.get(patternNode.alias);
-      SelectStatement select = new SelectStatement(-1);
+      final PatternNode patternNode = edge.out ? edge.edge.out : edge.edge.in;
+      final String typez = this.aliasTypes.get(patternNode.alias);
+      final String bucket = this.aliasBuckets.get(patternNode.alias);
+      final Rid rid = this.aliasRids.get(patternNode.alias);
+      final WhereClause where = aliasFilters.get(patternNode.alias);
+      final SelectStatement select = new SelectStatement(-1);
       select.setTarget(new FromClause(-1));
       select.getTarget().setItem(new FromItem(-1));
       if (typez != null) {
@@ -498,7 +499,7 @@ public class MatchExecutionPlanner {
         select.getTarget().getItem().setRids(Collections.singletonList(rid));
       }
       select.setWhereClause(where == null ? null : where.copy());
-      BasicCommandContext subContxt = new BasicCommandContext();
+      final BasicCommandContext subContxt = new BasicCommandContext();
       subContxt.setParentWithoutOverridingChild(context);
       plan.chain(new MatchFirstStep(context, patternNode, select.createExecutionPlan(subContxt, profilingEnabled), profilingEnabled));
     }
@@ -510,24 +511,25 @@ public class MatchExecutionPlanner {
     }
   }
 
-  private void addPrefetchSteps(SelectExecutionPlan result, Set<String> aliasesToPrefetch, CommandContext context, boolean profilingEnabled) {
-    for (String alias : aliasesToPrefetch) {
-      String targetClass = aliasTypes.get(alias);
-      String targetCluster = aliasBuckets.get(alias);
-      Rid targetRid = aliasRids.get(alias);
-      WhereClause filter = aliasFilters.get(alias);
-      SelectStatement prefetchStm = createSelectStatement(targetClass, targetCluster, targetRid, filter);
+  private void addPrefetchSteps(final SelectExecutionPlan result, final Set<String> aliasesToPrefetch, final CommandContext context,
+      final boolean profilingEnabled) {
+    for (final String alias : aliasesToPrefetch) {
+      final String targetClass = aliasTypes.get(alias);
+      final String targetCluster = aliasBuckets.get(alias);
+      final Rid targetRid = aliasRids.get(alias);
+      final WhereClause filter = aliasFilters.get(alias);
+      final SelectStatement prefetchStm = createSelectStatement(targetClass, targetCluster, targetRid, filter);
 
-      MatchPrefetchStep step = new MatchPrefetchStep(context, prefetchStm.createExecutionPlan(context, profilingEnabled), alias, profilingEnabled);
+      final MatchPrefetchStep step = new MatchPrefetchStep(context, prefetchStm.createExecutionPlan(context, profilingEnabled), alias, profilingEnabled);
       result.chain(step);
     }
   }
 
-  private SelectStatement createSelectStatement(String targetClass, String targetCluster, Rid targetRid, WhereClause filter) {
-    SelectStatement prefetchStm = new SelectStatement(-1);
+  private SelectStatement createSelectStatement(final String targetClass, final String targetCluster, final Rid targetRid, final WhereClause filter) {
+    final SelectStatement prefetchStm = new SelectStatement(-1);
     prefetchStm.setWhereClause(filter);
-    FromClause from = new FromClause(-1);
-    FromItem fromItem = new FromItem(-1);
+    final FromClause from = new FromClause(-1);
+    final FromItem fromItem = new FromItem(-1);
     if (targetRid != null) {
       fromItem.setRids(Collections.singletonList(targetRid));
     } else if (targetClass != null) {
@@ -540,86 +542,22 @@ public class MatchExecutionPlanner {
     return prefetchStm;
   }
 
-  /**
-   * sort edges in the order they will be matched
-   */
-  private List<EdgeTraversal> sortEdges(Map<String, Long> estimatedRootEntries, Pattern pattern, CommandContext ctx) {
-    QueryStats stats = null;
-    if (ctx != null && ctx.getDatabase() != null) {
-      stats = QueryStats.get(ctx.getDatabase());
-    }
-    //TODO use the stats
-
-    List<EdgeTraversal> result = new ArrayList<>();
-
-    List<Pair<Long, String>> rootWeights = new ArrayList<>();
-    for (Map.Entry<String, Long> root : estimatedRootEntries.entrySet()) {
-      rootWeights.add(new Pair<>(root.getValue(), root.getKey()));
-    }
-    rootWeights.sort(Comparator.comparing(Pair::getFirst));
-
-    Set<PatternEdge> traversedEdges = new HashSet<>();
-    Set<PatternNode> traversedNodes = new HashSet<>();
-    List<PatternNode> nextNodes = new ArrayList<>();
-
-    while (result.size() < pattern.getNumOfEdges()) {
-      for (Pair<Long, String> rootPair : rootWeights) {
-        PatternNode root = pattern.get(rootPair.getSecond());
-        if (root.isOptionalNode()) {
-          continue;
-        }
-        if (!traversedNodes.contains(root)) {
-          nextNodes.add(root);
-          break;
-        }
-      }
-
-      if (nextNodes.isEmpty()) {
-        break;
-      }
-      while (!nextNodes.isEmpty()) {
-        PatternNode node = nextNodes.remove(0);
-        traversedNodes.add(node);
-        for (PatternEdge edge : node.out) {
-          if (!traversedEdges.contains(edge)) {
-            result.add(new EdgeTraversal(edge, true));
-            traversedEdges.add(edge);
-            if (!traversedNodes.contains(edge.in) && !nextNodes.contains(edge.in)) {
-              nextNodes.add(edge.in);
-            }
-          }
-        }
-        for (PatternEdge edge : node.in) {
-          if (!traversedEdges.contains(edge) && edge.item.isBidirectional()) {
-            result.add(new EdgeTraversal(edge, false));
-            traversedEdges.add(edge);
-            if (!traversedNodes.contains(edge.out) && !nextNodes.contains(edge.out)) {
-              nextNodes.add(edge.out);
-            }
-          }
-        }
-      }
-    }
-
-    return result;
-  }
-
-  private void buildPatterns(CommandContext ctx) {
+  private void buildPatterns(final CommandContext context) {
     if (this.pattern != null) {
       return;
     }
     assignDefaultAliases(this.matchExpressions);
     pattern = new Pattern();
-    for (MatchExpression expr : this.matchExpressions) {
+    for (final MatchExpression expr : this.matchExpressions) {
       pattern.addExpression(expr.copy());
     }
 
-    Map<String, WhereClause> aliasFilters = new LinkedHashMap<>();
-    Map<String, String> aliasUserTypes = new LinkedHashMap<>();
-    Map<String, String> aliasClusters = new LinkedHashMap<>();
-    Map<String, Rid> aliasRids = new LinkedHashMap<>();
-    for (MatchExpression expr : this.matchExpressions) {
-      addAliases(expr, aliasFilters, aliasUserTypes, aliasClusters, aliasRids, ctx);
+    final Map<String, WhereClause> aliasFilters = new LinkedHashMap<>();
+    final Map<String, String> aliasUserTypes = new LinkedHashMap<>();
+    final Map<String, String> aliasClusters = new LinkedHashMap<>();
+    final Map<String, Rid> aliasRids = new LinkedHashMap<>();
+    for (final MatchExpression expr : this.matchExpressions) {
+      addAliases(expr, aliasFilters, aliasUserTypes, aliasClusters, aliasRids, context);
     }
 
     this.aliasFilters = aliasFilters;
@@ -630,32 +568,32 @@ public class MatchExecutionPlanner {
     rebindFilters(aliasFilters);
   }
 
-  private void rebindFilters(Map<String, WhereClause> aliasFilters) {
-    for (MatchExpression expression : matchExpressions) {
+  private void rebindFilters(final Map<String, WhereClause> aliasFilters) {
+    for (final MatchExpression expression : matchExpressions) {
       WhereClause newFilter = aliasFilters.get(expression.getOrigin().getAlias());
       expression.getOrigin().setFilter(newFilter);
 
-      for (MatchPathItem item : expression.getItems()) {
+      for (final MatchPathItem item : expression.getItems()) {
         newFilter = aliasFilters.get(item.getFilter().getAlias());
         item.getFilter().setFilter(newFilter);
       }
     }
   }
 
-  private void addAliases(MatchExpression expr, Map<String, WhereClause> aliasFilters, Map<String, String> aliasUserTypes, Map<String, String> aliasClusters,
-      Map<String, Rid> aliasRids, CommandContext context) {
+  private void addAliases(final MatchExpression expr, final Map<String, WhereClause> aliasFilters, final Map<String, String> aliasUserTypes,
+      final Map<String, String> aliasClusters, final Map<String, Rid> aliasRids, final CommandContext context) {
     addAliases(expr.getOrigin(), aliasFilters, aliasUserTypes, aliasClusters, aliasRids, context);
-    for (MatchPathItem item : expr.getItems()) {
+    for (final MatchPathItem item : expr.getItems()) {
       if (item.getFilter() != null) {
         addAliases(item.getFilter(), aliasFilters, aliasUserTypes, aliasClusters, aliasRids, context);
       }
     }
   }
 
-  private void addAliases(MatchFilter matchFilter, Map<String, WhereClause> aliasFilters, Map<String, String> aliasUserTypes, Map<String, String> aliasClusters,
-      Map<String, Rid> aliasRids, CommandContext context) {
-    String alias = matchFilter.getAlias();
-    WhereClause filter = matchFilter.getFilter();
+  private void addAliases(final MatchFilter matchFilter, final Map<String, WhereClause> aliasFilters, final Map<String, String> aliasUserTypes,
+      final Map<String, String> aliasClusters, final Map<String, Rid> aliasRids, final CommandContext context) {
+    final String alias = matchFilter.getAlias();
+    final WhereClause filter = matchFilter.getFilter();
     if (alias != null) {
       if (filter != null && filter.getBaseExpression() != null) {
         WhereClause previousFilter = aliasFilters.get(alias);
@@ -721,14 +659,14 @@ public class MatchExecutionPlanner {
    *
    * @param matchExpressions
    */
-  private void assignDefaultAliases(List<MatchExpression> matchExpressions) {
+  private void assignDefaultAliases(final List<MatchExpression> matchExpressions) {
     int counter = 0;
-    for (MatchExpression expression : matchExpressions) {
+    for (final MatchExpression expression : matchExpressions) {
       if (expression.getOrigin().getAlias() == null) {
         expression.getOrigin().setAlias(DEFAULT_ALIAS_PREFIX + (counter++));
       }
 
-      for (MatchPathItem item : expression.getItems()) {
+      for (final MatchPathItem item : expression.getItems()) {
         if (item.getFilter() == null) {
           item.setFilter(new MatchFilter(-1));
         }
@@ -739,21 +677,21 @@ public class MatchExecutionPlanner {
     }
   }
 
-  private Map<String, Long> estimateRootEntries(Map<String, String> aliasUserTypes, Map<String, String> aliasClusters, Map<String, Rid> aliasRids,
-      Map<String, WhereClause> aliasFilters, CommandContext ctx) {
-    Set<String> allAliases = new LinkedHashSet<>();
+  private Map<String, Long> estimateRootEntries(final Map<String, String> aliasUserTypes, final Map<String, String> aliasClusters,
+      final Map<String, Rid> aliasRids, final Map<String, WhereClause> aliasFilters, final CommandContext context) {
+    final Set<String> allAliases = new LinkedHashSet<>();
     allAliases.addAll(aliasUserTypes.keySet());
     allAliases.addAll(aliasFilters.keySet());
     allAliases.addAll(aliasClusters.keySet());
     allAliases.addAll(aliasRids.keySet());
 
-    Schema schema = ctx.getDatabase().getSchema();
+    final Schema schema = context.getDatabase().getSchema();
 
-    Map<String, Long> result = new LinkedHashMap<>();
-    for (String alias : allAliases) {
-      String typeName = aliasUserTypes.get(alias);
-      String bucketName = aliasClusters.get(alias);
-      Rid rid = aliasRids.get(alias);
+    final Map<String, Long> result = new LinkedHashMap<>();
+    for (final String alias : allAliases) {
+      final String typeName = aliasUserTypes.get(alias);
+      final String bucketName = aliasClusters.get(alias);
+      final Rid rid = aliasRids.get(alias);
       if (typeName == null && bucketName == null) {
         continue;
       }
@@ -762,27 +700,27 @@ public class MatchExecutionPlanner {
         if (schema.getType(typeName) == null) {
           throw new CommandExecutionException("Type '" + typeName + "' not defined");
         }
-        DocumentType oClass = schema.getType(typeName);
-        long upperBound;
-        WhereClause filter = aliasFilters.get(alias);
+        final DocumentType oClass = schema.getType(typeName);
+        final long upperBound;
+        final WhereClause filter = aliasFilters.get(alias);
         if (filter != null) {
-          upperBound = filter.estimate(oClass, threshold, ctx);
+          upperBound = filter.estimate(oClass, threshold, context);
         } else {
-          upperBound = ctx.getDatabase().countType(oClass.getName(), true);
+          upperBound = context.getDatabase().countType(oClass.getName(), true);
         }
         result.put(alias, upperBound);
       } else if (bucketName != null) {
-        Database db = ctx.getDatabase();
+        final Database db = context.getDatabase();
         if (db.getSchema().getBucketByName(bucketName) == null) {
           throw new CommandExecutionException("Bucket '" + bucketName + "' not defined");
         }
-        int bucketId = db.getSchema().getBucketByName(bucketName).getId();
-        DocumentType oClass = db.getSchema().getTypeByBucketId(bucketId);
+        final int bucketId = db.getSchema().getBucketByName(bucketName).getId();
+        final DocumentType oClass = db.getSchema().getTypeByBucketId(bucketId);
         if (oClass != null) {
-          long upperBound;
-          WhereClause filter = aliasFilters.get(alias);
+          final long upperBound;
+          final WhereClause filter = aliasFilters.get(alias);
           if (filter != null) {
-            upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, threshold, ctx));
+            upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, threshold, context));
           } else {
             upperBound = db.countBucket(bucketName);
           }

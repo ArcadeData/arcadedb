@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 /**
@@ -32,8 +29,7 @@ import java.util.*;
  * Instances of this class are immutable and can be recycled multiple times in the same or in different queries.
  */
 public class Identifier extends SimpleNode {
-
-  protected String  value;
+  private   String  value;
   protected boolean quoted = false;
 
   /**
@@ -56,17 +52,6 @@ public class Identifier extends SimpleNode {
     super(id);
   }
 
-  public static Identifier deserialize(final Result fromResult) {
-    final Identifier identifier = new Identifier(-1);
-    identifier.value = fromResult.getProperty("value");
-    identifier.quoted = fromResult.getProperty("quoted");
-    return identifier;
-  }
-
-  public Identifier(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * returns the value as is, with back-ticks quoted with backslash
    *
@@ -82,12 +67,6 @@ public class Identifier extends SimpleNode {
    * @return
    */
   public String getStringValue() {
-    if (value == null)
-      return null;
-
-    if (value.contains("`"))
-      return value.replaceAll("\\\\`", "`");
-
     return value;
   }
 
@@ -97,13 +76,18 @@ public class Identifier extends SimpleNode {
    *
    * @param s
    */
-  private void setStringValue(final String s) {
+  public void setStringValue(final String s) {
     if (s == null)
       value = null;
     else if (s.contains("`"))
       value = s.replaceAll("`", "\\\\`");
     else
       value = s;
+  }
+
+  public void setQuotedStringValue(final String s) {
+    quoted = true;
+    setStringValue(s.substring(1, s.length() - 1));
   }
 
   @Override
@@ -149,13 +133,6 @@ public class Identifier extends SimpleNode {
     int result = value != null ? value.hashCode() : 0;
     result = 31 * result + (quoted ? 1 : 0);
     result = 31 * result + (internalAlias ? 1 : 0);
-    return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("value", value);
-    result.setProperty("quoted", quoted);
     return result;
   }
 }

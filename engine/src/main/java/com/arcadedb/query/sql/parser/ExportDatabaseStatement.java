@@ -33,84 +33,87 @@ import java.util.*;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
 
-  protected Url               url;
-  protected Identifier        format    = new Identifier("jsonl");
-  protected BooleanExpression overwrite = BooleanExpression.FALSE;
+  protected       Url                         url;
+  protected       Identifier                  format    = new Identifier("jsonl");
+  protected       BooleanExpression           overwrite = BooleanExpression.FALSE;
+  protected       Expression                  key;
+  protected       Expression                  value;
+  protected final Map<Expression, Expression> settings  = new HashMap<>();
 
-  public ExportDatabaseStatement(int id) {
+  public ExportDatabaseStatement(final int id) {
     super(id);
   }
 
-  public ExportDatabaseStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
-    String targetUrl = this.url.getUrlString();
-    ResultInternal result = new ResultInternal();
+  public ResultSet executeSimple(final CommandContext context) {
+    final String targetUrl = this.url.getUrlString();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "export database");
     result.setProperty("toUrl", targetUrl);
 
     String fileName = targetUrl.startsWith("file://") ? targetUrl.substring("file://".length()) : targetUrl;
-    if (fileName.contains("..") || fileName.contains(File.separator) )
+    if (fileName.contains("..") || fileName.contains(File.separator))
       throw new IllegalArgumentException("Export file cannot contain path change because the directory is specified");
 
     fileName = "exports" + File.separator + fileName;
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
-      final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), fileName);
+      final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), fileName);
+
+      clazz.getMethod("setOverwrite", Boolean.TYPE).invoke(exporter, overwrite == BooleanExpression.TRUE);
 
       String formatExport = format.getStringValue();
       if ((formatExport.startsWith("'") && formatExport.endsWith("'")) ||//
           formatExport.startsWith("\"") && formatExport.endsWith("\"")) {
         formatExport = formatExport.substring(1, formatExport.length() - 1);
       }
-
-      clazz.getMethod("setOverwrite", Boolean.TYPE).invoke(exporter, overwrite == BooleanExpression.TRUE);
       clazz.getMethod("setFormat", String.class).invoke(exporter, formatExport);
-      clazz.getMethod("exportDatabase").invoke(exporter);
 
-    } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+      // TRANSFORM SETTINGS
+      final Map<String, String> settingsToString = new HashMap<>();
+      for (final Map.Entry<Expression, Expression> entry : settings.entrySet())
+        settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
+      clazz.getMethod("setSettings", Map.class).invoke(exporter, settingsToString);
+
+      final Map<String, Object> exportResult = (Map<String, Object>) clazz.getMethod("exportDatabase").invoke(exporter);
+
+      result.setPropertiesFromMap(exportResult);
+
+    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on exporting database, exporter libs not found in classpath", e);
-    } catch (InvocationTargetException e) {
+    } catch (final InvocationTargetException e) {
       throw new CommandExecutionException("Error on exporting database", e.getTargetException());
     }
 
     result.setProperty("result", "OK");
 
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("EXPORT DATABASE ");
     url.toString(params, builder);
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-    final ExportDatabaseStatement that = (ExportDatabaseStatement) o;
-    return Objects.equals(url, that.url);
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hash(url);
+  protected Object[] getIdentityElements() {
+    return new Object[] { url };
   }
 
   @Override
   public Statement copy() {
-    ExportDatabaseStatement result = new ExportDatabaseStatement(-1);
+    final ExportDatabaseStatement result = new ExportDatabaseStatement(-1);
     result.url = this.url;
     return result;
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { url };
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=7a41f26bd0c3d48aafcf45752ac28521 (do not edit this line) */

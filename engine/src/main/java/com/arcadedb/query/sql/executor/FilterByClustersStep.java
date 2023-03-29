@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.*;
@@ -29,32 +28,29 @@ import java.util.stream.*;
  * Created by luigidellaquila on 01/03/17.
  */
 public class FilterByClustersStep extends AbstractExecutionStep {
-  private Set<String>  clusters;
-  private Set<Integer> bucketIds;
+  private final Set<String>  clusters;
+  private       Set<Integer> bucketIds;
 
   ResultSet prevResult = null;
 
-  public FilterByClustersStep(Set<String> filterClusters, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FilterByClustersStep(final Set<String> filterClusters, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.clusters = filterClusters;
-    Database db = ctx.getDatabase();
+    final Database db = context.getDatabase();
     init(db);
 
   }
 
-  private void init(Database db) {
+  private void init(final Database db) {
     if (this.bucketIds == null) {
       this.bucketIds = clusters.stream().filter(x -> x != null).map(x -> db.getSchema().getBucketByName(x).getId()).collect(Collectors.toSet());
     }
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    init(ctx.getDatabase());
-    if (prev.isEmpty()) {
-      throw new IllegalStateException("filter step requires a previous step");
-    }
-    ExecutionStepInternal prevStep = prev.get();
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    init(context.getDatabase());
+    final ExecutionStepInternal prevStep = checkForPrevious();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -68,7 +64,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -76,7 +72,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
@@ -84,7 +80,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
           }
           nextItem = prevResult.next();
           if (nextItem.isElement()) {
-            int bucketId = nextItem.getIdentity().get().getBucketId();
+            final int bucketId = nextItem.getIdentity().get().getBucketId();
             if (bucketId < 0) {
               // this record comes from a TX, it still doesn't have a bucket assigned
               break;
@@ -114,15 +110,15 @@ public class FilterByClustersStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (fetched >= nRecords || finished) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextItem == null) {
           fetchNextItem();
         }
         if (nextItem == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         return result;
@@ -133,43 +129,14 @@ public class FilterByClustersStep extends AbstractExecutionStep {
         FilterByClustersStep.this.close();
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
 
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ FILTER ITEMS BY CLUSTERS \n" + ExecutionStepInternal.getIndent(depth, indent) + "  "
         + String.join(", ", clusters);
-  }
-
-  @Override
-  public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (clusters != null) {
-      result.setProperty("clusters", clusters);
-    }
-
-    return result;
-  }
-
-  @Override
-  public void deserialize(Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      clusters = fromResult.getProperty("clusters");
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
   }
 
 }

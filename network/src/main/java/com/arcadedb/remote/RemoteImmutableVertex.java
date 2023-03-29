@@ -88,14 +88,14 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
 
   @Override
   public boolean isConnectedTo(final Identifiable toVertex) {
-    String query = "select from ( select both() as vertices from " + rid + " ) where vertices contains " + toVertex;
+    final String query = "select from ( select both() as vertices from " + rid + " ) where vertices contains " + toVertex;
     final ResultSet resultSet = remoteDatabase.query("sql", query);
     return resultSet.hasNext();
   }
 
   @Override
   public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
-    String query = "select from ( select " + direction.toString().toLowerCase() + "() as vertices from " + rid + " ) where vertices contains " + toVertex;
+    final String query = "select from ( select " + direction.toString().toLowerCase() + "() as vertices from " + rid + " ) where vertices contains " + toVertex;
     final ResultSet resultSet = remoteDatabase.query("sql", query);
     return resultSet.hasNext();
   }

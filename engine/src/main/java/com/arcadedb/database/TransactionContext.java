@@ -21,12 +21,12 @@ package com.arcadedb.database;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedFile;
-import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -112,7 +112,6 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already in commit phase");
 
     final TransactionPhase1 phase1 = commit1stPhase(true);
-
     if (phase1 != null)
       commit2ndPhase(phase1);
     else
@@ -125,12 +124,12 @@ public class TransactionContext implements Transaction {
   }
 
   public Record getRecordFromCache(final RID rid) {
-    Record rec = null;
-    if (database.isReadYourWrites()) {
-      rec = modifiedRecordsCache.get(rid);
-      if (rec == null)
-        rec = immutableRecordsCache.get(rid);
-    }
+    Record rec = modifiedRecordsCache.get(rid);
+    if (rec == null)
+      rec = immutableRecordsCache.get(rid);
+    if (rec == null && updatedRecords != null)
+      // IN CASE `READ-YOUR-WRITE` IS FALSE, THE MODIFIED RECORD IS NOT IN CACHE AND MUST BE READ FROM THE UPDATE RECORDS
+      rec = updatedRecords.get(rid);
     return rec;
   }
 
@@ -167,7 +166,7 @@ public class TransactionContext implements Transaction {
 
     if (database.isReadYourWrites()) {
       if (rid == null)
-        throw new IllegalArgumentException("Cannot remove record in TX cache because it is not persistent: " + rid);
+        throw new IllegalArgumentException("Cannot remove record in TX cache because it is not persistent");
       modifiedRecordsCache.remove(rid);
       immutableRecordsCache.remove(rid);
     }
@@ -191,26 +190,22 @@ public class TransactionContext implements Transaction {
 
   @Override
   public void rollback() {
-    LogManager.instance().log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-        Thread.currentThread().getId());
+    LogManager.instance()
+        .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages, Thread.currentThread().getId());
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
       if (modifiedPages != null) {
         final int dictionaryId = database.getSchema().getDictionary().getId();
-        boolean reloadDictionary = false;
 
-        for (PageId pageId : modifiedPages.keySet()) {
+        for (final PageId pageId : modifiedPages.keySet()) {
           if (dictionaryId == pageId.getFileId()) {
-            reloadDictionary = true;
+            // RELOAD THE DICTIONARY
+            try {
+              database.getSchema().getDictionary().reload();
+            } catch (final IOException e) {
+              throw new SchemaException("Error on reloading schema dictionary");
+            }
             break;
-          }
-        }
-
-        if (reloadDictionary) {
-          try {
-            database.getSchema().getDictionary().reload();
-          } catch (IOException e) {
-            throw new SchemaException("Error on reloading schema dictionary");
           }
         }
       }
@@ -221,8 +216,12 @@ public class TransactionContext implements Transaction {
 
     // RELOAD PREVIOUS VERSION OF MODIFIED RECORDS
     if (database.isOpen())
-      for (Record r : modifiedRecordsCache.values())
-        r.reload();
+      for (final Record r : modifiedRecordsCache.values())
+        try {
+          r.reload();
+        } catch (final Exception e) {
+          // IGNORE EXCEPTION (RECORD DELETED OR TYPE REMOVED)
+        }
 
     reset();
   }
@@ -255,12 +254,9 @@ public class TransactionContext implements Transaction {
     if (page == null && newPages != null)
       page = newPages.get(pageId);
 
-    if (page == null) {
+    if (page == null)
       // NOT FOUND, DELEGATES TO THE DATABASE
       page = database.getPageManager().getPage(pageId, size, false, true);
-      if (page != null)
-        page = page.createImmutableView();
-    }
 
     return page;
   }
@@ -279,7 +275,7 @@ public class TransactionContext implements Transaction {
 
       if (page == null) {
         // NOT FOUND, DELEGATES TO THE DATABASE
-        final BasePage loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
+        final ImmutablePage loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
         if (loadedPage != null) {
           final MutablePage mutablePage = loadedPage.modify();
           if (isNew)
@@ -290,8 +286,25 @@ public class TransactionContext implements Transaction {
         }
       }
     }
-
     return page;
+  }
+
+  /**
+   * Puts the page in the TX modified pages.
+   */
+  public MutablePage getPageToModify(final BasePage page) throws IOException {
+    if (!isActive())
+      throw new TransactionException("Transaction not active");
+
+    final MutablePage mutablePage = page.modify();
+
+    final PageId pageId = page.getPageId();
+    if (newPages.containsKey(pageId))
+      newPages.put(mutablePage.getPageId(), mutablePage);
+    else
+      modifiedPages.put(mutablePage.getPageId(), mutablePage);
+
+    return mutablePage;
   }
 
   public MutablePage addPage(final PageId pageId, final int pageSize) {
@@ -330,10 +343,10 @@ public class TransactionContext implements Transaction {
 
     final Set<Integer> involvedFiles = new LinkedHashSet<>();
     if (modifiedPages != null)
-      for (PageId pid : modifiedPages.keySet())
+      for (final PageId pid : modifiedPages.keySet())
         involvedFiles.add(pid.getFileId());
     if (newPages != null)
-      for (PageId pid : newPages.keySet())
+      for (final PageId pid : newPages.keySet())
         involvedFiles.add(pid.getFileId());
     involvedFiles.addAll(newPageCounters.keySet());
 
@@ -385,7 +398,7 @@ public class TransactionContext implements Transaction {
       // LOCK FILES (IN ORDER, SO TO AVOID DEADLOCK)
       final Set<Integer> modifiedFiles = new HashSet<>();
 
-      for (WALFile.WALPage p : buffer.pages)
+      for (final WALFile.WALPage p : buffer.pages)
         modifiedFiles.add(p.fileId);
 
       indexChanges.setKeys(keysTx);
@@ -394,7 +407,7 @@ public class TransactionContext implements Transaction {
       final int dictionaryFileId = database.getSchema().getDictionary().getId();
       boolean dictionaryModified = false;
 
-      for (WALFile.WALPage p : buffer.pages) {
+      for (final WALFile.WALPage p : buffer.pages) {
         final PaginatedFile file = database.getFileManager().getFile(p.fileId);
         final int pageSize = file.getPageSize();
 
@@ -423,10 +436,10 @@ public class TransactionContext implements Transaction {
       if (dictionaryModified)
         database.getSchema().getDictionary().reload();
 
-    } catch (ConcurrentModificationException e) {
+    } catch (final ConcurrentModificationException e) {
       rollback();
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       rollback();
       throw new TransactionException("Transaction error on commit", e);
     }
@@ -443,10 +456,10 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction in phase " + status);
 
     if (updatedRecords != null) {
-      for (Record rec : updatedRecords.values())
+      for (final Record rec : updatedRecords.values())
         try {
           database.updateRecordNoLock(rec, false);
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
           LogManager.instance().log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
         }
@@ -469,10 +482,9 @@ public class TransactionContext implements Transaction {
       lockedFiles = new ArrayList<>();
 
     try {
-      if (isLeader) {
+      if (isLeader)
         // COMMIT INDEX CHANGES (IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION)
         indexChanges.commit();
-      }
 
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
@@ -491,7 +503,7 @@ public class TransactionContext implements Transaction {
       }
 
       if (newPages != null)
-        for (MutablePage p : newPages.values()) {
+        for (final MutablePage p : newPages.values()) {
           final int[] range = p.getModifiedRange();
           if (range[1] > 0) {
             pageManager.checkPageVersion(p, true);
@@ -509,10 +521,10 @@ public class TransactionContext implements Transaction {
 
       return new TransactionPhase1(result, pages);
 
-    } catch (DuplicatedKeyException | ConcurrentModificationException e) {
+    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
       rollback();
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       rollback();
       throw new TransactionException("Transaction error on commit", e);
@@ -520,52 +532,52 @@ public class TransactionContext implements Transaction {
   }
 
   public void commit2ndPhase(final TransactionContext.TransactionPhase1 changes) {
-    if (changes == null)
-      return;
-
-    if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
-      throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
-
-    if (status != STATUS.COMMIT_1ST_PHASE)
-      throw new TransactionException("Cannot execute 2nd phase commit without having started the 1st phase");
-
-    status = STATUS.COMMIT_2ND_PHASE;
-
-    final PageManager pageManager = database.getPageManager();
-
     try {
+      if (changes == null)
+        return;
+
+      if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
+        throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
+
+      if (status != STATUS.COMMIT_1ST_PHASE)
+        throw new TransactionException("Cannot execute 2nd phase commit without having started the 1st phase");
+
+      status = STATUS.COMMIT_2ND_PHASE;
+
+      final PageManager pageManager = database.getPageManager();
+
       if (changes.result != null)
         // WRITE TO THE WAL FIRST
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
 
       // AT THIS POINT, LOCK + VERSION CHECK, THERE IS NO NEED TO MANAGE ROLLBACK BECAUSE THERE CANNOT BE CONCURRENT TX THAT UPDATE THE SAME PAGE CONCURRENTLY
       // UPDATE PAGE COUNTER FIRST
-      LogManager.instance().log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-          Thread.currentThread().getId());
+      LogManager.instance()
+          .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages, Thread.currentThread().getId());
 
       pageManager.updatePages(newPages, modifiedPages, asyncFlush);
 
       if (newPages != null) {
-        for (Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
+        for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
           database.getSchema().getFileById(entry.getKey()).setPageCount(entry.getValue());
           database.getFileManager()
               .setVirtualFileSize(entry.getKey(), (long) entry.getValue() * database.getFileManager().getFile(entry.getKey()).getPageSize());
         }
       }
 
-      for (Record r : modifiedRecordsCache.values())
+      for (final Record r : modifiedRecordsCache.values())
         ((RecordInternal) r).unsetDirty();
 
-      for (int fileId : lockedFiles) {
+      for (final int fileId : lockedFiles) {
         final PaginatedComponent file = database.getSchema().getFileByIdIfExists(fileId);
         if (file != null)
           // THE FILE COULD BE NULL IN CASE OF INDEX COMPACTION
           file.onAfterCommit();
       }
 
-    } catch (ConcurrentModificationException e) {
+    } catch (final ConcurrentModificationException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
@@ -590,10 +602,8 @@ public class TransactionContext implements Transaction {
   public void reset() {
     status = STATUS.INACTIVE;
 
-    final TransactionManager txManager = database.getTransactionManager();
-
     if (lockedFiles != null) {
-      txManager.unlockFilesInOrder(lockedFiles);
+      database.getTransactionManager().unlockFilesInOrder(lockedFiles);
       lockedFiles = null;
     }
 
@@ -644,10 +654,10 @@ public class TransactionContext implements Transaction {
   private List<Integer> lockFilesInOrder() {
     final Set<Integer> modifiedFiles = new HashSet<>();
 
-    for (PageId p : modifiedPages.keySet())
+    for (final PageId p : modifiedPages.keySet())
       modifiedFiles.add(p.getFileId());
     if (newPages != null)
-      for (PageId p : newPages.keySet())
+      for (final PageId p : newPages.keySet())
         modifiedFiles.add(p.getFileId());
 
     indexChanges.addFilesToLock(modifiedFiles);
@@ -656,6 +666,17 @@ public class TransactionContext implements Transaction {
 
     final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 
-    return database.getTransactionManager().tryLockFiles(modifiedFiles, timeout);
+    final List<Integer> locked = database.getTransactionManager().tryLockFiles(modifiedFiles, timeout);
+
+    // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX
+    for (Integer f : locked)
+      if (!database.getFileManager().existsFile(f)) {
+        // ONE FILE HAS BEEN REMOVED
+        database.getTransactionManager().unlockFilesInOrder(locked);
+        rollback();
+        throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
+      }
+
+    return locked;
   }
 }

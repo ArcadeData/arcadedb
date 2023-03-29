@@ -44,9 +44,9 @@ public class BucketIterator implements Iterator<Record> {
   Record   next                = null;
   int      currentRecordInPage = 0;
   long     browsed             = 0;
-  long     limit;
+  final long limit;
 
-  BucketIterator(Bucket bucket, Database db) {
+  BucketIterator(final Bucket bucket, final Database db) {
     ((DatabaseInternal) db).checkPermissionsOnFile(bucket.id, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     this.database = (DatabaseInternal) db;
@@ -113,7 +113,7 @@ public class BucketIterator implements Iterator<Record> {
                   .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
               return null;
             }
-          } catch (Exception e) {
+          } catch (final Exception e) {
             final String msg = String.format("Error on loading record #%d:%d (error: %s)", currentPage.pageId.getFileId(),
                 (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
             LogManager.instance().log(this, Level.SEVERE, msg);
@@ -150,7 +150,7 @@ public class BucketIterator implements Iterator<Record> {
     } finally {
       try {
         fetchNext();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new DatabaseOperationException("Cannot scan bucket '" + bucket.name + "'", e);
       }
     }

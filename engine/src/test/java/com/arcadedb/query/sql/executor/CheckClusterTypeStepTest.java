@@ -32,12 +32,12 @@ public class CheckClusterTypeStepTest {
   @Test
   public void shouldCheckClusterType() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      DocumentType clazz = (db.getSchema().createDocumentType(CLASS_CLUSTER_NAME).addBucket(db.getSchema().createBucket(CLASS_CLUSTER_NAME)));
-      BasicCommandContext context = new BasicCommandContext();
+      final DocumentType clazz = (db.getSchema().createDocumentType(CLASS_CLUSTER_NAME).addBucket(db.getSchema().createBucket(CLASS_CLUSTER_NAME)));
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      CheckClusterTypeStep step = new CheckClusterTypeStep(CLASS_CLUSTER_NAME, clazz.getName(), context, false);
+      final CheckClusterTypeStep step = new CheckClusterTypeStep(CLASS_CLUSTER_NAME, clazz.getName(), context, false);
 
-      ResultSet result = step.syncPull(context, 20);
+      final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(0, result.stream().count());
     });
   }
@@ -46,14 +46,14 @@ public class CheckClusterTypeStepTest {
     try {
       TestHelper.executeInNewDatabase((db) -> {
         db.getSchema().createBucket(CLUSTER_NAME);
-        BasicCommandContext context = new BasicCommandContext();
+        final BasicCommandContext context = new BasicCommandContext();
         context.setDatabase(db);
-        CheckClusterTypeStep step = new CheckClusterTypeStep(CLUSTER_NAME, TestHelper.createRandomType(db).getName(), context, false);
+        final CheckClusterTypeStep step = new CheckClusterTypeStep(CLUSTER_NAME, TestHelper.createRandomType(db).getName(), context, false);
 
         step.syncPull(context, 20);
       });
       Assertions.fail("Expected CommandExecutionException");
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       // OK
     }
   }

@@ -19,23 +19,38 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
+import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
+import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.utility.Callable;
+import com.arcadedb.utility.MultiIterator;
 
 import java.util.*;
 
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
 public class SQLQueryEngine implements QueryEngine {
-  private final DatabaseInternal database;
+  public static final String                    ENGINE_NAME = "sql";
+  protected final     DatabaseInternal          database;
+  protected final     DefaultSQLFunctionFactory functions;
+  protected final     DefaultSQLMethodFactory   methods;
 
   public static class SQLQueryEngineFactory implements QueryEngineFactory {
     @Override
     public String getLanguage() {
-      return "sql";
+      return ENGINE_NAME;
     }
 
     @Override
@@ -46,51 +61,52 @@ public class SQLQueryEngine implements QueryEngine {
 
   protected SQLQueryEngine(final DatabaseInternal database) {
     this.database = database;
+    this.functions = new DefaultSQLFunctionFactory();
+    this.methods = new DefaultSQLMethodFactory();
   }
 
   @Override
-  public ResultSet query(String query, Map<String, Object> parameters) {
-    final Statement statement = SQLEngine.parse(query, database);
+  public String getLanguage() {
+    return ENGINE_NAME;
+  }
+
+  @Override
+  public ResultSet query(final String query, final Map<String, Object> parameters) {
+    final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
       throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
-
     return statement.execute(database, parameters);
   }
 
   @Override
-  public ResultSet query(String query, Object... parameters) {
-    final Statement statement = SQLEngine.parse(query, database);
+  public ResultSet query(final String query, final Object... parameters) {
+    final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
       throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
-
     return statement.execute(database, parameters);
   }
 
   @Override
-  public ResultSet command(String query, Map<String, Object> parameters) {
-    final Statement statement = SQLEngine.parse(query, database);
-
+  public ResultSet command(final String query, final Map<String, Object> parameters) {
+    final Statement statement = parse(query, database);
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
-
     return statement.execute(database, parameters);
   }
 
   @Override
-  public ResultSet command(String query, Object... parameters) {
-    final Statement statement = SQLEngine.parse(query, database);
-
+  public ResultSet command(final String query, final Object... parameters) {
+    final Statement statement = parse(query, database);
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
-
     return statement.execute(database, parameters);
   }
 
   @Override
   public AnalyzedQuery analyze(final String query) {
-    final Statement statement = SQLEngine.parse(query, database);
+    final Statement statement = parse(query, database);
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -102,5 +118,87 @@ public class SQLQueryEngine implements QueryEngine {
         return statement.isDDL();
       }
     };
+  }
+
+  public static Object foreachRecord(final Callable<Object, Identifiable> iCallable, Object iCurrent, final CommandContext iContext) {
+    if (iCurrent == null)
+      return null;
+
+    if (iCurrent instanceof Iterable) {
+      iCurrent = ((Iterable) iCurrent).iterator();
+    }
+    if (MultiValue.isMultiValue(iCurrent) || iCurrent instanceof Iterator) {
+      final MultiIterator<Object> result = new MultiIterator<>();
+      for (final Object o : MultiValue.getMultiValueIterable(iCurrent, false)) {
+        if (MultiValue.isMultiValue(o) || o instanceof Iterator) {
+          for (final Object inner : MultiValue.getMultiValueIterable(o, false)) {
+            result.addIterator(iCallable.call((Identifiable) inner));
+          }
+        } else {
+          if (o instanceof Identifiable)
+            result.addIterator(iCallable.call((Identifiable) o));
+          else if (o instanceof Result) {
+            if (((Result) o).getIdentity().isPresent())
+              result.addIterator(iCallable.call(((Result) o).getIdentity().get()));
+          }
+        }
+      }
+      return result;
+    } else if (iCurrent instanceof Identifiable) {
+      return iCallable.call((Identifiable) iCurrent);
+    } else if (iCurrent instanceof Result) {
+      return iCallable.call(((Result) iCurrent).toElement());
+    }
+
+    return null;
+  }
+
+  public DefaultSQLFunctionFactory getFunctionFactory() {
+    return functions;
+  }
+
+  public DefaultSQLMethodFactory getMethodFactory() {
+    return methods;
+  }
+
+  public SQLFunction getFunction(final String name) {
+    SQLFunction sqlFunction = functions.getFunctionInstance(name);
+    if (sqlFunction == null) {
+      final int pos = name.indexOf(".");
+      if (pos > -1) {
+        // LOOK INTO FUNCTION LIBRARY
+        final String libraryName = name.substring(0, pos);
+        final String fnName = name.substring(pos + 1);
+        final FunctionDefinition function = database.getSchema().getFunction(libraryName, fnName);
+        if (function != null) {
+          // WRAP LIBRARY FUNCTION TO SQL FUNCTION TO BE EXECUTED BY SQL ENGINE
+          sqlFunction = new SQLFunctionAbstract(name) {
+            @Override
+            public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+                final CommandContext iContext) {
+              return function.execute(iParams);
+            }
+
+            @Override
+            public String getSyntax() {
+              return null;
+            }
+          };
+        }
+      }
+    }
+
+    if (sqlFunction == null)
+      throw new CommandExecutionException("Unknown function name '" + name + "'");
+
+    return sqlFunction;
+  }
+
+  public SQLMethod getMethod(final String name) {
+    return methods.createMethod(name);
+  }
+
+  public static Statement parse(final String query, final DatabaseInternal database) {
+    return database.getStatementCache().get(query);
   }
 }

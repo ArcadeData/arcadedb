@@ -43,12 +43,13 @@ public class VertexIteratorFilter extends IteratorFilterBase<Vertex> {
       throw new NoSuchElementException();
 
     try {
-      return next.asVertex();
-    } catch (SchemaException e) {
+      return next.asVertex(false);
+    } catch (final SchemaException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on loading vertex %s from edge %s", e, next, nextEdge);
       throw e;
     } finally {
       next = null;
+      ++browsed;
     }
   }
 }

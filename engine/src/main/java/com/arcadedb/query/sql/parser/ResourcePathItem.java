@@ -27,16 +27,12 @@ public class ResourcePathItem extends SimpleNode {
   protected Identifier identifier;
   protected String     name;
 
-  public ResourcePathItem(int id) {
+  public ResourcePathItem(final int id) {
     super(id);
   }
 
-  public ResourcePathItem(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (star) {
       builder.append("*");
     } else if (identifier != null) {
@@ -48,7 +44,7 @@ public class ResourcePathItem extends SimpleNode {
 
   @Override
   public ResourcePathItem copy() {
-    ResourcePathItem result = new ResourcePathItem(-1);
+    final ResourcePathItem result = new ResourcePathItem(-1);
     result.star = star;
     result.identifier = identifier == null ? null : identifier.copy();
     result.name = name;
@@ -56,13 +52,13 @@ public class ResourcePathItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ResourcePathItem that = (ResourcePathItem) o;
+    final ResourcePathItem that = (ResourcePathItem) o;
 
     if (star != that.star)
       return false;

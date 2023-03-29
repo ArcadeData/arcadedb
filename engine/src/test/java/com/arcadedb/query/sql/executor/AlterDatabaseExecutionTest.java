@@ -39,5 +39,9 @@ public class AlterDatabaseExecutionTest extends TestHelper {
     database.command("sql", "ALTER DATABASE `arcadedb.bucketDefaultPageSize` " + Bucket.DEF_PAGE_SIZE);
 
     Assertions.assertEquals(Bucket.DEF_PAGE_SIZE, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+
+    database.command("sql", "ALTER DATABASE `arcadedb.dateTimeFormat` 'yyyy-MM-dd HH:mm:ss.SSS'");
+
+    Assertions.assertEquals("yyyy-MM-dd HH:mm:ss.SSS", database.getSchema().getDateTimeFormat());
   }
 }

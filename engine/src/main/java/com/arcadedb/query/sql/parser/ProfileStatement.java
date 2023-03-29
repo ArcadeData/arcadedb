@@ -35,40 +35,36 @@ public class ProfileStatement extends Statement {
 
   protected Statement statement;
 
-  public ProfileStatement(int id) {
+  public ProfileStatement(final int id) {
     super(id);
   }
 
-  public ProfileStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("EXPLAIN ");
     statement.toString(params, builder);
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, true);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, true);
     if (executionPlan instanceof UpdateExecutionPlan) {
       ((UpdateExecutionPlan) executionPlan).executeInternal();
     }
 
-    LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
+    final LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
 
     while (rs.hasNext()) {
       rs.next();
     }
 
-    ExplainResultSet result = new ExplainResultSet(
+    final ExplainResultSet result = new ExplainResultSet(
         rs.getExecutionPlan().orElseThrow(() -> new CommandExecutionException("Cannot profile command: " + statement)));
     rs.close();
     return result;
@@ -76,48 +72,48 @@ public class ProfileStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(Database db, Map args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
+    context.setDatabase(db);
+    context.setInputParameters(args);
 
-    ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, true);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, true);
 
-    LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
+    final LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
 
     while (rs.hasNext()) {
       rs.next();
     }
 
-    ExplainResultSet result = new ExplainResultSet(
+    final ExplainResultSet result = new ExplainResultSet(
         rs.getExecutionPlan().orElseThrow(() -> new CommandExecutionException("Cannot profile command: " + statement)));
     rs.close();
     return result;
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean profile) {
-    return statement.createExecutionPlan(ctx, profile);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean profile) {
+    return statement.createExecutionPlan(context, profile);
   }
 
   @Override
   public ProfileStatement copy() {
-    ProfileStatement result = new ProfileStatement(-1);
+    final ProfileStatement result = new ProfileStatement(-1);
     result.statement = statement == null ? null : statement.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ProfileStatement that = (ProfileStatement) o;
+    final ProfileStatement that = (ProfileStatement) o;
 
     return Objects.equals(statement, that.statement);
   }

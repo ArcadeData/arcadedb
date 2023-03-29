@@ -35,7 +35,7 @@ public class PerformanceInsertIndexTest extends TestHelper {
   private static final String TYPE_NAME = "User";
   private static final int    PARALLEL  = 3;
 
-  public static void main(String[] args) {
+  public static void main(final String[] args) {
 //    GlobalConfiguration.FLUSH_ONLY_AT_CLOSE.setValue(true);
 //    GlobalConfiguration.PAGE_FLUSH_QUEUE.setValue(100000);
 //    GlobalConfiguration.MAX_PAGE_RAM.setValue(16 * 1024);
@@ -72,7 +72,7 @@ public class PerformanceInsertIndexTest extends TestHelper {
 
       database.commit();
 
-      long begin = System.currentTimeMillis();
+      final long begin = System.currentTimeMillis();
 
       try {
 
@@ -83,7 +83,7 @@ public class PerformanceInsertIndexTest extends TestHelper {
         database.async().setCommitEvery(10_000);
         database.async().onError(new ErrorCallback() {
           @Override
-          public void call(Throwable exception) {
+          public void call(final Throwable exception) {
             LogManager.instance().log(this, Level.SEVERE, "ERROR: " + exception, exception);
             System.exit(1);
           }

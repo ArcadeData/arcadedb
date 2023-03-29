@@ -23,20 +23,10 @@ package com.arcadedb.graphql.parser;
 public class DefaultValue extends SimpleNode {
   protected Value value;
 
-  public DefaultValue(int id) {
+  public DefaultValue(final int id) {
     super(id);
   }
 
-  public DefaultValue(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public Value getValue() {
     return value;

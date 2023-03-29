@@ -25,19 +25,8 @@ public class EnumValueDefinition extends SimpleNode {
   protected EnumValue  enumValue;
   protected Directives directives;
 
-  public EnumValueDefinition(int id) {
+  public EnumValueDefinition(final int id) {
     super(id);
-  }
-
-  public EnumValueDefinition(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=d501ea804071d45439cffe6e78b75781 (do not edit this line) */

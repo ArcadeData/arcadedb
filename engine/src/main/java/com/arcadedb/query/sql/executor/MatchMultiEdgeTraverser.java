@@ -33,13 +33,13 @@ import java.util.*;
  * Created by luigidellaquila on 14/10/16.
  */
 public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
-  public MatchMultiEdgeTraverser(Result lastUpstreamRecord, EdgeTraversal edge) {
+  public MatchMultiEdgeTraverser(final Result lastUpstreamRecord, final EdgeTraversal edge) {
     super(lastUpstreamRecord, edge);
   }
 
-  protected Iterable<ResultInternal> traversePatternEdge(Identifiable startingPoint, CommandContext iCommandContext) {
+  protected Iterable<ResultInternal> traversePatternEdge(final Identifiable startingPoint, final CommandContext iCommandContext) {
 
-    Iterable possibleResults = null;
+    final Iterable possibleResults = null;
     //    if (this.edge.edge.item.getFilter() != null) {
     //      String alias = this.edge.edge.item.getFilter().getAlias();
     //      Object matchedNodes = iCommandContext.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
@@ -52,17 +52,17 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
     //      }
     //    }
 
-    MultiMatchPathItem item = (MultiMatchPathItem) this.item;
+    final MultiMatchPathItem item = (MultiMatchPathItem) this.item;
     List<ResultInternal> result = new ArrayList<>();
 
     List<Object> nextStep = new ArrayList<>();
     nextStep.add(startingPoint);
 
-    Object oldCurrent = iCommandContext.getVariable("$current");
-    for (MatchPathItem sub : item.getItems()) {
-      List<ResultInternal> rightSide = new ArrayList<>();
-      for (Object o : nextStep) {
-        WhereClause whileCond = sub.getFilter() == null ? null : sub.getFilter().getWhileCondition();
+    final Object oldCurrent = iCommandContext.getVariable("current");
+    for (final MatchPathItem sub : item.getItems()) {
+      final List<ResultInternal> rightSide = new ArrayList<>();
+      for (final Object o : nextStep) {
+        final WhereClause whileCond = sub.getFilter() == null ? null : sub.getFilter().getWhileCondition();
 
         MethodCall method = sub.getMethod();
         if (sub instanceof MatchPathItemFirst) {
@@ -74,30 +74,29 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
           if (current instanceof Result) {
             current = ((Result) current).getElement().orElse(null);
           }
-          MatchEdgeTraverser subtraverser = new MatchEdgeTraverser(null, sub);
+          final MatchEdgeTraverser subtraverser = new MatchEdgeTraverser(null, sub);
           subtraverser.executeTraversal(iCommandContext, sub, (Identifiable) current, 0, null).forEach(x -> rightSide.add(x));
 
         } else {
-          iCommandContext.setVariable("$current", o);
-          Object nextSteps = method.execute(o, possibleResults, iCommandContext);
+          iCommandContext.setVariable("current", o);
+          final Object nextSteps = method.execute(o, possibleResults, iCommandContext);
           if (nextSteps instanceof Collection) {
-            ((Collection) nextSteps).stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull)
-                .forEach(i -> rightSide.add((ResultInternal) i));
+            ((Collection) nextSteps).stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull).forEach(i -> rightSide.add((ResultInternal) i));
           } else if (nextSteps instanceof Document) {
             rightSide.add(new ResultInternal((Document) nextSteps));
           } else if (nextSteps instanceof ResultInternal) {
             rightSide.add((ResultInternal) nextSteps);
           } else if (nextSteps instanceof Iterable) {
-            for (Object step : (Iterable) nextSteps) {
-              ResultInternal converted = toOResultInternal(step);
+            for (final Object step : (Iterable) nextSteps) {
+              final ResultInternal converted = toOResultInternal(step);
               if (converted != null) {
                 rightSide.add(converted);
               }
             }
           } else if (nextSteps instanceof Iterator) {
-            Iterator iterator = (Iterator) nextSteps;
+            final Iterator iterator = (Iterator) nextSteps;
             while (iterator.hasNext()) {
-              ResultInternal converted = toOResultInternal(iterator.next());
+              final ResultInternal converted = toOResultInternal(iterator.next());
               if (converted != null) {
                 rightSide.add(converted);
               }
@@ -109,12 +108,12 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
       result = rightSide;
     }
 
-    iCommandContext.setVariable("$current", oldCurrent);
+    iCommandContext.setVariable("current", oldCurrent);
     //    return (qR instanceof Iterable) ? (Iterable) qR : Collections.singleton((PIdentifiable) qR);
     return result;
   }
 
-  private ResultInternal toOResultInternal(Object x) {
+  private ResultInternal toOResultInternal(final Object x) {
     if (x instanceof ResultInternal) {
       return (ResultInternal) x;
     }

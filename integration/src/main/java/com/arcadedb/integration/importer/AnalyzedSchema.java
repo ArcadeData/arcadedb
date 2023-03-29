@@ -38,8 +38,8 @@ public class AnalyzedSchema {
   }
 
   public void endParsing() {
-    for (AnalyzedEntity entity : entities.values())
-      for (AnalyzedProperty property : entity.getProperties())
+    for (final AnalyzedEntity entity : entities.values())
+      for (final AnalyzedProperty property : entity.getProperties())
         property.endParsing();
   }
 

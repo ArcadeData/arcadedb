@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -34,44 +33,37 @@ import com.arcadedb.schema.Property;
 import java.util.*;
 
 public class AlterPropertyStatement extends DDLStatement {
-
   public Expression settingValue;
-
   Identifier typeName;
   Identifier propertyName;
   Identifier customPropertyName;
   Expression customPropertyValue;
   Identifier settingName;
 
-  public AlterPropertyStatement(int id) {
+  public AlterPropertyStatement(final int id) {
     super(id);
   }
 
-  public AlterPropertyStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-    Database db = ctx.getDatabase();
-    DocumentType typez = db.getSchema().getType(typeName.getStringValue());
+  public ResultSet executeDDL(final CommandContext context) {
+    final Database db = context.getDatabase();
+    final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
 
-    if (typez == null) {
+    if (typez == null)
       throw new CommandExecutionException("Invalid type name or type not found: " + typez);
-    }
 
     final Property property = typez.getProperty(propertyName.getStringValue());
     if (property == null)
-      throw new CommandExecutionException("Property '" + property + "' not found on type " + typez);
+      throw new CommandExecutionException("Property '" + propertyName + "' not found on type " + typez);
 
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", typeName.getStringValue());
     result.setProperty("property", propertyName.getStringValue());
 
     if (customPropertyName != null) {
-      String customName = customPropertyName.getStringValue();
-      Object oldValue = property.getCustomValue(customName);
-      Object finalValue = customPropertyValue.execute((Identifiable) null, ctx);
+      final String customName = customPropertyName.getStringValue();
+      final Object oldValue = property.getCustomValue(customName);
+      final Object finalValue = customPropertyValue.execute((Identifiable) null, context);
       property.setCustomValue(customName, finalValue);
 
       result.setProperty("operation", "alter property custom");
@@ -80,12 +72,31 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
       final String setting = settingName.getStringValue().toLowerCase();
-      final Object finalValue = settingValue.execute((Identifiable) null, ctx);
+      final Object finalValue = settingValue.execute((Identifiable) null, context);
 
       final Object oldValue;
-      if ("default".equals(setting)) {
+
+      if (setting.equalsIgnoreCase("readonly")) {
+        oldValue = property.isReadonly();
+        property.setReadonly((boolean) finalValue);
+      } else if (setting.equalsIgnoreCase("mandatory")) {
+        oldValue = property.isMandatory();
+        property.setMandatory((boolean) finalValue);
+      } else if (setting.equalsIgnoreCase("notnull")) {
+        oldValue = property.isNotNull();
+        property.setNotNull((boolean) finalValue);
+      } else if (setting.equalsIgnoreCase("max")) {
+        oldValue = property.getMax();
+        property.setMax("" + finalValue);
+      } else if (setting.equalsIgnoreCase("min")) {
+        oldValue = property.getMin();
+        property.setMin("" + finalValue);
+      } else if (setting.equalsIgnoreCase("default")) {
         oldValue = property.getDefaultValue();
-        property.setDefaultValue(finalValue);
+        property.setDefaultValue(settingValue.toString());
+      } else if (setting.equalsIgnoreCase("regexp")) {
+        oldValue = property.getRegexp();
+        property.setRegexp("" + finalValue);
       } else {
         throw new CommandExecutionException("Setting '" + setting + "' not supported");
       }
@@ -103,12 +114,7 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public void validate() throws CommandSQLParsingException {
-    super.validate();//TODO
-  }
-
-  @Override
-  public void toString( final Map<String, Object> params, final StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALTER PROPERTY ");
     typeName.toString(params, builder);
     builder.append(".");
@@ -139,36 +145,8 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AlterPropertyStatement that = (AlterPropertyStatement) o;
-
-    if (!Objects.equals(typeName, that.typeName))
-      return false;
-    if (!Objects.equals(propertyName, that.propertyName))
-      return false;
-    if (!Objects.equals(customPropertyName, that.customPropertyName))
-      return false;
-    if (!Objects.equals(customPropertyValue, that.customPropertyValue))
-      return false;
-    if (!Objects.equals(settingName, that.settingName))
-      return false;
-    return Objects.equals(settingValue, that.settingValue);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = typeName != null ? typeName.hashCode() : 0;
-    result = 31 * result + (propertyName != null ? propertyName.hashCode() : 0);
-    result = 31 * result + (customPropertyName != null ? customPropertyName.hashCode() : 0);
-    result = 31 * result + (customPropertyValue != null ? customPropertyValue.hashCode() : 0);
-    result = 31 * result + (settingName != null ? settingName.hashCode() : 0);
-    result = 31 * result + (settingValue != null ? settingValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { typeName, propertyName, customPropertyName, customPropertyValue, settingName, settingValue };
   }
 }
 /* JavaCC - OriginalChecksum=2421f6ad3b5f1f8e18149650ff80f1e7 (do not edit this line) */

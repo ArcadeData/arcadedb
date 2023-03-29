@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
@@ -84,6 +85,8 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
       file.createProperty("fileId", Integer.class);
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "File", "absoluteId");
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "File", "directoryId", "fileId");
+
+      file.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
 
       Assertions.assertFalse(database.getSchema().existsType("HasChildren"));
       database.getSchema().createEdgeType("HasChildren");

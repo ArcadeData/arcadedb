@@ -40,10 +40,6 @@ public class DeleteStatement extends Statement {
     super(id);
   }
 
-  public DeleteStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DELETE FROM ");
     fromClause.toString(params, builder);
@@ -74,64 +70,39 @@ public class DeleteStatement extends Statement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final DeleteStatement that = (DeleteStatement) o;
-
-    if (returnBefore != that.returnBefore)
-      return false;
-    if (unsafe != that.unsafe)
-      return false;
-    if (!Objects.equals(fromClause, that.fromClause))
-      return false;
-    if (!Objects.equals(whereClause, that.whereClause))
-      return false;
-    return Objects.equals(limit, that.limit);
+  protected Object[] getIdentityElements() {
+    return new Object[] { fromClause, whereClause, returnBefore, limit, unsafe };
   }
 
   @Override
-  public int hashCode() {
-    int result = fromClause != null ? fromClause.hashCode() : 0;
-    result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
-    result = 31 * result + (returnBefore ? 1 : 0);
-    result = 31 * result + (limit != null ? limit.hashCode() : 0);
-    result = 31 * result + (unsafe ? 1 : 0);
-    return result;
-  }
-
-  @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(params);
-    final DeleteExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    final DeleteExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
-    final DeleteExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setDatabase(db);
+    context.setInputParameters(args);
+    final DeleteExecutionPlan executionPlan = createExecutionPlan(context, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public DeleteExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+  public DeleteExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final DeleteExecutionPlanner planner = new DeleteExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   public FromClause getFromClause() {

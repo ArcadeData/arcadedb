@@ -32,7 +32,7 @@ public class PerformanceComplexIndexTest {
   private static final int    TOT       = 10_000_000;
   private static final String TYPE_NAME = "Device";
 
-  public static void main(String[] args) throws Exception {
+  public static void main(final String[] args) throws Exception {
     new PerformanceComplexIndexTest().run();
   }
 
@@ -47,7 +47,7 @@ public class PerformanceComplexIndexTest {
       if (!database.getSchema().existsType(TYPE_NAME)) {
         database.begin();
 
-        DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, parallel);
+        final DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, parallel);
 
         v.createProperty("id", Long.class);
         v.createProperty("name", String.class);
@@ -65,7 +65,7 @@ public class PerformanceComplexIndexTest {
 
     database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open();
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     try {
 

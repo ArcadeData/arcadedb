@@ -25,29 +25,30 @@ import com.arcadedb.query.sql.parser.WhereClause;
  * Created by luigidellaquila on 20/09/16.
  */
 public class EdgeTraversal {
-  boolean out;
+  final        boolean     out;
   public final PatternEdge edge;
   private      String      leftClass;
-  private String      leftCluster;
-  private Rid         leftRid;
-  private WhereClause leftFilter;
+  private      String      leftCluster;
+  private      Rid         leftRid;
+  private      WhereClause leftFilter;
 
-  public EdgeTraversal(PatternEdge edge, boolean out) {
+  public EdgeTraversal(final PatternEdge edge, final boolean out) {
     this.edge = edge;
     this.out = out;
   }
 
-  public void setLeftClass(String leftClass) {
+  public void setLeftClass(final String leftClass) {
     this.leftClass = leftClass;
   }
 
-  public void setLeftFilter(WhereClause leftFilter) {
+  public void setLeftFilter(final WhereClause leftFilter) {
     this.leftFilter = leftFilter;
   }
 
   public String getLeftClass() {
     return leftClass;
   }
+
   public String getLeftCluster() {
     return leftCluster;
   }
@@ -56,11 +57,11 @@ public class EdgeTraversal {
     return leftRid;
   }
 
-  public void setLeftCluster(String leftCluster) {
+  public void setLeftCluster(final String leftCluster) {
     this.leftCluster = leftCluster;
   }
 
-  public void setLeftRid(Rid leftRid) {
+  public void setLeftRid(final Rid leftRid) {
     this.leftRid = leftRid;
   }
 

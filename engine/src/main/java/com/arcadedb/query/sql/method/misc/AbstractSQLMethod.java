@@ -25,23 +25,22 @@ import com.arcadedb.query.sql.executor.SQLMethod;
  * @author Johann Sorel (Geomatys)
  */
 public abstract class AbstractSQLMethod implements SQLMethod {
-
   private final String name;
-  private final int    minparams;
-  private final int    maxparams;
+  private final int    minParams;
+  private final int    maxParams;
 
-  public AbstractSQLMethod(String name) {
+  public AbstractSQLMethod(final String name) {
     this(name, 0);
   }
 
-  public AbstractSQLMethod(String name, int nbparams) {
+  public AbstractSQLMethod(final String name, final int nbparams) {
     this(name, nbparams, nbparams);
   }
 
-  public AbstractSQLMethod(String name, int minparams, int maxparams) {
+  public AbstractSQLMethod(final String name, final int minParams, final int maxParams) {
     this.name = name;
-    this.minparams = minparams;
-    this.maxparams = maxparams;
+    this.minParams = minParams;
+    this.maxParams = maxParams;
   }
 
   @Override
@@ -54,16 +53,16 @@ public abstract class AbstractSQLMethod implements SQLMethod {
     final StringBuilder sb = new StringBuilder("<field>.");
     sb.append(getName());
     sb.append('(');
-    for (int i = 0; i < minparams; i++) {
+    for (int i = 0; i < minParams; i++) {
       if (i != 0) {
         sb.append(", ");
       }
       sb.append("param");
       sb.append(i + 1);
     }
-    if (minparams != maxparams) {
+    if (minParams != maxParams) {
       sb.append('[');
-      for (int i = minparams; i < maxparams; i++) {
+      for (int i = minParams; i < maxParams; i++) {
         if (i != 0) {
           sb.append(", ");
         }
@@ -75,16 +74,6 @@ public abstract class AbstractSQLMethod implements SQLMethod {
     sb.append(')');
 
     return sb.toString();
-  }
-
-  @Override
-  public int getMinParams() {
-    return minparams;
-  }
-
-  @Override
-  public int getMaxParams() {
-    return maxparams;
   }
 
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {
@@ -105,7 +94,7 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   }
 
   @Override
-  public int compareTo(SQLMethod o) {
+  public int compareTo(final SQLMethod o) {
     return this.getName().compareTo(o.getName());
   }
 

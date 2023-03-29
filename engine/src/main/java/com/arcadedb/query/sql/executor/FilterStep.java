@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.WhereClause;
 
@@ -28,23 +27,18 @@ import java.util.*;
  * Created by luigidellaquila on 12/07/16.
  */
 public class FilterStep extends AbstractExecutionStep {
-  private WhereClause whereClause;
+  private final WhereClause whereClause;
 
   ResultSet prevResult = null;
 
-  private long cost;
-
-  public FilterStep(WhereClause whereClause, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FilterStep(final WhereClause whereClause, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.whereClause = whereClause;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
-      throw new IllegalStateException("filter step requires a previous step");
-    }
-    ExecutionStepInternal prevStep = prev.get();
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ExecutionStepInternal prevStep = checkForPrevious();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -58,7 +52,7 @@ public class FilterStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -66,16 +60,16 @@ public class FilterStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
             }
           }
           nextItem = prevResult.next();
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
-            if (whereClause.matchesFilters(nextItem, ctx)) {
+            if (whereClause.matchesFilters(nextItem, context)) {
               break;
             }
 
@@ -90,30 +84,27 @@ public class FilterStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-
-        if (fetched >= nRecords || finished) {
+        if (fetched >= nRecords || finished)
           return false;
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           fetchNextItem();
-        }
 
         return nextItem != null;
-
       }
 
       @Override
       public Result next() {
-        if (fetched >= nRecords || finished) {
-          throw new IllegalStateException();
-        }
-        if (nextItem == null) {
+        if (fetched >= nRecords || finished)
+          throw new NoSuchElementException();
+
+        if (nextItem == null)
           fetchNextItem();
-        }
-        if (nextItem == null) {
-          throw new IllegalStateException();
-        }
-        Result result = nextItem;
+
+        if (nextItem == null)
+          throw new NoSuchElementException();
+
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         return result;
@@ -123,27 +114,16 @@ public class FilterStep extends AbstractExecutionStep {
       public void close() {
         FilterStep.this.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
-
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder result = new StringBuilder();
     result.append(ExecutionStepInternal.getIndent(depth, indent)).append("+ FILTER ITEMS WHERE ");
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result.append(" (").append(getCostFormatted()).append(")");
-    }
+
     result.append("\n");
     result.append(ExecutionStepInternal.getIndent(depth, indent));
     result.append("  ");
@@ -152,38 +132,12 @@ public class FilterStep extends AbstractExecutionStep {
   }
 
   @Override
-  public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (whereClause != null) {
-      result.setProperty("whereClause", whereClause.serialize());
-    }
-
-    return result;
-  }
-
-  @Override
-  public void deserialize(Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      whereClause = new WhereClause(-1);
-      whereClause.deserialize(fromResult.getProperty("whereClause"));
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
-  }
-
-  @Override
   public boolean canBeCached() {
     return true;
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    return new FilterStep(this.whereClause.copy(), ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new FilterStep(this.whereClause.copy(), context, profilingEnabled);
   }
 }

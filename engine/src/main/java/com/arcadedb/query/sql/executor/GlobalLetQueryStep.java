@@ -29,52 +29,48 @@ import java.util.*;
  * Created by luigidellaquila on 03/08/16.
  */
 public class GlobalLetQueryStep extends AbstractExecutionStep {
-
   private final Identifier            varName;
   private final InternalExecutionPlan subExecutionPlan;
-
   boolean executed = false;
 
-
-  public GlobalLetQueryStep(Identifier varName, Statement query, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.varName = varName;
 
-    BasicCommandContext subCtx = new BasicCommandContext();
-    subCtx.setDatabase(ctx.getDatabase());
-    subCtx.setParent(ctx);
+    final BasicCommandContext subCtx = new BasicCommandContext();
+    subCtx.setDatabase(context.getDatabase());
+    subCtx.setParent(context);
     subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
   }
 
-  @Override public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    calculate(ctx);
+  @Override
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+    calculate(context);
     return new InternalResultSet();
   }
 
-  private void calculate(CommandContext ctx) {
-    if (executed) {
+  private void calculate(final CommandContext context) {
+    if (executed)
       return;
-    }
-    ctx.setVariable(varName.getStringValue(), toList(new LocalResultSet(subExecutionPlan)));
+
+    context.setVariable(varName.getStringValue(), toList(new LocalResultSet(subExecutionPlan)));
     executed = true;
   }
 
-
-
-  private List<Result> toList(LocalResultSet oLocalResultSet) {
-    List<Result> result = new ArrayList<>();
-    while (oLocalResultSet.hasNext()) {
+  private List<Result> toList(final LocalResultSet oLocalResultSet) {
+    final List<Result> result = new ArrayList<>();
+    while (oLocalResultSet.hasNext())
       result.add(oLocalResultSet.next());
-    }
+
     oLocalResultSet.close();
     return result;
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (once)\n" +
-        spaces + "  " + varName + " = \n" + box(spaces+"    ", this.subExecutionPlan.prettyPrint(0, indent));
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    return spaces + "+ LET (once)\n" + spaces + "  " + varName + " = \n" + box(spaces + "    ", this.subExecutionPlan.prettyPrint(0, indent));
   }
 
   @Override
@@ -82,12 +78,12 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
     return Collections.singletonList(this.subExecutionPlan);
   }
 
-  private String box(String spaces, String s) {
-    String[] rows = s.split("\n");
-    StringBuilder result = new StringBuilder();
+  private String box(final String spaces, final String s) {
+    final String[] rows = s.split("\n");
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+-------------------------\n");
-    for(String row:rows){
+    for (final String row : rows) {
       result.append(spaces);
       result.append("| ");
       result.append(row);

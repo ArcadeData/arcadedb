@@ -26,19 +26,8 @@ public class InlineFragment extends SimpleNode {
   protected Directives    directives;
   protected SelectionSet  selectionSet;
 
-  public InlineFragment(int id) {
+  public InlineFragment(final int id) {
     super(id);
-  }
-
-  public InlineFragment(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=b25dd549b07816d5a3cbcf5cf42f3a6f (do not edit this line) */

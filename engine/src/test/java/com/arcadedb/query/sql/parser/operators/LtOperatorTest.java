@@ -30,7 +30,7 @@ import java.math.*;
 public class LtOperatorTest {
   @Test
   public void test() {
-    LtOperator op = new LtOperator(-1);
+    final LtOperator op = new LtOperator(-1);
     Assertions.assertFalse(op.execute(null, 1, 1));
     Assertions.assertFalse(op.execute(null, 1, 0));
     Assertions.assertTrue(op.execute(null, 0, 1));
@@ -60,7 +60,7 @@ public class LtOperatorTest {
     try {
       Assertions.assertTrue(op.execute(null, new Object(), new Object()));
       Assertions.fail();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       Assertions.assertTrue(e instanceof ClassCastException);
     }
   }

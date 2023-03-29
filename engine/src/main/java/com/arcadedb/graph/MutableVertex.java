@@ -25,7 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.VertexType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -72,12 +72,12 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public synchronized MutableVertex fromMap(Map<String, Object> map) {
+  public synchronized MutableVertex fromMap(final Map<String, Object> map) {
     return (MutableVertex) super.fromMap(map);
   }
 
   @Override
-  public synchronized MutableVertex fromJSON(JSONObject json) {
+  public synchronized MutableVertex fromJSON(final JSONObject json) {
     return (MutableVertex) super.fromJSON(json);
   }
 
@@ -111,11 +111,13 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   @Override
   public void setOutEdgesHeadChunk(final RID outEdges) {
+    dirty = true;
     this.outEdges = outEdges;
   }
 
   @Override
   public void setInEdgesHeadChunk(final RID inEdges) {
+    dirty = true;
     this.inEdges = inEdges;
   }
 
@@ -133,7 +135,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public long countEdges(DIRECTION direction, String edgeType) {
+  public long countEdges(final DIRECTION direction, final String edgeType) {
     return database.getGraphEngine().countEdges(this, direction, edgeType);
   }
 
@@ -178,9 +180,11 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
-    final Map<String, Object> map = super.toMap();
-    map.put("@cat", "v");
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> map = super.toMap(includeMetadata);
+    if (includeMetadata) {
+      map.put("@cat", "v");
+    }
     return map;
   }
 

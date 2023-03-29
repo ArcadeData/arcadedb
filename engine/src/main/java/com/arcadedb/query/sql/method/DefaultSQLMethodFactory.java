@@ -20,19 +20,14 @@ package com.arcadedb.query.sql.method;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.query.sql.function.conversion.SQLMethodAsDate;
-import com.arcadedb.query.sql.function.conversion.SQLMethodAsDateTime;
-import com.arcadedb.query.sql.function.conversion.SQLMethodAsDecimal;
-import com.arcadedb.query.sql.function.conversion.SQLMethodConvert;
 import com.arcadedb.query.sql.function.text.SQLMethodAppend;
-import com.arcadedb.query.sql.function.text.SQLMethodHash;
-import com.arcadedb.query.sql.function.text.SQLMethodLength;
-import com.arcadedb.query.sql.function.text.SQLMethodReplace;
-import com.arcadedb.query.sql.function.text.SQLMethodRight;
-import com.arcadedb.query.sql.function.text.SQLMethodSubString;
-import com.arcadedb.query.sql.function.text.SQLMethodToJSON;
+import com.arcadedb.query.sql.method.geo.SQLMethodIntersectsWith;
+import com.arcadedb.query.sql.method.geo.SQLMethodIsWithin;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsBoolean;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsByte;
+import com.arcadedb.query.sql.method.misc.SQLMethodAsDate;
+import com.arcadedb.query.sql.method.misc.SQLMethodAsDateTime;
+import com.arcadedb.query.sql.method.misc.SQLMethodAsDecimal;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsDouble;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsFloat;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsInteger;
@@ -43,6 +38,7 @@ import com.arcadedb.query.sql.method.misc.SQLMethodAsSet;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsShort;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsString;
 import com.arcadedb.query.sql.method.misc.SQLMethodCharAt;
+import com.arcadedb.query.sql.method.misc.SQLMethodConvert;
 import com.arcadedb.query.sql.method.misc.SQLMethodExclude;
 import com.arcadedb.query.sql.method.misc.SQLMethodField;
 import com.arcadedb.query.sql.method.misc.SQLMethodFormat;
@@ -53,6 +49,7 @@ import com.arcadedb.query.sql.method.misc.SQLMethodKeys;
 import com.arcadedb.query.sql.method.misc.SQLMethodLastIndexOf;
 import com.arcadedb.query.sql.method.misc.SQLMethodLeft;
 import com.arcadedb.query.sql.method.misc.SQLMethodNormalize;
+import com.arcadedb.query.sql.method.misc.SQLMethodPrecision;
 import com.arcadedb.query.sql.method.misc.SQLMethodPrefix;
 import com.arcadedb.query.sql.method.misc.SQLMethodRemove;
 import com.arcadedb.query.sql.method.misc.SQLMethodRemoveAll;
@@ -104,6 +101,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodLeft.NAME, new SQLMethodLeft());
     register(SQLMethodLength.NAME, new SQLMethodLength());
     register(SQLMethodNormalize.NAME, new SQLMethodNormalize());
+    register(SQLMethodPrecision.NAME, new SQLMethodPrecision());
     register(SQLMethodPrefix.NAME, new SQLMethodPrefix());
     register(SQLMethodRemove.NAME, new SQLMethodRemove());
     register(SQLMethodRemoveAll.NAME, new SQLMethodRemoveAll());
@@ -118,6 +116,9 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodSubString.NAME, new SQLMethodSubString());
     register(SQLMethodToJSON.NAME, new SQLMethodToJSON());
     register(SQLMethodValues.NAME, new SQLMethodValues());
+    // GEO
+    register(SQLMethodIsWithin.NAME, new SQLMethodIsWithin());
+    register(SQLMethodIntersectsWith.NAME, new SQLMethodIntersectsWith());
   }
 
   public void register(final String iName, final Object iImplementation) {
@@ -132,7 +133,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     if (m instanceof Class<?>)
       try {
         method = (SQLMethod) ((Class<?>) m).getConstructor().newInstance();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new CommandExecutionException("Cannot create SQL method: " + m, e);
       }
     else

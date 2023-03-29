@@ -44,7 +44,7 @@ public class CreateEdgeExecutionPlanner {
   protected final Number     retry;
   protected final Number     wait;
 
-  public CreateEdgeExecutionPlanner(CreateEdgeStatement statement) {
+  public CreateEdgeExecutionPlanner(final CreateEdgeStatement statement) {
     this.targetClass = statement.getTargetType() == null ? null : statement.getTargetType().copy();
     this.targetClusterName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
     this.leftExpression = statement.getLeftExpression() == null ? null : statement.getLeftExpression().copy();
@@ -55,14 +55,14 @@ public class CreateEdgeExecutionPlanner {
     this.wait = statement.getWait();
   }
 
-  public InsertExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
 
     if (targetClass == null) {
       if (targetClusterName == null) {
         throw new CommandSQLParsingException("Missing target");
       } else {
-        final Database db = ctx.getDatabase();
-        DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getId()));
+        final Database db = context.getDatabase();
+        final DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getId()));
         if (typez != null) {
           targetClass = new Identifier(typez.getName());
         } else {
@@ -71,65 +71,66 @@ public class CreateEdgeExecutionPlanner {
       }
     }
 
-    InsertExecutionPlan result = new InsertExecutionPlan(ctx);
+    final InsertExecutionPlan result = new InsertExecutionPlan(context);
 
-    handleCheckType(result, ctx, enableProfiling);
+    handleCheckType(result, context, enableProfiling);
 
-    handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"), leftExpression, ctx, enableProfiling);
-    handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), rightExpression, ctx, enableProfiling);
+    handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"), leftExpression, context, enableProfiling);
+    handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), rightExpression, context, enableProfiling);
 
     final String uniqueIndexName;
-//    if (ctx.getDatabase().getSchema().existsType(targetClass.getStringValue())) {
-//      final EdgeType clazz = (EdgeType) ctx.getDatabase().getSchema().getType(targetClass.getStringValue());
+//    if (context.getDatabase().getSchema().existsType(targetClass.getStringValue())) {
+//      final EdgeType clazz = (EdgeType) context.getDatabase().getSchema().getType(targetClass.getStringValue());
 //      uniqueIndexName = clazz.getAllIndexes(true).stream().filter(x -> x.isUnique())
-//          .filter(x -> x.getPropertyNames().size() == 2 && x.getPropertyNames().contains("@out") && x.getPropertyNames().contains("@in")).map(x -> x.getName())
+//          .filter(x -> x.getPropertyNames().size() == 2 && x.has("@out") && x.has("@in")).map(x -> x.getName())
 //          .findFirst().orElse(null);
 //    } else
     uniqueIndexName = null;
 
     result.chain(new CreateEdgesStep(targetClass, targetClusterName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
-        new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), ifNotExists, wait, retry, ctx, enableProfiling));
+        new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), ifNotExists, wait, retry, context, enableProfiling));
 
-    handleSetFields(result, body, ctx, enableProfiling);
-    handleSave(result, targetClusterName, ctx, enableProfiling);
+    handleSetFields(result, body, context, enableProfiling);
+    handleSave(result, targetClusterName, context, enableProfiling);
     //TODO implement batch, wait and retry
     return result;
   }
 
-  private void handleGlobalLet(InsertExecutionPlan result, Identifier name, Expression expression, CommandContext ctx, boolean profilingEnabled) {
-    result.chain(new GlobalLetExpressionStep(name, expression, ctx, profilingEnabled));
+  private void handleGlobalLet(final InsertExecutionPlan result, final Identifier name, final Expression expression, final CommandContext context,
+      final boolean profilingEnabled) {
+    result.chain(new GlobalLetExpressionStep(name, expression, context, profilingEnabled));
   }
 
-  private void handleCheckType(InsertExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
+  private void handleCheckType(final InsertExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
     if (targetClass != null) {
-      result.chain(new CheckIsEdgeTypeStep(targetClass.getStringValue(), ctx, profilingEnabled));
+      result.chain(new CheckIsEdgeTypeStep(targetClass.getStringValue(), context, profilingEnabled));
     }
   }
 
-  private void handleSave(InsertExecutionPlan result, Identifier targetClusterName, CommandContext ctx, boolean profilingEnabled) {
-    result.chain(new SaveElementStep(ctx, targetClusterName, profilingEnabled));
+  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context, final boolean profilingEnabled) {
+    result.chain(new SaveElementStep(context, targetClusterName, profilingEnabled));
   }
 
-  private void handleSetFields(InsertExecutionPlan result, InsertBody insertBody, CommandContext ctx, boolean profilingEnabled) {
+  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext context, final boolean profilingEnabled) {
     if (insertBody == null) {
       return;
     }
     if (insertBody.getIdentifierList() != null) {
-      result.chain(new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), ctx, profilingEnabled));
+      result.chain(new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), context, profilingEnabled));
     } else if (insertBody.getContent() != null) {
-      result.chain(new UpdateContentStep(insertBody.getContent(), ctx, profilingEnabled));
+      result.chain(new UpdateContentStep(insertBody.getContent(), context, profilingEnabled));
     } else if (insertBody.getContentInputParam() != null) {
-      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), ctx, profilingEnabled));
+      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), context, profilingEnabled));
     } else if (insertBody.getSetExpressions() != null) {
-      List<UpdateItem> items = new ArrayList<>();
-      for (InsertSetExpression exp : insertBody.getSetExpressions()) {
-        UpdateItem item = new UpdateItem(-1);
+      final List<UpdateItem> items = new ArrayList<>();
+      for (final InsertSetExpression exp : insertBody.getSetExpressions()) {
+        final UpdateItem item = new UpdateItem(-1);
         item.setOperator(UpdateItem.OPERATOR_EQ);
         item.setLeft(exp.getLeft().copy());
         item.setRight(exp.getRight().copy());
         items.add(item);
       }
-      result.chain(new UpdateSetStep(items, ctx, profilingEnabled));
+      result.chain(new UpdateSetStep(items, context, profilingEnabled));
     }
   }
 

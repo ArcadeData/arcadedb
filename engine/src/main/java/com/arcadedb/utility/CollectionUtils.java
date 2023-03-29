@@ -18,6 +18,8 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.*;
@@ -38,5 +40,82 @@ public class CollectionUtils {
     else if (l1.size() < l2.size())
       return -1;
     return 0;
+  }
+
+  /**
+   * Returns the count of the remaining items that have not been iterated yet.<br>
+   * <b>NOTE: the default implementation consumes the iterator</b>.
+   */
+  public static long countEntries(final Iterator iterator) {
+    long tot = 0;
+
+    while (iterator.hasNext()) {
+      iterator.next();
+      tot++;
+    }
+
+    return tot;
+  }
+
+  public static List<Document> resultsetToListOfDocuments(final ResultSet resultset) {
+    final List<Document> list = new ArrayList<>();
+    while (resultset.hasNext())
+      list.add(resultset.next().toElement());
+    return list;
+  }
+
+  public static Document getFirstResultAsDocument(final ResultSet resultset) {
+    if (resultset.hasNext())
+      return resultset.next().toElement();
+    return null;
+  }
+
+  public static Object getFirstResultValue(final ResultSet resultset, final String propertyName) {
+    if (resultset.hasNext())
+      return resultset.next().getProperty(propertyName);
+    return null;
+  }
+
+  public static <T> List<T> addToUnmodifiableList(List<T> list, T objToAdd) {
+    final ArrayList<T> result = new ArrayList<>(list.size() + 1);
+    result.addAll(list);
+    result.add(objToAdd);
+    return Collections.unmodifiableList(result);
+  }
+
+  public static <T> List<T> removeFromUnmodifiableList(List<T> list, T objToRemove) {
+    final ArrayList<T> result = new ArrayList<>(list.size() - 1);
+    for (int i = 0; i < list.size(); i++) {
+      final T o = list.get(i);
+      if (Objects.equals(o, objToRemove))
+        continue;
+      result.add(o);
+    }
+    return Collections.unmodifiableList(result);
+  }
+
+  public static <T> List<T> addAllToUnmodifiableList(List<T> list, List<T> objsToAdd) {
+    final ArrayList<T> result = new ArrayList<>(list.size() + objsToAdd.size());
+    result.addAll(list);
+    result.addAll(objsToAdd);
+    return Collections.unmodifiableList(result);
+  }
+
+  public static <T> List<T> removeAllFromUnmodifiableList(List<T> list, List<T> objsToRemove) {
+    final ArrayList<T> result = new ArrayList<>(list.size() - objsToRemove.size());
+    for (int i = 0; i < list.size(); i++) {
+      final T o = list.get(i);
+
+      boolean found = false;
+      for (int k = 0; k < objsToRemove.size(); k++) {
+        if (Objects.equals(o, objsToRemove.get(k))) {
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+        result.add(o);
+    }
+    return Collections.unmodifiableList(result);
   }
 }

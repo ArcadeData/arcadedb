@@ -24,26 +24,16 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 
 public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryCompareOperator {
-
-  public NullSafeEqualsCompareOperator(int id) {
+  public NullSafeEqualsCompareOperator(final int id) {
     super(id);
   }
 
-  public NullSafeEqualsCompareOperator(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
+  public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     if (iLeft == null && iRight == null)
       return true;
 
     return QueryOperatorEquals.equals(iLeft, iRight);
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override
@@ -57,7 +47,7 @@ public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryC
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

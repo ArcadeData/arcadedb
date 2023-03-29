@@ -33,7 +33,7 @@ public class ProfileStatementExecutionTest {
       db.command("sql", "insert into testProfile set name ='foo'");
       db.command("sql", "insert into testProfile set name ='bar'");
 
-      ResultSet result = db.query("sql", "PROFILE SELECT FROM testProfile WHERE name ='bar'");
+      final ResultSet result = db.query("sql", "PROFILE SELECT FROM testProfile WHERE name ='bar'");
       Assertions.assertTrue(result.getExecutionPlan().get().prettyPrint(0, 2).contains("μs"));
 
       result.close();

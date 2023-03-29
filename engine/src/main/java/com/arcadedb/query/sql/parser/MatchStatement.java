@@ -68,19 +68,19 @@ public class MatchStatement extends Statement {
     return returnNestedProjections;
   }
 
-  public void setReturnNestedProjections(List<NestedProjection> returnNestedProjections) {
+  public void setReturnNestedProjections(final List<NestedProjection> returnNestedProjections) {
     this.returnNestedProjections = returnNestedProjections;
   }
 
   public static class MatchContext {
     int currentEdgeNumber = 0;
 
-    Map<String, Iterable>     candidates   = new LinkedHashMap<String, Iterable>();
-    Map<String, Identifiable> matched      = new LinkedHashMap<String, Identifiable>();
-    Map<PatternEdge, Boolean> matchedEdges = new IdentityHashMap<PatternEdge, Boolean>();
+    final Map<String, Iterable>     candidates   = new LinkedHashMap<String, Iterable>();
+    final Map<String, Identifiable> matched      = new LinkedHashMap<String, Identifiable>();
+    final Map<PatternEdge, Boolean> matchedEdges = new IdentityHashMap<PatternEdge, Boolean>();
 
-    public MatchContext copy(String alias, Identifiable value) {
-      MatchContext result = new MatchContext();
+    public MatchContext copy(final String alias, final Identifiable value) {
+      final MatchContext result = new MatchContext();
 
       result.candidates.putAll(candidates);
       result.candidates.remove(alias);
@@ -100,10 +100,10 @@ public class MatchStatement extends Statement {
   }
 
   public static class EdgeTraversal {
-    boolean     out = true;
-    PatternEdge edge;
+    boolean out = true;
+    final PatternEdge edge;
 
-    public EdgeTraversal(PatternEdge edge, boolean out) {
+    public EdgeTraversal(final PatternEdge edge, final boolean out) {
       this.edge = edge;
       this.out = out;
     }
@@ -119,63 +119,59 @@ public class MatchStatement extends Statement {
     super(-1);
   }
 
-  public MatchStatement(int id) {
+  public MatchStatement(final int id) {
     super(id);
   }
 
-  public MatchStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
     this.database = db;
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
-    ctx.setInputParameters(args);
+    context.setDatabase(db);
+    context.setInputParameters(args);
 
     setProfilingConstraints((DatabaseInternal) database);
 
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
 
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
     this.database = db;
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
+    context.setDatabase(db);
 
     setProfilingConstraints((DatabaseInternal) database);
 
-    ctx.setInputParameters(params);
-    InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setInputParameters(params);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
 
     return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    MatchExecutionPlanner planner = new MatchExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final MatchExecutionPlanner planner = new MatchExecutionPlanner(this);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   protected void buildPatterns() {
     assignDefaultAliases(this.matchExpressions);
     pattern = new Pattern();
-    for (MatchExpression expr : this.matchExpressions) {
+    for (final MatchExpression expr : this.matchExpressions) {
       pattern.addExpression(expr);
     }
 
-    Map<String, WhereClause> aliasFilters = new LinkedHashMap<String, WhereClause>();
-    Map<String, String> aliasUserTypes = new LinkedHashMap<String, String>();
-    for (MatchExpression expr : this.matchExpressions) {
+    final Map<String, WhereClause> aliasFilters = new LinkedHashMap<String, WhereClause>();
+    final Map<String, String> aliasUserTypes = new LinkedHashMap<String, String>();
+    for (final MatchExpression expr : this.matchExpressions) {
       addAliases(database, expr, aliasFilters, aliasUserTypes, context);
     }
 
@@ -190,12 +186,12 @@ public class MatchStatement extends Statement {
    *
    * @param aliasFilters
    */
-  private void rebindFilters(Map<String, WhereClause> aliasFilters) {
-    for (MatchExpression expression : matchExpressions) {
+  private void rebindFilters(final Map<String, WhereClause> aliasFilters) {
+    for (final MatchExpression expression : matchExpressions) {
       WhereClause newFilter = aliasFilters.get(expression.origin.getAlias());
       expression.origin.setFilter(newFilter);
 
-      for (MatchPathItem item : expression.items) {
+      for (final MatchPathItem item : expression.items) {
         newFilter = aliasFilters.get(item.filter.getAlias());
         item.filter.setFilter(newFilter);
       }
@@ -207,14 +203,14 @@ public class MatchStatement extends Statement {
    *
    * @param matchExpressions
    */
-  private void assignDefaultAliases(List<MatchExpression> matchExpressions) {
+  private void assignDefaultAliases(final List<MatchExpression> matchExpressions) {
     int counter = 0;
-    for (MatchExpression expression : matchExpressions) {
+    for (final MatchExpression expression : matchExpressions) {
       if (expression.origin.getAlias() == null) {
         expression.origin.setAlias(DEFAULT_ALIAS_PREFIX + (counter++));
       }
 
-      for (MatchPathItem item : expression.items) {
+      for (final MatchPathItem item : expression.items) {
         if (item.filter == null) {
           item.filter = new MatchFilter(-1);
         }
@@ -226,7 +222,7 @@ public class MatchStatement extends Statement {
   }
 
   public boolean returnsPathElements() {
-    for (Expression item : returnItems) {
+    for (final Expression item : returnItems) {
       if (item.toString().equalsIgnoreCase("$pathElements")) {
         return true;
       }
@@ -235,7 +231,7 @@ public class MatchStatement extends Statement {
   }
 
   public boolean returnsElements() {
-    for (Expression item : returnItems) {
+    for (final Expression item : returnItems) {
       if (item.toString().equalsIgnoreCase("$elements")) {
         return true;
       }
@@ -244,7 +240,7 @@ public class MatchStatement extends Statement {
   }
 
   public boolean returnsPatterns() {
-    for (Expression item : returnItems) {
+    for (final Expression item : returnItems) {
       if (item.toString().equalsIgnoreCase("$patterns")) {
         return true;
       }
@@ -256,7 +252,7 @@ public class MatchStatement extends Statement {
   }
 
   public boolean returnsPaths() {
-    for (Expression item : returnItems) {
+    for (final Expression item : returnItems) {
       if (item.toString().equalsIgnoreCase("$paths")) {
         return true;
       }
@@ -264,20 +260,20 @@ public class MatchStatement extends Statement {
     return false;
   }
 
-  private void addAliases(final Database database, final MatchExpression expr, Map<String, WhereClause> aliasFilters, Map<String, String> aliasUserTypes,
-      CommandContext context) {
+  private void addAliases(final Database database, final MatchExpression expr, final Map<String, WhereClause> aliasFilters,
+      final Map<String, String> aliasUserTypes, final CommandContext context) {
     addAliases(database, expr.origin, aliasFilters, aliasUserTypes, context);
-    for (MatchPathItem item : expr.items) {
+    for (final MatchPathItem item : expr.items) {
       if (item.filter != null) {
         addAliases(database, item.filter, aliasFilters, aliasUserTypes, context);
       }
     }
   }
 
-  private void addAliases(final Database database, final MatchFilter matchFilter, Map<String, WhereClause> aliasFilters, Map<String, String> aliasUserTypes,
-      CommandContext context) {
-    String alias = matchFilter.getAlias();
-    WhereClause filter = matchFilter.getFilter();
+  private void addAliases(final Database database, final MatchFilter matchFilter, final Map<String, WhereClause> aliasFilters,
+      final Map<String, String> aliasUserTypes, final CommandContext context) {
+    final String alias = matchFilter.getAlias();
+    final WhereClause filter = matchFilter.getFilter();
     if (alias != null) {
       if (filter != null && filter.baseExpression != null) {
         WhereClause previousFilter = aliasFilters.get(alias);
@@ -286,19 +282,19 @@ public class MatchStatement extends Statement {
           previousFilter.baseExpression = new AndBlock(-1);
           aliasFilters.put(alias, previousFilter);
         }
-        AndBlock filterBlock = (AndBlock) previousFilter.baseExpression;
+        final AndBlock filterBlock = (AndBlock) previousFilter.baseExpression;
         if (filter != null && filter.baseExpression != null) {
           filterBlock.subBlocks.add(filter.baseExpression);
         }
       }
 
-      String typez = matchFilter.getTypeName(context);
+      final String typez = matchFilter.getTypeName(context);
       if (typez != null) {
-        String previousClass = aliasUserTypes.get(alias);
+        final String previousClass = aliasUserTypes.get(alias);
         if (previousClass == null) {
           aliasUserTypes.put(alias, typez);
         } else {
-          String lower = getLowerSubclass(database, typez, previousClass);
+          final String lower = getLowerSubclass(database, typez, previousClass);
           if (lower == null) {
             throw new CommandExecutionException("classes defined for alias " + alias + " (" + typez + ", " + previousClass + ") are not in the same hierarchy");
           }
@@ -332,11 +328,11 @@ public class MatchStatement extends Statement {
     return true;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(KEYWORD_MATCH);
     builder.append(" ");
     boolean first = true;
-    for (MatchExpression expr : this.matchExpressions) {
+    for (final MatchExpression expr : this.matchExpressions) {
       if (!first) {
         builder.append(", ");
       }
@@ -349,7 +345,7 @@ public class MatchStatement extends Statement {
     }
     first = true;
     int i = 0;
-    for (Expression expr : this.returnItems) {
+    for (final Expression expr : this.returnItems) {
       if (!first) {
         builder.append(", ");
       }
@@ -388,7 +384,7 @@ public class MatchStatement extends Statement {
 
   @Override
   public MatchStatement copy() {
-    MatchStatement result = new MatchStatement(-1);
+    final MatchStatement result = new MatchStatement(-1);
     result.database = database;
     result.matchExpressions = matchExpressions == null ? null : matchExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.notMatchExpressions =
@@ -407,13 +403,13 @@ public class MatchStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    MatchStatement that = (MatchStatement) o;
+    final MatchStatement that = (MatchStatement) o;
 
     if (!Objects.equals(matchExpressions, that.matchExpressions))
       return false;
@@ -458,7 +454,7 @@ public class MatchStatement extends Statement {
     return returnAliases;
   }
 
-  public void setReturnAliases(List<Identifier> returnAliases) {
+  public void setReturnAliases(final List<Identifier> returnAliases) {
     this.returnAliases = returnAliases;
   }
 
@@ -466,7 +462,7 @@ public class MatchStatement extends Statement {
     return returnItems;
   }
 
-  public void setReturnItems(List<Expression> returnItems) {
+  public void setReturnItems(final List<Expression> returnItems) {
     this.returnItems = returnItems;
   }
 
@@ -474,7 +470,7 @@ public class MatchStatement extends Statement {
     return matchExpressions;
   }
 
-  public void setMatchExpressions(List<MatchExpression> matchExpressions) {
+  public void setMatchExpressions(final List<MatchExpression> matchExpressions) {
     this.matchExpressions = matchExpressions;
   }
 
@@ -482,7 +478,7 @@ public class MatchStatement extends Statement {
     return notMatchExpressions;
   }
 
-  public void setNotMatchExpressions(List<MatchExpression> notMatchExpressions) {
+  public void setNotMatchExpressions(final List<MatchExpression> notMatchExpressions) {
     this.notMatchExpressions = notMatchExpressions;
   }
 
@@ -490,7 +486,7 @@ public class MatchStatement extends Statement {
     return returnDistinct;
   }
 
-  public void setReturnDistinct(boolean returnDistinct) {
+  public void setReturnDistinct(final boolean returnDistinct) {
     this.returnDistinct = returnDistinct;
   }
 
@@ -498,7 +494,7 @@ public class MatchStatement extends Statement {
     return orderBy;
   }
 
-  public void setOrderBy(OrderBy orderBy) {
+  public void setOrderBy(final OrderBy orderBy) {
     this.orderBy = orderBy;
   }
 
@@ -506,7 +502,7 @@ public class MatchStatement extends Statement {
     return groupBy;
   }
 
-  public void setGroupBy(GroupBy groupBy) {
+  public void setGroupBy(final GroupBy groupBy) {
     this.groupBy = groupBy;
   }
 
@@ -514,7 +510,7 @@ public class MatchStatement extends Statement {
     return unwind;
   }
 
-  public void setUnwind(Unwind unwind) {
+  public void setUnwind(final Unwind unwind) {
     this.unwind = unwind;
   }
 
@@ -522,7 +518,7 @@ public class MatchStatement extends Statement {
     return skip;
   }
 
-  public void setSkip(Skip skip) {
+  public void setSkip(final Skip skip) {
     this.skip = skip;
   }
 

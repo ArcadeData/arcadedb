@@ -45,7 +45,7 @@ public class StatementCache {
   public StatementCache(final Database db, final int size) {
     this.db = db;
     this.mapSize = size;
-    this.map = new LinkedHashMap<String, Statement>(size) {
+    this.map = new LinkedHashMap<>(size) {
       protected boolean removeEldestEntry(final Map.Entry<String, Statement> eldest) {
         return super.size() > mapSize;
       }
@@ -87,7 +87,7 @@ public class StatementCache {
   protected Statement parse(final String statement) throws CommandSQLParsingException {
     try {
 
-      InputStream is;
+      final InputStream is;
 
       if (db == null) {
         is = new ByteArrayInputStream(statement.getBytes(DatabaseFactory.getDefaultCharset()));
@@ -95,35 +95,38 @@ public class StatementCache {
         is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
       }
 
-      SqlParser osql = null;
+      SqlParser osql;
       if (db == null) {
-        osql = new SqlParser(is);
+        osql = new SqlParser(db, is);
       } else {
         try {
 //          osql = new SqlParser(is, db.getStorage().getConfiguration().getCharset());
-          osql = new SqlParser(is, "UTF-8");
-        } catch (UnsupportedEncodingException e2) {
+          osql = new SqlParser(db, is, "UTF-8");
+        } catch (final UnsupportedEncodingException e2) {
           LogManager.instance().log(this, Level.WARNING, "Unsupported charset for database " + db);
-          osql = new SqlParser(is);
+          osql = new SqlParser(db, is);
         }
       }
-      Statement result = osql.parse();
-      result.originalStatement = statement;
 
+      final Statement result = osql.Parse();
+      result.originalStatementAsString = statement;
       return result;
-    } catch (ParseException e) {
+
+    } catch (final ParseException e) {
       throwParsingException(e, statement);
-    } catch (TokenMgrError e2) {
+    } catch (final TokenMgrError e2) {
       throwParsingException(e2, statement);
+    } catch (final Throwable e3) {
+      throwParsingException(e3, statement);
     }
     return null;
   }
 
-  protected static void throwParsingException(ParseException e, String statement) {
+  protected static void throwParsingException(final Throwable e, final String statement) {
     throw new CommandSQLParsingException(statement, e);
   }
 
-  protected static void throwParsingException(TokenMgrError e, String statement) {
+  protected static void throwParsingException(final TokenMgrError e, final String statement) {
     throw new CommandSQLParsingException(statement, e);
   }
 

@@ -19,22 +19,27 @@
 package com.arcadedb.console;
 
 import com.arcadedb.Constants;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.engine.PaginatedFile;
-import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.AnsiCode;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
 import org.jline.reader.Completer;
@@ -52,48 +57,56 @@ import java.io.*;
 import java.util.*;
 
 public class Console {
-  private static final String           PROMPT               = "%n%s> ";
-  private static final String           REMOTE_PREFIX        = "remote:";
-  private static final String           SQL_LANGUAGE         = "SQL";
-  private final        boolean          system               = System.console() != null;
-  private final        Terminal         terminal;
-  private final        LineReader       lineReader;
-  private final        TerminalParser   parser               = new TerminalParser();
-  private              RemoteDatabase   remoteDatabase;
-  private              ConsoleOutput    output;
-  private              DatabaseFactory  databaseFactory;
-  private              DatabaseInternal localDatabase;
-  private              int              limit                = 20;
-  private              int              maxMultiValueEntries = 10;
-  private              int              maxWidth             = TableFormatter.DEFAULT_MAX_WIDTH;
-  private              Boolean          expandResultSet;
-  private              ResultSet        resultSet;
-  private              String           databaseDirectory;
-  private              int              verboseLevel         = 1;
-  private              String           language             = SQL_LANGUAGE;
+  private static final String               PROMPT                   = "%n%s> ";
+  private static final String               REMOTE_PREFIX            = "remote:";
+  private static final String               LOCAL_PREFIX             = "local:";
+  private static final String               SQL_LANGUAGE             = "SQL";
+  private final        boolean              system                   = System.console() != null;
+  private final        Terminal             terminal;
+  private final        TerminalParser       parser                   = new TerminalParser();
+  private              ConsoleOutput        output;
+  private              DatabaseFactory      databaseFactory;
+  private              BasicDatabase        databaseProxy;
+  private              int                  limit                    = 20;
+  private              int                  maxMultiValueEntries     = 10;
+  private              int                  maxWidth                 = TableFormatter.DEFAULT_MAX_WIDTH;
+  private              Boolean              expandResultSet;
+  private              ResultSet            resultSet;
+  private              String               databaseDirectory;
+  private              int                  verboseLevel             = 3;
+  private              String               language                 = SQL_LANGUAGE;
+  private final        ContextConfiguration configuration            = new ContextConfiguration();
+  private              boolean              asyncMode                = false;
+  private              long                 transactionBatchSize     = 0L;
+  protected            long                 currentOperationsInBatch = 0L;
 
   public Console(final DatabaseInternal database) throws IOException {
-    this(false);
-    this.localDatabase = database;
+    this();
+    this.databaseProxy = database;
   }
 
-  public Console(final boolean interactive) throws IOException {
-    setRootPath(".");
+  public Console() throws IOException {
+    IntegrationUtils.setRootPath(configuration);
+    databaseDirectory = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+    if (!databaseDirectory.endsWith(File.separator))
+      databaseDirectory += File.separator;
 
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
-    Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
-        "create user", "drop database", "drop user", "export", "import", "help", "info types", "load", "exit", "quit", "set", "match", "select", "insert into",
-        "update", "delete", "pwd");
 
-    lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history").history(new DefaultHistory())
-        .completer(completer).build();
+    output(3, "%s Console v.%s - %s (%s)", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
+  }
 
-    output("%s Console v.%s - %s (%s)", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
+  public void interactiveMode() throws IOException {
+    final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
+        "create user", "drop database", "drop user", "export", "import", "help", "info types", "list databases", "load", "exit", "quit", "set", "match",
+        "select", "insert into", "update", "delete", "pwd");
 
-    if (!interactive)
-      return;
+    final LineReader lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history")
+        .history(new DefaultHistory()).completer(completer).build();
+
+    Runtime.getRuntime().addShutdownHook(new Thread(this::close));
 
     lineReader.getHistory().load();
 
@@ -108,14 +121,14 @@ public class Console {
 
           lineReader.getHistory().save();
 
-        } catch (UserInterruptException | EndOfFileException e) {
+        } catch (final UserInterruptException | EndOfFileException e) {
           return;
         }
 
         try {
           if (!parse(line, false))
             return;
-        } catch (Exception e) {
+        } catch (final Exception e) {
           // IGNORE (ALREADY PRINTED)
         }
       }
@@ -124,260 +137,336 @@ public class Console {
     }
   }
 
-  public static void main(String[] args) throws IOException {
-    if (args.length > 0) {
-      final Console console = new Console(false);
-      console.parse(args[0], false);
-    } else
-      new Console(true);
+  public static void main(final String[] args) throws IOException {
+    try {
+      execute(args);
+    } finally {
+      // FORCE EXIT IN CASE OF UNMANAGED ERROR
+      System.exit(0);
+    }
+  }
+
+  public static void execute(final String[] args) throws IOException {
+    final StringBuilder commands = new StringBuilder();
+    boolean batchMode = false;
+    // PARSE ARGUMENT, EXTRACT SETTING AND BATCH MODE AND COMPILE THE LINES TO EXECUTE
+    for (int i = 0; i < args.length; i++) {
+      final String value = args[i].trim();
+      if (value.startsWith("-D")) {
+        // SETTING
+        final String[] parts = value.substring(2).split("=");
+        System.setProperty(parts[0], parts[1]);
+        setGlobalConfiguration(parts[0], parts[1], true);
+      } else if (value.equalsIgnoreCase("-b"))
+        batchMode = true;
+      else {
+        commands.append(value);
+        if (!value.endsWith(";"))
+          commands.append(";");
+      }
+    }
+
+    final Console console = new Console();
+
+    try {
+      if (batchMode) {
+        // BATCH MODE
+        console.parse(commands.toString(), true);
+        console.parse("exit", true);
+      } else {
+        // INTERACTIVE MODE
+        if (console.parse(commands.toString(), true))
+          console.interactiveMode();
+      }
+
+    } finally {
+      // FORCE THE CLOSING
+      console.close();
+    }
   }
 
   public void close() {
-    if (terminal != null)
-      flushOutput();
+    try {
+      if (transactionBatchSize > 0 && currentOperationsInBatch > 0) {
+        currentOperationsInBatch = 0;
+        databaseProxy.commit();
+      }
 
-    if (remoteDatabase != null) {
-      remoteDatabase.close();
-      remoteDatabase = null;
+      if (terminal != null)
+        flushOutput();
+
+      if (databaseProxy != null) {
+        databaseProxy.close();
+        databaseProxy = null;
+      }
+
+      if (databaseFactory != null) {
+        databaseFactory.close();
+        databaseFactory = null;
+      }
+    } catch (Throwable t) {
+      // IGNORE ANY EXCEPTION AT CLOSING
     }
-
-    if (localDatabase != null) {
-      localDatabase.close();
-      localDatabase = null;
-    }
-
-    if (databaseFactory != null) {
-      databaseFactory.close();
-      databaseFactory = null;
-    }
-  }
-
-  public Console setRootPath(final String rootDirectory) {
-    String root = rootDirectory;
-    if (root == null || root.isEmpty())
-      root = ".";
-    else if (root.endsWith(File.separator))
-      root = root.substring(0, root.length() - 1);
-
-    if (!new File(root + File.separator + "config").exists() && new File(root + File.separator + ".." + File.separator + "config").exists()) {
-      databaseDirectory = new File(root).getAbsoluteFile().getParentFile().getPath() + File.separator + "databases" + File.separator;
-    } else
-      databaseDirectory = root + File.separator + "databases" + File.separator;
-
-    return this;
   }
 
   public void setOutput(final ConsoleOutput output) {
     this.output = output;
   }
 
-  private boolean execute(String line) throws IOException {
-    try {
-      if (line != null && !line.isEmpty()) {
-        line = line.trim();
-        final String lineLowerCase = line.toLowerCase();
+  public BasicDatabase getDatabase() {
+    return databaseProxy;
+  }
 
-        if (lineLowerCase.startsWith("begin"))
-          executeBegin();
-        else if (lineLowerCase.startsWith("close"))
-          executeClose();
-        else if (lineLowerCase.startsWith("commit"))
-          executeCommit();
-        else if (lineLowerCase.startsWith("connect"))
-          executeConnect(line);
-        else if (lineLowerCase.startsWith("create database"))
-          executeCreateDatabase(line);
-        else if (lineLowerCase.startsWith("create user"))
-          executeCreateUser(line);
-        else if (lineLowerCase.startsWith("drop database"))
-          executeDropDatabase(line);
-        else if (lineLowerCase.startsWith("drop user"))
-          executeDropUser(line);
-        else if (lineLowerCase.equals("help") || line.equals("?"))
-          executeHelp();
-        else if (lineLowerCase.startsWith("info"))
-          executeInfo(line.substring("info".length()).trim());
-        else if (lineLowerCase.startsWith("load"))
-          executeLoad(line.substring("load".length()).trim());
-        else if (lineLowerCase.equals("quit") || lineLowerCase.equals("exit")) {
-          executeClose();
-          return false;
-        } else if (lineLowerCase.startsWith("pwd"))
-          outputLine("Current directory: " + new File(".").getAbsolutePath());
-        else if (lineLowerCase.startsWith("rollback"))
-          executeRollback();
-        else if (lineLowerCase.startsWith("set"))
-          executeSet(line.substring("set".length()).trim());
-        else {
-          executeSQL(line);
-        }
-      }
+  private boolean execute(final String line) throws IOException {
+    try {
+
+      if (line == null)
+        return true;
+
+      final String lineTrimmed = line.trim();
+
+      if (lineTrimmed.isEmpty() || lineTrimmed.startsWith("--"))
+        return true;
+
+      final String lineLowerCase = lineTrimmed.toLowerCase();
+
+      if (lineLowerCase.equals("quit") || lineLowerCase.equals("exit")) {
+        executeClose();
+        return false;
+      } else if (lineLowerCase.equals("help") || line.equals("?"))
+        executeHelp();
+      else if (lineLowerCase.startsWith("begin"))
+        executeBegin();
+      else if (lineLowerCase.startsWith("close"))
+        executeClose();
+      else if (lineLowerCase.startsWith("commit"))
+        executeCommit();
+      else if (lineLowerCase.startsWith("rollback"))
+        executeRollback();
+      else if (lineLowerCase.startsWith("list databases"))
+        executeListDatabases(lineTrimmed.substring("list databases".length()).trim());
+      else if (lineLowerCase.startsWith("connect "))
+        executeConnect(lineTrimmed.substring("connect".length()).trim());
+      else if (lineLowerCase.startsWith("create database "))
+        executeCreateDatabase(lineTrimmed.substring("create database".length()).trim());
+      else if (lineLowerCase.startsWith("create user "))
+        executeCreateUser(lineTrimmed.substring("create user".length()).trim());
+      else if (lineLowerCase.startsWith("drop database "))
+        executeDropDatabase(lineTrimmed.substring("drop database".length()).trim());
+      else if (lineLowerCase.startsWith("drop user "))
+        executeDropUser(lineTrimmed.substring("drop user".length()).trim());
+      else if (lineLowerCase.startsWith("info"))
+        executeInfo(lineTrimmed.substring("info".length()).trim());
+      else if (lineLowerCase.startsWith("load"))
+        executeLoad(lineTrimmed.substring("load".length()).trim());
+      else if (lineLowerCase.startsWith("set "))
+        executeSet(lineTrimmed.substring("set".length()).trim());
+      else if (lineLowerCase.startsWith("pwd"))
+        outputLine(3, "Current directory: " + new File(".").getAbsolutePath());
+      else
+        executeSQL(lineTrimmed);
 
       return true;
-    } catch (IOException | RuntimeException e) {
+    } catch (final IOException | RuntimeException e) {
       outputError(e);
       throw e;
     }
   }
 
   private void executeSet(final String line) {
-    if (line == null || line.isEmpty())
-      return;
-
     final String[] parts = line.split("=");
-    if (parts.length != 2) {
-      outputLine("ERROR: invalid syntax for SET. Use SET <name> = <value>");
-      return;
-    }
+    if (parts.length != 2)
+      throw new ConsoleException("Invalid syntax for SET, use SET <name> = <value>");
 
     final String key = parts[0].trim();
     final String value = parts[1].trim();
 
     if ("limit".equalsIgnoreCase(key)) {
       limit = Integer.parseInt(value);
-      outputLine("Set new limit to %d", limit);
+      outputLine(3, "Set new limit to %d", limit);
+    } else if ("asyncMode".equalsIgnoreCase(key)) {
+      asyncMode = Boolean.parseBoolean(value);
+      if (asyncMode) {
+        // ENABLE ASYNCHRONOUS PARALLEL MODE
+        GlobalConfiguration.ASYNC_WORKER_THREADS.reset();
+        // AVOID BATCH IN ASYNC MODE BECAUSE IT IS NOT POSSIBLE TO RETRY THE OPERATION
+        GlobalConfiguration.ASYNC_TX_BATCH_SIZE.setValue(1);
+        if (!isRemoteDatabase())
+          ((Database) databaseProxy).async().onError((e) -> {
+            outputError(e);
+          });
+      }
+      outputLine(3, "Set asyncMode to %s", asyncMode);
+    } else if ("transactionBatchSize".equalsIgnoreCase(key)) {
+      transactionBatchSize = Integer.parseInt(value);
+      outputLine(3, "Set new transactionBatch to %d", transactionBatchSize);
     } else if ("language".equalsIgnoreCase(key)) {
       language = value;
-      outputLine("Set language to %s", language);
+      outputLine(3, "Set language to %s", language);
     } else if ("expandResultSet".equalsIgnoreCase(key)) {
       expandResultSet = value.equalsIgnoreCase("true");
-      outputLine("Set expanded result set to %s", expandResultSet);
+      outputLine(3, "Set expanded result set to %s", expandResultSet);
     } else if ("maxMultiValueEntries".equalsIgnoreCase(key)) {
       maxMultiValueEntries = Integer.parseInt(value);
-      outputLine("Set maximum multi value entries to %d", maxMultiValueEntries);
+      outputLine(3, "Set maximum multi value entries to %d", maxMultiValueEntries);
     } else if ("verbose".equalsIgnoreCase(key)) {
       verboseLevel = Integer.parseInt(value);
-      outputLine("Set verbose level to %d", verboseLevel);
+      outputLine(3, "Set verbose level to %d", verboseLevel);
     } else if ("maxWidth".equalsIgnoreCase(key)) {
       maxWidth = Integer.parseInt(value);
-      outputLine("Set maximum width to %d", maxWidth);
+      outputLine(3, "Set maximum width to %d", maxWidth);
+    } else {
+      if (!setGlobalConfiguration(key, value, false))
+        outputLine(3, "Setting '%s' is not supported by the console", key);
     }
+
+    flushOutput();
   }
 
   private void executeTransactionStatus() {
     checkDatabaseIsOpen();
 
-    final TransactionContext tx = localDatabase.getTransaction();
-    if (tx.isActive()) {
-      final ResultInternal row = new ResultInternal();
-      row.setPropertiesFromMap(tx.getStats());
-      printRecord(row);
+    if (databaseProxy instanceof DatabaseInternal) {
+      final TransactionContext tx = ((DatabaseInternal) databaseProxy).getTransaction();
+      if (tx.isActive()) {
+        final ResultInternal row = new ResultInternal();
+        row.setPropertiesFromMap(tx.getStats());
+        printRecord(row);
 
-    } else
-      outputLine("Transaction is not Active");
+      } else
+        outputLine(3, "Transaction is not Active");
+    } else {
+      outputLine(3, "No statistics available from remote database");
+    }
   }
 
   private void executeBegin() {
     checkDatabaseIsOpen();
-    if (localDatabase != null)
-      localDatabase.begin();
-    else
-      remoteDatabase.begin();
+    databaseProxy.begin();
   }
 
   private void executeCommit() {
     checkDatabaseIsOpen();
-    if (localDatabase != null)
-      localDatabase.commit();
-    else
-      remoteDatabase.commit();
+    databaseProxy.commit();
   }
 
   private void executeRollback() {
     checkDatabaseIsOpen();
-    if (localDatabase != null)
-      localDatabase.rollback();
-    else
-      remoteDatabase.rollback();
+    databaseProxy.rollback();
   }
 
   private void executeClose() {
-    if (localDatabase != null) {
-      if (localDatabase.isTransactionActive())
-        localDatabase.commit();
-
-      localDatabase.close();
-      localDatabase = null;
-    }
-
-    if (remoteDatabase != null) {
-      remoteDatabase.close();
-      remoteDatabase = null;
+    if (databaseProxy != null) {
+      if (databaseProxy.isTransactionActive())
+        databaseProxy.commit();
+      databaseProxy.close();
+      databaseProxy = null;
     }
   }
 
-  private void executeConnect(final String line) {
-    final String url = line.substring("connect".length()).trim();
+  private void executeListDatabases(final String url) {
 
-    final String[] urlParts = url.split(" ");
+    outputLine(3, "Databases:");
+    if (url.startsWith(REMOTE_PREFIX)) {
+      final RemoteDatabase holdRemoteDatabase = getRemoteDatabase();
 
-    if (localDatabase != null || remoteDatabase != null)
-      outputLine("Database already connected, to connect to a different database close the current one first");
-    else if (!urlParts[0].isEmpty()) {
-      if (urlParts[0].startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url);
-
-        outputLine("Connected");
-        flushOutput();
-
-      } else {
-        PaginatedFile.MODE mode = PaginatedFile.MODE.READ_WRITE;
-        if (urlParts.length > 1)
-          mode = PaginatedFile.MODE.valueOf(urlParts[1].toUpperCase());
-
-        final String databaseUrl = databaseDirectory + urlParts[0];
-
-        databaseFactory = new DatabaseFactory(databaseUrl);
-        localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open(mode);
+      connectToRemoteServer(url, false);
+      for (final Object f : getRemoteDatabase().databases()) {
+        outputLine(3, "- " + f.toString());
       }
-    } else
-      throw new ConsoleException("URL missing");
+
+      databaseProxy = holdRemoteDatabase;
+
+    } else if (isRemoteDatabase()) {
+      // REMOTE DATABASE
+      for (final Object f : getRemoteDatabase().databases()) {
+        outputLine(3, "- " + f.toString());
+      }
+    } else {
+      // LOCAL DATABASE
+      for (final String f : new File(databaseDirectory).list()) {
+        outputLine(3, "- " + f);
+      }
+    }
+
+    flushOutput();
   }
 
-  private void executeCreateDatabase(final String line) {
-    String url = line.substring("create database".length()).trim();
-    if (localDatabase != null || remoteDatabase != null)
-      outputLine("Database already connected, to connect to a different database close the current one first");
-    else if (!url.isEmpty()) {
-      if (url.startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url);
-        remoteDatabase.create();
+  private void executeConnect(final String url) {
+    checkDatabaseIsConnected();
+    checkIsEmpty("URL", url);
 
-        outputLine("Database created");
-        flushOutput();
+    final String databaseName;
 
-      } else {
-        if (url.startsWith("file://"))
-          url = url.substring("file://".length());
+    if (url.startsWith(REMOTE_PREFIX)) {
+      connectToRemoteServer(url, true);
+      databaseName = databaseProxy.getName();
 
-        url = databaseDirectory + url;
+    } else {
+      final String[] urlParts = url.split(" ");
 
-        databaseFactory = new DatabaseFactory(url);
-        localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).create();
-      }
-    } else
-      throw new ConsoleException("URL missing");
+      final String localUrl = parseLocalUrl(urlParts[0]);
+
+      checkDatabaseIsLocked(localUrl);
+
+      PaginatedFile.MODE mode = PaginatedFile.MODE.READ_WRITE;
+      if (urlParts.length > 1)
+        mode = PaginatedFile.MODE.valueOf(urlParts[1].toUpperCase());
+
+      databaseFactory = new DatabaseFactory(localUrl);
+      databaseProxy = databaseFactory.setAutoTransaction(true).open(mode);
+      databaseName = databaseProxy.getName();
+    }
+
+    outputLine(3, "Database '%s' connected", databaseName);
+    flushOutput();
   }
 
-  private void executeCreateUser(final String line) {
-    if (localDatabase != null || remoteDatabase == null)
-      throw new ArcadeDBException("Create a new user is allowed only on a server connected in remote");
+  private void executeCreateDatabase(final String url) {
+    checkDatabaseIsConnected();
+    checkIsEmpty("URL", url);
 
-    String params = line.substring("create user ".length()).trim();
+    final String databaseName;
+
+    if (url.startsWith(REMOTE_PREFIX)) {
+      connectToRemoteServer(url, true);
+      getRemoteDatabase().create();
+
+    } else {
+      final String localUrl = parseLocalUrl(url);
+
+      if (new File(localUrl).exists())
+        throw new ConsoleException("Database already exists");
+
+      databaseFactory = new DatabaseFactory(localUrl);
+      databaseProxy = databaseFactory.setAutoTransaction(true).create();
+    }
+
+    databaseName = databaseProxy.getName();
+
+    outputLine(3, "Database '%s' created", databaseName);
+    flushOutput();
+  }
+
+  private void executeCreateUser(final String params) {
+    checkRemoteDatabaseIsConnected();
+
     final String paramsUpperCase = params.toUpperCase();
 
     final int identifiedByPos = paramsUpperCase.indexOf("IDENTIFIED BY");
     if (identifiedByPos < 0)
-      throw new CommandSQLParsingException("IDENTIFIED BY is missing");
+      throw new ConsoleException("IDENTIFIED BY is missing");
 
     final int databasesByPos = paramsUpperCase.indexOf(" GRANT CONNECT TO ");
 
     final String userName = params.substring(0, identifiedByPos).trim();
-    if (userName.isEmpty())
-      throw new CommandSQLParsingException("User name is empty");
+
+    checkIsEmpty("User name", userName);
+    checkHasSpaces("User name", userName);
 
     final String password;
     final List<String> databases;
+
     if (databasesByPos > -1) {
       password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1, databasesByPos).trim();
       final String databasesList = params.substring(databasesByPos + " GRANT CONNECT TO ".length()).trim();
@@ -388,52 +477,51 @@ public class Console {
       databases = new ArrayList<>();
     }
 
-    if (password.isEmpty())
-      throw new CommandSQLParsingException("User password missing");
+    checkIsEmpty("User password", password);
+    checkHasSpaces("User password", password);
 
-    if (password.indexOf(" ") > -1)
-      throw new CommandSQLParsingException("User password cannot have spaces");
+    getRemoteDatabase().createUser(userName, password, databases);
 
-    remoteDatabase.createUser(userName, password, databases);
-
-    outputLine("User '" + userName + "' created correctly on the server");
+    outputLine(3, "User '%s' created (on the server)", userName);
+    flushOutput();
   }
 
-  private void executeDropDatabase(final String line) {
-    final String url = line.substring("drop database".length()).trim();
-    if (localDatabase != null || remoteDatabase != null)
-      outputLine("A database is open, close the database first");
-    else if (!url.isEmpty()) {
-      if (url.startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url);
-        remoteDatabase.drop();
+  private void executeDropDatabase(final String url) {
 
-        outputLine("Database dropped");
-        flushOutput();
+    checkDatabaseIsConnected();
+    checkIsEmpty("URL", url);
 
-      } else {
-        databaseFactory = new DatabaseFactory(url);
-        localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open();
-        localDatabase.drop();
-      }
-    } else
-      throw new ConsoleException("URL missing");
+    final String databaseName;
 
-    remoteDatabase = null;
-    localDatabase = null;
+    if (url.startsWith(REMOTE_PREFIX)) {
+      connectToRemoteServer(url, true);
+
+    } else {
+      final String localUrl = parseLocalUrl(url);
+
+      checkDatabaseIsLocked(localUrl);
+
+      databaseFactory = new DatabaseFactory(localUrl);
+      databaseProxy = databaseFactory.setAutoTransaction(true).open();
+    }
+
+    databaseName = databaseProxy.getName();
+    databaseProxy.drop();
+    databaseProxy = null;
+
+    outputLine(3, "Database '%s' dropped", databaseName);
+    flushOutput();
   }
 
-  private void executeDropUser(final String line) {
-    if (localDatabase != null || remoteDatabase == null)
-      throw new ArcadeDBException("Dropping a user is allowed only on a server connected in remote");
+  private void executeDropUser(final String userName) {
+    checkRemoteDatabaseIsConnected();
+    checkIsEmpty("User name", userName);
+    checkHasSpaces("User name", userName);
 
-    final String userName = line.substring("drop user ".length()).trim();
-    if (userName.isEmpty())
-      throw new CommandSQLParsingException("User name is empty");
+    getRemoteDatabase().dropUser(userName);
 
-    remoteDatabase.dropUser(userName);
-
-    outputLine("User '" + userName + "' correctly deleted on the server");
+    outputLine(3, "User '%s' deleted (on the server)", userName);
+    flushOutput();
   }
 
   private void printRecord(final Result currentRecord) {
@@ -443,16 +531,16 @@ public class Console {
     final Document rec = currentRecord.getElement().orElse(null);
 
     if (rec instanceof Vertex)
-      outputLine("VERTEX @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
+      outputLine(3, "VERTEX @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
     else if (rec instanceof Edge)
-      outputLine("EDGE @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
+      outputLine(3, "EDGE @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
     else if (rec != null)
-      outputLine("DOCUMENT @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
+      outputLine(3, "DOCUMENT @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
 
     final List<TableFormatter.TableRow> resultSet = new ArrayList<>();
 
     Object value;
-    for (String fieldName : currentRecord.getPropertyNames()) {
+    for (final String fieldName : currentRecord.getPropertyNames()) {
       value = currentRecord.getProperty(fieldName);
       if (value instanceof byte[])
         value = "byte[" + ((byte[]) value).length + "]";
@@ -472,7 +560,7 @@ public class Console {
       row.setProperty("VALUE", value);
     }
 
-    final TableFormatter formatter = new TableFormatter(this::output);
+    final TableFormatter formatter = new TableFormatter((text, args) -> output(3, text, args));
     formatter.setMaxWidthSize(maxWidth);
     formatter.writeRows(resultSet, -1);
   }
@@ -482,10 +570,37 @@ public class Console {
 
     final long beginTime = System.currentTimeMillis();
 
-    if (remoteDatabase != null)
-      resultSet = remoteDatabase.command(language, line);
-    else
-      resultSet = localDatabase.command(language, line);
+    resultSet = null;
+
+    if (transactionBatchSize > 0 && !databaseProxy.isTransactionActive())
+      databaseProxy.begin();
+
+    if (asyncMode && !isRemoteDatabase()) {
+      ((DatabaseInternal) databaseProxy).async().command(language, line, new AsyncResultsetCallback() {
+        @Override
+        public void onError(Exception exception) {
+          outputError(exception);
+        }
+      });
+    } else
+      try {
+        resultSet = databaseProxy.command(language, line);
+      } catch (Exception e) {
+        outputError(e);
+        return;
+      }
+
+    if (transactionBatchSize > 0) {
+      ++currentOperationsInBatch;
+      if (currentOperationsInBatch > transactionBatchSize) {
+        currentOperationsInBatch = 1;
+        databaseProxy.commit();
+        databaseProxy.begin();
+      }
+    }
+
+    if (resultSet == null)
+      return;
 
     final long elapsed;
 
@@ -519,7 +634,7 @@ public class Console {
 
     } else {
       // TABLE FORMAT
-      final TableFormatter table = new TableFormatter(this::output);
+      final TableFormatter table = new TableFormatter((text, args) -> output(3, text, args));
       table.setMaxWidthSize(maxWidth);
       table.setPrefixedColumns("#", "@RID", "@TYPE");
 
@@ -541,29 +656,73 @@ public class Console {
       table.writeRows(list, limit);
     }
 
-    outputLine("Command executed in %dms", elapsed);
+    outputLine(3, "Command executed in %dms", elapsed);
   }
 
   private void executeLoad(final String fileName) throws IOException {
-    if (fileName.isEmpty())
-      throw new ArcadeDBException("File name is empty");
+    checkIsEmpty("File name", fileName);
 
     final File file = new File(fileName);
     if (!file.exists())
-      throw new ArcadeDBException("File name '" + fileName + "' not found");
+      throw new ConsoleException("File name '" + fileName + "' not found");
+
+    output(2, "\nExecuting commands from file %s...", fileName);
+
+    final long startedOn = System.currentTimeMillis();
+    final long fileSize = file.length();
+
+    long elapsed = 0L;
+    long executedLines = 0L;
+    long byteReadFromFile = 0L;
+    long lastLapTime = System.currentTimeMillis();
+    long lastLapExecutedLines = 0L;
 
     try (final BufferedReader bufferedReader = new BufferedReader(new FileReader(file, DatabaseFactory.getDefaultCharset()))) {
-      while (bufferedReader.ready())
-        parse(bufferedReader.readLine(), true);
+      while (bufferedReader.ready()) {
+        final String line = FileUtils.decodeFromFile(bufferedReader.readLine());
+
+        parse(line, true);
+
+        ++executedLines;
+        byteReadFromFile += line.length() + 1;
+
+        final long lapElapsed = System.currentTimeMillis() - lastLapTime;
+        if (lapElapsed > 10_000) {
+          elapsed = System.currentTimeMillis() - startedOn;
+          final int commandsPerSec = (int) ((executedLines - lastLapExecutedLines) * 1000 / lapElapsed);
+          final float statusPerc = byteReadFromFile * 100F / fileSize;
+          final float etaInMinutes = (elapsed * (fileSize - byteReadFromFile) / (float) byteReadFromFile) / 60_000F;
+
+          output(2, "\n- executed %d commands (%.2f%% of file processed - %d commands/sec - eta %.1f more minutes)", executedLines, statusPerc, commandsPerSec,
+              etaInMinutes);
+          flushOutput();
+
+          lastLapTime = System.currentTimeMillis();
+          lastLapExecutedLines = executedLines;
+        }
+      }
     }
+
+    elapsed = System.currentTimeMillis() - startedOn;
+
+    output(2, "\nFile processed in " + (elapsed / 1000) + " seconds");
+    flushOutput();
+  }
+
+  public boolean parse(final String line) throws IOException {
+    return parse(line, false);
   }
 
   public boolean parse(final String line, final boolean printCommand) throws IOException {
-    final ParsedLine parsed = parser.parse(line, 0);
 
-    for (String w : parsed.words()) {
+    final ParsedLine parsedLine = parser.parse(line, 0);
+
+    if (parsedLine == null)
+      return true;
+
+    for (final String w : parsedLine.words()) {
       if (printCommand)
-        output(getPrompt() + w);
+        output(3, getPrompt() + w);
 
       if (!execute(w))
         return false;
@@ -571,18 +730,25 @@ public class Console {
     return true;
   }
 
-  private void outputLine(final String text, final Object... args) {
-    output("\n" + text, args);
+  private void outputLine(final int level, final String text, final Object... args) {
+    output(level, "\n" + text, args);
   }
 
-  private void output(final String text, final Object... args) {
-    if (verboseLevel < 1)
+  private void output(final int level, final String text, final Object... args) {
+    if (verboseLevel < level)
       return;
 
-    if (output != null)
-      output.onOutput(String.format(text, args));
-    else
-      terminal.writer().printf(text, args);
+    if (args.length > 0) {
+      if (output != null)
+        output.onOutput(String.format(text, args));
+      else
+        terminal.writer().printf(text, args);
+    } else {
+      if (output != null)
+        output.onOutput(text);
+      else
+        terminal.writer().print(text);
+    }
   }
 
   private void executeInfo(final String subject) {
@@ -592,18 +758,18 @@ public class Console {
     checkDatabaseIsOpen();
 
     if (subject.equalsIgnoreCase("types")) {
-      outputLine("AVAILABLE TYPES");
+      outputLine(3, "AVAILABLE TYPES");
 
-      final TableFormatter table = new TableFormatter(this::output);
+      final TableFormatter table = new TableFormatter((text, args) -> output(3, text, args));
       table.setMaxWidthSize(maxWidth);
 
-      if (remoteDatabase != null) {
+      if (isRemoteDatabase()) {
         executeSQL("select from schema:types");
         return;
       }
 
       final List<TableFormatter.TableMapRow> rows = new ArrayList<>();
-      for (DocumentType type : localDatabase.getSchema().getTypes()) {
+      for (final DocumentType type : ((DatabaseInternal) databaseProxy).getSchema().getTypes()) {
         final TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
         row.setField("NAME", type.getName());
 
@@ -626,43 +792,135 @@ public class Console {
       table.writeRows(rows, -1);
     } else if (subject.equalsIgnoreCase("transaction"))
       executeTransactionStatus();
-    else
+    else if (subject.startsWith("type ")) {
+      final String typeName = subject.substring("type ".length()).trim();
+
+      final TableFormatter table = new TableFormatter((text, args) -> output(0, text, args));
+      table.setMaxWidthSize(maxWidth);
+
+      final ResultSet typeResult = databaseProxy.command("sql", "select from schema:types where name = \"" + typeName + "\"");
+      if (!typeResult.hasNext())
+        return;
+
+      final Result result = typeResult.next();
+
+      outputLine(0, result.getProperty("type").toString().toUpperCase() + " TYPE '" + typeName + "'\n");
+      outputLine(0, "Super types.......: " + result.getProperty("parentTypes"));
+      outputLine(0, "Buckets...........: " + result.getProperty("buckets"));
+      outputLine(0, "Bucket selection..: " + result.getProperty("bucketSelectionStrategy"));
+
+      if (result.hasProperty("properties")) {
+        outputLine(0, "\nPROPERTIES");
+
+        final List<TableFormatter.TableMapRow> rows = new ArrayList<>();
+        for (final Result property : (List<Result>) result.getProperty("properties")) {
+          final TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
+          row.setField("NAME", property.getProperty("name"));
+          row.setField("TYPE", property.getProperty("type"));
+          row.setField("MANDATORY", property.hasProperty("mandatory") ? property.getProperty("mandatory") : "false");
+          row.setField("READONLY", property.hasProperty("readOnly") ? property.getProperty("readOnly") : "false");
+          row.setField("NOT NULL", property.hasProperty("notNull") ? property.getProperty("notNull") : "false");
+          row.setField("MIN", property.hasProperty("min") ? property.getProperty("min") : "");
+          row.setField("MAX", property.hasProperty("max") ? property.getProperty("max") : "");
+          row.setField("CUSTOM", property.getProperty("custom"));
+          rows.add(row);
+        }
+        table.writeRows(rows, -1);
+      }
+
+      if (result.hasProperty("indexes")) {
+        final List<Result> indexes = result.getProperty("indexes");
+        outputLine(0, "\nINDEXES (" + indexes.size() + " altogether)");
+
+        final List<TableFormatter.TableMapRow> rows = new ArrayList<>();
+        for (final Result index : indexes) {
+          final TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
+          row.setField("NAME", index.getProperty("name"));
+          row.setField("TYPE", index.getProperty("type"));
+          row.setField("UNIQUE", index.getProperty("unique"));
+          row.setField("PROPERTIES", index.getProperty("properties").toString());
+          rows.add(row);
+        }
+        table.writeRows(rows, -1);
+      }
+
+    } else
       throw new ConsoleException("Information about '" + subject + "' is not available");
   }
 
   private void executeHelp() {
-    outputLine("HELP");
-    outputLine("begin                               -> begins a new transaction");
-    outputLine("check database                      -> check database integrity");
-    outputLine("close                               -> closes the database");
-    outputLine("create database <path>|remote:<url> -> creates a new database");
-    outputLine("commit                              -> commits current transaction");
-    outputLine("connect <path>|remote:<url>         -> connects to a database stored on <path>");
-    outputLine("help|?                              -> ask for this help");
-    outputLine("info types                          -> print available types");
-    outputLine("info transaction                    -> print current transaction");
-    outputLine("rollback                            -> rollbacks current transaction");
-    outputLine("quit or exit                        -> exits from the console");
+    outputLine(1, "Help:");
+    outputLine(1, "begin                                             -> begins a new transaction");
+    outputLine(1, "check database                                    -> check database integrity");
+    outputLine(1, "commit                                            -> commits current transaction");
+    outputLine(1, "connect <path>|remote:<url> <user> <pw>           -> connects to a database");
+    outputLine(1, "close                                             -> disconnects a database");
+    outputLine(1, "create database <path>|remote:<url> <user> <pw>   -> creates a new database");
+    outputLine(1, "create user <user> identified by <pw> [grant connect to <db>*] -> creates a user");
+    outputLine(1, "drop database <path>|remote:<url> <user> <pw>     -> deletes a database");
+    outputLine(1, "drop user <user>                                  -> deletes a user");
+    outputLine(1, "help|?                                            -> ask for this help");
+    outputLine(1, "info types                                        -> prints available types");
+    outputLine(1, "info transaction                                  -> prints current transaction");
+    outputLine(1, "list databases |remote:<url> <user> <pw>          -> prints list of databases");
+    outputLine(1, "load <path>                                       -> runs local script");
+    outputLine(1, "rollback                                          -> rolls back current transaction");
+    outputLine(1, "set language = sql|sqlscript|cypher|gremlin|mongo -> sets console query language");
+    outputLine(1, "-- <comment>                                      -> comment (no operation)");
+    outputLine(1, "quit|exit                                         -> exits from the console");
   }
 
   private void checkDatabaseIsOpen() {
-    if (localDatabase == null && remoteDatabase == null)
-      throw new ArcadeDBException("No active database. Open a database first");
+    if (databaseProxy == null)
+      throw new ConsoleException("No active database. Open a database first");
   }
 
-  private void connectToRemoteServer(final String url) {
+  private void checkDatabaseIsConnected() {
+    if (databaseProxy != null)
+      throw new ConsoleException("Database already connected, close current first");
+  }
+
+  private void checkRemoteDatabaseIsConnected() {
+    if (!isRemoteDatabase())
+      throw new ConsoleException("Remote database connection needed");
+  }
+
+  private void checkDatabaseIsLocked(final String url) {
+    if (new File(url + "/database.lck").exists())
+      throw new ConsoleException("Database appears locked by server");
+  }
+
+  private void checkIsEmpty(final String key, final String value) {
+    if (value.isEmpty())
+      throw new ConsoleException(key + " is empty");
+  }
+
+  private void checkHasSpaces(final String key, final String value) {
+    if (value.contains(" "))
+      throw new ConsoleException(key + " cannot have spaces");
+  }
+
+  private String parseLocalUrl(final String url) {
+    if (url.startsWith(LOCAL_PREFIX + "//")) {
+      return url.replaceFirst(LOCAL_PREFIX + "//", "/");
+    } else {
+      return databaseDirectory + url.replaceFirst("file://", "");
+    }
+  }
+
+  private void connectToRemoteServer(final String url, final Boolean needsDatabase) {
     final String conn = url.startsWith(REMOTE_PREFIX + "//") ? url.substring((REMOTE_PREFIX + "//").length()) : url.substring(REMOTE_PREFIX.length());
 
-    final String[] serverUserPassword = conn.split(" ");
+    final String[] serverUserPassword = conn.trim().split(" ");
     if (serverUserPassword.length != 3)
       throw new ConsoleException("URL username and password are missing");
 
     final String[] serverParts = serverUserPassword[0].split("/");
-    if (serverParts.length != 2)
+    if ((needsDatabase && serverParts.length != 2) || (!needsDatabase && serverParts.length != 1))
       throw new ConsoleException("Remote URL '" + url + "' not valid");
 
-    String remoteServer;
-    int remotePort;
+    final String remoteServer;
+    final int remotePort;
 
     final int portPos = serverParts[0].indexOf(":");
     if (portPos < 0) {
@@ -673,25 +931,54 @@ public class Console {
       remotePort = Integer.parseInt(serverParts[0].substring(portPos + 1));
     }
 
-    remoteDatabase = new RemoteDatabase(remoteServer, remotePort, serverParts[1], serverUserPassword[1], serverUserPassword[2]);
+    databaseProxy = new RemoteDatabase(remoteServer, remotePort, needsDatabase ? serverParts[1] : "", serverUserPassword[1], serverUserPassword[2]);
   }
 
   private void flushOutput() {
     terminal.writer().flush();
   }
 
-  private void outputError(final Exception e) throws IOException {
+  private void outputError(final Throwable e) {
     if (verboseLevel > 1) {
-      try (ByteArrayOutputStream out = new ByteArrayOutputStream(); PrintWriter writer = new PrintWriter(out)) {
+      try (final ByteArrayOutputStream out = new ByteArrayOutputStream(); final PrintWriter writer = new PrintWriter(out)) {
         e.printStackTrace(writer);
         writer.flush();
-        output("\nERROR:\n" + out + "\n");
+        output(1, AnsiCode.format("\n$ANSI{red ERROR:\n" + out + "}\n"));
+      } catch (IOException ex) {
+        // IGNORE IT
       }
     } else
-      output("\nERROR: " + e.getMessage() + "\n");
+      output(1, AnsiCode.format("\n$ANSI{red ERROR: " + e.getMessage() + "}\n"));
   }
 
   private String getPrompt() {
-    return String.format(PROMPT, localDatabase != null ? "{" + localDatabase.getName() + "}" : "");
+    final String databaseName = databaseProxy != null ? databaseProxy.getName() : null;
+    return String.format(PROMPT, databaseName != null ? "{" + databaseName + "}" : "");
+  }
+
+  private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+    if (cfg != null) {
+      if (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER) {
+        if (printError)
+          System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
+      } else {
+        cfg.setValue(value);
+        return true;
+      }
+    } else {
+      if (printError)
+        System.err.println("Global configuration '" + key + "' not found. The setting will be ignored");
+    }
+
+    return false;
+  }
+
+  private boolean isRemoteDatabase() {
+    return databaseProxy instanceof RemoteDatabase;
+  }
+
+  private RemoteDatabase getRemoteDatabase() {
+    return ((RemoteDatabase) databaseProxy);
   }
 }

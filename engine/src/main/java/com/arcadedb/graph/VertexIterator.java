@@ -22,16 +22,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
 
-public class VertexIterator implements Iterator<Vertex>, Iterable<Vertex> {
-  private       EdgeSegment   currentContainer;
-  private final AtomicInteger currentPosition = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+public class VertexIterator extends ResettableIteratorBase<Vertex> {
 
   public VertexIterator(final EdgeSegment current) {
-    if (current == null)
-      throw new IllegalArgumentException("Edge chunk is null");
-    this.currentContainer = current;
+    super(null, current);
   }
 
   @Override
@@ -42,7 +37,7 @@ public class VertexIterator implements Iterator<Vertex>, Iterable<Vertex> {
     if (currentPosition.get() < currentContainer.getUsed())
       return true;
 
-    currentContainer = currentContainer.getNext();
+    currentContainer = currentContainer.getPrevious();
     if (currentContainer != null) {
       currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
       return currentPosition.get() < currentContainer.getUsed();
@@ -59,16 +54,14 @@ public class VertexIterator implements Iterator<Vertex>, Iterable<Vertex> {
       currentContainer.getRID(currentPosition); // SKIP EDGE
       final RID rid = currentContainer.getRID(currentPosition);
 
+      ++browsed;
+
       try {
-        return rid.asVertex();
-      } catch (RecordNotFoundException e) {
+        // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
+        return rid.asVertex(false);
+      } catch (final RecordNotFoundException e) {
         // SKIP
       }
     }
-  }
-
-  @Override
-  public Iterator<Vertex> iterator() {
-    return this;
   }
 }

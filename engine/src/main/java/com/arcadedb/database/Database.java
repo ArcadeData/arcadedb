@@ -20,40 +20,30 @@ package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
-import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.NewEdgeCallback;
-import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.WALFile;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
 import java.util.concurrent.*;
 
-public interface Database extends AutoCloseable {
+public interface Database extends BasicDatabase {
   ContextConfiguration getConfiguration();
 
-  String getName();
-
   PaginatedFile.MODE getMode();
-
-  @Override
-  void close();
-
-  boolean isOpen();
-
-  void drop();
 
   DatabaseAsyncExecutor async();
 
   String getDatabasePath();
+
+  boolean isOpen();
 
   /**
    * Return the current username if the database supports security. If used embedded, ArcadeDB does not provide a security model. If you want to use database
@@ -62,59 +52,29 @@ public interface Database extends AutoCloseable {
   String getCurrentUserName();
 
   /**
-   * Returns true if there is a transaction active. A transaction is active if it is in the following states: `{BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}`.
+   * Executes a command by specifying the language and arguments in a map.
+   *
+   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
+   * @param query    The command to be interpreted in the specified language as a string
+   * @param args     Arguments to pass to the command as a map of name/values.
+   *
+   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
    */
-  boolean isTransactionActive();
+  ResultSet command(String language, String query, Map<String, Object> args);
 
   /**
-   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is temporarily parked and a new sub-transaction
-   * is begun. In case an exception is thrown inside the lambda method, the transaction is rolled back.
+   * Executes a query as an idempotent (read only) command by specifying the language and arguments in a map.
    *
-   * @param txBlock Transaction lambda to execute
+   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
+   * @param query    The command to be interpreted in the specified language as a string
+   * @param args     Arguments to pass to the command as a map of name/values.
+   *
+   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
    */
-  void transaction(TransactionScope txBlock);
+  ResultSet query(String language, String query, Map<String, Object> args);
 
-  /**
-   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is temporarily parked and a new sub-transaction
-   * is begun. In case an exception is thrown inside the lambda method, the transaction is rolled back. If joinCurrentTx is true, otherwise the current active
-   * transaction is joined.
-   *
-   * @param txBlock       Transaction lambda to execute
-   * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
-   *
-   * @return true if a new transaction has been created or false if an existent transaction has been joined
-   */
-  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx);
-
-  /**
-   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is temporarily parked and a new sub-transaction
-   * is begun.  In case an exception is thrown inside the lambda method, the transaction is rolled back. If joinCurrentTx is true, otherwise the current active
-   * transaction is joined. The difference with the method {@link #transaction(TransactionScope)} is that in case the NeedRetryException exception is thrown, the
-   * transaction is re-executed for a number of retries.
-   *
-   * @param txBlock       Transaction lambda to execute
-   * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
-   * @param retries       number of retries in case the NeedRetryException exception is thrown
-   *
-   * @return true if a new transaction has been created or false if an existent transaction has been joined
-   */
-  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int retries);
-
-  /**
-   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is parked and a new sub-transaction is begun
-   * if joinCurrentTx is true, otherwise the current active transaction is joined.
-   * The difference with the method {@link #transaction(TransactionScope)} is that in case the NeedRetryException exception is thrown, the transaction is
-   * re-executed for a number of retries.
-   *
-   * @param txBlock       Transaction lambda to execute
-   * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
-   * @param attempts      number of attempts in case the NeedRetryException exception is thrown
-   * @param ok            callback invoked if the transaction completes the commit
-   * @param error         callback invoked if the transaction cannot complete the commit, after the rollback
-   *
-   * @return true if a new transaction has been created or false if an existent transaction has been joined
-   */
-  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, final OkCallback ok, final ErrorCallback error);
+  @Deprecated
+  ResultSet execute(String language, String script, Map<String, Object> args);
 
   /**
    * Returns true if a transaction is started automatically for all non-idempotent operation in the database.
@@ -122,22 +82,6 @@ public interface Database extends AutoCloseable {
   boolean isAutoTransaction();
 
   void setAutoTransaction(boolean autoTransaction);
-
-  /**
-   * Begins a new transaction. If a transaction is already begun, the current transaction is parked and a new sub-transaction is begun. The new sub-transaction
-   * does not access to the content of the previous transaction. Sub transactions are totally isolated.
-   */
-  void begin();
-
-  /**
-   * Commits the current transaction. If it was a sub-transaction, then the previous in the stack becomes active again.
-   */
-  void commit();
-
-  /**
-   * Rolls back the current transaction. If it was a sub-transaction, then the previous in the stack becomes active again.
-   */
-  void rollback();
 
   /**
    * Rolls back all the nested transactions if any.
@@ -191,20 +135,7 @@ public interface Database extends AutoCloseable {
   void scanBucket(String bucketName, RecordCallback callback, ErrorRecordCallback errorRecordCallback);
 
   /**
-   * Lookups for a record by its @{@link RID} (record id). If #loadContent is true, the content is immediately loaded, otherwise the content will be loaded at
-   * the first attempt to access to its content.
-   *
-   * @param rid         @{@link RID} record id
-   * @param loadContent true to load the record content immediately, otherwise the content will be loaded at the first attempt to access to its content
-   *
-   * @return The record found
-   *
-   * @throws RecordNotFoundException If the record is not found
-   */
-  Record lookupByRID(RID rid, boolean loadContent);
-
-  /**
-   * Lookups for records of a specific type by a key and value. This operation requires an index to be created against the property used in the key.
+   * Looks up for records of a specific type by a key and value. This operation requires an index to be created against the property used in the key.
    *
    * @param type     Type name
    * @param keyName  Name of the property defined in the index to use
@@ -217,7 +148,7 @@ public interface Database extends AutoCloseable {
   IndexCursor lookupByKey(String type, String keyName, Object keyValue);
 
   /**
-   * Lookups for records of a specific type by a set of keys and values. This operation requires an index to be created against the properties used in the key.
+   * Looks up for records of a specific type by a set of keys and values. This operation requires an index to be created against the properties used in the key.
    *
    * @param type      Type name
    * @param keyNames  Names of the property defined in the index to use
@@ -248,46 +179,6 @@ public interface Database extends AutoCloseable {
    * @return The number of records found
    */
   Iterator<Record> iterateBucket(String bucketName);
-
-  /**
-   * Returns the number of record contained in all the buckets defined by a type. This operation is expensive because it scans all the entire buckets.
-   *
-   * @param typeName    The name of the type
-   * @param polymorphic true if the records of all the subtypes must be included, otherwise only the records strictly contained in the #typeName
-   *                    will be scanned
-   *
-   * @return The number of records found
-   */
-  long countType(String typeName, boolean polymorphic);
-
-  /**
-   * Returns the number of record contained in a bucket. This operation is expensive because it scans the entire bucket.
-   *
-   * @param bucketName The name of the bucket
-   *
-   * @return The number of records found
-   */
-  long countBucket(String bucketName);
-
-  /**
-   * Creates a new document of type typeName. The type must be defined beforehand in the schema. The returned document only lives in memory until the method
-   * {@link MutableDocument#save()} is executed.
-   *
-   * @param typeName Type name defined in the schema
-   *
-   * @return The new document as a MutableDocument object.
-   */
-  MutableDocument newDocument(String typeName);
-
-  /**
-   * Creates a new vertex of type typeName. The type must be defined beforehand in the schema. The returned vertex only lives in memory until the method
-   * {@link MutableVertex#save()} is executed.
-   *
-   * @param typeName Type name defined in the schema
-   *
-   * @return The new vertex as a MutableVertex object.
-   */
-  MutableVertex newVertex(String typeName);
 
   /**
    * Creates a new edge between two vertices specifying the key/value pairs to lookup for both source and destination vertices. The direction of the edge is from source
@@ -339,11 +230,13 @@ public interface Database extends AutoCloseable {
       boolean createVertexIfNotExist, String edgeType, boolean bidirectional, Object... properties);
 
   /**
-   * Deletes a record. The actual deletion will be effective only at transaction commit time. This operation is not allowed in databases open in read-only mode.
+   * Returns the query engine by language name.
    *
-   * @param record The record to delete
+   * @param language Language name
+   *
+   * @return Query engine implementation if available, otherwise null
    */
-  void deleteRecord(Record record);
+  QueryEngine getQueryEngine(String language);
 
   /**
    * Returns the database schema.
@@ -356,72 +249,24 @@ public interface Database extends AutoCloseable {
   RecordEvents getEvents();
 
   /**
-   * Executes a command by specifying the language and an optional variable array of arguments.
-   *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
-   * @param query    The command to be interpreted in the specified language as a string
-   * @param args     (optional) Arguments to pass to the command as a variable length array
-   *
-   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
-   */
-  ResultSet command(String language, String query, Object... args);
-
-  /**
-   * Executes a command by specifying the language and arguments in a map.
-   *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
-   * @param query    The command to be interpreted in the specified language as a string
-   * @param args     Arguments to pass to the command as a map of name/values.
-   *
-   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
-   */
-  ResultSet command(String language, String query, Map<String, Object> args);
-
-  /**
-   * Executes a query as an idempotent (read only) command by specifying the language and an optional variable array of arguments.
-   *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
-   * @param query    The command to be interpreted in the specified language as a string
-   * @param args     (optional) Arguments to pass to the command as a variable length array
-   *
-   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
-   */
-  ResultSet query(String language, String query, Object... args);
-
-  /**
-   * Executes a query as an idempotent (read only) command by specifying the language and arguments in a map.
-   *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
-   * @param query    The command to be interpreted in the specified language as a string
-   * @param args     Arguments to pass to the command as a map of name/values.
-   *
-   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
-   */
-  ResultSet query(String language, String query, Map<String, Object> args);
-
-  ResultSet execute(String language, String script, Object... args);
-
-  ResultSet execute(String language, String script, Map<String, Object> args);
-
-  /**
    * Executes an operation in database read (shared) lock.
    */
-  <RET extends Object> RET executeInReadLock(Callable<RET> callable);
+  <RET> RET executeInReadLock(Callable<RET> callable);
 
   /**
    * Executes an operation in database write (exclusive) lock.
    */
-  <RET extends Object> RET executeInWriteLock(Callable<RET> callable);
+  <RET> RET executeInWriteLock(Callable<RET> callable);
 
   /**
-   * If enabled, writes the writes to the database are immediately available in queries and lookups.
+   * If enabled, writes the writes to the database are immediately available in queries and lookup.
    *
    * @return true if "ready your write" setting is enabled, otherwise false.
    */
   boolean isReadYourWrites();
 
   /**
-   * Tells to the database writes must be immediately available for following reads and lookups. Disable this setting to speedup massive insertion workloads.
+   * Tells to the database writes must be immediately available for following reads and lookup. Disable this setting to speedup massive insertion workloads.
    *
    * @param value set to true to enable the "ready your write" setting, otherwise false.
    *
@@ -456,7 +301,7 @@ public interface Database extends AutoCloseable {
   /**
    * Sets the WAL (Write Ahead Log - Transaction Journal) flush strategy.
    *
-   * @param flush The new value contained in the enum: NO (no flush), YES_NOMETADATA (flush only data, no metadata), YES_FULL (full flush)
+   * @param flush The new value contained in the enum: `NO` (no flush), `YES_NOMETADATA` (flush only data, no metadata), `YES_FULL` (full flush)
    *
    * @return Current Database instance to execute setter methods in chain.
    *
@@ -485,15 +330,4 @@ public interface Database extends AutoCloseable {
    * @see #isAsyncFlush()
    */
   Database setAsyncFlush(boolean value);
-
-  /**
-   * Interface for defining a transaction scope to be executed by the {@link #transaction(TransactionScope)} method.
-   */
-  interface TransactionScope {
-    /**
-     * Callback executed inside a transaction. All the changes executed in this method will be executed in a transaction scope where all the operations are
-     * committed or all roll backed in case of an exception is thrown.
-     */
-    void execute();
-  }
 }

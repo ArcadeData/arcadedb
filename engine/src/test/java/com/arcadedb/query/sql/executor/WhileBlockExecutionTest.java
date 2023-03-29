@@ -33,7 +33,7 @@ public class WhileBlockExecutionTest extends TestHelper {
   @Test
   public void testPlain() {
 
-    String className = "testPlain";
+    final String className = "testPlain";
 
     database.getSchema().createDocumentType(className);
 
@@ -45,12 +45,12 @@ public class WhileBlockExecutionTest extends TestHelper {
     script += "}";
     script += "SELECT FROM " + className + ";";
 
-    ResultSet results = database.execute("sql", script);
+    final ResultSet results = database.command("sqlscript", script);
 
     int tot = 0;
     int sum = 0;
     while (results.hasNext()) {
-      Result item = results.next();
+      final Result item = results.next();
       sum += (Integer) item.getProperty("value");
       tot++;
     }
@@ -61,7 +61,7 @@ public class WhileBlockExecutionTest extends TestHelper {
 
   @Test
   public void testReturn() {
-    String className = "testReturn";
+    final String className = "testReturn";
 
     database.getSchema().createDocumentType(className);
 
@@ -75,14 +75,14 @@ public class WhileBlockExecutionTest extends TestHelper {
     script += "  LET $i = $i + 1;";
     script += "}";
 
-    ResultSet results = database.execute("sql", script);
+    ResultSet results = database.command("sqlscript", script);
     results.close();
     results = database.query("sql", "SELECT FROM " + className);
 
     int tot = 0;
     int sum = 0;
     while (results.hasNext()) {
-      Result item = results.next();
+      final Result item = results.next();
       sum += (Integer) item.getProperty("value");
       tot++;
     }

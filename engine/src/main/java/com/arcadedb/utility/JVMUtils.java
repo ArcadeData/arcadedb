@@ -40,7 +40,7 @@ public class JVMUtils {
     final StringBuilder output = new StringBuilder();
     final ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
     final ThreadInfo[] threadInfos = threadMXBean.getThreadInfo(threadMXBean.getAllThreadIds(), 100);
-    for (ThreadInfo threadInfo : threadInfos) {
+    for (final ThreadInfo threadInfo : threadInfos) {
       if (threadInfo == null)
         continue;
 
@@ -55,7 +55,7 @@ public class JVMUtils {
             break;
           }
 
-          if (found && filterExclude != null && stackTraceElement.toString().contains(filterExclude)) {
+          if (found && stackTraceElement.toString().contains(filterExclude)) {
             found = false;
             break;
           }
@@ -100,9 +100,9 @@ public class JVMUtils {
           try {
             final MBeanServer server = ManagementFactory.getPlatformMBeanServer();
             hotspotMBean = ManagementFactory.newPlatformMXBeanProxy(server, HOTSPOT_BEAN_NAME, HotSpotDiagnosticMXBean.class);
-          } catch (RuntimeException re) {
+          } catch (final RuntimeException re) {
             throw re;
-          } catch (Exception exp) {
+          } catch (final Exception exp) {
             throw new ArcadeDBException(exp);
           }
         }
@@ -119,9 +119,9 @@ public class JVMUtils {
 
       return content;
 
-    } catch (RuntimeException re) {
+    } catch (final RuntimeException re) {
       throw re;
-    } catch (Exception exp) {
+    } catch (final Exception exp) {
       throw new ArcadeDBException(exp);
     }
   }

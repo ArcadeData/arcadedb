@@ -26,6 +26,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -39,6 +40,7 @@ public class TransactionTypeTest extends TestHelper {
 
   @Test
   public void testPopulate() {
+    // EMPTY METHOD
   }
 
   @Test
@@ -50,8 +52,8 @@ public class TransactionTypeTest extends TestHelper {
     database.scanType(TYPE_NAME, true, record -> {
       Assertions.assertNotNull(record);
 
-      Set<String> prop = new HashSet<String>();
-        prop.addAll(record.getPropertyNames());
+      final Set<String> prop = new HashSet<String>();
+      prop.addAll(record.getPropertyNames());
 
       Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
       Assertions.assertTrue(prop.contains("id"));
@@ -78,8 +80,8 @@ public class TransactionTypeTest extends TestHelper {
       Assertions.assertNotNull(record2);
       Assertions.assertEquals(record, record2);
 
-      Set<String> prop = new HashSet<String>();
-        prop.addAll(record2.getPropertyNames());
+      final Set<String> prop = new HashSet<String>();
+      prop.addAll(record2.getPropertyNames());
 
       Assertions.assertEquals(record2.getPropertyNames().size(), 3);
       Assertions.assertTrue(prop.contains("id"));
@@ -104,14 +106,14 @@ public class TransactionTypeTest extends TestHelper {
     for (int i = 0; i < TOT; i++) {
       final IndexCursor result = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { i });
       Assertions.assertNotNull(result);
-      Assertions.assertEquals(1, result.size());
+      Assertions.assertTrue(result.hasNext());
 
       final Document record2 = (Document) result.next().getRecord();
 
       Assertions.assertEquals(i, record2.get("id"));
 
-      Set<String> prop = new HashSet<String>();
-        prop.addAll(record2.getPropertyNames());
+      final Set<String> prop = new HashSet<String>();
+      prop.addAll(record2.getPropertyNames());
 
       Assertions.assertEquals(record2.getPropertyNames().size(), 3);
       Assertions.assertTrue(prop.contains("id"));
@@ -149,7 +151,7 @@ public class TransactionTypeTest extends TestHelper {
     // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
     final Index[] indexes = database.getSchema().getIndexes();
     for (int i = 0; i < TOT; ++i) {
-      for (Index index : indexes)
+      for (final Index index : indexes)
         Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i);
     }
 
@@ -190,7 +192,7 @@ public class TransactionTypeTest extends TestHelper {
 
     // COUNT WITH ITERATE TYPE
     total.set(0);
-    for (Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
+    for (final Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
       total.incrementAndGet();
 
     Assertions.assertEquals(originalCount - 1, total.get());
@@ -228,7 +230,7 @@ public class TransactionTypeTest extends TestHelper {
 
     // COUNT WITH ITERATE TYPE
     total.set(0);
-    for (Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
+    for (final Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
       total.incrementAndGet();
 
     Assertions.assertEquals(originalCount, total.get());
@@ -260,9 +262,9 @@ public class TransactionTypeTest extends TestHelper {
       database.transaction(() -> database.newDocument(TYPE_NAME).set("id", -2, "tx", 2).save());
     });
 
-    Assertions.assertEquals(0, database.query("sql", "select from " + TYPE_NAME + " where tx = 0").countEntries());
-    Assertions.assertEquals(1, database.query("sql", "select from " + TYPE_NAME + " where tx = 1").countEntries());
-    Assertions.assertEquals(1, database.query("sql", "select from " + TYPE_NAME + " where tx = 2").countEntries());
+    Assertions.assertEquals(0, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 0")));
+    Assertions.assertEquals(1, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 1")));
+    Assertions.assertEquals(1, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 2")));
   }
 
   @Override

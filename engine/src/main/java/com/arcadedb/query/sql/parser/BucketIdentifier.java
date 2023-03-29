@@ -26,12 +26,8 @@ public class BucketIdentifier extends SimpleNode {
   protected PInteger   bucketId;
   protected Identifier bucketName;
 
-  public BucketIdentifier(int id) {
+  public BucketIdentifier(final int id) {
     super(id);
-  }
-
-  public BucketIdentifier(SqlParser p, int id) {
-    super(p, id);
   }
 
   public Object getValue() {

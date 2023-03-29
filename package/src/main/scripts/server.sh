@@ -28,63 +28,64 @@ echo "PLAY WITH DATA                                    arcadedb.com"
 PRG="$0"
 
 while [ -h "$PRG" ]; do
-  ls=`ls -ld "$PRG"`
-  link=`expr "$ls" : '.*-> \(.*\)$'`
-  if expr "$link" : '/.*' > /dev/null; then
+  ls=$(ls -ld "$PRG")
+  link=$(expr "$ls" : '.*-> \(.*\)$')
+  if expr "$link" : '/.*' >/dev/null; then
     PRG="$link"
   else
-    PRG=`dirname "$PRG"`/"$link"
+    PRG=$(dirname "$PRG")/"$link"
   fi
 done
 
 # Get standard environment variables
-PRGDIR=`dirname "$PRG"`
+PRGDIR=$(dirname "$PRG")
 
 # Only set ARCADEDB_HOME if not already set
-[ -f "$ARCADEDB_HOME"/bin/server.sh ] || ARCADEDB_HOME=`cd "$PRGDIR/.." ; pwd`
+[ -f "$ARCADEDB_HOME"/bin/server.sh ] || ARCADEDB_HOME=$(
+  cd "$PRGDIR/.."
+  pwd
+)
 
 # Raspberry Pi check (Java VM does not run with -server argument on ARMv6)
-if [ `uname -m` != "armv6l" ]; then
+if [ $(uname -m) != "armv6l" ]; then
   JAVA_OPTS="$JAVA_OPTS -server "
 fi
 
 # Set JavaHome if it exists
 if [ -f "${JAVA_HOME}/bin/java" ]; then
-   JAVA=${JAVA_HOME}/bin/java
+  JAVA=${JAVA_HOME}/bin/java
 else
-   JAVA=java
+  JAVA=java
 fi
 
-
-if [ -z "$ARCADEDB_PID" ] ; then
-    ARCADEDB_PID=$ARCADEDB_HOME/bin/arcadedb.pid
+if [ -z "$ARCADEDB_PID" ]; then
+  ARCADEDB_PID=$ARCADEDB_HOME/bin/arcadedb.pid
 fi
 
 if [ -f "$ARCADEDB_PID" ]; then
-    echo "removing old pid file $ARCADEDB_PID"
-    rm "$ARCADEDB_PID"
+  echo "removing old pid file $ARCADEDB_PID"
+  rm "$ARCADEDB_PID"
 fi
-
 
 # ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G"
-if [ -z "$ARCADEDB_OPTS_MEMORY" ] ; then
-    ARCADEDB_OPTS_MEMORY=""
+if [ -z "$ARCADEDB_OPTS_MEMORY" ]; then
+  ARCADEDB_OPTS_MEMORY=""
 fi
 
-if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
-    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
+if [ -z "$JAVA_OPTS_SCRIPT" ]; then
+  JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError --add-opens java.base/java.io=ALL-UNNAMED -Dpolyglot.engine.WarnInterpreterOnly=false -Djava.awt.headless=true -Dfile.encoding=UTF8 -Djava.util.logging.config.file=config/arcadedb-log.properties"
 fi
 
-if [ -z "$ARCADEDB_JMX" ] ; then
-    ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998"
+if [ -z "$ARCADEDB_JMX" ]; then
+  ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998"
 fi
 
-echo $$ > $ARCADEDB_PID
+echo $$ >$ARCADEDB_PID
 
 exec "$JAVA" $JAVA_OPTS \
-    $ARCADEDB_OPTS_MEMORY \
-    $JAVA_OPTS_SCRIPT \
-    $ARCADEDB_JMX \
-    $ARCADEDB_SETTINGS \
-    -cp "$ARCADEDB_HOME/lib/*" \
-    $ARGS  $* "$@" com.arcadedb.server.ArcadeDBServer
+  $ARCADEDB_OPTS_MEMORY \
+  $JAVA_OPTS_SCRIPT \
+  $ARCADEDB_JMX \
+  $ARCADEDB_SETTINGS \
+  -cp "$ARCADEDB_HOME/lib/*" \
+  $ARGS $* "$@" com.arcadedb.server.ArcadeDBServer

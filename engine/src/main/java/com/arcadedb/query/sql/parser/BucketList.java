@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -34,14 +31,10 @@ public class BucketList extends SimpleNode {
     super(id);
   }
 
-  public BucketList(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("bucket:[");
     boolean first = true;
-    for (Identifier id : buckets) {
+    for (final Identifier id : buckets) {
       if (!first) {
         builder.append(",");
       }
@@ -52,9 +45,9 @@ public class BucketList extends SimpleNode {
   }
 
   public List<Bucket> toListOfClusters() {
-    final  List<Bucket> result = new ArrayList<>();
-    for (Identifier id : buckets) {
-      Bucket bucket = new Bucket(-1);
+    final List<Bucket> result = new ArrayList<>();
+    for (final Identifier id : buckets) {
+      final Bucket bucket = new Bucket(-1);
       bucket.bucketName = id.getStringValue();
       result.add(bucket);
     }
@@ -62,46 +55,14 @@ public class BucketList extends SimpleNode {
   }
 
   public BucketList copy() {
-    final  BucketList result = new BucketList(-1);
+    final BucketList result = new BucketList(-1);
     result.buckets = buckets.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BucketList that = (BucketList) o;
-
-    return Objects.equals(buckets, that.buckets);
-  }
-
-  @Override
-  public int hashCode() {
-    return buckets != null ? buckets.hashCode() : 0;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (buckets != null) {
-      result.setProperty("buckets", buckets.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("buckets") != null) {
-      buckets = new ArrayList<>();
-      final List<Result> ser = fromResult.getProperty("buckets");
-      for (Result item : ser) {
-        Identifier id = new Identifier(-1);
-        Identifier.deserialize(item);
-        buckets.add(id);
-      }
-    }
+  protected Object[] getIdentityElements() {
+    return new Object[] { buckets };
   }
 }
 /* JavaCC - OriginalChecksum=bd90ffa0b9d17f204b3cf2d47eedb409 (do not edit this line) */

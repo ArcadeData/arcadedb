@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -32,22 +31,18 @@ import java.util.stream.*;
 public class OrBlock extends BooleanExpression {
   List<BooleanExpression> subBlocks = new ArrayList<BooleanExpression>();
 
-  public OrBlock(int id) {
+  public OrBlock(final int id) {
     super(id);
   }
 
-  public OrBlock(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (getSubBlocks() == null) {
       return true;
     }
 
-    for (BooleanExpression block : subBlocks) {
-      if (block.evaluate(currentRecord, ctx)) {
+    for (final BooleanExpression block : subBlocks) {
+      if (block.evaluate(currentRecord, context)) {
         return true;
       }
     }
@@ -55,28 +50,27 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    if (getSubBlocks() == null) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    if (getSubBlocks() == null)
       return true;
-    }
 
-    for (BooleanExpression block : subBlocks) {
-      if (block.evaluate(currentRecord, ctx)) {
+    for (final BooleanExpression block : subBlocks) {
+      if (block.evaluate(currentRecord, context)) {
         return true;
       }
     }
     return false;
   }
 
-  public boolean evaluate(Object currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Object currentRecord, final CommandContext context) {
     if (currentRecord instanceof Result) {
-      return evaluate((Result) currentRecord, ctx);
+      return evaluate((Result) currentRecord, context);
     } else if (currentRecord instanceof Identifiable) {
-      return evaluate((Identifiable) currentRecord, ctx);
+      return evaluate((Identifiable) currentRecord, context);
     } else if (currentRecord instanceof Map) {
 //      ODocument doc = new ODocument();
 //      doc.fromMap((Map<String, Object>) currentRecord);
-//      return evaluate(doc, ctx);
+//      return evaluate(doc, context);
       throw new UnsupportedOperationException();
     }
     return false;
@@ -86,18 +80,14 @@ public class OrBlock extends BooleanExpression {
     return subBlocks;
   }
 
-  public void setSubBlocks(List<BooleanExpression> subBlocks) {
+  public void setSubBlocks(final List<BooleanExpression> subBlocks) {
     this.subBlocks = subBlocks;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (subBlocks == null || subBlocks.size() == 0) {
       return;
     }
-    // if (subBlocks.size() == 1) {
-    // subBlocks.get(0).toString(params, builder);
-    // return;
-    // }
 
     boolean first = true;
     for (BooleanExpression expr : subBlocks) {
@@ -109,41 +99,13 @@ public class OrBlock extends BooleanExpression {
     }
   }
 
-  @Override
-  protected boolean supportsBasicCalculation() {
-    for (BooleanExpression expr : subBlocks) {
-      if (!expr.supportsBasicCalculation()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int result = 0;
-    for (BooleanExpression expr : subBlocks) {
-      result += expr.getNumberOfExternalCalculations();
-    }
-    return result;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
-    for (BooleanExpression expr : subBlocks) {
-      result.addAll(expr.getExternalCalculationConditions());
-    }
-    return result;
-  }
-
-  public List<BinaryCondition> getIndexedFunctionConditions(DocumentType iSchemaClass, Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (subBlocks == null || subBlocks.size() > 1) {
       return null;
     }
-    List<BinaryCondition> result = new ArrayList<BinaryCondition>();
-    for (BooleanExpression exp : subBlocks) {
-      List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, database);
+    final List<BinaryCondition> result = new ArrayList<BinaryCondition>();
+    for (final BooleanExpression exp : subBlocks) {
+      final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, context);
       if (sub != null && sub.size() > 0) {
         result.addAll(sub);
       }
@@ -152,10 +114,10 @@ public class OrBlock extends BooleanExpression {
   }
 
   public List<AndBlock> flatten() {
-    List<AndBlock> result = new ArrayList<AndBlock>();
-    for (BooleanExpression sub : subBlocks) {
-      List<AndBlock> childFlattened = sub.flatten();
-      for (AndBlock child : childFlattened) {
+    final List<AndBlock> result = new ArrayList<AndBlock>();
+    for (final BooleanExpression sub : subBlocks) {
+      final List<AndBlock> childFlattened = sub.flatten();
+      for (final AndBlock child : childFlattened) {
         result.add(child);
       }
     }
@@ -163,37 +125,10 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
-    for (BooleanExpression expr : subBlocks) {
-      if (expr.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  @Override
   public OrBlock copy() {
-    OrBlock result = new OrBlock(-1);
+    final OrBlock result = new OrBlock(-1);
     result.subBlocks = subBlocks.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final OrBlock oOrBlock = (OrBlock) o;
-
-    return Objects.equals(subBlocks, oOrBlock.subBlocks);
-  }
-
-  @Override
-  public int hashCode() {
-    return subBlocks != null ? subBlocks.hashCode() : 0;
   }
 
   @Override
@@ -201,7 +136,7 @@ public class OrBlock extends BooleanExpression {
     if (subBlocks.isEmpty()) {
       return true;
     }
-    for (BooleanExpression block : subBlocks) {
+    for (final BooleanExpression block : subBlocks) {
       if (!block.isEmpty()) {
         return false;
       }
@@ -210,27 +145,17 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
-    for (BooleanExpression block : subBlocks) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    for (final BooleanExpression block : subBlocks) {
       block.extractSubQueries(collector);
     }
   }
 
   @Override
-  public boolean refersToParent() {
-    for (BooleanExpression exp : subBlocks) {
-      if (exp != null && exp.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<String>();
-    for (BooleanExpression exp : subBlocks) {
-      List<String> x = exp.getMatchPatternInvolvedAliases();
+    final List<String> result = new ArrayList<String>();
+    for (final BooleanExpression exp : subBlocks) {
+      final List<String> x = exp.getMatchPatternInvolvedAliases();
       if (x != null) {
         result.addAll(x);
       }
@@ -238,15 +163,26 @@ public class OrBlock extends BooleanExpression {
     return result.isEmpty() ? null : result;
   }
 
-  @Override
-  public boolean isCacheable() {
-    for (BooleanExpression block : this.subBlocks) {
-      if (!block.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return subBlocks.toArray(new BooleanExpression[subBlocks.size()]);
+  }
+
+  @Override
+  public boolean isAlwaysTrue() {
+    if (subBlocks.isEmpty())
+      return true;
+
+    for (BooleanExpression exp : subBlocks) {
+      if (exp.isAlwaysTrue()) {
+        return true;
+      }
+    }
+    return false;
+  }
 }
 /* JavaCC - OriginalChecksum=98d3077303a598705894dbb7bd4e1573 (do not edit this line) */

@@ -53,7 +53,7 @@ public interface SecurityDatabaseUser {
     }
 
     public static DATABASE_ACCESS getByName(final String name) {
-      for (DATABASE_ACCESS v : DATABASE_ACCESS.values())
+      for (final DATABASE_ACCESS v : DATABASE_ACCESS.values())
         if (v.name.equals(name))
           return v;
       return null;

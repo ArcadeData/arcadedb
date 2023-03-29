@@ -46,7 +46,6 @@ import java.util.concurrent.atomic.*;
 public class FullBackupIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
   private final static String FILE              = "target/arcadedb-backup.zip";
-  private final        File   databaseDirectory = new File(DATABASE_PATH);
   private final        File   restoredDirectory = new File(DATABASE_PATH + "_restored");
   private final        File   file              = new File(FILE);
 
@@ -62,8 +61,8 @@ public class FullBackupIT {
 
     new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o").split(" ")).restoreDatabase();
 
-    try (Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
-      try (Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
+    try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
+      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
         new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
     }
@@ -81,7 +80,7 @@ public class FullBackupIT {
 
       new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
 
-      try (Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
+      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
         new DatabaseComparator().compare(importedDatabase, restoredDatabase);
       }
     }
@@ -117,7 +116,7 @@ public class FullBackupIT {
         type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "thread", "id");
         type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy() {
           @Override
-          public int getBucketIdByRecord(Document record, boolean async) {
+          public int getBucketIdByRecord(final Document record, final boolean async) {
             return record.getInteger("thread");
           }
         });
@@ -133,7 +132,7 @@ public class FullBackupIT {
             for (int j = 0; j < 500; j++) {
               importedDatabase.begin();
               for (int k = 0; k < 500; k++) {
-                MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
+                final MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
                 Assertions.assertEquals(threadBucket.getId(), v.getIdentity().getBucketId());
 
                 if (k + 1 % 100 == 0) {
@@ -174,7 +173,7 @@ public class FullBackupIT {
 
         new Restore(FILE + "_" + i, databasePath).setVerboseLevel(1).restoreDatabase();
 
-        try (Database restoredDatabase = new DatabaseFactory(databasePath).open(PaginatedFile.MODE.READ_ONLY)) {
+        try (final Database restoredDatabase = new DatabaseFactory(databasePath).open(PaginatedFile.MODE.READ_ONLY)) {
           // VERIFY ONLY WHOLE TRANSACTION ARE WRITTEN
           Assertions.assertTrue(restoredDatabase.countType("BackupTest", true) % 500 == 0);
         }
@@ -199,7 +198,7 @@ public class FullBackupIT {
       emptyDatabase().close();
       new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format unknown").split(" ")).backupDatabase();
       Assertions.fail();
-    } catch (BackupException e) {
+    } catch (final BackupException e) {
       // EXPECTED
     }
   }
@@ -211,7 +210,7 @@ public class FullBackupIT {
       new File(FILE).createNewFile();
       new Backup(("-f " + FILE + " -d " + DATABASE_PATH).split(" ")).backupDatabase();
       Assertions.fail();
-    } catch (BackupException e) {
+    } catch (final BackupException e) {
       // EXPECTED
     }
   }

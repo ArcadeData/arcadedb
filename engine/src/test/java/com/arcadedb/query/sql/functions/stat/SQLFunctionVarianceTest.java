@@ -36,43 +36,43 @@ public class SQLFunctionVarianceTest {
 
     @Test
     public void testEmpty() {
-        Object result = variance.getResult();
+        final Object result = variance.getResult();
         assertNull(result);
     }
 
     @Test
     public void testVariance() {
-        Integer[] scores = {4, 7, 15, 3};
+        final Integer[] scores = {4, 7, 15, 3};
 
-        for (Integer s : scores) {
+        for (final Integer s : scores) {
             variance.execute(null, null, null, new Object[]{s}, null);
         }
 
-        Object result = variance.getResult();
+        final Object result = variance.getResult();
         Assertions.assertEquals(22.1875, result);
     }
 
     @Test
     public void testVariance1() {
-        Integer[] scores = {4, 7};
+        final Integer[] scores = {4, 7};
 
-        for (Integer s : scores) {
+        for (final Integer s : scores) {
             variance.execute(null, null, null, new Object[]{s}, null);
         }
 
-        Object result = variance.getResult();
+        final Object result = variance.getResult();
         Assertions.assertEquals(2.25, result);
     }
 
     @Test
     public void testVariance2() {
-        Integer[] scores = {15, 3};
+        final Integer[] scores = {15, 3};
 
-        for (Integer s : scores) {
+        for (final Integer s : scores) {
             variance.execute(null, null, null, new Object[]{s}, null);
         }
 
-        Object result = variance.getResult();
+        final Object result = variance.getResult();
         Assertions.assertEquals(36.0, result);
     }
 }

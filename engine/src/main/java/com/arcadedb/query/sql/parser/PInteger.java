@@ -20,36 +20,29 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class PInteger extends PNumber {
 
-  protected java.lang.Number value;
+  protected Number value;
 
-  public PInteger(int id) {
+  public PInteger(final int id) {
     super(id);
   }
 
-  public PInteger(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public java.lang.Number getValue() {
+  public Number getValue() {
     return value;
   }
 
-  public void setValue(int sign, String stringValue) {
-    int radix = radix(stringValue);
+  public void setValue(final int sign, String stringValue) {
+    final int radix = radix(stringValue);
     stringValue = convertToJavaByRadix(stringValue, radix);
 
     if (stringValue.endsWith("L") || stringValue.endsWith("l")) {
       value = Long.parseLong(stringValue.substring(0, stringValue.length() - 1), radix) * sign;
     } else {
-      long longValue = Long.parseLong(stringValue, radix) * sign;
-      if (longValue > java.lang.Integer.MAX_VALUE || longValue < java.lang.Integer.MIN_VALUE) {
+      final long longValue = Long.parseLong(stringValue, radix) * sign;
+      if (longValue > Integer.MAX_VALUE || longValue < Integer.MIN_VALUE) {
         value = longValue;
       } else {
         value = (int) longValue;
@@ -57,7 +50,7 @@ public class PInteger extends PNumber {
     }
   }
 
-  private String convertToJavaByRadix(String stringValue, int radix) {
+  private String convertToJavaByRadix(final String stringValue, final int radix) {
     if (radix == 16) {
       if (stringValue.charAt(0) == '-') {
         return "-" + stringValue.substring(3);
@@ -86,41 +79,19 @@ public class PInteger extends PNumber {
     return this;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("" + value);
   }
 
   public PInteger copy() {
-    PInteger result = new PInteger(-1);
+    final PInteger result = new PInteger(-1);
     result.value = value;
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    PInteger oInteger = (PInteger) o;
-
-    return Objects.equals(value, oInteger.value);
-  }
-
-  @Override
-  public int hashCode() {
-    return value != null ? value.hashCode() : 0;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("value", value);
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    value = fromResult.getProperty("value");
+  protected Object[] getIdentityElements() {
+    return new Object[] { value };
   }
 }
 /* JavaCC - OriginalChecksum=2e6eee6366ff4e864dd6c8184d2766f5 (do not edit this line) */

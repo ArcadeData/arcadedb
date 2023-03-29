@@ -51,9 +51,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX Person set name = 'n5'");
     database.command("sql", "CREATE VERTEX Person set name = 'n6'");
 
-    String[][] friendList = new String[][] { { "n1", "n2" }, { "n1", "n3" }, { "n2", "n4" }, { "n4", "n5" }, { "n4", "n6" } };
+    final String[][] friendList = new String[][] { { "n1", "n2" }, { "n1", "n3" }, { "n2", "n4" }, { "n4", "n5" }, { "n4", "n6" } };
 
-    for (String[] pair : friendList) {
+    for (final String[] pair : friendList) {
       database.command("sql", "CREATE EDGE Friend from (select from Person where name = ?) to (select from Person where name = ?)", pair[0], pair[1]);
     }
 
@@ -82,14 +82,14 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.begin();
   }
 
-  private static void initEdgeIndexTest(Database database) {
+  private static void initEdgeIndexTest(final Database database) {
     database.command("sql", "CREATE vertex type IndexedVertex");
     database.command("sql", "CREATE property IndexedVertex.uid INTEGER");
     database.command("sql", "CREATE index on IndexedVertex (uid) NOTUNIQUE");
 
-    int nodes = 1000;
+    final int nodes = 1000;
     for (int i = 0; i < nodes; i++) {
-      MutableDocument doc = database.newVertex("IndexedVertex");
+      final MutableDocument doc = database.newVertex("IndexedVertex");
       doc.set("uid", i);
       doc.save();
     }
@@ -97,7 +97,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE edge type IndexedEdge");
 
     for (int i = 0; i < 100; i++) {
-      String cmd =
+      final String cmd =
           "CREATE EDGE IndexedEdge FROM (SELECT FROM IndexedVertex WHERE uid = 0) TO (SELECT FROM IndexedVertex WHERE uid > " + (i * nodes / 100) + " and uid <"
               + ((i + 1) * nodes / 100) + ")";
       database.command("sql", cmd);
@@ -106,7 +106,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 //    database.query("sql", "select expand(out()) from IndexedVertex where uid = 0").stream().forEach(x -> System.out.println("x = " + x));
   }
 
-  private static void initOrgChart(Database database) {
+  private static void initOrgChart(final Database database) {
 
     // ______ [manager] department _______
     // _____ (employees in department)____
@@ -141,7 +141,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE edge type  WorksAt");
     database.command("sql", "CREATE edge type  ManagerOf ");
 
-    int[][] deptHierarchy = new int[10][];
+    final int[][] deptHierarchy = new int[10][];
     deptHierarchy[0] = new int[] { 1, 2 };
     deptHierarchy[1] = new int[] { 3, 4 };
     deptHierarchy[2] = new int[] { 5, 6 };
@@ -153,9 +153,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     deptHierarchy[8] = new int[] {};
     deptHierarchy[9] = new int[] {};
 
-    String[] deptManagers = { "a", "b", "d", null, null, null, null, "c", null, null };
+    final String[] deptManagers = { "a", "b", "d", null, null, null, null, "c", null, null };
 
-    String[][] employees = new String[10][];
+    final String[][] employees = new String[10][];
     employees[0] = new String[] { "p1" };
     employees[1] = new String[] { "p2", "p3" };
     employees[2] = new String[] { "p4", "p5" };
@@ -172,15 +172,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     }
 
     for (int parent = 0; parent < deptHierarchy.length; parent++) {
-      int[] children = deptHierarchy[parent];
-      for (int child : children) {
+      final int[] children = deptHierarchy[parent];
+      for (final int child : children) {
         database.command("sql", "CREATE EDGE ParentDepartment from (select from Department where name = 'department" + child
             + "') to (select from Department where name = 'department" + parent + "') ");
       }
     }
 
     for (int dept = 0; dept < deptManagers.length; dept++) {
-      String manager = deptManagers[dept];
+      final String manager = deptManagers[dept];
       if (manager != null) {
         database.command("sql", "CREATE Vertex Employee set name = '" + manager + "' ");
 
@@ -191,8 +191,8 @@ public class MatchStatementExecutionTest extends TestHelper {
     }
 
     for (int dept = 0; dept < employees.length; dept++) {
-      String[] employeesForDept = employees[dept];
-      for (String employee : employeesForDept) {
+      final String[] employeesForDept = employees[dept];
+      for (final String employee : employeesForDept) {
         database.command("sql", "CREATE Vertex Employee set name = '" + employee + "' ");
 
         database.command("sql",
@@ -202,7 +202,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     }
   }
 
-  private static void initTriangleTest(Database database) {
+  private static void initTriangleTest(final Database database) {
     database.command("sql", "CREATE vertex type TriangleV");
     database.command("sql", "CREATE property TriangleV.uid INTEGER");
     database.command("sql", "CREATE index on TriangleV (uid) UNIQUE");
@@ -210,36 +210,35 @@ public class MatchStatementExecutionTest extends TestHelper {
     for (int i = 0; i < 10; i++) {
       database.command("sql", "CREATE VERTEX TriangleV set uid = ?", i);
     }
-    int[][] edges = { { 0, 1 }, { 0, 2 }, { 1, 2 }, { 1, 3 }, { 2, 4 }, { 3, 4 }, { 3, 5 }, { 4, 0 }, { 4, 7 }, { 6, 7 }, { 7, 8 }, { 7, 9 }, { 8, 9 },
+    final int[][] edges = { { 0, 1 }, { 0, 2 }, { 1, 2 }, { 1, 3 }, { 2, 4 }, { 3, 4 }, { 3, 5 }, { 4, 0 }, { 4, 7 }, { 6, 7 }, { 7, 8 }, { 7, 9 }, { 8, 9 },
         { 9, 1 }, { 8, 3 }, { 8, 4 } };
-    for (int[] edge : edges) {
+    for (final int[] edge : edges) {
       database.command("sql", "CREATE EDGE TriangleE from (select from TriangleV where uid = ?) to (select from TriangleV where uid = ?)", edge[0], edge[1]);
     }
   }
 
-  private static void initDiamondTest(Database database) {
+  private static void initDiamondTest(final Database database) {
     database.command("sql", "CREATE vertex type DiamondV");
     database.command("sql", "CREATE edge type DiamondE");
     for (int i = 0; i < 4; i++) {
       database.command("sql", "CREATE VERTEX DiamondV set uid = ?", i);
     }
-    int[][] edges = { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 } };
-    for (int[] edge : edges) {
+    final int[][] edges = { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 } };
+    for (final int[] edge : edges) {
       database.command("sql", "CREATE EDGE DiamondE from (select from DiamondV where uid = ?) to (select from DiamondV where uid = ?)", edge[0], edge[1]);
     }
   }
 
   @Test
   public void testSimple() {
-    ResultSet qResult = database.query("sql", "match {type:Person, as: person} return person");
-    printExecutionPlan(qResult);
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person} return person");
 
     for (int i = 0; i < 6; i++) {
-      Result item = qResult.next();
+      final Result item = qResult.next();
       Assertions.assertEquals(1, item.getPropertyNames().size());
-      Document person = item.getProperty("person");
+      final Document person = item.getProperty("person");
 
-      String name = person.getString("name");
+      final String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));
     }
     qResult.close();
@@ -247,15 +246,15 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSimpleWhere() {
-    ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person");
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person");
 
     for (int i = 0; i < 2; i++) {
-      Result item = qResult.next();
+      final Result item = qResult.next();
       Assertions.assertTrue(item.getPropertyNames().size() == 1);
-      Document personId = item.getProperty("person");
+      final Document personId = item.getProperty("person");
 
-      MutableDocument person = personId.getRecord().asVertex().modify();
-      String name = person.getString("name");
+      final MutableDocument person = personId.getRecord().asVertex().modify();
+      final String name = person.getString("name");
       Assertions.assertTrue(name.equals("n1") || name.equals("n2"));
     }
     qResult.close();
@@ -263,7 +262,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSimpleLimit() {
-    ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 1");
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 1");
     Assertions.assertTrue(qResult.hasNext());
     qResult.next();
     Assertions.assertFalse(qResult.hasNext());
@@ -272,7 +271,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSimpleLimit2() {
-    ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit -1");
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit -1");
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(qResult.hasNext());
       qResult.next();
@@ -283,7 +282,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testSimpleLimit3() {
 
-    ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 3");
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 3");
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(qResult.hasNext());
       qResult.next();
@@ -293,16 +292,15 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSimpleUnnamedParams() {
-    ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = ? or name = ?)} return person", "n1", "n2");
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = ? or name = ?)} return person", "n1", "n2");
 
-    printExecutionPlan(qResult);
     for (int i = 0; i < 2; i++) {
 
-      Result item = qResult.next();
+      final Result item = qResult.next();
       Assertions.assertEquals(1, item.getPropertyNames().size());
-      Document person = item.getProperty("person");
+      final Document person = item.getProperty("person");
 
-      String name = person.getString("name");
+      final String name = person.getString("name");
       Assertions.assertTrue(name.equals("n1") || name.equals("n2"));
     }
     qResult.close();
@@ -311,11 +309,11 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testCommonFriends() {
 
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend)");
-    printExecutionPlan(qResult);
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -324,11 +322,11 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testCommonFriendsPatterns() {
 
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $patterns)");
-    printExecutionPlan(qResult);
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -336,11 +334,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testPattens() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $patterns");
-    printExecutionPlan(qResult);
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals(1, item.getPropertyNames().size());
     Assertions.assertEquals("friend", item.getPropertyNames().iterator().next());
     Assertions.assertFalse(qResult.hasNext());
@@ -349,11 +347,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testPaths() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $paths");
-    printExecutionPlan(qResult);
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals(3, item.getPropertyNames().size());
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -361,11 +359,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testElements() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $elements");
-    printExecutionPlan(qResult);
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -373,16 +371,16 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testPathElements() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $pathElements");
-    printExecutionPlan(qResult);
-    Set<String> expected = new HashSet<>();
+
+    final Set<String> expected = new HashSet<>();
     expected.add("n1");
     expected.add("n2");
     expected.add("n4");
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(qResult.hasNext());
-      Result item = qResult.next();
+      final Result item = qResult.next();
       expected.remove(item.getProperty("name"));
     }
     Assertions.assertFalse(qResult.hasNext());
@@ -393,11 +391,11 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testCommonFriendsMatches() {
 
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $matches)");
-    printExecutionPlan(qResult);
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -406,11 +404,11 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testCommonFriendsArrows() {
 
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend)");
-    printExecutionPlan(qResult);
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -419,11 +417,11 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testCommonFriendsArrowsPatterns() {
 
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return $patterns)");
-    printExecutionPlan(qResult);
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -432,11 +430,11 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testCommonFriends2() {
 
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name as name");
 
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -445,11 +443,11 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testCommonFriends2Arrows() {
 
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name as name");
 
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -457,10 +455,10 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testReturnMethod() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name.toUpperCase(Locale.ENGLISH) as name");
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("N2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -468,10 +466,10 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testReturnMethodArrows() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name.toUpperCase(Locale.ENGLISH) as name");
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("N2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -479,11 +477,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testReturnExpression() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name + ' ' +friend.name as name");
 
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2 n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -491,11 +489,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testReturnExpressionArrows() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name + ' ' +friend.name as name");
 
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2 n2", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -503,11 +501,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testReturnDefaultAlias() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name");
 
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("friend.name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -515,11 +513,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testReturnDefaultAliasArrows() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name");
 
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n2", item.getProperty("friend.name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -527,12 +525,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFriendsOfFriends() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend').out('Friend'){as:friend} return $matches)");
 
-    printExecutionPlan(qResult);
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n4", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -540,11 +537,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFriendsOfFriendsArrows() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{}-Friend->{as:friend} return $matches)");
 
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertEquals("n4", item.getProperty("name"));
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
@@ -552,13 +549,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFriendsOfFriends2() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1'), as: me}.both('Friend').both('Friend'){as:friend, where: ($matched.me != $currentMatch)} return $matches)");
 
-    printExecutionPlan(qResult);
     Assertions.assertTrue(qResult.hasNext());
     while (qResult.hasNext()) {
-      Result item = qResult.next();
+      final Result item = qResult.next();
       Assertions.assertNotEquals("n1", item.getProperty("name"));
     }
     qResult.close();
@@ -566,7 +562,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFriendsOfFriends2Arrows() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1'), as: me}-Friend-{}-Friend-{as:friend, where: ($matched.me != $currentMatch)} return $matches)");
 
     Assertions.assertTrue(qResult.hasNext());
@@ -578,7 +574,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFriendsWithName() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)} return friend)");
 
     Assertions.assertTrue(qResult.hasNext());
@@ -589,7 +585,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFriendsWithNameArrows() {
-    ResultSet qResult = database.query("sql",
+    final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1' and 1 + 1 = 2)}-Friend->{as:friend, where:(name = 'n2' and 1 + 1 = 2)} return friend)");
     Assertions.assertTrue(qResult.hasNext());
     Assertions.assertEquals("n2", qResult.next().getProperty("name"));
@@ -631,7 +627,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     qResult.close();
   }
 
-  private int size(ResultSet qResult) {
+  private int size(final ResultSet qResult) {
     int result = 0;
     while (qResult.hasNext()) {
       result++;
@@ -726,7 +722,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testExpanded() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("select @type from ( ");
     query.append(" select expand(manager) from (");
     query.append("  match {type:Employee, where: (name = '" + "p10" + "')}");
@@ -740,17 +736,17 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append(" )");
     query.append(")");
 
-    ResultSet qResult = database.query("sql", query.toString());
+    final ResultSet qResult = database.query("sql", query.toString());
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
 
     Assertions.assertEquals("Employee", item.getProperty("@type"));
   }
 
-  private Document getManager(String personName) {
-    StringBuilder query = new StringBuilder();
+  private Document getManager(final String personName) {
+    final StringBuilder query = new StringBuilder();
     query.append("select expand(manager) from (");
     query.append("  match {type:Employee, where: (name = '" + personName + "')}");
     query.append("  .out('WorksAt')");
@@ -762,16 +758,16 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  return manager");
     query.append(")");
 
-    ResultSet qResult = database.query("sql", query.toString());
+    final ResultSet qResult = database.query("sql", query.toString());
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
     return item.getElement().get().getRecord().asVertex();
   }
 
-  private Document getManagerArrows(String personName) {
-    StringBuilder query = new StringBuilder();
+  private Document getManagerArrows(final String personName) {
+    final StringBuilder query = new StringBuilder();
     query.append("select expand(manager) from (");
     query.append("  match {type:Employee, where: (name = '" + personName + "')}");
     query.append("  -WorksAt->{}-ParentDepartment->{");
@@ -781,10 +777,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  return manager");
     query.append(")");
 
-    ResultSet qResult = database.query("sql", query.toString());
-    printExecutionPlan(qResult);
+    final ResultSet qResult = database.query("sql", query.toString());
+
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
     return item.getElement().get().getRecord().asVertex();
@@ -806,8 +802,8 @@ public class MatchStatementExecutionTest extends TestHelper {
     Assertions.assertEquals("b", getManager2Arrows("p11").getProperty("name"));
   }
 
-  private Result getManager2(String personName) {
-    StringBuilder query = new StringBuilder();
+  private Result getManager2(final String personName) {
+    final StringBuilder query = new StringBuilder();
     query.append("select expand(manager) from (");
     query.append("  match {type:Employee, where: (name = '" + personName + "')}");
     query.append("   .( out('WorksAt')");
@@ -820,16 +816,16 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  return manager");
     query.append(")");
 
-    ResultSet qResult = database.query("sql", query.toString());
+    final ResultSet qResult = database.query("sql", query.toString());
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
     return item;
   }
 
-  private Result getManager2Arrows(String personName) {
-    StringBuilder query = new StringBuilder();
+  private Result getManager2Arrows(final String personName) {
+    final StringBuilder query = new StringBuilder();
     query.append("select expand(manager) from (");
     query.append("  match {type:Employee, where: (name = '" + personName + "')}");
     query.append("   .( -WorksAt->{}-ParentDepartment->{");
@@ -840,9 +836,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  return manager");
     query.append(")");
 
-    ResultSet qResult = database.query("sql", query.toString());
+    final ResultSet qResult = database.query("sql", query.toString());
     Assertions.assertTrue(qResult.hasNext());
-    Result item = qResult.next();
+    final Result item = qResult.next();
     Assertions.assertFalse(qResult.hasNext());
     qResult.close();
     return item;
@@ -852,34 +848,34 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testManaged() {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
-    ResultSet managedByA = getManagedBy("a");
+    final ResultSet managedByA = getManagedBy("a");
     Assertions.assertTrue(managedByA.hasNext());
-    Result item = managedByA.next();
+    final Result item = managedByA.next();
     Assertions.assertFalse(managedByA.hasNext());
     Assertions.assertEquals("p1", item.getProperty("name"));
     managedByA.close();
 
-    ResultSet managedByB = getManagedBy("b");
+    final ResultSet managedByB = getManagedBy("b");
 
-    Set<String> expectedNames = new HashSet<String>();
+    final Set<String> expectedNames = new HashSet<String>();
     expectedNames.add("p2");
     expectedNames.add("p3");
     expectedNames.add("p6");
     expectedNames.add("p7");
     expectedNames.add("p11");
-    Set<String> names = new HashSet<String>();
+    final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
       Assertions.assertTrue(managedByB.hasNext());
-      Result id = managedByB.next();
-      String name = id.getProperty("name");
+      final Result id = managedByB.next();
+      final String name = id.getProperty("name");
       names.add(name);
     }
     Assertions.assertEquals(expectedNames, names);
     managedByB.close();
   }
 
-  private ResultSet getManagedBy(String managerName) {
-    StringBuilder query = new StringBuilder();
+  private ResultSet getManagedBy(final String managerName) {
+    final StringBuilder query = new StringBuilder();
     query.append("select expand(managed) from (");
     query.append("  match {type:Employee, where: (name = '" + managerName + "')}");
     query.append("  .out('ManagerOf')");
@@ -898,33 +894,33 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testManagedArrows() {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
-    ResultSet managedByA = getManagedByArrows("a");
+    final ResultSet managedByA = getManagedByArrows("a");
     Assertions.assertTrue(managedByA.hasNext());
-    Result item = managedByA.next();
+    final Result item = managedByA.next();
     Assertions.assertFalse(managedByA.hasNext());
     Assertions.assertEquals("p1", item.getProperty("name"));
     managedByA.close();
-    ResultSet managedByB = getManagedByArrows("b");
+    final ResultSet managedByB = getManagedByArrows("b");
 
-    Set<String> expectedNames = new HashSet<String>();
+    final Set<String> expectedNames = new HashSet<String>();
     expectedNames.add("p2");
     expectedNames.add("p3");
     expectedNames.add("p6");
     expectedNames.add("p7");
     expectedNames.add("p11");
-    Set<String> names = new HashSet<String>();
+    final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
       Assertions.assertTrue(managedByB.hasNext());
-      Result id = managedByB.next();
-      String name = id.getProperty("name");
+      final Result id = managedByB.next();
+      final String name = id.getProperty("name");
       names.add(name);
     }
     Assertions.assertEquals(expectedNames, names);
     managedByB.close();
   }
 
-  private ResultSet getManagedByArrows(String managerName) {
-    StringBuilder query = new StringBuilder();
+  private ResultSet getManagedByArrows(final String managerName) {
+    final StringBuilder query = new StringBuilder();
     query.append("select expand(managed) from (");
     query.append("  match {type:Employee, where: (name = '" + managerName + "')}");
     query.append("  -ManagerOf->{}<-ParentDepartment-{");
@@ -941,33 +937,33 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testManaged2() {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
-    ResultSet managedByA = getManagedBy2("a");
+    final ResultSet managedByA = getManagedBy2("a");
     Assertions.assertTrue(managedByA.hasNext());
-    Result item = managedByA.next();
+    final Result item = managedByA.next();
     Assertions.assertFalse(managedByA.hasNext());
     Assertions.assertEquals("p1", item.getProperty("name"));
     managedByA.close();
-    ResultSet managedByB = getManagedBy2("b");
+    final ResultSet managedByB = getManagedBy2("b");
 
-    Set<String> expectedNames = new HashSet<String>();
+    final Set<String> expectedNames = new HashSet<String>();
     expectedNames.add("p2");
     expectedNames.add("p3");
     expectedNames.add("p6");
     expectedNames.add("p7");
     expectedNames.add("p11");
-    Set<String> names = new HashSet<String>();
+    final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
       Assertions.assertTrue(managedByB.hasNext());
-      Result id = managedByB.next();
-      String name = id.getProperty("name");
+      final Result id = managedByB.next();
+      final String name = id.getProperty("name");
       names.add(name);
     }
     Assertions.assertEquals(expectedNames, names);
     managedByB.close();
   }
 
-  private ResultSet getManagedBy2(String managerName) {
-    StringBuilder query = new StringBuilder();
+  private ResultSet getManagedBy2(final String managerName) {
+    final StringBuilder query = new StringBuilder();
     query.append("select expand(managed) from (");
     query.append("  match {type:Employee, where: (name = '" + managerName + "')}");
     query.append("  .out('ManagerOf')");
@@ -986,33 +982,33 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testManaged2Arrows() {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
-    ResultSet managedByA = getManagedBy2Arrows("a");
+    final ResultSet managedByA = getManagedBy2Arrows("a");
     Assertions.assertTrue(managedByA.hasNext());
-    Result item = managedByA.next();
+    final Result item = managedByA.next();
     Assertions.assertFalse(managedByA.hasNext());
     Assertions.assertEquals("p1", item.getProperty("name"));
     managedByA.close();
-    ResultSet managedByB = getManagedBy2Arrows("b");
+    final ResultSet managedByB = getManagedBy2Arrows("b");
 
-    Set<String> expectedNames = new HashSet<String>();
+    final Set<String> expectedNames = new HashSet<String>();
     expectedNames.add("p2");
     expectedNames.add("p3");
     expectedNames.add("p6");
     expectedNames.add("p7");
     expectedNames.add("p11");
-    Set<String> names = new HashSet<String>();
+    final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
       Assertions.assertTrue(managedByB.hasNext());
-      Result id = managedByB.next();
-      String name = id.getProperty("name");
+      final Result id = managedByB.next();
+      final String name = id.getProperty("name");
       names.add(name);
     }
     Assertions.assertEquals(expectedNames, names);
     managedByB.close();
   }
 
-  private ResultSet getManagedBy2Arrows(String managerName) {
-    StringBuilder query = new StringBuilder();
+  private ResultSet getManagedBy2Arrows(final String managerName) {
+    final StringBuilder query = new StringBuilder();
     query.append("select expand(managed) from (");
     query.append("  match {type:Employee, where: (name = '" + managerName + "')}");
     query.append("  -ManagerOf->{}");
@@ -1028,7 +1024,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle1() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
     query.append("  .out('TriangleE'){as: friend2}");
@@ -1037,9 +1033,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  .out('TriangleE'){as: friend3}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
-
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", query.toString());
 
     Assertions.assertTrue(result.hasNext());
     result.next();
@@ -1049,13 +1043,13 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle1Arrows() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)} -TriangleE-> {as: friend2} -TriangleE-> {as: friend3},");
     query.append("{type:TriangleV, as: friend1} -TriangleE-> {as: friend3}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
     result.next();
     Assertions.assertFalse(result.hasNext());
@@ -1064,7 +1058,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle2Old() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1}");
     query.append("  .out('TriangleE'){type:TriangleV, as: friend2, where: (uid = 1)}");
@@ -1073,13 +1067,13 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  .out('TriangleE'){as: friend3}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", query.toString());
+
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
-    Document friend1 = doc.getProperty("friend1");
-    Document friend2 = doc.getProperty("friend2");
-    Document friend3 = doc.getProperty("friend3");
+    final Result doc = result.next();
+    final Document friend1 = doc.getProperty("friend1");
+    final Document friend2 = doc.getProperty("friend2");
+    final Document friend3 = doc.getProperty("friend3");
     Assertions.assertEquals(0, friend1.getInteger("uid"));
     Assertions.assertEquals(1, friend2.getInteger("uid"));
     Assertions.assertEquals(2, friend3.getInteger("uid"));
@@ -1088,7 +1082,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle2() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1}");
     query.append("  .out('TriangleE'){type:TriangleV, as: friend2, where: (uid = 1)}");
@@ -1097,13 +1091,13 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  .out('TriangleE'){as: friend3}");
     query.append("return $patterns");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
-    Document friend1 = doc.getProperty("friend1");
-    Document friend2 = doc.getProperty("friend2");
-    Document friend3 = doc.getProperty("friend3");
+    final Document friend1 = doc.getProperty("friend1");
+    final Document friend2 = doc.getProperty("friend2");
+    final Document friend3 = doc.getProperty("friend3");
     Assertions.assertEquals(0, friend1.getInteger("uid"));
     Assertions.assertEquals(1, friend2.getInteger("uid"));
     Assertions.assertEquals(2, friend3.getInteger("uid"));
@@ -1112,7 +1106,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle2Arrows() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1}");
     query.append("  -TriangleE->{type:TriangleV, as: friend2, where: (uid = 1)}");
@@ -1121,13 +1115,13 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  -TriangleE->{as: friend3}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
-    Document friend1 = doc.getProperty("friend1");
-    Document friend2 = doc.getProperty("friend2");
-    Document friend3 = doc.getProperty("friend3");
+    final Document friend1 = doc.getProperty("friend1");
+    final Document friend2 = doc.getProperty("friend2");
+    final Document friend3 = doc.getProperty("friend3");
     Assertions.assertEquals(0, friend1.getInteger("uid"));
     Assertions.assertEquals(1, friend2.getInteger("uid"));
     Assertions.assertEquals(2, friend3.getInteger("uid"));
@@ -1136,7 +1130,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle3() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1}");
     query.append("  -TriangleE->{as: friend2}");
@@ -1145,16 +1139,16 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  -TriangleE->{as: friend3}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
 
   @Test
   public void testTriangle4() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1}");
     query.append("  .out('TriangleE'){as: friend2, where: (uid = 1)}");
@@ -1163,16 +1157,16 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  .out('TriangleE'){as: friend3}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
 
   @Test
   public void testTriangle4Arrows() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1}");
     query.append("  -TriangleE->{as: friend2, where: (uid = 1)}");
@@ -1181,16 +1175,16 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  -TriangleE->{as: friend3}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
 
   @Test
   public void testTriangleWithEdges4() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1}");
     query.append("  .outE('TriangleE').inV(){as: friend2, where: (uid = 1)}");
@@ -1199,29 +1193,28 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("  .outE('TriangleE').inV(){as: friend3}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", query.toString());
+
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
 
   @Test
   public void testCartesianProduct() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where:(uid = 1)},");
     query.append("{type:TriangleV, as: friend2, where:(uid = 2 or uid = 3)}");
     query.append("return $matches");
 
-    ResultSet result = database.query("sql", query.toString());
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", query.toString());
 
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result doc = result.next();
-      Vertex friend1 = doc.getProperty("friend1");
+      final Result doc = result.next();
+      final Vertex friend1 = doc.getProperty("friend1");
       Assertions.assertEquals(friend1.getInteger("uid"), 1);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1230,13 +1223,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNoPrefetch() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:IndexedVertex, as: one}");
     query.append("return $patterns");
 
-    ResultSet result = database.query("sql", query.toString());
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", query.toString());
 
     result.getExecutionPlan().ifPresent(x -> x.getSteps().stream().filter(y -> y instanceof MatchPrefetchStep).forEach(prefetchStepFound -> fail()));
 
@@ -1250,17 +1242,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testCartesianProductLimit() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where:(uid = 1)},");
     query.append("{type:TriangleV, as: friend2, where:(uid = 2 or uid = 3)}");
     query.append("return $matches LIMIT 1");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
 
     Assertions.assertTrue(result.hasNext());
-    Result d = result.next();
-    Document friend1 = d.getProperty("friend1");
+    final Result d = result.next();
+    final Document friend1 = d.getProperty("friend1");
     Assertions.assertEquals(friend1.getInteger("uid"), 1);
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -1268,17 +1260,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testArrayNumber() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
     query.append("return friend1.out('TriangleE')[0] as foo");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
 
     Assertions.assertTrue(result.hasNext());
 
-    Result doc = result.next();
-    Object foo = doc.getProperty("foo");
+    final Result doc = result.next();
+    final Object foo = doc.getProperty("foo");
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof Vertex);
     result.close();
@@ -1286,16 +1278,16 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testArraySingleSelectors2() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
     query.append("return friend1.out('TriangleE')[0,1] as foo");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
-    Object foo = doc.getProperty("foo");
+    final Object foo = doc.getProperty("foo");
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof List);
     Assertions.assertEquals(2, ((List) foo).size());
@@ -1304,17 +1296,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testArrayRangeSelectors1() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
     query.append("return friend1.out('TriangleE')[0..1] as foo");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
 
-    Object foo = doc.getProperty("foo");
+    final Object foo = doc.getProperty("foo");
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof List);
     Assertions.assertEquals(1, ((List) foo).size());
@@ -1323,17 +1315,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testArrayRange2() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
     query.append("return friend1.out('TriangleE')[0..2] as foo");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
 
-    Object foo = doc.getProperty("foo");
+    final Object foo = doc.getProperty("foo");
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof List);
     Assertions.assertEquals(2, ((List) foo).size());
@@ -1342,17 +1334,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testArrayRange3() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
     query.append("return friend1.out('TriangleE')[0..3] as foo");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
 
-    Object foo = doc.getProperty("foo");
+    final Object foo = doc.getProperty("foo");
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof List);
     Assertions.assertEquals(2, ((List) foo).size());
@@ -1361,66 +1353,66 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testConditionInSquareBrackets() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
     query.append("return friend1.out('TriangleE')[uid = 2] as foo");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
 
-    Object foo = doc.getProperty("foo");
+    final Object foo = doc.getProperty("foo");
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof List);
     Assertions.assertEquals(1, ((List) foo).size());
-    Vertex resultVertex = (Vertex) ((List) foo).get(0);
+    final Vertex resultVertex = (Vertex) ((List) foo).get(0);
     Assertions.assertEquals(2, resultVertex.getInteger("uid"));
     result.close();
   }
 
   @Test
   public void testIndexedEdge() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:IndexedVertex, as: one, where: (uid = 0)}");
     query.append(".out('IndexedEdge'){type:IndexedVertex, as: two, where: (uid = 1)}");
     query.append("return one, two");
 
-    ResultSet result = database.query("sql", query.toString());
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", query.toString());
+
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
 
   @Test
   public void testIndexedEdgeArrows() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:IndexedVertex, as: one, where: (uid = 0)}");
     query.append("-IndexedEdge->{type:IndexedVertex, as: two, where: (uid = 1)}");
     query.append("return one, two");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
 
   @Test
   public void testJson() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:IndexedVertex, as: one, where: (uid = 0)} ");
     query.append("return {'name':'foo', 'uuid':one.uid}");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
 
     //    Document doc = result.get(0);
@@ -1431,14 +1423,14 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testJson2() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:IndexedVertex, as: one, where: (uid = 0)} ");
     query.append("return {'name':'foo', 'sub': {'uuid':one.uid}}");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
     //    Document doc = result.get(0);
     //    assertEquals("foo", doc.set("name");
@@ -1448,14 +1440,14 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testJson3() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:IndexedVertex, as: one, where: (uid = 0)} ");
     query.append("return {'name':'foo', 'sub': [{'uuid':one.uid}]}");
 
-    ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query.toString());
     Assertions.assertTrue(result.hasNext());
-    Result doc = result.next();
+    final Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
     //    Document doc = result.get(0);
     //    assertEquals("foo", doc.set("name");
@@ -1472,7 +1464,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return DISTINCT one, two");
 
     ResultSet result = database.query("sql", query.toString());
-    printExecutionPlan(result);
+
     Assertions.assertTrue(result.hasNext());
     Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
@@ -1502,7 +1494,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return one, two");
 
     ResultSet result = database.query("sql", query.toString());
-    printExecutionPlan(result);
+
     Assertions.assertTrue(result.hasNext());
     Result doc = result.next();
     Assertions.assertTrue(result.hasNext());
@@ -1529,20 +1521,20 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testManagedElements() {
-    ResultSet managedByB = getManagedElements("b");
+    final ResultSet managedByB = getManagedElements("b");
 
-    Set<String> expectedNames = new HashSet<String>();
+    final Set<String> expectedNames = new HashSet<String>();
     expectedNames.add("b");
     expectedNames.add("p2");
     expectedNames.add("p3");
     expectedNames.add("p6");
     expectedNames.add("p7");
     expectedNames.add("p11");
-    Set<String> names = new HashSet<String>();
+    final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 6; i++) {
       Assertions.assertTrue(managedByB.hasNext());
-      Result doc = managedByB.next();
-      String name = doc.getProperty("name");
+      final Result doc = managedByB.next();
+      final String name = doc.getProperty("name");
       names.add(name);
     }
     Assertions.assertFalse(managedByB.hasNext());
@@ -1550,8 +1542,8 @@ public class MatchStatementExecutionTest extends TestHelper {
     managedByB.close();
   }
 
-  private ResultSet getManagedElements(String managerName) {
-    StringBuilder query = new StringBuilder();
+  private ResultSet getManagedElements(final String managerName) {
+    final StringBuilder query = new StringBuilder();
     query.append("  match {type:Employee, as:boss, where: (name = '" + managerName + "')}");
     query.append("  -ManagerOf->{}<-ParentDepartment-{");
     query.append("      while: ($depth = 0 or in('ManagerOf').size() = 0),");
@@ -1564,9 +1556,9 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testManagedPathElements() {
-    ResultSet managedByB = getManagedPathElements("b");
+    final ResultSet managedByB = getManagedPathElements("b");
 
-    Set<String> expectedNames = new HashSet<String>();
+    final Set<String> expectedNames = new HashSet<String>();
     expectedNames.add("department1");
     expectedNames.add("department3");
     expectedNames.add("department4");
@@ -1577,11 +1569,11 @@ public class MatchStatementExecutionTest extends TestHelper {
     expectedNames.add("p6");
     expectedNames.add("p7");
     expectedNames.add("p11");
-    Set<String> names = new HashSet<String>();
+    final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(managedByB.hasNext());
-      Result doc = managedByB.next();
-      String name = doc.getProperty("name");
+      final Result doc = managedByB.next();
+      final String name = doc.getProperty("name");
       names.add(name);
     }
     Assertions.assertFalse(managedByB.hasNext());
@@ -1591,44 +1583,42 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testOptional() {
-    ResultSet qResult = database.query("sql", "match {type:Person, as: person} -NonExistingEdge-> {as:b, optional:true} return person, b.name");
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person} -NonExistingEdge-> {as:b, optional:true} return person, b.name");
 
-    printExecutionPlan(qResult);
     for (int i = 0; i < 6; i++) {
       Assertions.assertTrue(qResult.hasNext());
-      Result doc = qResult.next();
+      final Result doc = qResult.next();
       Assertions.assertTrue(doc.getPropertyNames().size() == 2);
-      Vertex person = doc.getProperty("person");
+      final Vertex person = doc.getProperty("person");
 
-      String name = person.getString("name");
+      final String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));
     }
   }
 
   @Test
   public void testOptional2() {
-    ResultSet qResult = database.query("sql", "match {type:Person, as: person} --> {as:b, optional:true, where:(nonExisting = 12)} return person, b.name");
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person} --> {as:b, optional:true, where:(nonExisting = 12)} return person, b.name");
 
     for (int i = 0; i < 6; i++) {
       Assertions.assertTrue(qResult.hasNext());
-      Result doc = qResult.next();
+      final Result doc = qResult.next();
       Assertions.assertTrue(doc.getPropertyNames().size() == 2);
-      Vertex person = doc.getProperty("person");
+      final Vertex person = doc.getProperty("person");
 
-      String name = person.getString("name");
+      final String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));
     }
   }
 
   @Test
   public void testOptional3() {
-    ResultSet qResult = database.query("sql", "select friend.name as name, b from ("
+    final ResultSet qResult = database.query("sql", "select friend.name as name, b from ("
         + "match {type:Person, as:a, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)},"
         + "{as:a}.out(){as:b, where:(nonExisting = 12), optional:true}," + "{as:friend}.out(){as:b, optional:true}" + " return friend, b)");
 
-    printExecutionPlan(qResult);
     Assertions.assertTrue(qResult.hasNext());
-    Result doc = qResult.next();
+    final Result doc = qResult.next();
     Assertions.assertEquals("n2", doc.getProperty("name"));
     Assertions.assertNull(doc.getProperty("b"));
     Assertions.assertFalse(qResult.hasNext());
@@ -1643,9 +1633,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX testOrderByAsc SET name = 'aaa'");
     database.command("sql", "CREATE VERTEX testOrderByAsc SET name = 'ccc'");
 
-    String query = "MATCH { type: testOrderByAsc, as:a} RETURN a.name as name order by name asc";
+    final String query = "MATCH { type: testOrderByAsc, as:a} RETURN a.name as name order by name asc";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals("aaa", result.next().getProperty("name"));
     Assertions.assertTrue(result.hasNext());
@@ -1666,9 +1656,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX testOrderByDesc SET name = 'aaa'");
     database.command("sql", "CREATE VERTEX testOrderByDesc SET name = 'ccc'");
 
-    String query = "MATCH { type: testOrderByDesc, as:a} RETURN a.name as name order by name desc";
+    final String query = "MATCH { type: testOrderByDesc, as:a} RETURN a.name as name order by name desc";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals("zzz", result.next().getProperty("name"));
     Assertions.assertTrue(result.hasNext());
@@ -1683,17 +1673,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNestedProjections() {
-    String clazz = "testNestedProjections";
+    final String clazz = "testNestedProjections";
     database.command("sql", "CREATE vertex type " + clazz + " ");
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', surname = 'ccc'");
 
-    String query = "MATCH { type: " + clazz + ", as:a} RETURN a:{name}, 'x' ";
+    final String query = "MATCH { type: " + clazz + ", as:a} RETURN a:{name}, 'x' ";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
-    Result a = item.getProperty("a");
+    final Result item = result.next();
+    final Result a = item.getProperty("a");
     Assertions.assertEquals("bbb", a.getProperty("name"));
     Assertions.assertNull(a.getProperty("surname"));
     Assertions.assertFalse(result.hasNext());
@@ -1702,7 +1692,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNestedProjectionsStar() {
-    String clazz = "testNestedProjectionsStar";
+    final String clazz = "testNestedProjectionsStar";
     database.command("sql", "CREATE vertex type " + clazz + " ");
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', surname = 'ccc'");
@@ -1712,12 +1702,12 @@ public class MatchStatementExecutionTest extends TestHelper {
       database.begin();
     }
 
-    String query = "MATCH { type: " + clazz + ", as:a} RETURN a:{*, @rid}, 'x' ";
+    final String query = "MATCH { type: " + clazz + ", as:a} RETURN a:{*, @rid}, 'x' ";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
-    Result a = item.getProperty("a");
+    final Result item = result.next();
+    final Result a = item.getProperty("a");
     Assertions.assertEquals("bbb", a.getProperty("name"));
     Assertions.assertEquals("ccc", a.getProperty("surname"));
     Assertions.assertNotNull(a.getProperty("@rid"));
@@ -1728,7 +1718,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testExpand() {
-    String clazz = "testExpand";
+    final String clazz = "testExpand";
     database.command("sql", "CREATE vertex type " + clazz + " ");
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', surname = 'ccc'");
@@ -1738,11 +1728,11 @@ public class MatchStatementExecutionTest extends TestHelper {
       database.begin();
     }
 
-    String query = "MATCH { type: " + clazz + ", as:a} RETURN expand(a) ";
+    final String query = "MATCH { type: " + clazz + ", as:a} RETURN expand(a) ";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
     Assertions.assertTrue(result.hasNext());
-    Result a = result.next();
+    final Result a = result.next();
     Assertions.assertEquals("bbb", a.getProperty("name"));
     Assertions.assertEquals("ccc", a.getProperty("surname"));
     Assertions.assertFalse(result.hasNext());
@@ -1751,7 +1741,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testAggregate() {
-    String clazz = "testAggregate";
+    final String clazz = "testAggregate";
     database.command("sql", "CREATE vertex type " + clazz);
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa', num = 1");
@@ -1761,9 +1751,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', num = 5");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', num = 6");
 
-    String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as a, max(a.num) as maxNum group by a.name order by a.name";
+    final String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as a, max(a.num) as maxNum group by a.name order by a.name";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertEquals("aaa", item.getProperty("a"));
@@ -1780,19 +1770,19 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testOrderByOutOfProjAsc() {
-    String clazz = "testOrderByOutOfProjAsc";
+    final String clazz = "testOrderByOutOfProjAsc";
     database.command("sql", "CREATE vertex type " + clazz);
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa', num = 0, num2 = 1");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa', num = 1, num2 = 2");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa', num = 2, num2 = 3");
 
-    String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name, a.num as num order by a.num2 asc";
+    final String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name, a.num as num order by a.num2 asc";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertEquals("aaa", item.getProperty("name"));
       Assertions.assertEquals(i, (int) item.getProperty("num"));
     }
@@ -1803,20 +1793,20 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testOrderByOutOfProjDesc() {
-    String clazz = "testOrderByOutOfProjDesc";
+    final String clazz = "testOrderByOutOfProjDesc";
     database.command("sql", "CREATE vertex type " + clazz);
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa', num = 0, num2 = 1");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa', num = 1, num2 = 2");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa', num = 2, num2 = 3");
 
-    String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name, a.num as num order by a.num2 desc";
+    final String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name, a.num as num order by a.num2 desc";
 
-    ResultSet result = database.query("sql", query);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", query);
+
     for (int i = 2; i >= 0; i--) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertEquals("aaa", item.getProperty("name"));
       Assertions.assertEquals(i, (int) item.getProperty("num"));
     }
@@ -1827,19 +1817,19 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testUnwind() {
-    String clazz = "testUnwind";
+    final String clazz = "testUnwind";
     database.command("sql", "CREATE vertex type " + clazz);
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa', coll = [1, 2]");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', coll = [3, 4]");
 
-    String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name, a.coll as num unwind num";
+    final String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name, a.coll as num unwind num";
 
     int sum = 0;
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
     for (int i = 0; i < 4; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       sum += (Integer) item.getProperty("num");
     }
 
@@ -1851,7 +1841,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSkip() {
-    String clazz = "testSkip";
+    final String clazz = "testSkip";
     database.command("sql", "CREATE vertex type " + clazz);
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa'");
@@ -1859,9 +1849,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'ccc'");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'ddd'");
 
-    String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name ORDER BY name ASC skip 1 limit 2";
+    final String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name ORDER BY name ASC skip 1 limit 2";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
 
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
@@ -1878,7 +1868,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testDepthAlias() {
-    String clazz = "testDepthAlias";
+    final String clazz = "testDepthAlias";
     database.command("sql", "CREATE vertex type " + clazz);
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa'");
@@ -1890,16 +1880,16 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'bbb') TO (SELECT FROM " + clazz + " WHERE name = 'ccc')");
     database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'ccc') TO (SELECT FROM " + clazz + " WHERE name = 'ddd')");
 
-    String query =
+    final String query =
         "MATCH { type: " + clazz + ", as:a, where:(name = 'aaa')} --> {as:b, while:($depth<10), depthAlias: xy} RETURN a.name as name, b.name as bname, xy";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
 
     int sum = 0;
     for (int i = 0; i < 4; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Object depth = item.getProperty("xy");
+      final Result item = result.next();
+      final Object depth = item.getProperty("xy");
       Assertions.assertTrue(depth instanceof Integer);
       Assertions.assertEquals("aaa", item.getProperty("name"));
       switch ((int) depth) {
@@ -1928,7 +1918,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testPathAlias() {
-    String clazz = "testPathAlias";
+    final String clazz = "testPathAlias";
     database.command("sql", "CREATE vertex type " + clazz);
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'aaa'");
@@ -1940,19 +1930,19 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'bbb') TO (SELECT FROM " + clazz + " WHERE name = 'ccc')");
     database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'ccc') TO (SELECT FROM " + clazz + " WHERE name = 'ddd')");
 
-    String query =
+    final String query =
         "MATCH { type: " + clazz + ", as:a, where:(name = 'aaa')} --> {as:b, while:($depth<10), pathAlias: xy} RETURN a.name as name, b.name as bname, xy";
 
-    ResultSet result = database.query("sql", query);
+    final ResultSet result = database.query("sql", query);
 
     for (int i = 0; i < 4; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Object path = item.getProperty("xy");
+      final Result item = result.next();
+      final Object path = item.getProperty("xy");
       Assertions.assertTrue(path instanceof List);
-      List<Identifiable> thePath = (List<Identifiable>) path;
+      final List<Identifiable> thePath = (List<Identifiable>) path;
 
-      String bname = item.getProperty("bname");
+      final String bname = item.getProperty("bname");
       if (bname.equals("aaa")) {
         Assertions.assertEquals(0, thePath.size());
       } else if (bname.equals("aaa")) {
@@ -1976,26 +1966,26 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testBucketTarget() {
-    String clazz = "testBucketTarget";
+    final String clazz = "testBucketTarget";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET +" + clazz + "_one").close();
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET +" + clazz + "_two").close();
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET +" + clazz + "_three").close();
 
-    MutableVertex v1 = database.newVertex(clazz);
+    final MutableVertex v1 = database.newVertex(clazz);
     v1.set("name", "one");
     v1.save(clazz + "_one");
 
-    MutableVertex vx = database.newVertex(clazz);
+    final MutableVertex vx = database.newVertex(clazz);
     vx.set("name", "onex");
     vx.save(clazz + "_one");
 
-    MutableVertex v2 = database.newVertex(clazz);
+    final MutableVertex v2 = database.newVertex(clazz);
     v2.set("name", "two");
     v2.save(clazz + "_two");
 
-    MutableVertex v3 = database.newVertex(clazz);
+    final MutableVertex v3 = database.newVertex(clazz);
     v3.set("name", "three");
     v3.save(clazz + "_three");
 
@@ -2003,12 +1993,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     v2.newEdge("Friend", v3, true).save();
     v1.newEdge("Friend", v3, true).save();
 
-    String query = "MATCH { bucket: " + clazz + "_one, as:a} --> {as:b, bucket:" + clazz + "_two} RETURN a.name as aname, b.name as bname";
+    final String query = "MATCH { bucket: " + clazz + "_one, as:a} --> {as:b, bucket:" + clazz + "_two} RETURN a.name as aname, b.name as bname";
 
-    ResultSet result = database.query("SQL", query);
+    final ResultSet result = database.query("SQL", query);
 
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertEquals("one", item.getProperty("aname"));
     Assertions.assertEquals("two", item.getProperty("bname"));
 
@@ -2019,18 +2009,18 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNegativePattern() {
-    String clazz = "testNegativePattern";
+    final String clazz = "testNegativePattern";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
-    MutableVertex v1 = database.newVertex(clazz);
+    final MutableVertex v1 = database.newVertex(clazz);
     v1.set("name", "a");
     v1.save();
 
-    MutableVertex v2 = database.newVertex(clazz);
+    final MutableVertex v2 = database.newVertex(clazz);
     v2.set("name", "b");
     v2.save();
 
-    MutableVertex v3 = database.newVertex(clazz);
+    final MutableVertex v3 = database.newVertex(clazz);
     v3.set("name", "c");
     v3.save();
 
@@ -2041,7 +2031,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     query += " NOT {as:a} --> {as:c}";
     query += " RETURN $patterns";
 
-    ResultSet result = database.query("SQL", query);
+    final ResultSet result = database.query("SQL", query);
     Assertions.assertTrue(result.hasNext());
     result.next();
     Assertions.assertFalse(result.hasNext());
@@ -2051,18 +2041,18 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNegativePattern2() {
-    String clazz = "testNegativePattern2";
+    final String clazz = "testNegativePattern2";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
-    MutableVertex v1 = database.newVertex(clazz);
+    final MutableVertex v1 = database.newVertex(clazz);
     v1.set("name", "a");
     v1.save();
 
-    MutableVertex v2 = database.newVertex(clazz);
+    final MutableVertex v2 = database.newVertex(clazz);
     v2.set("name", "b");
     v2.save();
 
-    MutableVertex v3 = database.newVertex(clazz);
+    final MutableVertex v3 = database.newVertex(clazz);
     v3.set("name", "c");
     v3.save();
 
@@ -2074,7 +2064,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     query += " NOT {as:a} --> {as:c}";
     query += " RETURN $patterns";
 
-    ResultSet result = database.query("SQL", query);
+    final ResultSet result = database.query("SQL", query);
     Assertions.assertFalse(result.hasNext());
 
     result.close();
@@ -2082,18 +2072,18 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNegativePattern3() {
-    String clazz = "testNegativePattern3";
+    final String clazz = "testNegativePattern3";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
-    MutableVertex v1 = database.newVertex(clazz);
+    final MutableVertex v1 = database.newVertex(clazz);
     v1.set("name", "a");
     v1.save();
 
-    MutableVertex v2 = database.newVertex(clazz);
+    final MutableVertex v2 = database.newVertex(clazz);
     v2.set("name", "b");
     v2.save();
 
-    MutableVertex v3 = database.newVertex(clazz);
+    final MutableVertex v3 = database.newVertex(clazz);
     v3.set("name", "c");
     v3.save();
 
@@ -2105,7 +2095,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     query += " NOT {as:a} --> {as:c, where:(name <> 'c')}";
     query += " RETURN $patterns";
 
-    ResultSet result = database.query("SQL", query);
+    final ResultSet result = database.query("SQL", query);
     Assertions.assertTrue(result.hasNext());
     result.next();
     Assertions.assertFalse(result.hasNext());
@@ -2115,18 +2105,18 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testPathTraversal() {
-    String clazz = "testPathTraversal";
+    final String clazz = "testPathTraversal";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
-    MutableVertex v1 = database.newVertex(clazz);
+    final MutableVertex v1 = database.newVertex(clazz);
     v1.set("name", "a");
     v1.save();
 
-    MutableVertex v2 = database.newVertex(clazz);
+    final MutableVertex v2 = database.newVertex(clazz);
     v2.set("name", "b");
     v2.save();
 
-    MutableVertex v3 = database.newVertex(clazz);
+    final MutableVertex v3 = database.newVertex(clazz);
     v3.set("name", "c");
     v3.save();
 
@@ -2163,8 +2153,8 @@ public class MatchStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  private ResultSet getManagedPathElements(String managerName) {
-    StringBuilder query = new StringBuilder();
+  private ResultSet getManagedPathElements(final String managerName) {
+    final StringBuilder query = new StringBuilder();
     query.append("  match {type:Employee, as:boss, where: (name = '" + managerName + "')}");
     query.append("  -ManagerOf->{}<-ParentDepartment-{");
     query.append("      while: ($depth = 0 or in('ManagerOf').size() = 0),");
@@ -2177,26 +2167,14 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testQuotedClassName() {
-    String className = "testQuotedClassName";
+    final String className = "testQuotedClassName";
     database.command("sql", "CREATE vertex type " + className);
     database.command("sql", "CREATE VERTEX " + className + " SET name = 'a'");
 
-    String query = "MATCH {type: `" + className + "`, as:foo} RETURN $elements";
+    final String query = "MATCH {type: `" + className + "`, as:foo} RETURN $elements";
 
-    try (ResultSet rs = database.query("SQL", query)) {
+    try (final ResultSet rs = database.query("SQL", query)) {
       Assertions.assertEquals(1L, rs.stream().count());
     }
-  }
-
-  private void printExecutionPlan(ResultSet result) {
-    printExecutionPlan(null, result);
-  }
-
-  private void printExecutionPlan(String query, ResultSet result) {
-//        if (query != null) {
-//          System.out.println(query);
-//        }
-//        result.getExecutionPlan().ifPresent(x -> System.out.println(x.prettyPrint(0, 3)));
-//        System.out.println();
   }
 }

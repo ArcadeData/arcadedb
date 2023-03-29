@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -31,10 +28,6 @@ public class GroupBy extends SimpleNode {
 
   public GroupBy(final int id) {
     super(id);
-  }
-
-  public GroupBy(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -58,53 +51,18 @@ public class GroupBy extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final GroupBy oGroupBy = (GroupBy) o;
-
-    return Objects.equals(items, oGroupBy.items);
-  }
-
-  @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { items };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
-    for (Expression item : items)
+    for (final Expression item : items)
       item.extractSubQueries(collector);
   }
 
-  public boolean refersToParent() {
-    for (Expression item : items) {
-      if (item.refersToParent())
-        return true;
-    }
-    return false;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (items != null)
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("items") != null) {
-      List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (Result r : ser) {
-        final Expression exp = new Expression(-1);
-        exp.deserialize(r);
-        items.add(exp);
-      }
-    }
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new Expression[items.size()]);
   }
 }
 /* JavaCC - OriginalChecksum=4739190aa6c1a3533a89b76a15bd6fdf (do not edit this line) */

@@ -48,7 +48,7 @@ public abstract class TxRequestAbstract extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     databaseName = stream.getString();
     changesUncompressedLength = stream.getInt();
     changesBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), changesUncompressedLength);

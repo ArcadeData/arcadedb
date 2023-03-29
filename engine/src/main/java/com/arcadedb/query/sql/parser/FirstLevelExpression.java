@@ -21,28 +21,13 @@
 package com.arcadedb.query.sql.parser;
 
 public class FirstLevelExpression extends MathExpression {
-  public FirstLevelExpression(int id) {
+  public FirstLevelExpression(final int id) {
     super(id);
-  }
-
-  public FirstLevelExpression(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  @Override
-  protected boolean supportsBasicCalculation() {
-    return super.supportsBasicCalculation();
   }
 
   //never used, this class is never returned by the parser!
   public boolean isBaseIdentifier() {
     return value instanceof Identifier;
-  }
-
-  //never used, this class is never returned by the parser!
-  @Override
-  public MathExpression copy() {
-    return super.copy();
   }
 }
 /* JavaCC - OriginalChecksum=30dc1016b686d4841bbd57d6e6c0bfbd (do not edit this line) */

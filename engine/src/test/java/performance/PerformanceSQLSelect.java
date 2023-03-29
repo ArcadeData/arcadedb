@@ -29,7 +29,7 @@ public class PerformanceSQLSelect extends TestHelper {
   private static final String TYPE_NAME = "Person";
   private static final int    MAX_LOOPS = 10;
 
-  public static void main(String[] args) {
+  public static void main(final String[] args) {
     new PerformanceSQLSelect().run();
   }
 
@@ -49,7 +49,7 @@ public class PerformanceSQLSelect extends TestHelper {
 
         final ResultSet rs = database.command("SQL", "select from " + TYPE_NAME + " where id < 1l");
         while (rs.hasNext()) {
-          Result record = rs.next();
+          final Result record = rs.next();
           Assertions.assertNotNull(record);
           Assertions.assertTrue((long) record.getProperty("id") < 1);
           row.incrementAndGet();

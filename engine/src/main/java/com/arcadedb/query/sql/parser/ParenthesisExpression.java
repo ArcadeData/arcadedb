@@ -35,43 +35,39 @@ public class ParenthesisExpression extends MathExpression {
   protected Expression expression;
   protected Statement  statement;
 
-  public ParenthesisExpression(int id) {
+  public ParenthesisExpression(final int id) {
     super(id);
   }
 
-  public ParenthesisExpression(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public ParenthesisExpression(Expression exp) {
+  public ParenthesisExpression(final Expression exp) {
     super(-1);
     this.expression = exp;
   }
 
   @Override
-  public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
     if (expression != null) {
-      return expression.execute(iCurrentRecord, ctx);
+      return expression.execute(iCurrentRecord, context);
     }
     if (statement != null) {
       throw new UnsupportedOperationException("Execution of select in parentheses is not supported");
     }
-    return super.execute(iCurrentRecord, ctx);
+    return super.execute(iCurrentRecord, context);
   }
 
   @Override
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
     if (expression != null) {
-      return expression.execute(iCurrentRecord, ctx);
+      return expression.execute(iCurrentRecord, context);
     }
     if (statement != null) {
-      InternalExecutionPlan execPlan = statement.createExecutionPlan(ctx, false);
+      final InternalExecutionPlan execPlan = statement.createExecutionPlan(context, false);
 
       if (execPlan instanceof InsertExecutionPlan) {
         ((InsertExecutionPlan) execPlan).executeInternal();
       }
-      LocalResultSet rs = new LocalResultSet(execPlan);
-      List<Result> result = new ArrayList<>();
+      final LocalResultSet rs = new LocalResultSet(execPlan);
+      final List<Result> result = new ArrayList<>();
       while (rs.hasNext()) {
         result.add(rs.next());
       }
@@ -79,10 +75,10 @@ public class ParenthesisExpression extends MathExpression {
       rs.close();
       return result;
     }
-    return super.execute(iCurrentRecord, ctx);
+    return super.execute(iCurrentRecord, context);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("(");
     if (expression != null) {
       expression.toString(params, builder);
@@ -92,24 +88,6 @@ public class ParenthesisExpression extends MathExpression {
     builder.append(")");
   }
 
-  @Override
-  protected boolean supportsBasicCalculation() {
-    if (expression != null) {
-      return expression.supportsBasicCalculation();
-    }
-    return true;
-  }
-
-  @Override
-  public boolean isEarlyCalculated() {
-    // TODO implement query execution and early calculation;
-    return expression != null && expression.isEarlyCalculated();
-  }
-
-  public boolean needsAliases(Set<String> aliases) {
-    return expression.needsAliases(aliases);
-  }
-
   public boolean isExpand() {
     if (expression != null) {
       return expression.isExpand();
@@ -117,24 +95,30 @@ public class ParenthesisExpression extends MathExpression {
     return false;
   }
 
-  public boolean isAggregate() {
+  public boolean isAggregate(CommandContext context) {
     if (expression != null) {
-      return expression.isAggregate();
+      return expression.isAggregate(context);
     }
     return false;
   }
 
   public boolean isCount() {
-    if (expression != null) {
+    if (expression != null)
       return expression.isCount();
-    }
+
     return false;
   }
 
-  public SimpleNode splitForAggregation(AggregateProjectionSplit aggregateProj) {
-    if (isAggregate()) {
-      ParenthesisExpression result = new ParenthesisExpression(-1);
-      result.expression = expression.splitForAggregation(aggregateProj);
+  @Override
+  public boolean isEarlyCalculated(final CommandContext context) {
+    // TODO implement query execution and early calculation;
+    return expression != null && expression.isEarlyCalculated(context);
+  }
+
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
+      final ParenthesisExpression result = new ParenthesisExpression(-1);
+      result.expression = expression.splitForAggregation(aggregateProj, context);
       return result;
     } else {
       return this;
@@ -143,31 +127,32 @@ public class ParenthesisExpression extends MathExpression {
 
   @Override
   public ParenthesisExpression copy() {
-    ParenthesisExpression result = new ParenthesisExpression(-1);
+    final ParenthesisExpression result = new ParenthesisExpression(-1);
     result.expression = expression == null ? null : expression.copy();
     result.statement = statement == null ? null : statement.copy();
+    result.cachedStringForm = cachedStringForm;
     return result;
   }
 
-  public void setStatement(Statement statement) {
+  public void setStatement(final Statement statement) {
     this.statement = statement;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (expression != null) {
       expression.extractSubQueries(collector);
     } else if (statement != null) {
-      Identifier alias = collector.addStatement(statement);
+      final Identifier alias = collector.addStatement(statement);
       statement = null;
       expression = new Expression(alias);
     }
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
     if (expression != null) {
       expression.extractSubQueries(collector);
     } else if (statement != null) {
-      Identifier alias = collector.addStatement(letAlias, statement);
+      final Identifier alias = collector.addStatement(letAlias, statement);
       statement = null;
       expression = new Expression(alias);
     }
@@ -181,7 +166,7 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -189,7 +174,7 @@ public class ParenthesisExpression extends MathExpression {
     if (!super.equals(o))
       return false;
 
-    ParenthesisExpression that = (ParenthesisExpression) o;
+    final ParenthesisExpression that = (ParenthesisExpression) o;
 
     if (!Objects.equals(expression, that.expression))
       return false;
@@ -209,45 +194,18 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public void applyRemove(ResultInternal result, CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext context) {
     if (expression != null) {
-      expression.applyRemove(result, ctx);
+      expression.applyRemove(result, context);
     } else {
       throw new CommandExecutionException("Cannot apply REMOVE " + this);
     }
   }
 
-  public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    if (statement != null) {
-      result.setProperty("statement", statement.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    super.deserialize(fromResult);
-    if (fromResult.getProperty("expression") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    if (fromResult.getProperty("statement") != null) {
-      statement = Statement.deserializeFromOResult(fromResult.getProperty("statement"));
-    }
-  }
-
   @Override
-  public boolean isCacheable() {
-    if (expression != null) {
-      return expression.isCacheable();
-    }
-    if (statement != null) {
-      return statement.executionPlanCanBeCached();
-    }
-    return true;
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression, statement };
   }
+
 }
 /* JavaCC - OriginalChecksum=4656e5faf4f54dc3fc45a06d8e375c35 (do not edit this line) */

@@ -30,26 +30,22 @@ import java.util.*;
 public class BeginStatement extends SimpleExecStatement {
   protected Identifier isolation;
 
-  public BeginStatement(int id) {
+  public BeginStatement(final int id) {
     super(id);
   }
 
-  public BeginStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
-    ctx.getDatabase().begin();
-    InternalResultSet result = new InternalResultSet();
-    ResultInternal item = new ResultInternal();
+  public ResultSet executeSimple(final CommandContext context) {
+    context.getDatabase().begin();
+    final InternalResultSet result = new InternalResultSet();
+    final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "begin");
     result.add(item);
     return result;
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("BEGIN");
     if (isolation != null) {
       builder.append(" ISOLATION ");
@@ -59,26 +55,15 @@ public class BeginStatement extends SimpleExecStatement {
 
   @Override
   public BeginStatement copy() {
-    BeginStatement result = new BeginStatement(-1);
+    final BeginStatement result = new BeginStatement(-1);
     result.isolation = isolation == null ? null : isolation.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    BeginStatement that = (BeginStatement) o;
-
-    return Objects.equals(isolation, that.isolation);
+  protected Object[] getIdentityElements() {
+    return new Object[] { isolation };
   }
 
-  @Override
-  public int hashCode() {
-    return isolation != null ? isolation.hashCode() : 0;
-  }
 }
 /* JavaCC - OriginalChecksum=aaa994acbe63cc4169fe33144d412fed (do not edit this line) */

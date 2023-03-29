@@ -22,8 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -56,21 +56,31 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("r", rid.toString());
     object.put("t", document.getTypeName());
 
-    for (String p : document.getPropertyNames()) {
-      Object value = document.get(p);
+    for (final Map.Entry<String, Object> prop : document.toMap().entrySet()) {
+      Object value = prop.getValue();
 
-      if (value instanceof Document)
-        value = serializeGraphElement((Document) value, new JSONObject());
-      else if (value instanceof Collection) {
-        final List<Object> list = new ArrayList<>();
-        for (Object o : (Collection) value) {
-          if (o instanceof Document)
-            o = serializeGraphElement((Document) o, new JSONObject());
-          list.add(o);
-        }
-        value = list;
+      if (value != null) {
+        if (value instanceof Document)
+          value = serializeGraphElement((Document) value, new JSONObject());
+        else if (value instanceof Collection) {
+          final List<Object> list = new ArrayList<>();
+          for (Object o : (Collection) value) {
+            if (o instanceof Document)
+              o = serializeGraphElement((Document) o, new JSONObject());
+            list.add(o);
+          }
+          value = list;
+        } else if (value.equals(Double.NaN) || value.equals(Float.NaN))
+          // JSON DOES NOT SUPPORT NaN
+          value = "NaN";
+        else if (value.equals(Double.POSITIVE_INFINITY) || value.equals(Float.POSITIVE_INFINITY))
+          // JSON DOES NOT SUPPORT INFINITY
+          value = "PosInfinity";
+        else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
+          // JSON DOES NOT SUPPORT INFINITY
+          value = "NegInfinity";
       }
-      properties.put(p, value);
+      properties.put(prop.getKey(), value);
     }
 
     setMetadata(document, object);
@@ -93,12 +103,12 @@ public class JsonGraphSerializer extends JsonSerializer {
 
       if (expandVertexEdges) {
         final JSONArray outEdges = new JSONArray();
-        for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+        for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
           outEdges.put(e.getIdentity().toString());
         object.put("o", outEdges);
 
         final JSONArray inEdges = new JSONArray();
-        for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+        for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
           inEdges.put(e.getIdentity().toString());
         object.put("i", inEdges);
       } else {
@@ -108,8 +118,8 @@ public class JsonGraphSerializer extends JsonSerializer {
 
     } else if (document instanceof Edge) {
       final Edge edge = ((Edge) document);
-      object.put("i", edge.getIn());
-      object.put("o", edge.getOut());
+      object.put("i", edge.getIn().toString());
+      object.put("o", edge.getOut().toString());
     }
   }
 

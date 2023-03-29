@@ -21,10 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.math.*;
 import java.text.*;
@@ -34,54 +31,50 @@ public class InputParameter extends SimpleNode {
 
   protected static final String dateFormatString = "yyyy-MM-dd HH:mm:ss.SSS";
 
-  public InputParameter(int id) {
+  public InputParameter(final int id) {
     super(id);
   }
 
-  public InputParameter(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public Object bindFromInputParams(Map<String, Object> params) {
+  public Object bindFromInputParams(final Map<String, Object> params) {
     return null;
   }
 
-  public Object getValue(Map<String, Object> params) {
+  public Object getValue(final Map<String, Object> params) {
     return null;
   }
 
-  protected Object toParsedTree(Object value) {
+  protected Object toParsedTree(final Object value) {
     if (value == null) {
-      Expression result = new Expression(-1);
+      final Expression result = new Expression(-1);
       result.isNull = true;
       return result;
     }
     if (value instanceof Boolean) {
-      Expression result = new Expression(-1);
+      final Expression result = new Expression(-1);
       result.booleanValue = (Boolean) value;
       return result;
     }
-    if (value instanceof java.lang.Integer) {
-      PInteger result = new PInteger(-1);
-      result.setValue((java.lang.Integer) value);
+    if (value instanceof Integer) {
+      final PInteger result = new PInteger(-1);
+      result.setValue((Integer) value);
       return result;
     }
     if (value instanceof BigDecimal) {
-      Expression result = new Expression(-1);
-      FunctionCall funct = new FunctionCall(-1);
+      final Expression result = new Expression(-1);
+      final FunctionCall funct = new FunctionCall(-1);
       result.mathExpression = new BaseExpression(-1);
       ((BaseExpression) result.mathExpression).identifier = new BaseIdentifier(-1);
       ((BaseExpression) result.mathExpression).identifier.levelZero = new LevelZeroIdentifier(-1);
       ((BaseExpression) result.mathExpression).identifier.levelZero.functionCall = funct;
       funct.name = new Identifier("decimal");
-      Expression stringExp = new Expression(-1);
+      final Expression stringExp = new Expression(-1);
       stringExp.mathExpression = new BaseExpression(((BigDecimal) value).toPlainString());
       funct.getParams().add(stringExp);
       return result;
     }
 
     if (value instanceof Number) {
-      FloatingPoint result = new FloatingPoint(-1);
+      final FloatingPoint result = new FloatingPoint(-1);
       result.sign = ((Number) value).doubleValue() >= 0 ? 1 : -1;
       result.stringValue = value.toString();
       if (result.stringValue.startsWith("-")) {
@@ -93,24 +86,24 @@ public class InputParameter extends SimpleNode {
       return value;
     }
     if (MultiValue.isMultiValue(value) && !(value instanceof byte[]) && !(value instanceof Byte[])) {
-      PCollection coll = new PCollection(-1);
+      final PCollection coll = new PCollection(-1);
       coll.expressions = new ArrayList<Expression>();
-      Iterator iterator = MultiValue.getMultiValueIterator(value);
+      final Iterator iterator = MultiValue.getMultiValueIterator(value);
       while (iterator.hasNext()) {
-        Object o = iterator.next();
-        Expression exp = new Expression(-1);
+        final Object o = iterator.next();
+        final Expression exp = new Expression(-1);
         exp.value = toParsedTree(o);
         coll.expressions.add(exp);
       }
       return coll;
     }
     if (value instanceof Map) {
-      Json json = new Json(-1);
+      final Json json = new Json(-1);
       json.items = new ArrayList<JsonItem>();
-      for (Object entry : ((Map) value).entrySet()) {
-        JsonItem item = new JsonItem();
+      for (final Object entry : ((Map) value).entrySet()) {
+        final JsonItem item = new JsonItem();
         item.leftString = "" + ((Map.Entry) entry).getKey();
-        Expression exp = new Expression(-1);
+        final Expression exp = new Expression(-1);
         exp.value = toParsedTree(((Map.Entry) entry).getValue());
         item.right = exp;
         json.items.add(item);
@@ -119,65 +112,44 @@ public class InputParameter extends SimpleNode {
     }
     if (value instanceof Identifiable) {
       // TODO if invalid build a JSON
-      Rid rid = new Rid(-1);
-      String stringVal = ((Identifiable) value).getIdentity().toString().substring(1);
-      String[] splitted = stringVal.split(":");
-      PInteger c = new PInteger(-1);
-      c.setValue(java.lang.Integer.parseInt(splitted[0]));
+      final Rid rid = new Rid(-1);
+      final String stringVal = ((Identifiable) value).getIdentity().toString().substring(1);
+      final String[] splitted = stringVal.split(":");
+      final PInteger c = new PInteger(-1);
+      c.setValue(Integer.parseInt(splitted[0]));
       rid.bucket = c;
-      PInteger p = new PInteger(-1);
-      p.setValue(java.lang.Integer.parseInt(splitted[1]));
+      final PInteger p = new PInteger(-1);
+      p.setValue(Integer.parseInt(splitted[1]));
       rid.position = p;
       rid.setLegacy(true);
       return rid;
     }
     if (value instanceof Date) {
-      FunctionCall function = new FunctionCall(-1);
-      function.name = new Identifier(-1);
-      function.name.value = "date";
+      final FunctionCall function = new FunctionCall(-1);
+      function.name = new Identifier("date");
 
-      Expression dateExpr = new Expression(-1);
+      final Expression dateExpr = new Expression(-1);
       dateExpr.singleQuotes = true;
       dateExpr.doubleQuotes = false;
-      SimpleDateFormat dateFormat = new SimpleDateFormat(dateFormatString);
+      final SimpleDateFormat dateFormat = new SimpleDateFormat(dateFormatString);
       dateExpr.value = dateFormat.format(value);
       function.getParams().add(dateExpr);
 
-      Expression dateFormatExpr = new Expression(-1);
+      final Expression dateFormatExpr = new Expression(-1);
       dateFormatExpr.singleQuotes = true;
       dateFormatExpr.doubleQuotes = false;
       dateFormatExpr.value = dateFormatString;
       function.getParams().add(dateFormatExpr);
       return function;
     }
-    if (value.getClass().isEnum()) {
+
+    if (value.getClass().isEnum())
       return value.toString();
-    }
 
     return this;
   }
 
   public InputParameter copy() {
-    throw new UnsupportedOperationException();
-  }
-
-  public static InputParameter deserializeFromOResult(Result doc) {
-    try {
-      InputParameter result = (InputParameter) Class.forName(doc.getProperty("__class")).getConstructor(java.lang.Integer.class).newInstance(-1);
-      result.deserialize(doc);
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
-    return null;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("__class", getClass().getName());
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
     throw new UnsupportedOperationException();
   }
 }

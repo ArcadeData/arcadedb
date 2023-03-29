@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -48,7 +49,7 @@ public class DeleteStatementTest extends TestHelper {
     doc2.save();
     doc3.save();
 
-    List<Document> list = new ArrayList<>();
+    final List<Document> list = new ArrayList<>();
     list.add(doc1);
     list.add(doc2);
     list.add(doc3);
@@ -57,39 +58,39 @@ public class DeleteStatementTest extends TestHelper {
 
     database.command("sql", "delete from (select expand(arr) from Bar) where k = 'key2'");
 
-    ResultSet result = database.query("sql", "select from Foo");
+    final ResultSet result = database.query("sql", "select from Foo");
     Assertions.assertNotNull(result);
-    Assertions.assertEquals(result.countEntries(), 2);
-    for (ResultSet it = result; it.hasNext(); ) {
-      Document doc = it.next().toElement();
+    Assertions.assertEquals(CollectionUtils.countEntries(result), 2);
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Document doc = it.next().toElement();
       Assertions.assertNotEquals(doc.getString("k"), "key2");
     }
     database.commit();
   }
 
-  protected SqlParser getParserFor(String string) {
-    InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(is);
+  protected SqlParser getParserFor(final String string) {
+    final InputStream is = new ByteArrayInputStream(string.getBytes());
+    final SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 
-  protected SimpleNode checkRightSyntax(String query) {
+  protected SimpleNode checkRightSyntax(final String query) {
     return checkSyntax(query, true);
   }
 
-  protected SimpleNode checkWrongSyntax(String query) {
+  protected SimpleNode checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected SimpleNode checkSyntax(String query, boolean isCorrect) {
-    SqlParser osql = getParserFor(query);
+  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
+    final SqlParser osql = getParserFor(query);
     try {
-      SimpleNode result = osql.parse();
+      final SimpleNode result = osql.Parse();
       if (!isCorrect) {
         fail();
       }
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (isCorrect) {
         e.printStackTrace();
         fail();

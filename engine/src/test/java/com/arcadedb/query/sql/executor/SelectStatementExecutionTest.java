@@ -26,6 +26,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -42,21 +43,19 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectNoTarget() {
-    ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3");
+    final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals(1, item.<Object>getProperty("one"));
     Assertions.assertEquals(2, item.<Object>getProperty("two"));
     Assertions.assertEquals(5, item.<Object>getProperty("2 + 3"));
-    printExecutionPlan(result);
 
     result.close();
   }
 
   @Test
   public void testGroupByCount() {
-
     database.getSchema().createDocumentType("InputTx");
 
     database.begin();
@@ -83,99 +82,92 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectNoTargetSkip() {
-    ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 1");
+    final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 1");
     Assertions.assertFalse(result.hasNext());
-    printExecutionPlan(result);
 
     result.close();
   }
 
   @Test
   public void testSelectNoTargetSkipZero() {
-    ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 0");
+    final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 0");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals(1, item.<Object>getProperty("one"));
     Assertions.assertEquals(2, item.<Object>getProperty("two"));
     Assertions.assertEquals(5, item.<Object>getProperty("2 + 3"));
-    printExecutionPlan(result);
 
     result.close();
   }
 
   @Test
   public void testSelectNoTargetLimit0() {
-    ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 limit 0");
+    final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 limit 0");
     Assertions.assertFalse(result.hasNext());
-    printExecutionPlan(result);
 
     result.close();
   }
 
   @Test
   public void testSelectNoTargetLimit1() {
-    ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 limit 1");
+    final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 limit 1");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals(1, item.<Object>getProperty("one"));
     Assertions.assertEquals(2, item.<Object>getProperty("two"));
     Assertions.assertEquals(5, item.<Object>getProperty("2 + 3"));
-    printExecutionPlan(result);
 
     result.close();
   }
 
   @Test
   public void testSelectNoTargetLimitx() {
-    ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 0 limit 0");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 0 limit 0");
     result.close();
   }
 
   @Test
   public void testSelectFullScan1() {
-    String className = "TestSelectFullScan1";
+    final String className = "TestSelectFullScan1";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 100000; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className);
+    final ResultSet result = database.query("sql", "select from " + className);
     for (int i = 0; i < 100000; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
     }
     Assertions.assertFalse(result.hasNext());
-    printExecutionPlan(result);
     result.close();
   }
 
   @Test
   public void testSelectFullScanOrderByRidAsc() {
-    String className = "testSelectFullScanOrderByRidAsc";
+    final String className = "testSelectFullScanOrderByRidAsc";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 100000; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid ASC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid ASC");
     Document lastItem = null;
     for (int i = 0; i < 100000; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
       if (lastItem != null) {
@@ -190,22 +182,21 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectFullScanOrderByRidDesc() {
-    String className = "testSelectFullScanOrderByRidDesc";
+    final String className = "testSelectFullScanOrderByRidDesc";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 100000; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid DESC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid DESC");
     Document lastItem = null;
     for (int i = 0; i < 100000; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
       if (lastItem != null) {
@@ -220,23 +211,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectFullScanLimit1() {
-    String className = "testSelectFullScanLimit1";
+    final String className = "testSelectFullScanLimit1";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 300; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " limit 10");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " limit 10");
 
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
     }
@@ -246,23 +236,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectFullScanSkipLimit1() {
-    String className = "testSelectFullScanSkipLimit1";
+    final String className = "testSelectFullScanSkipLimit1";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 300; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " skip 100 limit 10");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " skip 100 limit 10");
 
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
     }
@@ -272,26 +261,25 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectOrderByDesc() {
-    String className = "testSelectOrderByDesc";
+    final String className = "testSelectOrderByDesc";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 30; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " order by surname desc");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " order by surname desc");
 
     String lastSurname = null;
     for (int i = 0; i < 30; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      String thisSurname = item.getProperty("surname");
+      final String thisSurname = item.getProperty("surname");
       if (lastSurname != null) {
         Assertions.assertTrue(lastSurname.compareTo(thisSurname) >= 0);
       }
@@ -303,25 +291,24 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectOrderByAsc() {
-    String className = "testSelectOrderByAsc";
+    final String className = "testSelectOrderByAsc";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 30; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " order by surname asc");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " order by surname asc");
 
     String lastSurname = null;
     for (int i = 0; i < 30; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      String thisSurname = item.getProperty("surname");
+      final String thisSurname = item.getProperty("surname");
       if (lastSurname != null) {
         Assertions.assertTrue(lastSurname.compareTo(thisSurname) <= 0);
       }
@@ -333,24 +320,23 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectOrderByMassiveAsc() {
-    String className = "testSelectOrderByMassiveAsc";
+    final String className = "testSelectOrderByMassiveAsc";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 100000; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i % 100);
       doc.save();
     }
     database.commit();
-    long begin = System.nanoTime();
-    ResultSet result = database.query("sql", "select from " + className + " order by surname asc limit 100");
+    final long begin = System.nanoTime();
+    final ResultSet result = database.query("sql", "select from " + className + " order by surname asc limit 100");
     //    System.out.println("elapsed: " + (System.nanoTime() - begin));
-    printExecutionPlan(result);
 
     for (int i = 0; i < 100; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("surname0", item.getProperty("surname"));
     }
@@ -360,27 +346,26 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectOrderWithProjections() {
-    String className = "testSelectOrderWithProjections";
+    final String className = "testSelectOrderWithProjections";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 100; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 10);
       doc.set("surname", "surname" + i % 10);
       doc.save();
     }
     database.commit();
-    long begin = System.nanoTime();
-    ResultSet result = database.query("sql", "select name from " + className + " order by surname asc");
+    final long begin = System.nanoTime();
+    final ResultSet result = database.query("sql", "select name from " + className + " order by surname asc");
     //    System.out.println("elapsed: " + (System.nanoTime() - begin));
-    printExecutionPlan(result);
 
     String lastName = null;
     for (int i = 0; i < 100; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      String name = item.getProperty("name");
+      final String name = item.getProperty("name");
       Assertions.assertNotNull(name);
       if (i > 0) {
         Assertions.assertTrue(name.compareTo(lastName) >= 0);
@@ -393,27 +378,26 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectOrderWithProjections2() {
-    String className = "testSelectOrderWithProjections2";
+    final String className = "testSelectOrderWithProjections2";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 100; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 10);
       doc.set("surname", "surname" + i % 10);
       doc.save();
     }
     database.commit();
-    long begin = System.nanoTime();
-    ResultSet result = database.query("sql", "select name from " + className + " order by name asc, surname asc");
+    final long begin = System.nanoTime();
+    final ResultSet result = database.query("sql", "select name from " + className + " order by name asc, surname asc");
     //    System.out.println("elapsed: " + (System.nanoTime() - begin));
-    printExecutionPlan(result);
 
     String lastName = null;
     for (int i = 0; i < 100; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      String name = item.getProperty("name");
+      final String name = item.getProperty("name");
       Assertions.assertNotNull(name);
       if (i > 0) {
         Assertions.assertTrue(name.compareTo(lastName) >= 0);
@@ -426,24 +410,23 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectFullScanWithFilter1() {
-    String className = "testSelectFullScanWithFilter1";
+    final String className = "testSelectFullScanWithFilter1";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 300; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' or name = 'name7' ");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' or name = 'name7' ");
 
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Object name = item.getProperty("name");
+      final Object name = item.getProperty("name");
       Assertions.assertTrue("name1".equals(name) || "name7".equals(name));
     }
     Assertions.assertFalse(result.hasNext());
@@ -452,24 +435,23 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectFullScanWithFilter2() {
-    String className = "testSelectFullScanWithFilter2";
+    final String className = "testSelectFullScanWithFilter2";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 300; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " where name <> 'name1' ");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name <> 'name1' ");
 
     for (int i = 0; i < 299; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Object name = item.getProperty("name");
+      final Object name = item.getProperty("name");
       Assertions.assertFalse("name1".equals(name));
     }
     Assertions.assertFalse(result.hasNext());
@@ -478,25 +460,24 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testProjections() {
-    String className = "testProjections";
+    final String className = "testProjections";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 300; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select name from " + className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select name from " + className);
 
     for (int i = 0; i < 300; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      String name = item.getProperty("name");
-      String surname = item.getProperty("surname");
+      final String name = item.getProperty("name");
+      final String surname = item.getProperty("surname");
       Assertions.assertNotNull(name);
       Assertions.assertTrue(name.startsWith("name"));
       Assertions.assertNull(surname);
@@ -508,26 +489,26 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testCountStar() {
-    String className = "testCountStar";
+    final String className = "testCountStar";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 7; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.save();
     }
     database.commit();
     try {
-      ResultSet result = database.query("sql", "select count(*) from " + className);
-      printExecutionPlan(result);
+      final ResultSet result = database.query("sql", "select count(*) from " + className);
+
       Assertions.assertNotNull(result);
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertEquals(7L, (Object) next.getProperty("count(*)"));
       Assertions.assertFalse(result.hasNext());
       result.close();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       e.printStackTrace();
       Assertions.fail();
     }
@@ -535,29 +516,29 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testCountStar2() {
-    String className = "testCountStar2";
+    final String className = "testCountStar2";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + (i % 5));
       doc.save();
     }
     database.commit();
     try {
-      ResultSet result = database.query("sql", "select count(*), name from " + className + " group by name");
-      printExecutionPlan(result);
+      final ResultSet result = database.query("sql", "select count(*), name from " + className + " group by name");
+
       Assertions.assertNotNull(result);
       for (int i = 0; i < 5; i++) {
         Assertions.assertTrue(result.hasNext());
-        Result next = result.next();
+        final Result next = result.next();
         Assertions.assertNotNull(next);
         Assertions.assertEquals(2L, (Object) next.getProperty("count(*)"));
       }
       Assertions.assertFalse(result.hasNext());
       result.close();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       e.printStackTrace();
       Assertions.fail();
     }
@@ -565,26 +546,26 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testCountStarEmptyNoIndex() {
-    String className = "testCountStarEmptyNoIndex";
+    final String className = "testCountStarEmptyNoIndex";
     database.getSchema().createDocumentType(className);
 
     database.begin();
-    MutableDocument elem = database.newDocument(className);
+    final MutableDocument elem = database.newDocument(className);
     elem.set("name", "bar");
     elem.save();
     database.commit();
 
     try {
-      ResultSet result = database.query("sql", "select count(*) from " + className + " where name = 'foo'");
-      printExecutionPlan(result);
+      final ResultSet result = database.query("sql", "select count(*) from " + className + " where name = 'foo'");
+
       Assertions.assertNotNull(result);
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertEquals(0L, (Object) next.getProperty("count(*)"));
       Assertions.assertFalse(result.hasNext());
       result.close();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       e.printStackTrace();
       Assertions.fail();
     }
@@ -592,26 +573,26 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testCountStarEmptyNoIndexWithAlias() {
-    String className = "testCountStarEmptyNoIndexWithAlias";
+    final String className = "testCountStarEmptyNoIndexWithAlias";
     database.getSchema().createDocumentType(className);
 
     database.begin();
-    MutableDocument elem = database.newDocument(className);
+    final MutableDocument elem = database.newDocument(className);
     elem.set("name", "bar");
     elem.save();
     database.commit();
 
     try {
-      ResultSet result = database.query("sql", "select count(*) as a from " + className + " where name = 'foo'");
-      printExecutionPlan(result);
+      final ResultSet result = database.query("sql", "select count(*) as a from " + className + " where name = 'foo'");
+
       Assertions.assertNotNull(result);
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertEquals(0L, (Object) next.getProperty("a"));
       Assertions.assertFalse(result.hasNext());
       result.close();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       e.printStackTrace();
       Assertions.fail();
     }
@@ -619,59 +600,58 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testAggregateMixedWithNonAggregate() {
-    String className = "testAggregateMixedWithNonAggregate";
+    final String className = "testAggregateMixedWithNonAggregate";
     database.getSchema().createDocumentType(className);
 
     try {
       database.query("sql", "select max(a) + max(b) + pippo + pluto as foo, max(d) + max(e), f from " + className).close();
       Assertions.fail();
-    } catch (CommandExecutionException x) {
+    } catch (final CommandExecutionException x) {
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       Assertions.fail();
     }
   }
 
   @Test
   public void testAggregateMixedWithNonAggregateInCollection() {
-    String className = "testAggregateMixedWithNonAggregateInCollection";
+    final String className = "testAggregateMixedWithNonAggregateInCollection";
     database.getSchema().createDocumentType(className);
 
     try {
       database.query("sql", "select [max(a), max(b), foo] from " + className).close();
       Assertions.fail();
-    } catch (CommandExecutionException x) {
+    } catch (final CommandExecutionException x) {
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       Assertions.fail();
     }
   }
 
   @Test
   public void testAggregateInCollection() {
-    String className = "testAggregateInCollection";
+    final String className = "testAggregateInCollection";
     database.getSchema().createDocumentType(className);
 
     try {
-      String query = "select [max(a), max(b)] from " + className;
-      ResultSet result = database.query("sql", query);
-      printExecutionPlan(query, result);
+      final String query = "select [max(a), max(b)] from " + className;
+      final ResultSet result = database.query("sql", query);
       result.close();
-    } catch (Exception x) {
+    } catch (final Exception x) {
       Assertions.fail();
     }
   }
 
   @Test
   public void testAggregateMixedWithNonAggregateConstants() {
-    String className = "testAggregateMixedWithNonAggregateConstants";
+    final String className = "testAggregateMixedWithNonAggregateConstants";
     database.getSchema().createDocumentType(className);
 
     try {
-      ResultSet result = database.query("sql", "select max(a + b) + (max(b + c * 2) + 1 + 2) * 3 as foo, max(d) + max(e), f from " + className);
-      printExecutionPlan(result);
+      final ResultSet result = database.query("sql", "select max(a + b) + (max(b + c * 2) + 1 + 2) * 3 as foo, max(d) + max(e), f from " + className);
+
       result.close();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       e.printStackTrace();
       Assertions.fail();
     }
@@ -679,20 +659,19 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testAggregateSum() {
-    String className = "testAggregateSum";
+    final String className = "testAggregateSum";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("val", i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select sum(val) from " + className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select sum(val) from " + className);
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals(45, (Object) item.getProperty("sum(val)"));
 
@@ -701,23 +680,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testAggregateSumGroupBy() {
-    String className = "testAggregateSumGroupBy";
+    final String className = "testAggregateSumGroupBy";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("type", i % 2 == 0 ? "even" : "odd");
       doc.set("val", i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select sum(val), type from " + className + " group by type");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select sum(val), type from " + className + " group by type");
     boolean evenFound = false;
     boolean oddFound = false;
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       if ("even".equals(item.getProperty("type"))) {
         Assertions.assertEquals(20, item.<Object>getProperty("sum(val)"));
@@ -735,23 +713,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testAggregateSumMaxMinGroupBy() {
-    String className = "testAggregateSumMaxMinGroupBy";
+    final String className = "testAggregateSumMaxMinGroupBy";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("type", i % 2 == 0 ? "even" : "odd");
       doc.set("val", i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select sum(val), max(val), min(val), type from " + className + " group by type");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select sum(val), max(val), min(val), type from " + className + " group by type");
     boolean evenFound = false;
     boolean oddFound = false;
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       if ("even".equals(item.getProperty("type"))) {
         Assertions.assertEquals(20, item.<Object>getProperty("sum(val)"));
@@ -773,25 +750,24 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testAggregateSumNoGroupByInProjection() {
-    String className = "testAggregateSumNoGroupByInProjection";
+    final String className = "testAggregateSumNoGroupByInProjection";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("type", i % 2 == 0 ? "even" : "odd");
       doc.set("val", i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select sum(val) from " + className + " group by type");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select sum(val) from " + className + " group by type");
     boolean evenFound = false;
     boolean oddFound = false;
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Object sum = item.getProperty("sum(val)");
+      final Object sum = item.getProperty("sum(val)");
       if (sum.equals(20)) {
         evenFound = true;
       } else if (sum.equals(25)) {
@@ -806,23 +782,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testAggregateSumNoGroupByInProjection2() {
-    String className = "testAggregateSumNoGroupByInProjection2";
+    final String className = "testAggregateSumNoGroupByInProjection2";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("type", i % 2 == 0 ? "dd1" : "dd2");
       doc.set("val", i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select sum(val) from " + className + " group by type.substring(0,1)");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select sum(val) from " + className + " group by type.substring(0,1)");
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Object sum = item.getProperty("sum(val)");
+      final Object sum = item.getProperty("sum(val)");
       Assertions.assertEquals(45, sum);
     }
     Assertions.assertFalse(result.hasNext());
@@ -831,25 +806,24 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromBucketNumber() {
-    String className = "testFetchFromBucketNumber";
-    Schema schema = database.getSchema();
-    DocumentType clazz = schema.createDocumentType(className);
-    String targetClusterName = clazz.getBuckets(false).get(0).getName();
+    final String className = "testFetchFromBucketNumber";
+    final Schema schema = database.getSchema();
+    final DocumentType clazz = schema.createDocumentType(className);
+    final String targetClusterName = clazz.getBuckets(false).get(0).getName();
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("val", i);
       doc.save(targetClusterName);
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from bucket:" + targetClusterName);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from bucket:" + targetClusterName);
     int sum = 0;
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Integer val = item.getProperty("val");
+      final Result item = result.next();
+      final Integer val = item.getProperty("val");
       Assertions.assertNotNull(val);
       sum += val;
     }
@@ -860,26 +834,25 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromBucketNumberOrderByRidDesc() {
-    String className = "testFetchFromBucketNumberOrderByRidDesc";
-    Schema schema = database.getSchema();
-    DocumentType clazz = schema.createDocumentType(className);
+    final String className = "testFetchFromBucketNumberOrderByRidDesc";
+    final Schema schema = database.getSchema();
+    final DocumentType clazz = schema.createDocumentType(className);
 
-    String targetBucketName = clazz.getBuckets(false).get(0).getName();
+    final String targetBucketName = clazz.getBuckets(false).get(0).getName();
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("val", i);
       doc.save(targetBucketName);
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from bucket:" + targetBucketName + " order by @rid desc");
-    printExecutionPlan(result);
-    int sum = 0;
+    final ResultSet result = database.query("sql", "select from bucket:" + targetBucketName + " order by @rid desc");
+    final int sum = 0;
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Integer val = item.getProperty("val");
+      final Result item = result.next();
+      final Integer val = item.getProperty("val");
       Assertions.assertEquals(i, 9 - val);
     }
 
@@ -889,26 +862,25 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClusterNumberOrderByRidAsc() {
-    String className = "testFetchFromClusterNumberOrderByRidAsc";
-    Schema schema = database.getSchema();
-    DocumentType clazz = schema.createDocumentType(className);
+    final String className = "testFetchFromClusterNumberOrderByRidAsc";
+    final Schema schema = database.getSchema();
+    final DocumentType clazz = schema.createDocumentType(className);
 
-    String targetClusterName = clazz.getBuckets(false).get(0).getName();
+    final String targetClusterName = clazz.getBuckets(false).get(0).getName();
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("val", i);
       doc.save(targetClusterName);
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from bucket:" + targetClusterName + " order by @rid asc");
-    printExecutionPlan(result);
-    int sum = 0;
+    final ResultSet result = database.query("sql", "select from bucket:" + targetClusterName + " order by @rid asc");
+    final int sum = 0;
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Integer val = item.getProperty("val");
+      final Result item = result.next();
+      final Integer val = item.getProperty("val");
       Assertions.assertEquals((Object) i, val);
     }
 
@@ -918,37 +890,36 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClustersNumberOrderByRidAsc() {
-    String className = "testFetchFromClustersNumberOrderByRidAsc";
-    Schema schema = database.getSchema();
-    DocumentType clazz = schema.createDocumentType(className);
+    final String className = "testFetchFromClustersNumberOrderByRidAsc";
+    final Schema schema = database.getSchema();
+    final DocumentType clazz = schema.createDocumentType(className);
     if (clazz.getBuckets(false).size() < 2) {
       //clazz.addCluster("testFetchFromClustersNumberOrderByRidAsc_2");
       return;
     }
 
-    String targetClusterName = clazz.getBuckets(false).get(0).getName();
-    String targetClusterName2 = clazz.getBuckets(false).get(1).getName();
+    final String targetClusterName = clazz.getBuckets(false).get(0).getName();
+    final String targetClusterName2 = clazz.getBuckets(false).get(1).getName();
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("val", i);
       doc.save(targetClusterName);
     }
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("val", i);
       doc.save(targetClusterName2);
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from bucket:[" + targetClusterName + ", " + targetClusterName2 + "] order by @rid asc");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from bucket:[" + targetClusterName + ", " + targetClusterName2 + "] order by @rid asc");
 
     for (int i = 0; i < 20; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Integer val = item.getProperty("val");
+      final Result item = result.next();
+      final Integer val = item.getProperty("val");
       Assertions.assertEquals((Object) (i % 10), val);
     }
 
@@ -958,24 +929,23 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testQueryAsTarget() {
-    String className = "testQueryAsTarget";
-    Schema schema = database.getSchema();
-    DocumentType clazz = schema.createDocumentType(className);
+    final String className = "testQueryAsTarget";
+    final Schema schema = database.getSchema();
+    final DocumentType clazz = schema.createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("val", i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from (select from " + className + " where val > 2)  where val < 8");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from (select from " + className + " where val > 2)  where val < 8");
 
     for (int i = 0; i < 5; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Integer val = item.getProperty("val");
+      final Result item = result.next();
+      final Integer val = item.getProperty("val");
       Assertions.assertTrue(val > 2);
       Assertions.assertTrue(val < 8);
     }
@@ -985,17 +955,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testQuerySchema() {
-    DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
+    final DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
     type.setCustomValue("description", "this is just a test");
 
-    ResultSet result = database.query("sql", "select from schema:types");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from schema:types");
 
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertEquals("testQuerySchema", item.getProperty("name"));
 
-    Map<String, Object> customType = item.getProperty("custom");
+    final Map<String, Object> customType = item.getProperty("custom");
     Assertions.assertNotNull(customType);
     Assertions.assertEquals(1, customType.size());
 
@@ -1007,16 +976,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testQueryMetadataIndexManager() {
-    DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
+    final DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
     database.begin();
     type.createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
     database.commit();
-    ResultSet result = database.query("sql", "select from schema:indexes");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from schema:indexes");
 
     while (result.hasNext()) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item.getProperty("name"));
       Assertions.assertEquals("STRING", ((List<String>) item.getProperty("keyTypes")).get(0));
       Assertions.assertFalse((Boolean) item.getProperty("unique"));
@@ -1027,11 +995,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testQueryMetadataDatabase() {
-    ResultSet result = database.query("sql", "select from schema:database");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from schema:database");
 
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item.getProperty("name"));
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -1039,10 +1006,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNonExistingRids() {
-    int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).get(0).getId();
-    ResultSet result = database.query("sql", "select from #" + bucketId + ":100000000");
-    printExecutionPlan(result);
-    Assertions.assertFalse(result.hasNext());
+    final int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).get(0).getId();
+    final ResultSet result = database.query("sql", "select from #" + bucketId + ":100000000");
+    Assertions.assertTrue(result.hasNext());
+
+    try {
+      result.next();
+    } catch (RecordNotFoundException e) {
+    }
+
     result.close();
   }
 
@@ -1050,11 +1022,10 @@ public class SelectStatementExecutionTest extends TestHelper {
   public void testFetchFromSingleRid() {
     database.getSchema().createDocumentType("testFetchFromSingleRid");
     database.begin();
-    MutableDocument doc = database.newDocument("testFetchFromSingleRid");
+    final MutableDocument doc = database.newDocument("testFetchFromSingleRid");
     doc.save();
     database.commit();
-    ResultSet result = database.query("sql", "select from #1:0");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from #1:0");
     Assertions.assertTrue(result.hasNext());
     Assertions.assertNotNull(result.next());
     Assertions.assertFalse(result.hasNext());
@@ -1065,11 +1036,10 @@ public class SelectStatementExecutionTest extends TestHelper {
   public void testFetchFromSingleRid2() {
     database.getSchema().createDocumentType("testFetchFromSingleRid2");
     database.begin();
-    MutableDocument doc = database.newDocument("testFetchFromSingleRid2");
+    final MutableDocument doc = database.newDocument("testFetchFromSingleRid2");
     doc.save();
     database.commit();
-    ResultSet result = database.query("sql", "select from [#1:0]");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from [#1:0]");
     Assertions.assertTrue(result.hasNext());
     Assertions.assertNotNull(result.next());
     Assertions.assertFalse(result.hasNext());
@@ -1080,11 +1050,10 @@ public class SelectStatementExecutionTest extends TestHelper {
   public void testFetchFromSingleRidParam() {
     database.getSchema().createDocumentType("testFetchFromSingleRidParam");
     database.begin();
-    MutableDocument doc = database.newDocument("testFetchFromSingleRidParam");
+    final MutableDocument doc = database.newDocument("testFetchFromSingleRidParam");
     doc.save();
     database.commit();
-    ResultSet result = database.query("sql", "select from ?", new RID(database, 1, 0));
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from ?", new RID(database, 1, 0));
     Assertions.assertTrue(result.hasNext());
     Assertions.assertNotNull(result.next());
     Assertions.assertFalse(result.hasNext());
@@ -1101,8 +1070,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.save();
     database.commit();
 
-    ResultSet result = database.query("sql", "select from [#1:0, #2:0]");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from [#1:0, #2:0]");
     Assertions.assertTrue(result.hasNext());
     Assertions.assertNotNull(result.next());
     Assertions.assertTrue(result.hasNext());
@@ -1121,87 +1089,89 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.save();
     database.commit();
 
-    ResultSet result = database.query("sql", "select from [#1:0, #2:0, #1:100000]");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from [#1:0, #2:0, #1:100000]");
     Assertions.assertTrue(result.hasNext());
     Assertions.assertNotNull(result.next());
     Assertions.assertTrue(result.hasNext());
     Assertions.assertNotNull(result.next());
-    Assertions.assertFalse(result.hasNext());
+
+    Assertions.assertTrue(result.hasNext());
+    try {
+      result.next();
+    } catch (RecordNotFoundException e) {
+    }
     result.close();
   }
 
   @Test
   public void testFetchFromClassWithIndex() {
-    String className = "testFetchFromClassWithIndex";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndex";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name2'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name2'");
 
     Assertions.assertTrue(result.hasNext());
-    Result next = result.next();
+    final Result next = result.next();
     Assertions.assertNotNull(next);
     Assertions.assertEquals("name2", next.getProperty("name"));
 
     Assertions.assertFalse(result.hasNext());
 
-    Optional<ExecutionPlan> p = result.getExecutionPlan();
+    final Optional<ExecutionPlan> p = result.getExecutionPlan();
     Assertions.assertTrue(p.isPresent());
-    ExecutionPlan p2 = p.get();
+    final ExecutionPlan p2 = p.get();
     Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
-    SelectExecutionPlan plan = (SelectExecutionPlan) p2;
+    final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
     Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
     result.close();
   }
 
   @Test
   public void testFetchFromIndex() {
-    String className = "testFetchFromIndex";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromIndex";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
-    String indexName;
-    Index idx = clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+    final String indexName;
+    final Index idx = clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
     indexName = idx.getName();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from index:`" + indexName + "` where key = 'name2'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from index:`" + indexName + "` where key = 'name2'");
 
     Assertions.assertTrue(result.hasNext());
-    Result next = result.next();
+    final Result next = result.next();
     Assertions.assertNotNull(next);
 
     Assertions.assertFalse(result.hasNext());
 
-    Optional<ExecutionPlan> p = result.getExecutionPlan();
+    final Optional<ExecutionPlan> p = result.getExecutionPlan();
     Assertions.assertTrue(p.isPresent());
-    ExecutionPlan p2 = p.get();
+    final ExecutionPlan p2 = p.get();
     Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
-    SelectExecutionPlan plan = (SelectExecutionPlan) p2;
+    final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
     Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
     result.close();
   }
 
   @Test
   public void testFetchFromClassWithIndexes() {
-    String className = "testFetchFromClassWithIndexes";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
@@ -1209,40 +1179,39 @@ public class SelectStatementExecutionTest extends TestHelper {
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name2' or surname = 'surname3'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name2' or surname = 'surname3'");
 
     Assertions.assertTrue(result.hasNext());
     for (int i = 0; i < 2; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertTrue("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname"))));
     }
 
     Assertions.assertFalse(result.hasNext());
 
-    Optional<ExecutionPlan> p = result.getExecutionPlan();
+    final Optional<ExecutionPlan> p = result.getExecutionPlan();
     Assertions.assertTrue(p.isPresent());
-    ExecutionPlan p2 = p.get();
+    final ExecutionPlan p2 = p.get();
     Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
-    SelectExecutionPlan plan = (SelectExecutionPlan) p2;
+    final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
     Assertions.assertEquals(ParallelExecStep.class, plan.getSteps().get(0).getClass());
-    ParallelExecStep parallel = (ParallelExecStep) plan.getSteps().get(0);
+    final ParallelExecStep parallel = (ParallelExecStep) plan.getSteps().get(0);
     Assertions.assertEquals(2, parallel.getSubExecutionPlans().size());
     result.close();
   }
 
   @Test
   public void testFetchFromClassWithIndexes2() {
-    String className = "testFetchFromClassWithIndexes2";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes2";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
@@ -1250,15 +1219,14 @@ public class SelectStatementExecutionTest extends TestHelper {
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
 
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " where foo is not null and (name = 'name2' or surname = 'surname3')");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where foo is not null and (name = 'name2' or surname = 'surname3')");
 
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -1266,8 +1234,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes3() {
-    String className = "testFetchFromClassWithIndexes3";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes3";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
@@ -1275,7 +1243,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1283,12 +1251,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where foo < 100 and (name = 'name2' or surname = 'surname3')");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where foo < 100 and (name = 'name2' or surname = 'surname3')");
 
     Assertions.assertTrue(result.hasNext());
     for (int i = 0; i < 2; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertTrue("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname"))));
     }
@@ -1299,8 +1266,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes4() {
-    String className = "testFetchFromClassWithIndexes4";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes4";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
@@ -1308,7 +1275,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1316,13 +1283,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql",
+    final ResultSet result = database.query("sql",
         "select from " + className + " where foo < 100 and ((name = 'name2' and foo < 20) or surname = 'surname3') and ( 4<5 and foo < 50)");
-    printExecutionPlan(result);
 
     Assertions.assertTrue(result.hasNext());
     for (int i = 0; i < 2; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertTrue("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname"))));
     }
@@ -1333,15 +1299,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes5() {
-    String className = "testFetchFromClassWithIndexes5";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes5";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1349,12 +1315,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname1'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname1'");
 
     Assertions.assertTrue(result.hasNext());
     for (int i = 0; i < 1; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertEquals("name3", next.getProperty("name"));
     }
@@ -1365,15 +1330,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes6() {
-    String className = "testFetchFromClassWithIndexes6";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes6";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1381,8 +1346,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname > 'surname3'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname > 'surname3'");
 
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -1390,15 +1354,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes7() {
-    String className = "testFetchFromClassWithIndexes7";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes7";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1406,10 +1370,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname3'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname3'");
     for (int i = 0; i < 1; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertEquals("name3", next.getProperty("name"));
     }
@@ -1419,15 +1382,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes8() {
-    String className = "testFetchFromClassWithIndexes8";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes8";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1435,8 +1398,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname < 'surname3'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname < 'surname3'");
 
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -1444,15 +1406,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes9() {
-    String className = "testFetchFromClassWithIndexes9";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes9";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1460,10 +1422,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname <= 'surname3'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname <= 'surname3'");
     for (int i = 0; i < 1; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
       Assertions.assertEquals("name3", next.getProperty("name"));
     }
@@ -1473,15 +1434,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes10() {
-    String className = "testFetchFromClassWithIndexes10";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes10";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1489,11 +1450,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name > 'name3' ");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name > 'name3' ");
     for (int i = 0; i < 6; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1502,15 +1462,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes11() {
-    String className = "testFetchFromClassWithIndexes11";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes11";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1518,10 +1478,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name >= 'name3' ");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name >= 'name3' ");
     for (int i = 0; i < 7; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1530,15 +1489,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes12() {
-    String className = "testFetchFromClassWithIndexes12";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes12";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1546,10 +1505,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name < 'name3' ");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name < 'name3' ");
     for (int i = 0; i < 3; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1558,15 +1516,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes13() {
-    String className = "testFetchFromClassWithIndexes13";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes13";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1574,10 +1532,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name <= 'name3' ");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name <= 'name3' ");
     for (int i = 0; i < 4; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1586,15 +1543,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromClassWithIndexes14() {
-    String className = "testFetchFromClassWithIndexes14";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes14";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1602,29 +1559,28 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name > 'name3' and name < 'name5'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name > 'name3' and name < 'name5'");
     for (int i = 0; i < 1; i++) {
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
-    SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
+    final SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
     result.close();
   }
 
   @Test
   public void testFetchFromClassWithIndexes15() {
-    String className = "testFetchFromClassWithIndexes15";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testFetchFromClassWithIndexes15";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
@@ -1632,11 +1588,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql",
+    final ResultSet result = database.query("sql",
         "select from " + className + " where name > 'name6' and name = 'name3' and surname > 'surname2' and surname < 'surname5' ");
-    printExecutionPlan(result);
     Assertions.assertFalse(result.hasNext());
-    SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
+    final SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
     result.close();
   }
@@ -1660,7 +1615,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //        ResultSet result =
 //                database.query("sql", "select from " + className + " where name = 'name6' and surname = 'surname6' ");
-//        printExecutionPlan(result);
+//
 //
 //        for (int i = 0; i < 1; i++) {
 //            Assertions.assertTrue(result.hasNext());
@@ -1693,7 +1648,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //        ResultSet result =
 //                database.query("sql", "select from " + className + " where name = 'name6' and surname >= 'surname6' ");
-//        printExecutionPlan(result);
+//
 //
 //        for (int i = 0; i < 1; i++) {
 //            Assertions.assertTrue(result.hasNext());
@@ -1709,32 +1664,31 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testExpand1() {
-    String childClassName = "testExpand1_child";
-    String parentClassName = "testExpand1_parent";
-    DocumentType childClass = database.getSchema().createDocumentType(childClassName);
-    DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
+    final String childClassName = "testExpand1_child";
+    final String parentClassName = "testExpand1_parent";
+    final DocumentType childClass = database.getSchema().createDocumentType(childClassName);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
 
     database.begin();
-    int count = 10;
+    final int count = 10;
     for (int i = 0; i < count; i++) {
-      MutableDocument doc = database.newDocument(childClassName);
+      final MutableDocument doc = database.newDocument(childClassName);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("foo", i);
       doc.save();
 
-      MutableDocument parent = database.newDocument(parentClassName);
+      final MutableDocument parent = database.newDocument(parentClassName);
       parent.set("linked", doc);
       parent.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName);
 
     for (int i = 0; i < count; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1743,35 +1697,34 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testExpand2() {
-    String childClassName = "testExpand2_child";
-    String parentClassName = "testExpand2_parent";
-    DocumentType childClass = database.getSchema().createDocumentType(childClassName);
-    DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
+    final String childClassName = "testExpand2_child";
+    final String parentClassName = "testExpand2_parent";
+    final DocumentType childClass = database.getSchema().createDocumentType(childClassName);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
 
-    int count = 10;
-    int collSize = 11;
+    final int count = 10;
+    final int collSize = 11;
     database.begin();
     for (int i = 0; i < count; i++) {
-      List coll = new ArrayList();
+      final List coll = new ArrayList();
       for (int j = 0; j < collSize; j++) {
-        MutableDocument doc = database.newDocument(childClassName);
+        final MutableDocument doc = database.newDocument(childClassName);
         doc.set("name", "name" + i);
         doc.save();
         coll.add(doc);
       }
 
-      MutableDocument parent = database.newDocument(parentClassName);
+      final MutableDocument parent = database.newDocument(parentClassName);
       parent.set("linked", coll);
       parent.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName);
 
     for (int i = 0; i < count * collSize; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1780,36 +1733,35 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testExpand3() {
-    String childClassName = "testExpand3_child";
-    String parentClassName = "testExpand3_parent";
-    DocumentType childClass = database.getSchema().createDocumentType(childClassName);
-    DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
+    final String childClassName = "testExpand3_child";
+    final String parentClassName = "testExpand3_parent";
+    final DocumentType childClass = database.getSchema().createDocumentType(childClassName);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
 
-    int count = 30;
-    int collSize = 7;
+    final int count = 30;
+    final int collSize = 7;
     database.begin();
     for (int i = 0; i < count; i++) {
-      List coll = new ArrayList<>();
+      final List coll = new ArrayList<>();
       for (int j = 0; j < collSize; j++) {
-        MutableDocument doc = database.newDocument(childClassName);
+        final MutableDocument doc = database.newDocument(childClassName);
         doc.set("name", "name" + j);
         doc.save();
         coll.add(doc);
       }
 
-      MutableDocument parent = database.newDocument(parentClassName);
+      final MutableDocument parent = database.newDocument(parentClassName);
       parent.set("linked", coll);
       parent.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName + " order by name");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName + " order by name");
 
     String last = null;
     for (int i = 0; i < count * collSize; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       if (i > 0) {
         Assertions.assertTrue(last.compareTo(next.getProperty("name")) <= 0);
       }
@@ -1822,25 +1774,24 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testDistinct1() {
-    String className = "testDistinct1";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testDistinct1";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     for (int i = 0; i < 30; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 10);
       doc.set("surname", "surname" + i % 10);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select distinct name, surname from " + className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select distinct name, surname from " + className);
 
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1849,26 +1800,25 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testDistinct2() {
-    String className = "testDistinct2";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testDistinct2";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
 
     for (int i = 0; i < 30; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 10);
       doc.set("surname", "surname" + i % 10);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select distinct(name) from " + className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select distinct(name) from " + className);
 
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result next = result.next();
+      final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1877,39 +1827,36 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testLet1() {
-    ResultSet result = database.query("sql", "select $a as one, $b as two let $a = 1, $b = 1+1");
+    final ResultSet result = database.query("sql", "select $a as one, $b as two let $a = 1, $b = 1+1");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals(1, item.<Object>getProperty("one"));
     Assertions.assertEquals(2, item.<Object>getProperty("two"));
-    printExecutionPlan(result);
     result.close();
   }
 
   @Test
   public void testLet1Long() {
-    ResultSet result = database.query("sql", "select $a as one, $b as two let $a = 1L, $b = 1L+1");
+    final ResultSet result = database.query("sql", "select $a as one, $b as two let $a = 1L, $b = 1L+1");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals(1l, item.<Object>getProperty("one"));
     Assertions.assertEquals(2l, item.<Object>getProperty("two"));
-    printExecutionPlan(result);
     result.close();
   }
 
   @Test
   public void testLet2() {
-    ResultSet result = database.query("sql", "select $a as one let $a = (select 1 as a)");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select $a as one let $a = (select 1 as a)");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
-    Object one = item.getProperty("one");
+    final Object one = item.getProperty("one");
     Assertions.assertTrue(one instanceof List);
     Assertions.assertEquals(1, ((List) one).size());
-    Object x = ((List) one).get(0);
+    final Object x = ((List) one).get(0);
     Assertions.assertTrue(x instanceof Result);
     Assertions.assertEquals(1, (Object) ((Result) x).getProperty("a"));
     result.close();
@@ -1917,36 +1864,34 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testLet3() {
-    ResultSet result = database.query("sql", "select $a[0].foo as one let $a = (select 1 as foo)");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select $a[0].foo as one let $a = (select 1 as foo)");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
-    Object one = item.getProperty("one");
+    final Object one = item.getProperty("one");
     Assertions.assertEquals(1, one);
     result.close();
   }
 
   @Test
   public void testLet4() {
-    String className = "testLet4";
+    final String className = "testLet4";
     database.getSchema().createDocumentType(className);
     database.begin();
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql",
+    final ResultSet result = database.query("sql",
         "select name, surname, $nameAndSurname as fullname from " + className + " let $nameAndSurname = name + ' ' + surname");
-    printExecutionPlan(result);
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals(item.getProperty("fullname"), item.getProperty("name") + " " + item.getProperty("surname"));
     }
@@ -1956,23 +1901,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testLet5() {
-    String className = "testLet5";
+    final String className = "testLet5";
     database.getSchema().createDocumentType(className);
     database.begin();
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name in (select name from " + className + " where name = 'name1')");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name in (select name from " + className + " where name = 'name1')");
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("name1", item.getProperty("name"));
     }
@@ -1982,24 +1926,23 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testLet6() {
-    String className = "testLet6";
+    final String className = "testLet6";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql",
+    final ResultSet result = database.query("sql",
         "select $foo as name from " + className + " let $foo = (select name from " + className + " where name = $parent.$current.name)");
-    printExecutionPlan(result);
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("name"));
       Assertions.assertTrue(item.getProperty("name") instanceof Collection);
@@ -2010,25 +1953,24 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testLet7() {
-    String className = "testLet7";
+    final String className = "testLet7";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql",
+    final ResultSet result = database.query("sql",
         "select $bar as name from " + className + " " + "let $foo = (select name from " + className + " where name = $parent.$current.name),"
             + "$bar = $foo[0].name");
-    printExecutionPlan(result);
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("name"));
       Assertions.assertTrue(item.getProperty("name") instanceof String);
@@ -2039,35 +1981,35 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   //    @Test
   public void testLetWithTraverseFunction() {
-    String vertexClassName = "testLetWithTraverseFunction";
-    String edgeClassName = "testLetWithTraverseFunctioEdge";
+    final String vertexClassName = "testLetWithTraverseFunction";
+    final String edgeClassName = "testLetWithTraverseFunctioEdge";
     database.begin();
 
-    DocumentType vertexClass = database.getSchema().createVertexType(vertexClassName);
+    final DocumentType vertexClass = database.getSchema().createVertexType(vertexClassName);
 
-    MutableVertex doc1 = database.newVertex(vertexClassName);
+    final MutableVertex doc1 = database.newVertex(vertexClassName);
     doc1.set("name", "A");
     doc1.save();
 
-    MutableVertex doc2 = database.newVertex(vertexClassName);
+    final MutableVertex doc2 = database.newVertex(vertexClassName);
     doc2.set("name", "B");
     doc2.save();
-    RID doc2Id = doc2.getIdentity();
+    final RID doc2Id = doc2.getIdentity();
 
-    DocumentType edgeClass = database.getSchema().createEdgeType(edgeClassName);
+    final DocumentType edgeClass = database.getSchema().createEdgeType(edgeClassName);
 
     doc1.newEdge(edgeClassName, doc2, true).save();
     database.commit();
 
-    String queryString = "SELECT $x, name FROM " + vertexClassName + " let $x = out(\"" + edgeClassName + "\")";
-    ResultSet resultSet = database.query("sql", queryString);
+    final String queryString = "SELECT $x, name FROM " + vertexClassName + " let $x = out(\"" + edgeClassName + "\")";
+    final ResultSet resultSet = database.query("sql", queryString);
     int counter = 0;
     while (resultSet.hasNext()) {
-      Result result = resultSet.next();
-      Iterable edge = result.getProperty("$x");
-      Iterator<Identifiable> iter = edge.iterator();
+      final Result result = resultSet.next();
+      final Iterable edge = result.getProperty("$x");
+      final Iterator<Identifiable> iter = edge.iterator();
       while (iter.hasNext()) {
-        MutableVertex tMutableVertex = (MutableVertex) database.lookupByRID(iter.next().getIdentity(), true);
+        final MutableVertex tMutableVertex = (MutableVertex) database.lookupByRID(iter.next().getIdentity(), true);
         if (doc2Id.equals(tMutableVertex.getIdentity())) {
           ++counter;
         }
@@ -2079,28 +2021,27 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testUnwind1() {
-    String className = "testUnwind1";
+    final String className = "testUnwind1";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("i", i);
       doc.set("iSeq", new int[] { i, 2 * i, 4 * i });
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select i, iSeq from " + className + " unwind iSeq");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select i, iSeq from " + className + " unwind iSeq");
     for (int i = 0; i < 30; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("i"));
       Assertions.assertNotNull(item.getProperty("iSeq"));
-      Integer first = item.getProperty("i");
-      Integer second = item.getProperty("iSeq");
+      final Integer first = item.getProperty("i");
+      final Integer second = item.getProperty("iSeq");
       Assertions.assertTrue(first + second == 0 || second % first == 0);
     }
     Assertions.assertFalse(result.hasNext());
@@ -2109,14 +2050,14 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testUnwind2() {
-    String className = "testUnwind2";
+    final String className = "testUnwind2";
     database.getSchema().createDocumentType(className);
 
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("i", i);
-      List<Integer> iSeq = new ArrayList<>();
+      final List<Integer> iSeq = new ArrayList<>();
       iSeq.add(i);
       iSeq.add(i * 2);
       iSeq.add(i * 4);
@@ -2125,16 +2066,15 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select i, iSeq from " + className + " unwind iSeq");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select i, iSeq from " + className + " unwind iSeq");
     for (int i = 0; i < 30; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("i"));
       Assertions.assertNotNull(item.getProperty("iSeq"));
-      Integer first = item.getProperty("i");
-      Integer second = item.getProperty("iSeq");
+      final Integer first = item.getProperty("i");
+      final Integer second = item.getProperty("iSeq");
       Assertions.assertTrue(first + second == 0 || second % first == 0);
     }
     Assertions.assertFalse(result.hasNext());
@@ -2143,11 +2083,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSubclassIndexes1() {
-    String parent = "testFetchFromSubclassIndexes1_parent";
-    String child1 = "testFetchFromSubclassIndexes1_child1";
-    String child2 = "testFetchFromSubclassIndexes1_child2";
+    final String parent = "testFetchFromSubclassIndexes1_parent";
+    final String child1 = "testFetchFromSubclassIndexes1_child1";
+    final String child2 = "testFetchFromSubclassIndexes1_child2";
     database.begin();
-    DocumentType parentClass = database.getSchema().createDocumentType(parent);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parent);
     database.command("sql", "create document type " + child1 + " extends " + parent);
     database.command("sql", "create document type " + child2 + " extends " + parent);
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
@@ -2164,25 +2104,24 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        childClass2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child1);
+      final MutableDocument doc = database.newDocument(child1);
       doc.set("name", "name" + i);
       doc.save();
     }
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child2);
+      final MutableDocument doc = database.newDocument(child2);
       doc.set("name", "name" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1'");
-    printExecutionPlan(result);
-    InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
+    final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1'");
+    final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
     }
     Assertions.assertFalse(result.hasNext());
@@ -2191,16 +2130,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSubclassIndexes2() {
-    String parent = "testFetchFromSubclassIndexes2_parent";
-    String child1 = "testFetchFromSubclassIndexes2_child1";
-    String child2 = "testFetchFromSubclassIndexes2_child2";
+    final String parent = "testFetchFromSubclassIndexes2_parent";
+    final String child1 = "testFetchFromSubclassIndexes2_child1";
+    final String child2 = "testFetchFromSubclassIndexes2_child2";
     database.begin();
-    DocumentType parentClass = database.getSchema().createDocumentType(parent);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parent);
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
-    DocumentType childClass1 = database.getSchema().createDocumentType(child1);
+    final DocumentType childClass1 = database.getSchema().createDocumentType(child1);
     childClass1.addSuperType(parentClass);
-    DocumentType childClass2 = database.getSchema().createDocumentType(child2);
+    final DocumentType childClass2 = database.getSchema().createDocumentType(child2);
     childClass2.addSuperType(parentClass);
 
     parentClass.createProperty("name", Type.STRING);
@@ -2208,27 +2147,26 @@ public class SelectStatementExecutionTest extends TestHelper {
     childClass2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child1);
+      final MutableDocument doc = database.newDocument(child1);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child2);
+      final MutableDocument doc = database.newDocument(child2);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
-    printExecutionPlan(result);
-    InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
+    final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
+    final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
     }
     Assertions.assertFalse(result.hasNext());
@@ -2237,43 +2175,42 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSubclassIndexes3() {
-    String parent = "testFetchFromSubclassIndexes3_parent";
-    String child1 = "testFetchFromSubclassIndexes3_child1";
-    String child2 = "testFetchFromSubclassIndexes3_child2";
+    final String parent = "testFetchFromSubclassIndexes3_parent";
+    final String child1 = "testFetchFromSubclassIndexes3_child1";
+    final String child2 = "testFetchFromSubclassIndexes3_child2";
     database.begin();
-    DocumentType parentClass = database.getSchema().createDocumentType(parent);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parent);
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
-    DocumentType childClass1 = database.getSchema().createDocumentType(child1);
+    final DocumentType childClass1 = database.getSchema().createDocumentType(child1);
     childClass1.addSuperType(parentClass);
-    DocumentType childClass2 = database.getSchema().createDocumentType(child2);
+    final DocumentType childClass2 = database.getSchema().createDocumentType(child2);
     childClass2.addSuperType(parentClass);
 
     parentClass.createProperty("name", Type.STRING);
     childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child1);
+      final MutableDocument doc = database.newDocument(child1);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child2);
+      final MutableDocument doc = database.newDocument(child2);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
-    printExecutionPlan(result);
-    InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
+    final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
+    final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromClassExecutionStep); // no index used
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
     }
     Assertions.assertFalse(result.hasNext());
@@ -2282,48 +2219,47 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSubclassIndexes4() {
-    String parent = "testFetchFromSubclassIndexes4_parent";
-    String child1 = "testFetchFromSubclassIndexes4_child1";
-    String child2 = "testFetchFromSubclassIndexes4_child2";
+    final String parent = "testFetchFromSubclassIndexes4_parent";
+    final String child1 = "testFetchFromSubclassIndexes4_child1";
+    final String child2 = "testFetchFromSubclassIndexes4_child2";
     database.begin();
-    DocumentType parentClass = database.getSchema().createDocumentType(parent);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parent);
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
-    DocumentType childClass1 = database.getSchema().createDocumentType(child1);
+    final DocumentType childClass1 = database.getSchema().createDocumentType(child1);
     childClass1.addSuperType(parent);
-    DocumentType childClass2 = database.getSchema().createDocumentType(child2);
+    final DocumentType childClass2 = database.getSchema().createDocumentType(child2);
     childClass2.addSuperType(parent);
 
     parentClass.createProperty("name", Type.STRING);
     childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
     childClass2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
 
-    MutableDocument parentdoc = database.newDocument(parent);
+    final MutableDocument parentdoc = database.newDocument(parent);
     parentdoc.set("name", "foo");
     parentdoc.save();
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child1);
+      final MutableDocument doc = database.newDocument(child1);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child2);
+      final MutableDocument doc = database.newDocument(child2);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
-    printExecutionPlan(result);
-    InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
+    final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
+    final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromClassExecutionStep); // no index, because the superclass is not empty
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
     }
     Assertions.assertFalse(result.hasNext());
@@ -2332,25 +2268,25 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSubSubclassIndexes() {
-    String parent = "testFetchFromSubSubclassIndexes_parent";
-    String child1 = "testFetchFromSubSubclassIndexes_child1";
-    String child2 = "testFetchFromSubSubclassIndexes_child2";
-    String child2_1 = "testFetchFromSubSubclassIndexes_child2_1";
-    String child2_2 = "testFetchFromSubSubclassIndexes_child2_2";
+    final String parent = "testFetchFromSubSubclassIndexes_parent";
+    final String child1 = "testFetchFromSubSubclassIndexes_child1";
+    final String child2 = "testFetchFromSubSubclassIndexes_child2";
+    final String child2_1 = "testFetchFromSubSubclassIndexes_child2_1";
+    final String child2_2 = "testFetchFromSubSubclassIndexes_child2_2";
     database.begin();
-    DocumentType parentClass = database.getSchema().createDocumentType(parent);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parent);
     parentClass.createProperty("name", Type.STRING);
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
 //        DocumentType childClass2_1 = database.getSchema().createDocumentType(child2_1, childClass2);
 //        DocumentType childClass2_2 = database.getSchema().createDocumentType(child2_2, childClass2);
-    DocumentType childClass1 = database.getSchema().createDocumentType(child1);
+    final DocumentType childClass1 = database.getSchema().createDocumentType(child1);
     childClass1.addSuperType(parent);
-    DocumentType childClass2 = database.getSchema().createDocumentType(child2);
+    final DocumentType childClass2 = database.getSchema().createDocumentType(child2);
     childClass2.addSuperType(parent);
-    DocumentType childClass2_1 = database.getSchema().createDocumentType(child2_1);
+    final DocumentType childClass2_1 = database.getSchema().createDocumentType(child2_1);
     childClass2_1.addSuperType(child2);
-    DocumentType childClass2_2 = database.getSchema().createDocumentType(child2_2);
+    final DocumentType childClass2_2 = database.getSchema().createDocumentType(child2_2);
     childClass2_2.addSuperType(child2);
 
     childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
@@ -2358,21 +2294,21 @@ public class SelectStatementExecutionTest extends TestHelper {
     childClass2_2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child1);
+      final MutableDocument doc = database.newDocument(child1);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child2_1);
+      final MutableDocument doc = database.newDocument(child2_1);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child2_2);
+      final MutableDocument doc = database.newDocument(child2_2);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
@@ -2380,13 +2316,12 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
-    printExecutionPlan(result);
-    InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
+    final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
+    final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
     }
     Assertions.assertFalse(result.hasNext());
@@ -2395,22 +2330,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSubSubclassIndexesWithDiamond() {
-    String parent = "testFetchFromSubSubclassIndexesWithDiamond_parent";
-    String child1 = "testFetchFromSubSubclassIndexesWithDiamond_child1";
-    String child2 = "testFetchFromSubSubclassIndexesWithDiamond_child2";
-    String child12 = "testFetchFromSubSubclassIndexesWithDiamond_child12";
+    final String parent = "testFetchFromSubSubclassIndexesWithDiamond_parent";
+    final String child1 = "testFetchFromSubSubclassIndexesWithDiamond_child1";
+    final String child2 = "testFetchFromSubSubclassIndexesWithDiamond_child2";
+    final String child12 = "testFetchFromSubSubclassIndexesWithDiamond_child12";
     database.begin();
 
-    DocumentType parentClass = database.getSchema().createDocumentType(parent);
+    final DocumentType parentClass = database.getSchema().createDocumentType(parent);
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
 //        DocumentType childClass12 =
 //                database.getSchema().createDocumentType(child12, childClass1, childClass2);
-    DocumentType childClass1 = database.getSchema().createDocumentType(child1);
+    final DocumentType childClass1 = database.getSchema().createDocumentType(child1);
     childClass1.addSuperType(parentClass);
-    DocumentType childClass2 = database.getSchema().createDocumentType(child2);
+    final DocumentType childClass2 = database.getSchema().createDocumentType(child2);
     childClass2.addSuperType(parentClass);
-    DocumentType childClass12 = database.getSchema().createDocumentType(child12);
+    final DocumentType childClass12 = database.getSchema().createDocumentType(child12);
     childClass12.addSuperType(childClass1);
     childClass12.addSuperType(childClass2);
 
@@ -2419,34 +2354,33 @@ public class SelectStatementExecutionTest extends TestHelper {
     childClass2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child1);
+      final MutableDocument doc = database.newDocument(child1);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child2);
+      final MutableDocument doc = database.newDocument(child2);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(child12);
+      final MutableDocument doc = database.newDocument(child12);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
-    printExecutionPlan(result);
-    InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
+    final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
+    final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromClassExecutionStep);
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
     }
     Assertions.assertFalse(result.hasNext());
@@ -2455,38 +2389,37 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort1() {
-    String className = "testIndexPlusSort1";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort1";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname ASC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname ASC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
 
-      String surname = item.getProperty("surname");
+      final String surname = item.getProperty("surname");
       if (i > 0) {
         Assertions.assertTrue(surname.compareTo(lastSurname) > 0);
       }
       lastSurname = surname;
     }
     Assertions.assertFalse(result.hasNext());
-    ExecutionPlan plan = result.getExecutionPlan().get();
+    final ExecutionPlan plan = result.getExecutionPlan().get();
     Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
     Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
     result.close();
@@ -2494,8 +2427,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort2() {
-    String className = "testIndexPlusSort2";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort2";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
@@ -2504,30 +2437,29 @@ public class SelectStatementExecutionTest extends TestHelper {
         "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname DESC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname DESC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
 
-      String surname = item.getProperty("surname");
+      final String surname = item.getProperty("surname");
       if (i > 0) {
         Assertions.assertTrue(surname.compareTo(lastSurname) < 0);
       }
       lastSurname = surname;
     }
     Assertions.assertFalse(result.hasNext());
-    ExecutionPlan plan = result.getExecutionPlan().get();
+    final ExecutionPlan plan = result.getExecutionPlan().get();
     Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
     Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
     result.close();
@@ -2535,38 +2467,37 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort3() {
-    String className = "testIndexPlusSort3";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort3";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name DESC, surname DESC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name DESC, surname DESC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
 
-      String surname = item.getProperty("surname");
+      final String surname = item.getProperty("surname");
       if (i > 0) {
         Assertions.assertTrue(((String) item.getProperty("surname")).compareTo(lastSurname) < 0);
       }
       lastSurname = surname;
     }
     Assertions.assertFalse(result.hasNext());
-    ExecutionPlan plan = result.getExecutionPlan().get();
+    final ExecutionPlan plan = result.getExecutionPlan().get();
     Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
     Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
     result.close();
@@ -2574,38 +2505,37 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort4() {
-    String className = "testIndexPlusSort4";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort4";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name ASC, surname ASC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name ASC, surname ASC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
 
-      String surname = item.getProperty("surname");
+      final String surname = item.getProperty("surname");
       if (i > 0) {
         Assertions.assertTrue(surname.compareTo(lastSurname) > 0);
       }
       lastSurname = surname;
     }
     Assertions.assertFalse(result.hasNext());
-    ExecutionPlan plan = result.getExecutionPlan().get();
+    final ExecutionPlan plan = result.getExecutionPlan().get();
     Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
     Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
     result.close();
@@ -2613,8 +2543,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort5() {
-    String className = "testIndexPlusSort5";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort5";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
@@ -2622,7 +2552,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create index on " + className + " (name, surname, address) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.set("address", "address" + i);
@@ -2630,22 +2560,21 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname ASC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname ASC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
-      String surname = item.getProperty("surname");
+      final String surname = item.getProperty("surname");
       if (i > 0) {
         Assertions.assertTrue(surname.compareTo(lastSurname) > 0);
       }
       lastSurname = surname;
     }
     Assertions.assertFalse(result.hasNext());
-    ExecutionPlan plan = result.getExecutionPlan().get();
+    final ExecutionPlan plan = result.getExecutionPlan().get();
     Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
     Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
     result.close();
@@ -2653,8 +2582,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort6() {
-    String className = "testIndexPlusSort6";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort6";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
@@ -2662,7 +2591,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create index on " + className + " (name, surname, address) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.set("address", "address" + i);
@@ -2670,22 +2599,21 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname DESC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname DESC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
-      String surname = item.getProperty("surname");
+      final String surname = item.getProperty("surname");
       if (i > 0) {
         Assertions.assertTrue(surname.compareTo(lastSurname) < 0);
       }
       lastSurname = surname;
     }
     Assertions.assertFalse(result.hasNext());
-    ExecutionPlan plan = result.getExecutionPlan().get();
+    final ExecutionPlan plan = result.getExecutionPlan().get();
     Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
     Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
     result.close();
@@ -2693,8 +2621,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort7() {
-    String className = "testIndexPlusSort7";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort7";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
@@ -2702,7 +2630,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create index on " + className + " (name, surname, address) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.set("address", "address" + i);
@@ -2710,18 +2638,17 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by address DESC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by address DESC");
 
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
     }
     Assertions.assertFalse(result.hasNext());
     boolean orderStepFound = false;
-    for (ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
+    for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
         orderStepFound = true;
         break;
@@ -2733,33 +2660,32 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort8() {
-    String className = "testIndexPlusSort8";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort8";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name ASC, surname DESC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name ASC, surname DESC");
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
     }
     Assertions.assertFalse(result.hasNext());
     Assertions.assertFalse(result.hasNext());
     boolean orderStepFound = false;
-    for (ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
+    for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
         orderStepFound = true;
         break;
@@ -2771,33 +2697,32 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort9() {
-    String className = "testIndexPlusSort9";
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "testIndexPlusSort9";
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " order by name , surname ASC");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " order by name , surname ASC");
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
     }
     Assertions.assertFalse(result.hasNext());
     Assertions.assertFalse(result.hasNext());
     boolean orderStepFound = false;
-    for (ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
+    for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
         orderStepFound = true;
         break;
@@ -2809,33 +2734,32 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort10() {
-    String className = "testIndexPlusSort10";
+    final String className = "testIndexPlusSort10";
     database.begin();
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " order by name desc, surname desc");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " order by name desc, surname desc");
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
     }
     Assertions.assertFalse(result.hasNext());
     Assertions.assertFalse(result.hasNext());
     boolean orderStepFound = false;
-    for (ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
+    for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
         orderStepFound = true;
         break;
@@ -2847,33 +2771,32 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort11() {
-    String className = "testIndexPlusSort11";
+    final String className = "testIndexPlusSort11";
     database.begin();
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " order by name asc, surname desc");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " order by name asc, surname desc");
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
     }
     Assertions.assertFalse(result.hasNext());
     Assertions.assertFalse(result.hasNext());
     boolean orderStepFound = false;
-    for (ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
+    for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
         orderStepFound = true;
         break;
@@ -2885,30 +2808,29 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexPlusSort12() {
-    String className = "testIndexPlusSort12";
+    final String className = "testIndexPlusSort12";
     database.begin();
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
       doc.save();
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " order by name");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " order by name");
     String last = null;
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("name"));
-      String name = item.getProperty("name");
+      final String name = item.getProperty("name");
       //System.out.println(name);
       if (i > 0) {
         Assertions.assertTrue(name.compareTo(last) >= 0);
@@ -2918,7 +2840,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     Assertions.assertFalse(result.hasNext());
     Assertions.assertFalse(result.hasNext());
     boolean orderStepFound = false;
-    for (ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
+    for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
         orderStepFound = true;
         break;
@@ -2930,21 +2852,20 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectFromStringParam() {
-    String className = "testSelectFromStringParam";
+    final String className = "testSelectFromStringParam";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from ?", className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from ?", className);
 
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
     }
@@ -2954,23 +2875,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectFromStringNamedParam() {
-    String className = "testSelectFromStringNamedParam";
+    final String className = "testSelectFromStringNamedParam";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.save();
     }
     database.commit();
-    Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     params.put("target", className);
-    ResultSet result = database.query("sql", "select from :target", params);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from :target", params);
 
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
     }
@@ -2980,21 +2900,20 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testMatches() {
-    String className = "testMatches";
+    final String className = "testMatches";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " where name matches 'name1'");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select from " + className + " where name matches 'name1'");
 
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals(item.getProperty("name"), "name1");
     }
@@ -3004,34 +2923,33 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRange() {
-    String className = "testRange";
+    final String className = "testRange";
     database.getSchema().createDocumentType(className);
 
     database.begin();
-    MutableDocument doc = database.newDocument(className);
+    final MutableDocument doc = database.newDocument(className);
     doc.set("name", new String[] { "a", "b", "c", "d" });
     doc.save();
     database.commit();
 
-    ResultSet result = database.query("sql", "select name[0..3] as names from " + className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select name[0..3] as names from " + className);
 
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Object names = item.getProperty("names");
+      final Object names = item.getProperty("names");
       if (names == null) {
         Assertions.fail();
       }
       if (names instanceof Collection) {
         Assertions.assertEquals(3, ((Collection) names).size());
-        Iterator iter = ((Collection) names).iterator();
+        final Iterator iter = ((Collection) names).iterator();
         Assertions.assertEquals("a", iter.next());
         Assertions.assertEquals("b", iter.next());
         Assertions.assertEquals("c", iter.next());
       } else if (names.getClass().isArray()) {
-        Assertions.assertEquals(3, java.lang.reflect.Array.getLength(names));
+        Assertions.assertEquals(3, Array.getLength(names));
       } else {
         Assertions.fail();
       }
@@ -3042,34 +2960,33 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRangeParams1() {
-    String className = "testRangeParams1";
+    final String className = "testRangeParams1";
     database.getSchema().createDocumentType(className);
     database.begin();
 
-    MutableDocument doc = database.newDocument(className);
+    final MutableDocument doc = database.newDocument(className);
     doc.set("name", new String[] { "a", "b", "c", "d" });
     doc.save();
     database.commit();
 
-    ResultSet result = database.query("sql", "select name[?..?] as names from " + className, 0, 3);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select name[?..?] as names from " + className, 0, 3);
 
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Object names = item.getProperty("names");
+      final Object names = item.getProperty("names");
       if (names == null) {
         Assertions.fail();
       }
       if (names instanceof Collection) {
         Assertions.assertEquals(3, ((Collection) names).size());
-        Iterator iter = ((Collection) names).iterator();
+        final Iterator iter = ((Collection) names).iterator();
         Assertions.assertEquals("a", iter.next());
         Assertions.assertEquals("b", iter.next());
         Assertions.assertEquals("c", iter.next());
       } else if (names.getClass().isArray()) {
-        Assertions.assertEquals(3, java.lang.reflect.Array.getLength(names));
+        Assertions.assertEquals(3, Array.getLength(names));
       } else {
         Assertions.fail();
       }
@@ -3080,37 +2997,36 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRangeParams2() {
-    String className = "testRangeParams2";
+    final String className = "testRangeParams2";
     database.getSchema().createDocumentType(className);
     database.begin();
 
-    MutableDocument doc = database.newDocument(className);
+    final MutableDocument doc = database.newDocument(className);
     doc.set("name", new String[] { "a", "b", "c", "d" });
     doc.save();
     database.commit();
 
-    Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     params.put("a", 0);
     params.put("b", 3);
-    ResultSet result = database.query("sql", "select name[:a..:b] as names from " + className, params);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select name[:a..:b] as names from " + className, params);
 
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Object names = item.getProperty("names");
+      final Object names = item.getProperty("names");
       if (names == null) {
         Assertions.fail();
       }
       if (names instanceof Collection) {
         Assertions.assertEquals(3, ((Collection) names).size());
-        Iterator iter = ((Collection) names).iterator();
+        final Iterator iter = ((Collection) names).iterator();
         Assertions.assertEquals("a", iter.next());
         Assertions.assertEquals("b", iter.next());
         Assertions.assertEquals("c", iter.next());
       } else if (names.getClass().isArray()) {
-        Assertions.assertEquals(3, java.lang.reflect.Array.getLength(names));
+        Assertions.assertEquals(3, Array.getLength(names));
       } else {
         Assertions.fail();
       }
@@ -3121,29 +3037,28 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testEllipsis() {
-    String className = "testEllipsis";
+    final String className = "testEllipsis";
     database.getSchema().createDocumentType(className);
     database.begin();
 
-    MutableDocument doc = database.newDocument(className);
+    final MutableDocument doc = database.newDocument(className);
     doc.set("name", new String[] { "a", "b", "c", "d" });
     doc.save();
     database.commit();
 
-    ResultSet result = database.query("sql", "select name[0...2] as names from " + className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select name[0...2] as names from " + className);
 
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Object names = item.getProperty("names");
+      final Object names = item.getProperty("names");
       if (names == null) {
         Assertions.fail();
       }
       if (names instanceof Collection) {
         Assertions.assertEquals(3, ((Collection) names).size());
-        Iterator iter = ((Collection) names).iterator();
+        final Iterator iter = ((Collection) names).iterator();
         Assertions.assertEquals("a", iter.next());
         Assertions.assertEquals("b", iter.next());
         Assertions.assertEquals("c", iter.next());
@@ -3162,12 +3077,12 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNewRid() {
-    ResultSet result = database.query("sql", "select {\"@rid\":\"#12:0\"} as theRid ");
+    final ResultSet result = database.query("sql", "select {\"@rid\":\"#12:0\"} as theRid ");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
-    Object rid = item.getProperty("theRid");
+    final Result item = result.next();
+    final Object rid = item.getProperty("theRid");
     Assertions.assertTrue(rid instanceof Identifiable);
-    Identifiable id = (Identifiable) rid;
+    final Identifiable id = (Identifiable) rid;
     Assertions.assertEquals(12, id.getIdentity().getBucketId());
     Assertions.assertEquals(0L, id.getIdentity().getPosition());
     Assertions.assertFalse(result.hasNext());
@@ -3176,23 +3091,23 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNestedProjections1() {
-    String className = "testNestedProjections1";
+    final String className = "testNestedProjections1";
     database.command("sql", "create document type " + className).close();
     database.begin();
-    MutableDocument elem1 = database.newDocument(className);
+    final MutableDocument elem1 = database.newDocument(className);
     elem1.set("name", "a");
     elem1.save();
 
-    MutableDocument elem2 = database.newDocument(className);
+    final MutableDocument elem2 = database.newDocument(className);
     elem2.set("name", "b");
     elem2.set("surname", "lkj");
     elem2.save();
 
-    MutableDocument elem3 = database.newDocument(className);
+    final MutableDocument elem3 = database.newDocument(className);
     elem3.set("name", "c");
     elem3.save();
 
-    MutableDocument elem4 = database.newDocument(className);
+    final MutableDocument elem4 = database.newDocument(className);
     elem4.set("name", "d");
     elem4.set("elem1", elem1);
     elem4.set("elem2", elem2);
@@ -3200,25 +3115,24 @@ public class SelectStatementExecutionTest extends TestHelper {
     elem4.save();
 
     database.commit();
-    ResultSet result = database.query("sql", "select name, elem1:{*}, elem2:{!surname} from " + className + " where name = 'd'");
+    final ResultSet result = database.query("sql", "select name, elem1:{*}, elem2:{!surname} from " + className + " where name = 'd'");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     // TODO refine this!
     Assertions.assertTrue(item.getProperty("elem1") instanceof Result);
     Assertions.assertEquals("a", ((Result) item.getProperty("elem1")).getProperty("name"));
-    printExecutionPlan(result);
 
     result.close();
   }
 
   @Test
   public void testSimpleCollectionFiltering() {
-    String className = "testSimpleCollectionFiltering";
+    final String className = "testSimpleCollectionFiltering";
     database.command("sql", "create document type " + className).close();
     database.begin();
-    MutableDocument elem1 = database.newDocument(className);
-    List<String> coll = new ArrayList<>();
+    final MutableDocument elem1 = database.newDocument(className);
+    final List<String> coll = new ArrayList<>();
     coll.add("foo");
     coll.add("bar");
     coll.add("baz");
@@ -3259,10 +3173,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContaninsWithConversion() {
-    String className = "testContaninsWithConversion";
+    final String className = "testContaninsWithConversion";
     database.command("sql", "create document type " + className).close();
     database.begin();
-    MutableDocument elem1 = database.newDocument(className);
+    final MutableDocument elem1 = database.newDocument(className);
     List<Long> coll = new ArrayList<>();
     coll.add(1L);
     coll.add(3L);
@@ -3270,7 +3184,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     elem1.set("coll", coll);
     elem1.save();
 
-    MutableDocument elem2 = database.newDocument(className);
+    final MutableDocument elem2 = database.newDocument(className);
     coll = new ArrayList<>();
     coll.add(2L);
     coll.add(4L);
@@ -3298,16 +3212,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContainsIntegers() {
-    String className = "testContains";
+    final String className = "testContains";
 
-    DocumentType clazz1 = database.getSchema().createDocumentType(className);
+    final DocumentType clazz1 = database.getSchema().createDocumentType(className);
     clazz1.createProperty("list", Type.LIST);
 
     database.getSchema().createDocumentType("embeddedList");
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
-        MutableDocument document = database.newDocument(className);
+        final MutableDocument document = database.newDocument(className);
         document.set("list", new ArrayList<>());
 
         for (int j = i; j < i + 3; j++)
@@ -3318,12 +3232,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     });
 
     int totalFound = 0;
-    for (ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = 3 )"); result.hasNext(); ) {
-      Result item = result.next();
-      List<EmbeddedDocument> embeddedList = item.getProperty("list");
+    for (final ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = 3 )"); result.hasNext(); ) {
+      final Result item = result.next();
+      final List<EmbeddedDocument> embeddedList = item.getProperty("list");
 
-      List<Integer> valueMatches = new ArrayList<>();
-      for (EmbeddedDocument d : embeddedList)
+      final List<Integer> valueMatches = new ArrayList<>();
+      for (final EmbeddedDocument d : embeddedList)
         valueMatches.add(d.getInteger("value"));
 
       Assertions.assertTrue(valueMatches.contains(3));
@@ -3336,16 +3250,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContainsStrings() {
-    String className = "testContains";
+    final String className = "testContains";
 
-    DocumentType clazz1 = database.getSchema().createDocumentType(className);
+    final DocumentType clazz1 = database.getSchema().createDocumentType(className);
     clazz1.createProperty("list", Type.LIST);
 
     database.getSchema().createDocumentType("embeddedList");
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
-        MutableDocument document = database.newDocument(className);
+        final MutableDocument document = database.newDocument(className);
         document.set("list", new ArrayList<>());
 
         for (int j = i; j < i + 3; j++)
@@ -3356,12 +3270,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     });
 
     int totalFound = 0;
-    for (ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
-      Result item = result.next();
-      List<EmbeddedDocument> embeddedList = item.getProperty("list");
+    for (final ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
+      final Result item = result.next();
+      final List<EmbeddedDocument> embeddedList = item.getProperty("list");
 
-      List<String> valueMatches = new ArrayList<>();
-      for (EmbeddedDocument d : embeddedList)
+      final List<String> valueMatches = new ArrayList<>();
+      for (final EmbeddedDocument d : embeddedList)
         valueMatches.add(d.getString("value"));
 
       Assertions.assertTrue(valueMatches.contains("3"));
@@ -3374,18 +3288,18 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContainsStringsInMap() {
-    String className = "testContains";
+    final String className = "testContains";
 
-    DocumentType clazz1 = database.getSchema().createDocumentType(className);
+    final DocumentType clazz1 = database.getSchema().createDocumentType(className);
     clazz1.createProperty("list", Type.LIST);
 
     database.getSchema().createDocumentType("embeddedList");
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
-        MutableDocument document = database.newDocument(className);
+        final MutableDocument document = database.newDocument(className);
 
-        List<Map> list = new ArrayList<>();
+        final List<Map> list = new ArrayList<>();
         document.set("list", list);
 
         for (int j = i; j < i + 3; j++)
@@ -3396,12 +3310,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     });
 
     int totalFound = 0;
-    for (ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
-      Result item = result.next();
-      List<Map> embeddedList = item.getProperty("list");
+    for (final ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
+      final Result item = result.next();
+      final List<Map> embeddedList = item.getProperty("list");
 
-      List<String> valueMatches = new ArrayList<>();
-      for (Map d : embeddedList)
+      final List<String> valueMatches = new ArrayList<>();
+      for (final Map d : embeddedList)
         valueMatches.add((String) d.get("value"));
 
       Assertions.assertTrue(valueMatches.contains("3"));
@@ -3415,7 +3329,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   @Test
   public void testIndexPrefixUsage() {
     // issue #7636
-    String className = "testIndexPrefixUsage";
+    final String className = "testIndexPrefixUsage";
     database.begin();
     database.command("sql", "create document type " + className).close();
     database.command("sql", "create property " + className + ".id LONG").close();
@@ -3424,7 +3338,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + " set id = 1 , name = 'Bar'").close();
 
     database.commit();
-    ResultSet result = database.query("sql", "select from " + className + " where name = 'Bar'");
+    final ResultSet result = database.query("sql", "select from " + className + " where name = 'Bar'");
     Assertions.assertTrue(result.hasNext());
     result.next();
     Assertions.assertFalse(result.hasNext());
@@ -3433,17 +3347,17 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNamedParams() {
-    String className = "testNamedParams";
+    final String className = "testNamedParams";
     database.begin();
     database.command("sql", "create document type " + className).close();
     database.command("sql", "insert into " + className + " set name = 'Foo', surname = 'Fox'").close();
     database.command("sql", "insert into " + className + " set name = 'Bar', surname = 'Bax'").close();
 
     database.commit();
-    Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     params.put("p1", "Foo");
     params.put("p2", "Fox");
-    ResultSet result = database.query("sql", "select from " + className + " where name = :p1 and surname = :p2", params);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = :p1 and surname = :p2", params);
     Assertions.assertTrue(result.hasNext());
     result.next();
     Assertions.assertFalse(result.hasNext());
@@ -3452,7 +3366,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNamedParamsWithIndex() {
-    String className = "testNamedParamsWithIndex";
+    final String className = "testNamedParamsWithIndex";
     database.command("sql", "create document type " + className).close();
     database.begin();
     database.command("sql", "create property " + className + ".name STRING").close();
@@ -3461,9 +3375,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + " set name = 'Bar'").close();
     database.commit();
 
-    Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     params.put("p1", "Foo");
-    ResultSet result = database.query("sql", "select from " + className + " where name = :p1", params);
+    final ResultSet result = database.query("sql", "select from " + className + " where name = :p1", params);
     Assertions.assertTrue(result.hasNext());
     result.next();
     Assertions.assertFalse(result.hasNext());
@@ -3472,7 +3386,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIsDefined() {
-    String className = "testIsDefined";
+    final String className = "testIsDefined";
     database.command("sql", "create document type " + className).close();
     database.begin();
     database.command("sql", "insert into " + className + " set name = 'Foo'").close();
@@ -3480,7 +3394,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + " set sur = 'Barz'").close();
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name is defined");
+    final ResultSet result = database.query("sql", "select from " + className + " where name is defined");
     Assertions.assertTrue(result.hasNext());
     result.next();
     Assertions.assertFalse(result.hasNext());
@@ -3489,7 +3403,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIsNotDefined() {
-    String className = "testIsNotDefined";
+    final String className = "testIsNotDefined";
     database.command("sql", "create document type " + className).close();
     database.begin();
     database.command("sql", "insert into " + className + " set name = 'Foo'").close();
@@ -3497,7 +3411,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + " set sur = 'Barz'").close();
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where name is not defined");
+    final ResultSet result = database.query("sql", "select from " + className + " where name is not defined");
     Assertions.assertTrue(result.hasNext());
     result.next();
     Assertions.assertFalse(result.hasNext());
@@ -3506,10 +3420,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRidPagination1() {
-    String className = "testRidPagination1";
-    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    final String className = "testRidPagination1";
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
-    int[] clusterIds = new int[clazz.getBuckets(false).size()];
+    final int[] clusterIds = new int[clazz.getBuckets(false).size()];
     if (clusterIds.length < 3) {
       return;
     }
@@ -3517,15 +3431,15 @@ public class SelectStatementExecutionTest extends TestHelper {
     Arrays.sort(clusterIds);
 
     for (int i = 0; i < clusterIds.length; i++) {
-      MutableDocument elem = database.newDocument(className);
+      final MutableDocument elem = database.newDocument(className);
       elem.set("cid", clusterIds[i]);
       elem.save(database.getSchema().getBucketById(clusterIds[i]).getName());
     }
     database.commit();
 
-    ResultSet result = database.query("sql", "select from " + className + " where @rid >= #" + clusterIds[1] + ":0");
-    ExecutionPlan execPlan = result.getExecutionPlan().get();
-    for (ExecutionStep ExecutionStep : execPlan.getSteps()) {
+    final ResultSet result = database.query("sql", "select from " + className + " where @rid >= #" + clusterIds[1] + ":0");
+    final ExecutionPlan execPlan = result.getExecutionPlan().get();
+    for (final ExecutionStep ExecutionStep : execPlan.getSteps()) {
       if (ExecutionStep instanceof FetchFromClassExecutionStep) {
         Assertions.assertEquals(clusterIds.length - 1, ExecutionStep.getSubSteps().size());
         // clusters - 1 + fetch from tx...
@@ -3542,10 +3456,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRidPagination2() {
-    String className = "testRidPagination2";
-    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    final String className = "testRidPagination2";
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
-    int[] clusterIds = new int[clazz.getBuckets(false).size()];
+    final int[] clusterIds = new int[clazz.getBuckets(false).size()];
     if (clusterIds.length < 3) {
       return;
     }
@@ -3553,17 +3467,17 @@ public class SelectStatementExecutionTest extends TestHelper {
     Arrays.sort(clusterIds);
 
     for (int i = 0; i < clusterIds.length; i++) {
-      MutableDocument elem = database.newDocument(className);
+      final MutableDocument elem = database.newDocument(className);
       elem.set("cid", clusterIds[i]);
       elem.save(database.getSchema().getBucketById(clusterIds[i]).getName());
     }
     database.commit();
 
-    Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     params.put("rid", new RID(database, clusterIds[1], 0));
-    ResultSet result = database.query("sql", "select from " + className + " where @rid >= :rid", params);
-    ExecutionPlan execPlan = result.getExecutionPlan().get();
-    for (ExecutionStep ExecutionStep : execPlan.getSteps()) {
+    final ResultSet result = database.query("sql", "select from " + className + " where @rid >= :rid", params);
+    final ExecutionPlan execPlan = result.getExecutionPlan().get();
+    for (final ExecutionStep ExecutionStep : execPlan.getSteps()) {
       if (ExecutionStep instanceof FetchFromClassExecutionStep) {
         Assertions.assertEquals(clusterIds.length - 1, ExecutionStep.getSubSteps().size());
         // clusters - 1 + fetch from tx...
@@ -3580,10 +3494,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContainsWithSubquery() {
-    String className = "testContainsWithSubquery";
+    final String className = "testContainsWithSubquery";
     database.begin();
-    DocumentType clazz1 = database.getSchema().getOrCreateDocumentType(className + 1);
-    DocumentType clazz2 = database.getSchema().getOrCreateDocumentType(className + 2);
+    final DocumentType clazz1 = database.getSchema().getOrCreateDocumentType(className + 1);
+    final DocumentType clazz2 = database.getSchema().getOrCreateDocumentType(className + 2);
     clazz2.createProperty("tags", Type.LIST);
 
     database.command("sql", "insert into " + className + 1 + "  set name = 'foo'");
@@ -3593,7 +3507,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + 2 + "  set tags = ['foo']");
     database.commit();
 
-    try (ResultSet result = database.query("sql",
+    try (final ResultSet result = database.query("sql",
         "select from " + className + 2 + " where tags contains (select from " + className + 1 + " where name = 'foo')")) {
 
       Assertions.assertTrue(result.hasNext());
@@ -3606,10 +3520,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testInWithSubquery() {
-    String className = "testInWithSubquery";
+    final String className = "testInWithSubquery";
     database.begin();
-    DocumentType clazz1 = database.getSchema().getOrCreateDocumentType(className + 1);
-    DocumentType clazz2 = database.getSchema().getOrCreateDocumentType(className + 2);
+    final DocumentType clazz1 = database.getSchema().getOrCreateDocumentType(className + 1);
+    final DocumentType clazz2 = database.getSchema().getOrCreateDocumentType(className + 2);
     clazz2.createProperty("tags", Type.LIST);
 
     database.command("sql", "insert into " + className + 1 + "  set name = 'foo'");
@@ -3619,7 +3533,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + 2 + "  set tags = ['foo']");
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + 2 + " where (select from " + className + 1 + " where name = 'foo') in tags")) {
+    try (final ResultSet result = database.query("sql",
+        "select from " + className + 2 + " where (select from " + className + 1 + " where name = 'foo') in tags")) {
 
       Assertions.assertTrue(result.hasNext());
       result.next();
@@ -3631,8 +3546,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContainsAny() {
-    String className = "testContainsAny";
-    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    final String className = "testContainsAny";
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
 //        clazz.createProperty("tags", Type.LIST, Type.STRING);
     clazz.createProperty("tags", Type.LIST);
@@ -3641,19 +3556,19 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + "  set tags = ['bbb', 'FFF']");
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','baz']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','baz']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bar']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bar']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bbb']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bbb']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertTrue(result.hasNext());
@@ -3661,43 +3576,43 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertFalse(result.hasNext());
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['xx','baz']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['xx','baz']")) {
       Assertions.assertFalse(result.hasNext());
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany []")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany []")) {
       Assertions.assertFalse(result.hasNext());
     }
   }
 
   //    @Test   TODO
   public void testContainsAnyWithIndex() {
-    String className = "testContainsAnyWithIndex";
-    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    final String className = "testContainsAnyWithIndex";
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
 //        Property prop = clazz.createProperty("tags", Type.LIST, Type.STRING);
-    Property prop = clazz.createProperty("tags", Type.LIST);
+    final Property prop = clazz.createProperty("tags", Type.LIST);
     prop.createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
 
     database.command("sql", "insert into " + className + "  set tags = ['foo', 'bar']");
     database.command("sql", "insert into " + className + "  set tags = ['bbb', 'FFF']");
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','baz']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','baz']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
       Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bar']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bar']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
       Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bbb']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bbb']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertTrue(result.hasNext());
@@ -3706,12 +3621,12 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['xx','baz']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['xx','baz']")) {
       Assertions.assertFalse(result.hasNext());
       Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsany []")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany []")) {
       Assertions.assertFalse(result.hasNext());
       Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
@@ -3719,8 +3634,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContainsAll() {
-    String className = "testContainsAll";
-    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    final String className = "testContainsAll";
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     clazz.createProperty("tags", Type.LIST);
 
     database.begin();
@@ -3728,13 +3643,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + "  set tags = ['foo', 'FFF']");
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsall ['foo','bar']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsall ['foo','bar']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tags containsall ['foo']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsall ['foo']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertTrue(result.hasNext());
@@ -3745,8 +3660,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testBetween() {
-    String className = "testBetween";
-    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    final String className = "testBetween";
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
 
     database.command("sql", "insert into " + className + "  set name = 'foo1', val = 1");
@@ -3755,7 +3670,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + "  set name = 'foo4', val = 4");
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where val between 2 and 3")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where val between 2 and 3")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertTrue(result.hasNext());
@@ -3766,24 +3681,24 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testInWithIndex() {
-    String className = "testInWithIndex";
+    final String className = "testInWithIndex";
     database.begin();
-    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
-    Property prop = clazz.createProperty("tag", Type.STRING);
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    final Property prop = clazz.createProperty("tag", Type.STRING);
     prop.createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
 
     database.command("sql", "insert into " + className + "  set tag = 'foo'");
     database.command("sql", "insert into " + className + "  set tag = 'bar'");
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','baz']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','baz']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
       Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','bar']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','bar']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertTrue(result.hasNext());
@@ -3792,15 +3707,15 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tag in []")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tag in []")) {
       Assertions.assertFalse(result.hasNext());
       Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    List<String> params = new ArrayList<>();
+    final List<String> params = new ArrayList<>();
     params.add("foo");
     params.add("bar");
-    try (ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertTrue(result.hasNext());
@@ -3812,23 +3727,23 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testInWithoutIndex() {
-    String className = "testInWithoutIndex";
+    final String className = "testInWithoutIndex";
     database.begin();
-    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
-    Property prop = clazz.createProperty("tag", Type.STRING);
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    final Property prop = clazz.createProperty("tag", Type.STRING);
 
     database.command("sql", "insert into " + className + "  set tag = 'foo'");
     database.command("sql", "insert into " + className + "  set tag = 'bar'");
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','baz']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','baz']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
       Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','bar']")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','bar']")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertTrue(result.hasNext());
@@ -3837,15 +3752,15 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where tag in []")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tag in []")) {
       Assertions.assertFalse(result.hasNext());
       Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
     }
 
-    List<String> params = new ArrayList<>();
+    final List<String> params = new ArrayList<>();
     params.add("foo");
     params.add("bar");
-    try (ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertTrue(result.hasNext());
@@ -3857,17 +3772,17 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   //    @Test
   public void testListOfMapsContains() {
-    String className = "testListOfMapsContains";
+    final String className = "testListOfMapsContains";
 
-    DocumentType clazz1 = database.getSchema().getOrCreateDocumentType(className);
+    final DocumentType clazz1 = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
-    Property prop = clazz1.createProperty("thelist", Type.LIST);
+    final Property prop = clazz1.createProperty("thelist", Type.LIST);
 
     database.command("sql", "insert INTO " + className + " SET thelist = [{name:\"Jack\"}]").close();
     database.command("sql", "insert INTO " + className + " SET thelist = [{name:\"Joe\"}]").close();
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where thelist CONTAINS ( name = ?)", "Jack")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where thelist CONTAINS ( name = ?)", "Jack")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
@@ -3876,7 +3791,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContainsEmptyCollection() {
-    String className = "testContainsEmptyCollection";
+    final String className = "testContainsEmptyCollection";
     database.begin();
 
     database.getSchema().getOrCreateDocumentType(className);
@@ -3888,7 +3803,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "INSERT INTO " + className + " content {\"name\": \"david\", \"age\": 22, \"test\": [\"hello\"]}").close();
 
     database.commit();
-    try (ResultSet result = database.query("sql", "select from " + className + " where test contains []")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where test contains []")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
@@ -3897,7 +3812,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testContainsCollection() {
-    String className = "testContainsCollection";
+    final String className = "testContainsCollection";
 
     database.getSchema().getOrCreateDocumentType(className);
     database.begin();
@@ -3909,7 +3824,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "INSERT INTO " + className + " content {\"name\": \"david\", \"age\": 22, \"test\": [\"hello\"]}").close();
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where test contains [1]")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where test contains [1]")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
@@ -3918,11 +3833,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testHeapLimitForOrderBy() {
-    Long oldValue = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
+    final Long oldValue = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
     try {
       GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(3);
 
-      String className = "testHeapLimitForOrderBy";
+      final String className = "testHeapLimitForOrderBy";
 
       database.getSchema().getOrCreateDocumentType(className);
       database.begin();
@@ -3934,11 +3849,11 @@ public class SelectStatementExecutionTest extends TestHelper {
       database.commit();
 
       try {
-        try (ResultSet result = database.query("sql", "select from " + className + " ORDER BY name")) {
+        try (final ResultSet result = database.query("sql", "select from " + className + " ORDER BY name")) {
           result.forEachRemaining(x -> x.getProperty("name"));
         }
         Assertions.fail();
-      } catch (CommandExecutionException ex) {
+      } catch (final CommandExecutionException ex) {
       }
     } finally {
       GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(oldValue);
@@ -3947,9 +3862,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testXor() {
-    try (ResultSet result = database.query("sql", "select 15 ^ 4 as foo")) {
+    try (final ResultSet result = database.query("sql", "select 15 ^ 4 as foo")) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertEquals(11, (int) item.getProperty("foo"));
       Assertions.assertFalse(result.hasNext());
     }
@@ -3957,7 +3872,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testLike() {
-    String className = "testLike";
+    final String className = "testLike";
 
     database.getSchema().getOrCreateDocumentType(className);
     database.begin();
@@ -3967,33 +3882,33 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     database.commit();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where name LIKE 'foo%'")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE 'foo%'")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
     }
-    try (ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%foo%baz%'")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%foo%baz%'")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
     }
-    try (ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%bar%'")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%bar%'")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where name LIKE 'bar%'")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE 'bar%'")) {
       Assertions.assertFalse(result.hasNext());
     }
 
-    try (ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%bar'")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%bar'")) {
       Assertions.assertFalse(result.hasNext());
     }
 
-    String specialChars = "[]{}()|*^.";
-    for (char c : specialChars.toCharArray()) {
-      try (ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%" + c + "%'")) {
+    final String specialChars = "[]{}()|*^.";
+    for (final char c : specialChars.toCharArray()) {
+      try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%" + c + "%'")) {
         Assertions.assertTrue(result.hasNext());
         result.next();
         Assertions.assertFalse(result.hasNext());
@@ -4004,21 +3919,20 @@ public class SelectStatementExecutionTest extends TestHelper {
   @Test
   public void testCountGroupBy() {
     // issue #9288
-    String className = "testCountGroupBy";
+    final String className = "testCountGroupBy";
     database.getSchema().createDocumentType(className);
     database.begin();
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("type", i % 2 == 0 ? "even" : "odd");
       doc.set("val", i);
       doc.save();
     }
     database.commit();
-    ResultSet result = database.query("sql", "select count(val) as count from " + className + " limit 3");
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "select count(val) as count from " + className + " limit 3");
 
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertEquals(10L, (long) item.getProperty("count"));
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -4030,7 +3944,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        final String functionName = getClass().getSimpleName() + "_sleep";
 //        database.getSchema().createDocumentType(className);
 //
-//        SQLEngine.getInstance()
+//        ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql"))
 //                .registerFunction(
 //                        functionName,
 //                        new SQLFunction() {
@@ -4141,7 +4055,6 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
     final ResultSet result = database.query("sql", "select from " + className + " WHERE name >= 'name5'");
-    printExecutionPlan(result);
 
     for (int i = 0; i < 5; i++) {
       Assertions.assertTrue(result.hasNext());
@@ -4166,7 +4079,6 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
     final ResultSet result = database.query("sql", "select from " + className + " WHERE name <= 'name5'");
-    printExecutionPlan(result);
 
     for (int i = 0; i < 6; i++) {
       Assertions.assertTrue(result.hasNext());
@@ -4178,7 +4090,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   //    @Test
   public void testIndexWithSubquery() {
-    String classNamePrefix = "testIndexWithSubquery_";
+    final String classNamePrefix = "testIndexWithSubquery_";
     database.begin();
     database.command("sql", "create Vertex Type " + classNamePrefix + "Ownership  abstract;").close();
     database.command("sql", "create vertex type " + classNamePrefix + "User ;").close();
@@ -4200,7 +4112,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         .close();
 
     database.commit();
-    try (ResultSet rs = database.query("sql",
+    try (final ResultSet rs = database.query("sql",
         "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from " + classNamePrefix
             + "User where id = 'admin');")) {
       Assertions.assertTrue(rs.hasNext());
@@ -4212,7 +4124,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     database.command("sql", "create index ON " + classNamePrefix + "Report(id) unique;").close();
 
-    try (ResultSet rs = database.query("sql",
+    try (final ResultSet rs = database.query("sql",
         "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from " + classNamePrefix
             + "User where id = 'admin');")) {
       Assertions.assertTrue(rs.hasNext());
@@ -4225,29 +4137,28 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testExclude() {
-    String className = "TestExclude";
+    final String className = "TestExclude";
     database.begin();
     database.getSchema().createDocumentType(className);
-    MutableDocument doc = database.newDocument(className);
+    final MutableDocument doc = database.newDocument(className);
     doc.set("name", "foo");
     doc.set("surname", "bar");
     doc.save();
     database.commit();
 
-    ResultSet result = database.query("sql", "select *, !surname from " + className);
+    final ResultSet result = database.query("sql", "select *, !surname from " + className);
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals("foo", item.getProperty("name"));
     Assertions.assertNull(item.getProperty("surname"));
 
-    printExecutionPlan(result);
     result.close();
   }
 
   @Test
   public void testOrderByLet() {
-    String className = "testOrderByLet";
+    final String className = "testOrderByLet";
     database.setAutoTransaction(true);
     database.getSchema().createDocumentType(className);
     MutableDocument doc = database.newDocument(className);
@@ -4258,29 +4169,35 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.set("name", "baaa");
     doc.save();
 
-    try (ResultSet result = database.query("sql", "select from " + className + " LET $order = name.substring(1) ORDER BY $order ASC LIMIT 1")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " LET $order = name.substring(1) ORDER BY $order ASC LIMIT 1")) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("baaa", item.getProperty("name"));
     }
-    try (ResultSet result = database.query("sql", "select from " + className + " LET $order = name.substring(1) ORDER BY $order DESC LIMIT 1")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " LET $order = name.substring(1) ORDER BY $order DESC LIMIT 1")) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("abbb", item.getProperty("name"));
     }
   }
 
-  public static void printExecutionPlan(ResultSet result) {
-    //printExecutionPlan(null, result);
-  }
+  @Test
+  public void testSchemaMap() {
+    database.command("sql", "CREATE DOCUMENT TYPE SchemaMap");
+    database.command("sql", "ALTER TYPE SchemaMap CUSTOM label = 'Document'");
+    final ResultSet result = database.query("sql", "SELECT map(name,custom.label) as map FROM schema:types");
 
-  public static void printExecutionPlan(String query, ResultSet result) {
-//        if (query != null) {
-//            System.out.println(query);
-//        }
-//        result.getExecutionPlan().ifPresent(x -> System.out.println(x.prettyPrint(0, 3)));
-//        System.out.println();
+    Assertions.assertTrue(result.hasNext());
+    final Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    Object map = item.getProperty("map");
+    Assertions.assertTrue(map instanceof Map);
+
+    Assertions.assertEquals("Document", ((Map<?, ?>) map).get("SchemaMap"));
+
+    result.close();
   }
 }

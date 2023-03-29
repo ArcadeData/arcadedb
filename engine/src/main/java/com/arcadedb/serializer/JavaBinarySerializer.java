@@ -27,6 +27,8 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 
 import java.io.*;
 import java.util.*;
@@ -42,22 +44,27 @@ public class JavaBinarySerializer {
     out.writeLong(rid != null ? rid.getPosition() : -1);
 
     final DatabaseInternal db = ((DatabaseInternal) document.getDatabase());
+    final DocumentType documentType = document.getType();
 
     final BinarySerializer serializer = db.getSerializer();
 
     final Binary buffer = db.getContext().getTemporaryBuffer1();
 
     // PROPERTY COUNT
-    final Set<String> properties = document.getPropertyNames();
+    final Map<String, Object> properties = document.toMap();
     out.writeInt(properties.size());
-    for (String propName : properties) {
+    for (final Map.Entry<String, Object> prop : properties.entrySet()) {
+      final String propName = prop.getKey();
+      final Object propValue = prop.getValue();
+
       // PROPERTY NAME
       out.writeUTF(propName);
 
-      final Object propValue = document.get(propName);
       if (propValue != null) {
         // PROPERTY VALUE
         buffer.clear();
+
+        final Property property = documentType.getPropertyIfExists(propName);
 
         final byte type = BinaryTypes.getTypeFromValue(propValue);
         buffer.putByte(type);
@@ -89,7 +96,7 @@ public class JavaBinarySerializer {
     }
   }
 
-  public static void readExternal(final Document document, final ObjectInput in) throws IOException, ClassNotFoundException {
+  public static void readExternal(final Document document, final ObjectInput in) throws IOException {
     if (!(document instanceof MutableDocument))
       throw new IllegalStateException("Error on deserialization: the current object is immutable");
 
@@ -111,7 +118,7 @@ public class JavaBinarySerializer {
       final byte[] array = new byte[propertySize];
       in.read(array);
 
-      Binary buffer = new Binary(array);
+      final Binary buffer = new Binary(array);
       final byte propType = buffer.getByte();
       final Object propValue = db.getSerializer().deserializeValue(db, buffer, propType, null);
 

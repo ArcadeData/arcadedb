@@ -35,8 +35,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.NumberUtils;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.net.*;
@@ -45,15 +45,14 @@ import java.util.concurrent.*;
 import java.util.logging.*;
 
 public class RedisNetworkExecutor extends Thread {
-  private static final String              DEFAULT_BUCKET = "default";
-  private final        ArcadeDBServer      server;
-  private final        ChannelBinaryServer channel;
-  private volatile     boolean             shutdown       = false;
-  private              int                 posInBuffer    = 0;
-  private final        StringBuilder       value          = new StringBuilder();
-  private final        byte[]              buffer         = new byte[32 * 1024];
-  private              int                 bytesRead      = 0;
-  private final        Map<String, Object> defaultBucket  = new ConcurrentHashMap<>();
+  private final    ArcadeDBServer      server;
+  private final    ChannelBinaryServer channel;
+  private volatile boolean             shutdown      = false;
+  private          int                 posInBuffer   = 0;
+  private final    StringBuilder       value         = new StringBuilder();
+  private final    byte[]              buffer        = new byte[32 * 1024];
+  private          int                 bytesRead     = 0;
+  private final    Map<String, Object> defaultBucket = new ConcurrentHashMap<>();
 
   public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
@@ -69,12 +68,12 @@ public class RedisNetworkExecutor extends Thread {
 
         replyToClient(value);
 
-      } catch (EOFException | SocketException e) {
+      } catch (final EOFException | SocketException e) {
         LogManager.instance().log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
         close();
-      } catch (SocketTimeoutException e) {
+      } catch (final SocketTimeoutException e) {
         // IGNORE IT
-      } catch (IOException e) {
+      } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
       }
     }
@@ -95,14 +94,6 @@ public class RedisNetworkExecutor extends Thread {
     shutdown = true;
     if (channel != null)
       channel.close();
-  }
-
-  public String getURL() {
-    return channel.getLocalSocketAddress();
-  }
-
-  public byte[] receiveResponse() throws IOException {
-    return channel.readBytes();
   }
 
   private void executeCommand(final Object command) {
@@ -186,7 +177,7 @@ public class RedisNetworkExecutor extends Thread {
           value.append("-Command not found");
         }
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         value.append("-");
         value.append(e.getMessage());
       }
@@ -216,7 +207,6 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private void exists(final List<Object> list) {
-    final String k = (String) list.get(1);
     int total = 0;
     for (int i = 1; i < list.size(); i++)
       total += defaultBucket.containsKey(list.get(i)) ? 1 : 0;
@@ -493,7 +483,7 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private Record getRecord(final String bucketName, final String key) {
-    Record record;
+    final Record record;
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
       // BY RID
@@ -534,7 +524,7 @@ public class RedisNetworkExecutor extends Thread {
       // BY RID
       final Database database = server.getDatabase(bucketName);
 
-      for (Object key : keys) {
+      for (final Object key : keys) {
         final String k = key.toString();
         if (k.startsWith("#"))
           records.add(new RID(database, k).asDocument());
@@ -550,11 +540,11 @@ public class RedisNetworkExecutor extends Thread {
 
       final Index index = database.getSchema().getIndexByName(keyType);
 
-      for (Object key : keys) {
+      for (final Object key : keys) {
         final String k = key.toString();
         final Object[] compositeKey;
         if (k.startsWith("[")) {
-          compositeKey = new JSONArray(key).toList().toArray();
+          compositeKey = new JSONArray((String[]) key).toList().toArray();
         } else if (k.startsWith("\"")) {
           compositeKey = new String[] { k.substring(1, k.length() - 1) };
         } else

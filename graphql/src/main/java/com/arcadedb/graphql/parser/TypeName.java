@@ -23,23 +23,13 @@ package com.arcadedb.graphql.parser;
 public class TypeName extends SimpleNode {
   protected Name name;
 
-  public TypeName(int id) {
+  public TypeName(final int id) {
     super(id);
-  }
-
-  public TypeName(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   public String getName() {
     return name != null ? name.value : null;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=d93c0e2c84e43cfe8e5dd3b12a3acd40 (do not edit this line) */

@@ -24,6 +24,7 @@ import com.arcadedb.serializer.JavaBinarySerializer;
 
 import java.io.*;
 import java.math.*;
+import java.time.*;
 import java.util.*;
 
 public abstract class BaseDocument extends BaseRecord implements Document, Serializable, Externalizable {
@@ -99,6 +100,26 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
     return (Date) Type.convert(database, get(propertyName), Date.class);
   }
 
+  public Calendar getCalendar(final String propertyName) {
+    return (Calendar) Type.convert(database, get(propertyName), Calendar.class);
+  }
+
+  public LocalDate getLocalDate(final String propertyName) {
+    return (LocalDate) Type.convert(database, get(propertyName), LocalDate.class, type.getPropertyIfExists(propertyName));
+  }
+
+  public LocalDateTime getLocalDateTime(final String propertyName) {
+    return (LocalDateTime) Type.convert(database, get(propertyName), LocalDateTime.class, type.getPropertyIfExists(propertyName));
+  }
+
+  public ZonedDateTime getZonedDateTime(final String propertyName) {
+    return (ZonedDateTime) Type.convert(database, get(propertyName), ZonedDateTime.class, type.getPropertyIfExists(propertyName));
+  }
+
+  public Instant getInstant(final String propertyName) {
+    return (Instant) Type.convert(database, get(propertyName), Instant.class, type.getPropertyIfExists(propertyName));
+  }
+
   @Override
   public byte[] getBinary(final String propertyName) {
     return (byte[]) Type.convert(database, get(propertyName), byte[].class);
@@ -135,7 +156,7 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
   }
 
   @Override
-  public void readExternal(final ObjectInput in) throws IOException, ClassNotFoundException {
+  public void readExternal(final ObjectInput in) throws IOException {
     JavaBinarySerializer.readExternal(this, in);
   }
 }

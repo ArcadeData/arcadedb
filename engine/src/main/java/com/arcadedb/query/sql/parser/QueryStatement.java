@@ -21,13 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 public class QueryStatement extends SimpleNode {
-  public QueryStatement(int id) {
+  public QueryStatement(final int id) {
     super(id);
   }
-
-  public QueryStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
 }
 /* JavaCC - OriginalChecksum=f78d23e607a64459efb18502e47359c1 (do not edit this line) */

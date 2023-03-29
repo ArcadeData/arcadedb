@@ -20,6 +20,7 @@ package com.arcadedb.database.bucketselectionstrategy;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.serializer.json.JSONObject;
 
 /**
  * Interface to delegate the assignment of the bucket based on document or keys.
@@ -34,4 +35,10 @@ public interface BucketSelectionStrategy {
   int getBucketIdByKeys(Object[] keyValues, boolean async);
 
   String getName();
+
+  default JSONObject toJSON() {
+    return new JSONObject().put("name", getName());
+  }
+
+  BucketSelectionStrategy copy();
 }

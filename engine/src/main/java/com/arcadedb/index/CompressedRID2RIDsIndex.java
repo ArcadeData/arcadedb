@@ -58,7 +58,6 @@ public class CompressedRID2RIDsIndex {
 
   public class EntryIterator {
     private int posInHashTable = 0;
-    private int posInChunk     = 0;
     private int nextEntryPos   = 0;
     private int nextKeyPos;
 
@@ -97,7 +96,7 @@ public class CompressedRID2RIDsIndex {
 
       // NEXT POSITION IN HASHTABLE
       for (; posInHashTable < keys; ++posInHashTable) {
-        posInChunk = chunk.getInt(posInHashTable * Binary.INT_SERIALIZED_SIZE);
+        int posInChunk = chunk.getInt(posInHashTable * Binary.INT_SERIALIZED_SIZE);
         if (posInChunk > 0) {
           chunk.position(posInChunk);
 
@@ -139,10 +138,10 @@ public class CompressedRID2RIDsIndex {
     }
   }
 
-  public CompressedRID2RIDsIndex(final Database database, final int expectedVertices, int expectedEdges) {
+  public CompressedRID2RIDsIndex(final Database database, final int expectedVertices, int expectedEdges) throws ClassNotFoundException {
     this.database = database;
     this.keys = expectedVertices;
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
 
     if (expectedEdges <= 0)
       expectedEdges = expectedVertices;
@@ -155,10 +154,10 @@ public class CompressedRID2RIDsIndex {
     this.totalUsedSlots = 0;
   }
 
-  public CompressedRID2RIDsIndex(final Database database, final Binary buffer) {
+  public CompressedRID2RIDsIndex(final Database database, final Binary buffer) throws ClassNotFoundException {
     this.database = database;
     this.keys = buffer.size();
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
     this.chunk = buffer;
   }
 
@@ -198,7 +197,7 @@ public class CompressedRID2RIDsIndex {
     // SLOT OCCUPIED, CHECK FOR THE KEY
     chunk.position(pos);
     while (true) {
-      Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
+      final Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
       if (BinaryComparator.equals(slotKey, key)) {
         // FOUND KEY, COLLECT ALL THE VALUE IN THE LINKED LIST

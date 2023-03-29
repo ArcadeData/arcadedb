@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.InsertBody;
 import com.arcadedb.query.sql.parser.InsertSetExpression;
 import com.arcadedb.query.sql.parser.InsertStatement;
@@ -39,7 +38,6 @@ public class InsertExecutionPlanner {
   protected Identifier      targetType;
   protected Identifier      targetBucketName;
   protected Bucket          targetBucket;
-  protected IndexIdentifier targetIndex;
   protected InsertBody      insertBody;
   protected Projection      returnStatement;
   protected SelectStatement selectStatement;
@@ -51,77 +49,73 @@ public class InsertExecutionPlanner {
     this.targetType = statement.getTargetType() == null ? null : statement.getTargetType().copy();
     this.targetBucketName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
     this.targetBucket = statement.getTargetBucket() == null ? null : statement.getTargetBucket().copy();
-    this.targetIndex = statement.getTargetIndex() == null ? null : statement.getTargetIndex().copy();
     this.insertBody = statement.getInsertBody() == null ? null : statement.getInsertBody().copy();
     this.returnStatement = statement.getReturnStatement() == null ? null : statement.getReturnStatement().copy();
     this.selectStatement = statement.getSelectStatement() == null ? null : statement.getSelectStatement().copy();
   }
 
-  public InsertExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    final InsertExecutionPlan result = new InsertExecutionPlan(ctx);
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final InsertExecutionPlan result = new InsertExecutionPlan(context);
 
-    if (targetIndex != null) {
-      result.chain(new InsertIntoIndexStep(targetIndex, insertBody, ctx, enableProfiling));
+    if (selectStatement != null) {
+      handleInsertSelect(result, this.selectStatement, context, enableProfiling);
     } else {
-      if (selectStatement != null) {
-        handleInsertSelect(result, this.selectStatement, ctx, enableProfiling);
-      } else {
-        handleCreateRecord(result, this.insertBody, ctx, enableProfiling);
-      }
-      handleTargetClass(result, targetType, ctx, enableProfiling);
-      handleSetFields(result, insertBody, ctx, enableProfiling);
-      if (targetBucket != null) {
-        String name = targetBucket.getBucketName();
-        if (name == null) {
-          name = ctx.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber()).getName();
-        }
-        handleSave(result, new Identifier(name), ctx, enableProfiling);
-      } else {
-        handleSave(result, targetBucketName, ctx, enableProfiling);
-      }
-      handleReturn(result, returnStatement, ctx, enableProfiling);
+      handleCreateRecord(result, this.insertBody, context, enableProfiling);
     }
+    handleTargetClass(result, targetType, context, enableProfiling);
+    handleSetFields(result, insertBody, context, enableProfiling);
+    if (targetBucket != null) {
+      String name = targetBucket.getBucketName();
+      if (name == null) {
+        name = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber()).getName();
+      }
+      handleSave(result, new Identifier(name), context, enableProfiling);
+    } else {
+      handleSave(result, targetBucketName, context, enableProfiling);
+    }
+    handleReturn(result, returnStatement, context, enableProfiling);
+
     return result;
   }
 
-  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext ctx, final boolean profilingEnabled) {
-    result.chain(new SaveElementStep(ctx, targetClusterName, profilingEnabled));
+  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context, final boolean profilingEnabled) {
+    result.chain(new SaveElementStep(context, targetClusterName, profilingEnabled));
   }
 
-  private void handleReturn(final InsertExecutionPlan result, final Projection returnStatement, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleReturn(final InsertExecutionPlan result, final Projection returnStatement, final CommandContext context, final boolean profilingEnabled) {
     if (returnStatement != null)
-      result.chain(new ProjectionCalculationStep(returnStatement, ctx, profilingEnabled));
+      result.chain(new ProjectionCalculationStep(returnStatement, context, profilingEnabled));
   }
 
-  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext context, final boolean profilingEnabled) {
     if (insertBody == null)
       return;
 
     if (insertBody.getIdentifierList() != null) {
-      result.chain(new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), ctx, profilingEnabled));
+      result.chain(new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), context, profilingEnabled));
     } else if (insertBody.getContent() != null) {
-      result.chain(new UpdateContentStep(insertBody.getContent(), ctx, profilingEnabled));
+      result.chain(new UpdateContentStep(insertBody.getContent(), context, profilingEnabled));
     } else if (insertBody.getContentInputParam() != null) {
-      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), ctx, profilingEnabled));
+      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), context, profilingEnabled));
     } else if (insertBody.getSetExpressions() != null) {
-      List<UpdateItem> items = new ArrayList<>();
-      for (InsertSetExpression exp : insertBody.getSetExpressions()) {
-        UpdateItem item = new UpdateItem(-1);
+      final List<UpdateItem> items = new ArrayList<>();
+      for (final InsertSetExpression exp : insertBody.getSetExpressions()) {
+        final UpdateItem item = new UpdateItem(-1);
         item.setOperator(UpdateItem.OPERATOR_EQ);
         item.setLeft(exp.getLeft().copy());
         item.setRight(exp.getRight().copy());
         items.add(item);
       }
-      result.chain(new UpdateSetStep(items, ctx, profilingEnabled));
+      result.chain(new UpdateSetStep(items, context, profilingEnabled));
     }
   }
 
-  private void handleTargetClass(final InsertExecutionPlan result, final Identifier targetClass, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleTargetClass(final InsertExecutionPlan result, final Identifier targetClass, final CommandContext context, final boolean profilingEnabled) {
     if (targetClass != null)
-      result.chain(new SetDocumentClassStep(targetClass, ctx, profilingEnabled));
+      result.chain(new SetDocumentClassStep(targetClass, context, profilingEnabled));
   }
 
-  private void handleCreateRecord(final InsertExecutionPlan result, final InsertBody body, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleCreateRecord(final InsertExecutionPlan result, final InsertBody body, final CommandContext context, final boolean profilingEnabled) {
     int tot = 1;
     if (body != null && body.getValueExpressions() != null && body.getValueExpressions().size() > 0)
       tot = body.getValueExpressions().size();
@@ -129,26 +123,26 @@ public class InsertExecutionPlanner {
     if (targetType == null && targetBucket != null) {
       final com.arcadedb.engine.Bucket bucket;
       if (targetBucket.getBucketName() != null)
-        bucket = ctx.getDatabase().getSchema().getBucketByName(targetBucket.getBucketName());
+        bucket = context.getDatabase().getSchema().getBucketByName(targetBucket.getBucketName());
       else
-        bucket = ctx.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber());
+        bucket = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber());
 
       if (bucket == null)
         throw new CommandSQLParsingException("Target not specified");
 
-      targetType = new Identifier(ctx.getDatabase().getSchema().getTypeNameByBucketId(bucket.getId()));
+      targetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getId()));
     }
 
-    result.chain(new CreateRecordStep(targetType.getStringValue(), ctx, tot, profilingEnabled));
+    result.chain(new CreateRecordStep(targetType.getStringValue(), context, tot, profilingEnabled));
   }
 
-  private void handleInsertSelect(final InsertExecutionPlan result, final SelectStatement selectStatement, final CommandContext ctx,
+  private void handleInsertSelect(final InsertExecutionPlan result, final SelectStatement selectStatement, final CommandContext context,
       final boolean profilingEnabled) {
-    final InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(ctx, profilingEnabled);
-    result.chain(new SubQueryStep(subPlan, ctx, ctx, profilingEnabled));
+    final InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(context, profilingEnabled);
+    result.chain(new SubQueryStep(subPlan, context, context, profilingEnabled));
     if (targetType != null)
-      result.chain(new CopyDocumentStep(ctx, targetType.getStringValue(), profilingEnabled));
+      result.chain(new CopyDocumentStep(context, targetType.getStringValue(), profilingEnabled));
 
-    result.chain(new RemoveEdgePointersStep(ctx, profilingEnabled));
+    result.chain(new RemoveEdgePointersStep(context, profilingEnabled));
   }
 }

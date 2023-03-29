@@ -385,16 +385,18 @@ fabric.properties
 **/security.json
 security.json
 *.rlog
+**/log
 
 databases
 .history
 .DS_Store
-doc/src/main/asciidoc/*/.asciidoctor/
-doc/src/main/asciidoc/*/var/
-server/backups/
 config/server-users.jsonl
 config/server-groups.json
+doc/src/main/asciidoc/*/.asciidoctor/
+doc/src/main/asciidoc/*/var/
 gremlin/file:/
+server/backups/
+server/config/*
 server/exports
 server/backups
 
@@ -403,3 +405,5 @@ server/backups
 .java-version
 .run/
 integration/server-users.jsonl
+server/replication/
+replication/

@@ -23,32 +23,27 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class UpdateAddItem extends SimpleNode {
-
   protected Identifier left;
   protected Expression right;
 
-  public UpdateAddItem(int id) {
+  public UpdateAddItem(final int id) {
     super(id);
   }
 
-  public UpdateAddItem(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" = ");
     right.toString(params, builder);
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    UpdateAddItem that = (UpdateAddItem) o;
+    final UpdateAddItem that = (UpdateAddItem) o;
 
     if (!Objects.equals(left, that.left))
       return false;

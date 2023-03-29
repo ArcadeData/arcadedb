@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class IndexIdentifier extends SimpleNode {
@@ -37,10 +34,6 @@ public class IndexIdentifier extends SimpleNode {
 
   public IndexIdentifier(final int id) {
     super(id);
-  }
-
-  public IndexIdentifier(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -78,7 +71,7 @@ public class IndexIdentifier extends SimpleNode {
   }
 
   public IndexIdentifier copy() {
-    IndexIdentifier result = new IndexIdentifier(-1);
+    final IndexIdentifier result = new IndexIdentifier(-1);
     result.type = type;
     result.indexNameString = indexNameString;
     result.indexName = indexName.copy();
@@ -109,36 +102,15 @@ public class IndexIdentifier extends SimpleNode {
     return result;
   }
 
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("type", type.toString());
-    result.setProperty("indexNameString", indexNameString);
-
-    if (indexName != null)
-      result.setProperty("indexName", indexName.serialize());
-
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    type = Type.valueOf(fromResult.getProperty("type"));
-    indexNameString = fromResult.getProperty("indexNameString");
-
-    if (fromResult.getProperty("indexName") != null) {
-      indexName = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("indexName"));
-    }
-  }
-
-  public void setType(Type type) {
+  public void setType(final Type type) {
     this.type = type;
   }
 
-  public void setIndexNameString(String indexNameString) {
+  public void setIndexNameString(final String indexNameString) {
     this.indexNameString = indexNameString;
   }
 
-  public void setIndexName(Identifier indexName) {
+  public void setIndexName(final Identifier indexName) {
     this.indexName = indexName;
   }
 

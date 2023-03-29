@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
 import javax.management.MBeanServer;
@@ -46,12 +47,165 @@ public class Profiler {
     databases.remove(database);
   }
 
-  //  @Override
-//  protected void finalize() {
-//    if (!databases.isEmpty())
-//      System.err.println("ARCADEDB: The following databases weren't closed properly: " + databases);
-//  }
-//
+  public synchronized JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+
+    json.put("diskFreeSpace", new JSONObject().put("space", new File(".").getFreeSpace()));
+    json.put("diskTotalSpace", new JSONObject().put("space", new File(".").getTotalSpace()));
+
+    long readCacheUsed = 0;
+    long writeCacheUsed = 0;
+    long cacheMax = 0;
+    long pagesRead = 0;
+    long pagesWritten = 0;
+    long pagesReadSize = 0;
+    long pagesWrittenSize = 0;
+    long pageFlushQueueLength = 0;
+    long asyncQueueLength = 0;
+    int asyncParallelLevel = 0;
+    long pageCacheHits = 0;
+    long pageCacheMiss = 0;
+    long totalOpenFiles = 0;
+    long maxOpenFiles = 0;
+    long walPagesWritten = 0;
+    long walBytesWritten = 0;
+    long walTotalFiles = 0;
+    long concurrentModificationExceptions = 0;
+
+    long txCommits = 0;
+    long txRollbacks = 0;
+    long createRecord = 0;
+    long readRecord = 0;
+    long updateRecord = 0;
+    long deleteRecord = 0;
+    long queries = 0;
+    long commands = 0;
+    long scanType = 0;
+    long scanBucket = 0;
+    long iterateType = 0;
+    long iterateBucket = 0;
+    long countType = 0;
+    long countBucket = 0;
+    long evictionRuns = 0;
+    long pagesEvicted = 0;
+    int readCachePages = 0;
+    int writeCachePages = 0;
+    long indexCompactions = 0;
+
+    for (final DatabaseInternal db : databases) {
+      final Map<String, Object> dbStats = db.getStats();
+      txCommits += (long) dbStats.get("txCommits");
+      txRollbacks += (long) dbStats.get("txRollbacks");
+      createRecord += (long) dbStats.get("createRecord");
+      readRecord += (long) dbStats.get("readRecord");
+      updateRecord += (long) dbStats.get("updateRecord");
+      deleteRecord += (long) dbStats.get("deleteRecord");
+      queries += (long) dbStats.get("queries");
+      commands += (long) dbStats.get("commands");
+      scanType += (long) dbStats.get("scanType");
+      scanBucket += (long) dbStats.get("scanBucket");
+      iterateType += (long) dbStats.get("iterateType");
+      iterateBucket += (long) dbStats.get("iterateBucket");
+      countType += (long) dbStats.get("countType");
+      countBucket += (long) dbStats.get("countBucket");
+      indexCompactions += (long) dbStats.get("indexCompactions");
+
+      final PageManager.PPageManagerStats pStats = db.getPageManager().getStats();
+      readCacheUsed += pStats.readCacheRAM;
+      writeCacheUsed += pStats.writeCacheRAM;
+      cacheMax += pStats.maxRAM;
+      pagesRead += pStats.pagesRead;
+      pagesReadSize += pStats.pagesReadSize;
+      pagesWritten += pStats.pagesWritten;
+      pagesWrittenSize += pStats.pagesWrittenSize;
+      pageFlushQueueLength += pStats.pageFlushQueueLength;
+      pageCacheHits += pStats.cacheHits;
+      pageCacheMiss += pStats.cacheMiss;
+      concurrentModificationExceptions += pStats.concurrentModificationExceptions;
+      evictionRuns += pStats.evictionRuns;
+      pagesEvicted += pStats.pagesEvicted;
+      readCachePages += pStats.readCachePages;
+
+      final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
+      totalOpenFiles += fStats.totalOpenFiles;
+      maxOpenFiles += fStats.maxOpenFiles;
+
+      final DatabaseAsyncExecutorImpl.DBAsyncStats aStats = ((DatabaseAsyncExecutorImpl) db.async()).getStats();
+      asyncQueueLength += aStats.queueSize;
+      asyncParallelLevel = db.async().getParallelLevel();
+
+      final Map<String, Object> walStats = db.getTransactionManager().getStats();
+      walPagesWritten += (Long) walStats.get("pagesWritten");
+      walBytesWritten += (Long) walStats.get("bytesWritten");
+      walTotalFiles += (Long) walStats.get("logFiles");
+    }
+
+    json.put("readCacheUsed", new JSONObject().put("space", readCacheUsed));
+    json.put("writeCacheUsed", new JSONObject().put("space", writeCacheUsed));
+    json.put("cacheMax", new JSONObject().put("space", cacheMax));
+    json.put("pagesRead", new JSONObject().put("count", pagesRead));
+    json.put("pagesWritten", new JSONObject().put("count", pagesWritten));
+    json.put("pagesReadSize", new JSONObject().put("space", pagesReadSize));
+    json.put("pagesWrittenSize", new JSONObject().put("space", pagesWrittenSize));
+    json.put("pageFlushQueueLength", new JSONObject().put("value", pageFlushQueueLength));
+    json.put("asyncQueueLength", new JSONObject().put("value", asyncQueueLength));
+    json.put("asyncParallelLevel", new JSONObject().put("count", asyncParallelLevel));
+    json.put("pageCacheHits", new JSONObject().put("count", pageCacheHits));
+    json.put("pageCacheMiss", new JSONObject().put("count", pageCacheMiss));
+    json.put("totalOpenFiles", new JSONObject().put("count", totalOpenFiles));
+    json.put("maxOpenFiles", new JSONObject().put("count", maxOpenFiles));
+    json.put("walPagesWritten", new JSONObject().put("count", walPagesWritten));
+    json.put("walBytesWritten", new JSONObject().put("space", walBytesWritten));
+    json.put("walTotalFiles", walTotalFiles);
+    json.put("concurrentModificationExceptions", new JSONObject().put("count", concurrentModificationExceptions));
+
+    json.put("txCommits", new JSONObject().put("count", txCommits));
+    json.put("txRollbacks", new JSONObject().put("count", txRollbacks));
+    json.put("createRecord", new JSONObject().put("count", createRecord));
+    json.put("readRecord", new JSONObject().put("count", readRecord));
+    json.put("updateRecord", new JSONObject().put("count", updateRecord));
+    json.put("deleteRecord", new JSONObject().put("count", deleteRecord));
+    json.put("queries", new JSONObject().put("count", queries));
+    json.put("commands", new JSONObject().put("count", commands));
+    json.put("scanType", new JSONObject().put("count", scanType));
+    json.put("scanBucket", new JSONObject().put("count", scanBucket));
+    json.put("iterateType", new JSONObject().put("count", iterateType));
+    json.put("iterateBucket", new JSONObject().put("count", iterateBucket));
+    json.put("countType", new JSONObject().put("count", countType));
+    json.put("countBucket", new JSONObject().put("count", countBucket));
+    json.put("evictionRuns", new JSONObject().put("count", evictionRuns));
+    json.put("pagesEvicted", new JSONObject().put("count", pagesEvicted));
+    json.put("readCachePages", new JSONObject().put("count", readCachePages));
+    json.put("writeCachePages", new JSONObject().put("count", writeCachePages));
+    json.put("indexCompactions", new JSONObject().put("count", indexCompactions));
+
+    json.put("gcTime", new JSONObject().put("count", getGarbageCollectionTime()));
+
+    final Runtime runtime = Runtime.getRuntime();
+    json.put("ramHeapUsed", new JSONObject().put("space", runtime.totalMemory() - runtime.freeMemory()));
+    json.put("ramHeapMax", new JSONObject().put("space", runtime.maxMemory()));
+
+    try {
+      final MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      final ObjectName osMBeanName = ObjectName.getInstance(ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME);
+
+      if (mbs.isInstanceOf(osMBeanName, "com.sun.management.OperatingSystemMXBean")) {
+        final long osTotalMem = ((Number) mbs.getAttribute(osMBeanName, "TotalPhysicalMemorySize")).longValue();
+        final long osUsedMem = osTotalMem - ((Number) mbs.getAttribute(osMBeanName, "FreePhysicalMemorySize")).longValue();
+
+        json.put("ramOsUsed", new JSONObject().put("space", osUsedMem));
+        json.put("ramOsTotal", new JSONObject().put("space", osTotalMem));
+      }
+    } catch (final Exception e) {
+      // JMX NOT AVAILABLE, AVOID OS DATA
+    }
+
+    json.put("totalDatabases", new JSONObject().put("count", databases.size()));
+    json.put("cpuCores", new JSONObject().put("count", Runtime.getRuntime().availableProcessors()));
+
+    return json;
+  }
+
   public synchronized void dumpMetrics(final PrintStream out) {
 
     final StringBuilder buffer = new StringBuilder("\n");
@@ -99,7 +253,7 @@ public class Profiler {
     long indexCompactions = 0;
 
     try {
-      for (DatabaseInternal db : databases) {
+      for (final DatabaseInternal db : databases) {
         final Map<String, Object> dbStats = db.getStats();
         txCommits += (long) dbStats.get("txCommits");
         txRollbacks += (long) dbStats.get("txRollbacks");
@@ -132,7 +286,6 @@ public class Profiler {
         evictionRuns += pStats.evictionRuns;
         pagesEvicted += pStats.pagesEvicted;
         readCachePages += pStats.readCachePages;
-        writeCachePages += pStats.writeCachePages;
 
         final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
         totalOpenFiles += fStats.totalOpenFiles;
@@ -156,8 +309,8 @@ public class Profiler {
 
       boolean dumpWithJmx = false;
       try {
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-        ObjectName osMBeanName = ObjectName.getInstance(ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME);
+        final MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+        final ObjectName osMBeanName = ObjectName.getInstance(ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME);
 
         if (mbs.isInstanceOf(osMBeanName, "com.sun.management.OperatingSystemMXBean")) {
           final long osTotalMem = ((Number) mbs.getAttribute(osMBeanName, "TotalPhysicalMemorySize")).longValue();
@@ -168,7 +321,7 @@ public class Profiler {
 
           dumpWithJmx = true;
         }
-      } catch (Exception e) {
+      } catch (final Exception e) {
         // JMX NOT AVAILABLE, AVOID OS DATA
       }
 
@@ -200,14 +353,14 @@ public class Profiler {
           FileUtils.getSizeAsString(totalSpaceInMB), totalOpenFiles, maxOpenFiles));
 
       out.println(buffer);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       out.println("Error on displaying metrics (" + e + ")");
     }
   }
 
   private static long getGarbageCollectionTime() {
     long collectionTime = 0;
-    for (GarbageCollectorMXBean garbageCollectorMXBean : ManagementFactory.getGarbageCollectorMXBeans()) {
+    for (final GarbageCollectorMXBean garbageCollectorMXBean : ManagementFactory.getGarbageCollectorMXBeans()) {
       collectionTime += garbageCollectorMXBean.getCollectionTime();
     }
     return collectionTime;

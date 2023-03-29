@@ -29,7 +29,7 @@ import java.io.*;
 public class ImporterTest {
   @Test
   public void importGraph() throws IOException {
-    String databasePath = "target/databases/test-import-graph";
+    final String databasePath = "target/databases/test-import-graph";
 
     Importer importer = new Importer(("-vertices src/test/resources/importer-vertices.csv -database " + databasePath
         + " -typeIdProperty Id -typeIdType Long -typeIdPropertyIsUnique true -forceDatabaseCreate true").split(" "));

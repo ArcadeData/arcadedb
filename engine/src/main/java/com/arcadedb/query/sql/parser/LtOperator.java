@@ -25,12 +25,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 public class LtOperator extends SimpleNode implements BinaryCompareOperator {
-  public LtOperator(int id) {
+  public LtOperator(final int id) {
     super(id);
-  }
-
-  public LtOperator(SqlParser p, int id) {
-    super(p, id);
   }
 
   @Override
@@ -55,11 +51,6 @@ public class LtOperator extends SimpleNode implements BinaryCompareOperator {
   @Override
   public String toString() {
     return "<";
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

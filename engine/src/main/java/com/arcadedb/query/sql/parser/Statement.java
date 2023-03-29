@@ -21,12 +21,9 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
@@ -34,30 +31,28 @@ import java.util.*;
 public class Statement extends SimpleNode {
 
   //only for internal use!!! (caching)
-  protected String  originalStatement;
-  protected Limit   limit   = null;
-  protected Timeout timeout = null;
+  protected Statement originalStatement;
+  protected String    originalStatementAsString;
+  protected Limit     limit   = null;
+  protected Timeout   timeout = null;
 
   public static final String CUSTOM_STRICT_SQL = "strictSql";
 
-  public Statement(int id) {
+  public Statement(final int id) {
     super(id);
   }
 
-  public Statement(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     throw new UnsupportedOperationException("missing implementation in " + getClass().getSimpleName());
   }
 
   public void validate() throws CommandSQLParsingException {
+    // NO VALIDATION BY DEFAULT
   }
 
   @Override
   public String toString(final String prefix) {
-    StringBuilder builder = new StringBuilder();
+    final StringBuilder builder = new StringBuilder();
     toString(null, builder);
     return builder.toString();
   }
@@ -74,7 +69,7 @@ public class Statement extends SimpleNode {
     return execute(db, args, true);
   }
 
-  public ResultSet execute(final Database db, final Map<String, Object> args, CommandContext parentContext) {
+  public ResultSet execute(final Database db, final Map<String, Object> args, final CommandContext parentContext) {
     return execute(db, args, parentContext, true);
   }
 
@@ -82,7 +77,7 @@ public class Statement extends SimpleNode {
     return execute(db, args, null, usePlanCache);
   }
 
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
     throw new UnsupportedOperationException();
   }
 
@@ -97,28 +92,28 @@ public class Statement extends SimpleNode {
   /**
    * creates an execution plan for current statement, with profiling disabled
    *
-   * @param ctx the context that will be used to execute the statement
+   * @param context the context that will be used to execute the statement
    *
    * @return an execution plan
    */
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx) {
-    return createExecutionPlan(ctx, false);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
+    return createExecutionPlan(context, false);
   }
 
   /**
    * creates an execution plan for current statement
    *
-   * @param ctx     the context that will be used to execute the statement
+   * @param context     the context that will be used to execute the statement
    * @param profile true to enable profiling, false to disable it
    *
    * @return an execution plan
    */
-  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean profile) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean profile) {
     throw new UnsupportedOperationException();
   }
 
-  public InternalExecutionPlan createExecutionPlanNoCache(CommandContext ctx, boolean profile) {
-    return createExecutionPlan(ctx, profile);
+  public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context, final boolean profile) {
+    return createExecutionPlan(context, profile);
   }
 
   public Statement copy() {
@@ -137,36 +132,21 @@ public class Statement extends SimpleNode {
     return this instanceof DDLStatement;
   }
 
-  public static Statement deserializeFromOResult(final Result doc) {
-    try {
-      Statement result = (Statement) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
-      result.deserialize(doc);
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
-    return null;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("__class", getClass().getName());
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    throw new UnsupportedOperationException();
-  }
-
   public boolean executionPlanCanBeCached() {
     return false;
   }
 
   public String getOriginalStatement() {
-    return originalStatement;
+    if (originalStatementAsString == null)
+      originalStatementAsString = originalStatement.toString();
+    return originalStatementAsString;
   }
 
-  public void setOriginalStatement(String originalStatement) {
-    this.originalStatement = originalStatement;
+  public void setOriginalStatement(final Statement originalStatement) {
+    if (!originalStatement.equals(this.originalStatement)) {
+      this.originalStatement = originalStatement;
+      this.originalStatementAsString = null;
+    }
   }
 
   public Limit getLimit() {

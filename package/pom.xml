@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>22.12.1-SNAPSHOT</version>
+        <version>23.3.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -33,7 +33,7 @@
     <packaging>pom</packaging>
 
     <properties>
-        <kubernetes-maven-plugin.version>1.10.1</kubernetes-maven-plugin.version>
+        <kubernetes-maven-plugin.version>1.11.0</kubernetes-maven-plugin.version>
     </properties>
 
     <build>
@@ -168,11 +168,9 @@
                                     <name>arcadedata/arcadedb</name>
                                     <build>
                                         <dockerFile>${project.basedir}/src/main/docker/Dockerfile</dockerFile>
-                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
-                                        </contextDir>
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir</contextDir>
                                         <args>
-                                            <docker.buildArg.platform>linux/arm64,linux/amd64,linux/arm/v7</docker.buildArg.platform>
-
+                                            <docker.buildArg.ARCH>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.ARCH>
                                         </args>
                                         <tags>
                                             <tag>latest</tag>

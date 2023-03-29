@@ -51,7 +51,7 @@ public abstract class Channel {
       final NetworkInterface current = interfaces.nextElement();
       if (!current.isUp() || current.isLoopback() || current.isVirtual())
         continue;
-      Enumeration<InetAddress> addresses = current.getInetAddresses();
+      final Enumeration<InetAddress> addresses = current.getInetAddresses();
       while (addresses.hasMoreElements()) {
         final InetAddress current_addr = addresses.nextElement();
         if (current_addr.isLoopbackAddress())
@@ -69,7 +69,7 @@ public abstract class Channel {
     if (inStream != null)
       try {
         return inStream.available() > 0;
-      } catch (IOException e) {
+      } catch (final IOException e) {
         // RETURN FALSE
       }
     return false;
@@ -86,7 +86,7 @@ public abstract class Channel {
         socket.close();
         socket = null;
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error during socket close", e);
     }
 
@@ -95,7 +95,7 @@ public abstract class Channel {
         inStream.close();
         inStream = null;
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error during closing of input stream", e);
     }
 
@@ -104,7 +104,7 @@ public abstract class Channel {
         outStream.close();
         outStream = null;
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error during closing of output stream", e);
     }
   }

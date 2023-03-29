@@ -48,9 +48,9 @@ class SQLMethodSplitTest {
     void testSplitByComma() {
 
         //null separator
-        Object result = method.execute("first,second", null, null, null, new Object[]{","});
+        final Object result = method.execute("first,second", null, null, null, new Object[]{","});
         assertThat(result).isInstanceOf(String[].class);
-        String[] splitted = (String[]) result;
+        final String[] splitted = (String[]) result;
         assertThat(splitted).hasSize(2)
                 .contains("first", "second");
     }

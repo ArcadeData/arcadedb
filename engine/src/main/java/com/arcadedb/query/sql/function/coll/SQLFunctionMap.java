@@ -32,11 +32,12 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<String, Ob
   public static final String NAME = "map";
 
   public SQLFunctionMap() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
 
     if (iParams.length > 2)
       // IN LINE MODE
@@ -76,10 +77,6 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<String, Ob
 
   public String getSyntax() {
     return "map(<map>|[<key>,<value>]*)";
-  }
-
-  public boolean aggregateResults(final Object[] configuredParameters) {
-    return configuredParameters.length <= 2;
   }
 
   @Override

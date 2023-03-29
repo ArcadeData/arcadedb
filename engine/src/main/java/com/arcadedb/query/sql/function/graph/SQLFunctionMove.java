@@ -23,9 +23,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 import com.arcadedb.utility.FileUtils;
 
@@ -35,14 +35,8 @@ import java.util.*;
  * Created by luigidellaquila on 03/01/17.
  */
 public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
-  public static final String NAME = "move";
-
-  public SQLFunctionMove() {
-    super(NAME, 1, 2);
-  }
-
-  public SQLFunctionMove(final String iName, final int iMin, final int iMax) {
-    super(iName, iMin, iMax);
+  protected SQLFunctionMove(final String iName) {
+    super(iName);
   }
 
   protected abstract Object move(final Database db, final Identifiable iRecord, final String[] iLabels);
@@ -60,8 +54,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     else
       labels = null;
 
-    return SQLEngine.foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels), iThis, iContext);
-
+    return SQLQueryEngine.foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels), iThis, iContext);
   }
 
   protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
@@ -72,7 +65,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
   }
 
   protected Object v2e(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
-    Document rec = (Document) iRecord.getRecord();
+    final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Vertex)
       return ((Vertex) rec).getEdges(iDirection, iLabels);
     return null;
@@ -80,7 +73,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
   }
 
   protected Object e2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
-    Document rec = (Document) iRecord.getRecord();
+    final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Edge) {
       if (iDirection == Vertex.DIRECTION.BOTH) {
         final List results = new ArrayList();

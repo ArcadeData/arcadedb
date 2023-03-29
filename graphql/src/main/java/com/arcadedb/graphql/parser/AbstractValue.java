@@ -23,22 +23,11 @@ package com.arcadedb.graphql.parser;
 public abstract class AbstractValue extends SimpleNode {
   protected Name name;
 
-  public AbstractValue(int id) {
+  public AbstractValue(final int id) {
     super(id);
   }
 
-  public AbstractValue(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
   public abstract Object getValue();
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public String getName() {
     return name != null ? name.value : null;

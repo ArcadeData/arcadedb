@@ -33,12 +33,12 @@ public class SQLFunctionDifference extends SQLFunctionMultiValueAbstract<Set<Obj
   public static final String NAME = "difference";
 
   public SQLFunctionDifference() {
-    super(NAME, 2, -1);
+    super(NAME);
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute( Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams,
-      CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams[0] == null)
       return null;
 
@@ -46,7 +46,7 @@ public class SQLFunctionDifference extends SQLFunctionMultiValueAbstract<Set<Obj
     final Set<Object> result = new HashSet<Object>();
 
     boolean first = true;
-    for (Object iParameter : iParams) {
+    for (final Object iParameter : iParams) {
       if (first) {
         if (iParameter instanceof Collection<?>) {
           result.addAll((Collection<Object>) iParameter);

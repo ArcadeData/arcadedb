@@ -19,16 +19,18 @@
 package com.arcadedb.database;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
 
 import java.io.*;
 import java.nio.*;
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.logging.*;
 
 /**
  * Binary data type. It is backed by Java Byte Buffers.
+ * <br>
+ * NOTE: This class is not thread safe and must be not used by multiple threads at the same time.
  *
  * @author Luca Garulli
  */
@@ -122,15 +124,16 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     buffer.position(0);
   }
 
-  public void setAutoResizable(final boolean autoResizable) {
+  public Binary setAutoResizable(final boolean autoResizable) {
     this.autoResizable = autoResizable;
+    return this;
   }
 
   public int getAllocationChunkSize() {
     return allocationChunkSize;
   }
 
-  public void setAllocationChunkSize(int allocationChunkSize) {
+  public void setAllocationChunkSize(final int allocationChunkSize) {
     this.allocationChunkSize = allocationChunkSize;
   }
 
@@ -152,7 +155,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   public void position(final int index) {
     try {
       buffer.position(index);
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       throw new IllegalArgumentException("Invalid position " + index + " (size=" + buffer.limit() + ")");
     }
   }
@@ -319,7 +322,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   /**
-   * Reads a signed number.
+   * Reads a signed number. This method is not thread safe
    *
    * @return An array of longs with the signed number in the 1st position and the occupied bytes on the 2nd position.
    */
@@ -394,8 +397,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   @Override
   public short getUnsignedShort() {
     checkForFetching(2);
-    int firstByte = (0x000000FF & ((int) buffer.get()));
-    int secondByte = (0x000000FF & ((int) buffer.get()));
+    final int firstByte = (0x000000FF & ((int) buffer.get()));
+    final int secondByte = (0x000000FF & ((int) buffer.get()));
     return (short) (firstByte << 8 | secondByte);
   }
 
@@ -523,8 +526,9 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice(final int position, final int length) {
+    final ByteBuffer result;
     buffer.position(position);
-    final ByteBuffer result = buffer.slice();
+    result = buffer.slice();
     result.position(length);
     result.flip();
     return new Binary(result);
@@ -599,7 +603,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     if (newSizeAsLong > Integer.MAX_VALUE)
       throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
 
-    if (offset + bytesToWrite > content.length) {
+    if (offset + bytesToWrite > content.length - buffer.arrayOffset()) {
       if (!autoResizable)
         throw new IllegalArgumentException("Cannot resize the buffer (autoResizable=false)");
 
@@ -611,21 +615,16 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
       final byte[] newContent = new byte[newSize];
       if (size > 0)
-        System.arraycopy(content, 0, newContent, 0, content.length);
+        System.arraycopy(content, buffer.arrayOffset(), newContent, 0, content.length);
       this.content = newContent;
 
       final int oldPosition = this.buffer.position();
-      final int oldOffset = this.buffer.arrayOffset();
-      this.buffer = ByteBuffer.wrap(this.content, oldOffset, this.content.length);
+      this.buffer = ByteBuffer.wrap(this.content, 0, this.content.length);
       this.buffer.position(oldPosition);
     }
 
     if (offset + bytesToWrite > size)
       size = offset + bytesToWrite;
-  }
-
-  public Object executeInLock(final Callable<Object> callable) throws Exception {
-    return callable.call();
   }
 
   public int capacity() {
@@ -649,7 +648,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     if (!(o instanceof Binary))
       return false;
     final Binary binary = (Binary) o;
-    return UnsignedBytesComparator.BEST_COMPARATOR.compare(content, binary.content) == 0;
+
+    return BinaryComparator.equalsBinary(this, binary);
   }
 
   @Override
@@ -682,7 +682,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
         content = newBuffer.content;
         size = newBuffer.size;
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on fetching", e);
       }
     }

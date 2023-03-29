@@ -29,13 +29,13 @@ public class CheckClassTypeStepTest {
   @Test
   public void shouldCheckSubclasses() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      BasicCommandContext context = new BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      DocumentType parentClass = TestHelper.createRandomType(db);
-      DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
-      CheckClassTypeStep step = new CheckClassTypeStep(childClass.getName(), parentClass.getName(), context, false);
+      final DocumentType parentClass = TestHelper.createRandomType(db);
+      final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
+      final CheckClassTypeStep step = new CheckClassTypeStep(childClass.getName(), parentClass.getName(), context, false);
 
-      ResultSet result = step.syncPull(context, 20);
+      final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(0, result.stream().count());
     });
   }
@@ -43,12 +43,12 @@ public class CheckClassTypeStepTest {
   @Test
   public void shouldCheckOneType() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      BasicCommandContext context = new BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      String className = TestHelper.createRandomType(db).getName();
-      CheckClassTypeStep step = new CheckClassTypeStep(className, className, context, false);
+      final String className = TestHelper.createRandomType(db).getName();
+      final CheckClassTypeStep step = new CheckClassTypeStep(className, className, context, false);
 
-      ResultSet result = step.syncPull(context, 20);
+      final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(0, result.stream().count());
     });
   }
@@ -57,14 +57,14 @@ public class CheckClassTypeStepTest {
   public void shouldThrowExceptionWhenClassIsNotParent() throws Exception {
     try {
       TestHelper.executeInNewDatabase((db) -> {
-        BasicCommandContext context = new BasicCommandContext();
+        final BasicCommandContext context = new BasicCommandContext();
         context.setDatabase(db);
-        CheckClassTypeStep step = new CheckClassTypeStep(TestHelper.createRandomType(db).getName(), TestHelper.createRandomType(db).getName(), context, false);
+        final CheckClassTypeStep step = new CheckClassTypeStep(TestHelper.createRandomType(db).getName(), TestHelper.createRandomType(db).getName(), context, false);
 
         step.syncPull(context, 20);
       });
       Assertions.fail("Expected CommandExecutionException");
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       // OK
     }
   }

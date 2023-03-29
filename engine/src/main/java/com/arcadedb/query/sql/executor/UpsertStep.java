@@ -38,19 +38,19 @@ public class UpsertStep extends AbstractExecutionStep {
   private final WhereClause initialFilter;
   boolean applied = false;
 
-  public UpsertStep(final FromClause target, final WhereClause where, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UpsertStep(final FromClause target, final WhereClause where, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.commandTarget = target;
     this.initialFilter = where;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (applied)
-      return getPrev().get().syncPull(ctx, nRecords);
+      return getPrev().syncPull(context, nRecords);
 
     applied = true;
-    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     if (upstream.hasNext())
       return upstream;
 
@@ -60,13 +60,24 @@ public class UpsertStep extends AbstractExecutionStep {
   }
 
   private Result createNewRecord(final FromClause commandTarget, final WhereClause initialFilter) {
-    if (commandTarget.getItem().getIdentifier() == null)
+    final DatabaseInternal database = context.getDatabase();
+    final DocumentType type;
+
+    if (commandTarget.getItem().getBucket() != null) {
+      // TARGET = BUCKET
+      if (commandTarget.getItem().getBucket().getBucketNumber() != null) {
+        // BUCKET ID
+        type = database.getSchema().getTypeByBucketId(commandTarget.getItem().getBucket().getBucketNumber());
+      } else {
+        // BUCKET NAME
+        type = database.getSchema().getTypeByBucketName(commandTarget.getItem().getBucket().getBucketName());
+      }
+    } else if (commandTarget.getItem().getIdentifier() != null) {
+      type = database.getSchema().getType(commandTarget.getItem().getIdentifier().getStringValue());
+    } else
       throw new CommandExecutionException("Cannot execute UPSERT on target '" + commandTarget + "'");
 
-    final DatabaseInternal database = ctx.getDatabase();
-    final DocumentType type = database.getSchema().getType(commandTarget.getItem().getIdentifier().getStringValue());
-
-    final MutableDocument doc = (MutableDocument) ctx.getDatabase().getRecordFactory().newMutableRecord(ctx.getDatabase(), type);
+    final MutableDocument doc = (MutableDocument) context.getDatabase().getRecordFactory().newMutableRecord(context.getDatabase(), type);
     final UpdatableResult result = new UpdatableResult(doc);
     if (initialFilter != null)
       setContent(result, initialFilter);
@@ -83,14 +94,14 @@ public class UpsertStep extends AbstractExecutionStep {
       throw new CommandExecutionException("Cannot UPSERT on OR conditions");
 
     final AndBlock andCond = flattened.get(0);
-    for (BooleanExpression condition : andCond.getSubBlocks())
-      condition.transformToUpdateItem().ifPresent(x -> x.applyUpdate(doc, ctx));
+    for (final BooleanExpression condition : andCond.getSubBlocks())
+      condition.transformToUpdateItem().ifPresent(x -> x.applyUpdate(doc, context));
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    final String result = spaces + "+ INSERT (upsert, if needed)\n" + spaces + "  target: " + commandTarget + "\n" + spaces + "  content: " + initialFilter;
+    final String result = spaces + "+ UPSERT (if needed)\n" + spaces + "  target: " + commandTarget + "\n" + spaces + "  content: " + initialFilter;
     return result;
   }
 }

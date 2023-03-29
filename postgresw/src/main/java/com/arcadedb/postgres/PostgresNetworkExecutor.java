@@ -24,16 +24,15 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -74,7 +73,7 @@ public class PostgresNetworkExecutor extends Thread {
   private              boolean                                        errorInTransaction         = false;
   private final        Set<String>                                    ignoreQueriesAppNames      = new HashSet<>(//
       List.of("dbvis", "Database Navigator - Pool"));
-  private  final     Set<String>                                    ignoreQueries              = new HashSet<>(//
+  private final        Set<String>                                    ignoreQueries              = new HashSet<>(//
       List.of(//
           "select distinct PRIVILEGE_TYPE as PRIVILEGE_NAME from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by PRIVILEGE_TYPE asc",//
           "SELECT oid, typname FROM pg_type"));
@@ -110,7 +109,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       waitForAMessage();
 
-      readMessage("password", (type, length) -> userPassword = readString(), 'p');
+      if (!readMessage("password", (type, length) -> userPassword = readString(), 'p'))
+        return;
 
       if (!openDatabase())
         return;
@@ -180,7 +180,7 @@ public class PostgresNetworkExecutor extends Thread {
 
             }, 'D', 'P', 'B', 'E', 'Q', 'S', 'C', 'X');
 
-          } catch (Exception e) {
+          } catch (final Exception e) {
             setErrorInTx();
 
             if (e instanceof PostgresProtocolException) {
@@ -316,10 +316,10 @@ public class PostgresNetworkExecutor extends Thread {
         } else
           writeNoData();
       }
-    } catch (QueryParsingException | CommandSQLParsingException e) {
+    } catch (final CommandParsingException e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
     }
@@ -365,10 +365,10 @@ public class PostgresNetworkExecutor extends Thread {
       writeDataRows(cachedResultset, columns);
       writeCommandComplete(queryText, cachedResultset.size());
 
-    } catch (QueryParsingException | CommandSQLParsingException e) {
+    } catch (final CommandParsingException e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
     } finally {
@@ -407,18 +407,18 @@ public class PostgresNetworkExecutor extends Thread {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
 
     if (resultSet != null) {
-      for (Result row : resultSet) {
+      for (final Result row : resultSet) {
         final Set<String> propertyNames = row.getPropertyNames();
-        for (String p : propertyNames) {
+        for (final String p : propertyNames) {
           final Object value = row.getProperty(p);
           if (value != null) {
             PostgresType valueType = columns.get(p);
 
             if (valueType == null) {
               // FIND THE VALUE TYPE AND WRITE IT IN THE DATA DESCRIPTION
-              Class valueClass = value.getClass();
+              final Class valueClass = value.getClass();
 
-              for (PostgresType t : PostgresType.values()) {
+              for (final PostgresType t : PostgresType.values()) {
                 if (t.cls.isAssignableFrom(valueClass)) {
                   valueType = t;
                   break;
@@ -444,7 +444,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
 
-    for (Map.Entry<String, PostgresType> col : columns.entrySet()) {
+    for (final Map.Entry<String, PostgresType> col : columns.entrySet()) {
       final String columnName = col.getKey();
       final PostgresType columnType = col.getValue();
 
@@ -458,7 +458,7 @@ public class PostgresNetworkExecutor extends Thread {
       bufferDescription.putShort((short) columnType.size);// The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
       bufferDescription.putInt(columnType.modifier);// The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
       bufferDescription.putShort(
-          (short) 1); // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
+          (short) 0); // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
     }
 
     bufferDescription.flip();
@@ -475,16 +475,16 @@ public class PostgresNetworkExecutor extends Thread {
     final ByteBuffer bufferData = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
     final ByteBuffer bufferValues = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
 
-    for (Result row : resultSet) {
+    for (final Result row : resultSet) {
       bufferData.clear();
       bufferValues.clear();
       bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
-      for (Map.Entry<String, PostgresType> entry : columns.entrySet()) {
+      for (final Map.Entry<String, PostgresType> entry : columns.entrySet()) {
         final String propertyName = entry.getKey();
         final Object value = row.getProperty(propertyName);
 
-        entry.getValue().serialize(bufferValues, value);
+        entry.getValue().serializeAsText(entry.getValue().code, bufferValues, value);
       }
 
       bufferValues.flip();
@@ -556,7 +556,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       writeMessage("bind complete", null, '2', 4);
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), "XX000");
     }
@@ -646,7 +646,7 @@ public class PostgresNetworkExecutor extends Thread {
         } else if (portal.query.contains("ORDER BY TABLE_TYPE,TABLE_SCHEM,TABLE_NAME ")) {
           portal.executed = true;
           portal.cachedResultset = new ArrayList<>();
-          for (DocumentType t : database.getSchema().getTypes()) {
+          for (final DocumentType t : database.getSchema().getTypes()) {
             final Map<String, Object> map = new HashMap<>();
             map.put("TABLE_CAT", "");
             map.put("TABLE_SCHEM", "");
@@ -713,7 +713,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.executed = true;
         portal.cachedResultset = new ArrayList<>();
 
-        for (String dbName : server.getDatabaseNames()) {
+        for (final String dbName : server.getDatabaseNames()) {
           final Map<String, Object> map = new HashMap<>();
           map.put("SCHEMA_NAME", dbName);
           map.put("IS_PUBLIC", "Y");
@@ -734,7 +734,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.executed = true;
         portal.cachedResultset = new ArrayList<>();
 
-        for (DocumentType t : database.getSchema().getTypes()) {
+        for (final DocumentType t : database.getSchema().getTypes()) {
           final Map<String, Object> map = new HashMap<>();
           map.put("TABLE_SCHEM", t.getName());
           map.put("TABLE_CATALOG", database.getName());
@@ -752,7 +752,8 @@ public class PostgresNetworkExecutor extends Thread {
 
         switch (language) {
         case "sql":
-          portal.sqlStatement = SQLEngine.parse(queryText, (DatabaseInternal) database);
+          final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
+          portal.sqlStatement = sqlEngine.parse(queryText, (DatabaseInternal) database);
 
           if (portal.query.equalsIgnoreCase("BEGIN")) {
             explicitTransactionStarted = true;
@@ -777,10 +778,10 @@ public class PostgresNetworkExecutor extends Thread {
       // ParseComplete
       writeMessage("parse complete", null, '1', 4);
 
-    } catch (QueryParsingException | CommandSQLParsingException e) {
+    } catch (final CommandParsingException e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + e.getCause().getMessage(), "42601");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), "XX000");
     }
@@ -820,11 +821,11 @@ public class PostgresNetworkExecutor extends Thread {
 
       database.setAutoTransaction(true);
 
-    } catch (ServerSecurityException e) {
+    } catch (final ServerSecurityException e) {
       writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
       return false;
-    } catch (DatabaseOperationException e) {
-      writeError(ERROR_SEVERITY.FATAL, "Database not exists", "HV00Q");
+    } catch (final DatabaseOperationException e) {
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
       return false;
     }
 
@@ -892,7 +893,7 @@ public class PostgresNetworkExecutor extends Thread {
           connectionProperties.put(paramName, paramValue);
         }
       }
-    } catch (IOException e) {
+    } catch (final IOException e) {
       setErrorInTx();
       throw new PostgresProtocolException("Error on parsing startup message", e);
     }
@@ -903,7 +904,7 @@ public class PostgresNetworkExecutor extends Thread {
     try {
       final String sev = severity.toString();
 
-      int length = 4 + //
+      final int length = 4 + //
           1 + errorMessage.getBytes(StandardCharsets.UTF_8).length + 1 +//
           1 + sev.getBytes(StandardCharsets.UTF_8).length + 1 +//
           1 + errorCode.getBytes(StandardCharsets.UTF_8).length + 1 +//
@@ -923,7 +924,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       channel.writeByte((byte) 0);
       channel.flush();
-    } catch (IOException e) {
+    } catch (final IOException e) {
       setErrorInTx();
       throw new PostgresProtocolException("Error on sending error '" + errorMessage + "' to the client", e);
     }
@@ -941,13 +942,13 @@ public class PostgresNetworkExecutor extends Thread {
         LogManager.instance().log(this, Level.INFO, "PSQL:-> %s (%s - %s) (thread=%s)", null, messageName, messageCode, FileUtils.getSizeAsString(length),
             Thread.currentThread().getId());
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       setErrorInTx();
       throw new PostgresProtocolException("Error on sending '" + messageName + "' message", e);
     }
   }
 
-  private void readMessage(final String messageName, final ReadMessageCallback callback, final char... expectedMessageCodes) {
+  private boolean readMessage(final String messageName, final ReadMessageCallback callback, final char... expectedMessageCodes) {
     try {
       final char type = (char) readNextByte();
       final long length = channel.readUnsignedInt();
@@ -973,11 +974,13 @@ public class PostgresNetworkExecutor extends Thread {
       //if (length > 4)
       callback.read(type, length - 4);
 
-    } catch (EOFException e) {
+      return true;
+
+    } catch (final EOFException e) {
       // CLIENT CLOSES THE CONNECTION
       setErrorInTx();
-      return;
-    } catch (IOException e) {
+      return false;
+    } catch (final IOException e) {
       setErrorInTx();
       throw new PostgresProtocolException("Error on reading " + messageName + " message: " + e.getMessage(), e);
     }
@@ -997,7 +1000,7 @@ public class PostgresNetworkExecutor extends Thread {
     while (!channel.inputHasData()) {
       try {
         Thread.sleep(100);
-      } catch (InterruptedException interruptedException) {
+      } catch (final InterruptedException interruptedException) {
         throw new PostgresProtocolException("Error on reading from the channel");
       }
     }
@@ -1034,7 +1037,7 @@ public class PostgresNetworkExecutor extends Thread {
     return len;
   }
 
-  private void readBytes(int len) throws IOException {
+  private void readBytes(final int len) throws IOException {
     for (int i = 0; i < len; i++)
       readNextByte();
   }
@@ -1053,7 +1056,7 @@ public class PostgresNetworkExecutor extends Thread {
     else if (upperCaseText.equals("BEGIN"))
       tag = "BEGIN";
 
-    String finalTag = tag;
+    final String finalTag = tag;
     writeMessage("command complete", () -> writeString(finalTag), 'C', 4 + tag.length() + 1);
   }
 

@@ -24,20 +24,10 @@ public class Argument extends SimpleNode {
   protected Name              name;
   protected ValueWithVariable valueWithVariable;
 
-  public Argument(int id) {
+  public Argument(final int id) {
     super(id);
   }
 
-  public Argument(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public String getName() {
     return name != null ? name.value : null;

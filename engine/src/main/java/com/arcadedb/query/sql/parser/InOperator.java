@@ -25,16 +25,12 @@ import com.arcadedb.database.DatabaseInternal;
 import java.util.*;
 
 public class InOperator extends SimpleNode implements BinaryCompareOperator {
-  public InOperator(int id) {
+  public InOperator(final int id) {
     super(id);
   }
 
-  public InOperator(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean execute(DatabaseInternal database, Object left, Object right) {
+  public boolean execute(final DatabaseInternal database, Object left, Object right) {
     if (left == null) {
       return false;
     }
@@ -46,9 +42,9 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
         left = ((Iterable) left).iterator();
       }
       if (left instanceof Iterator) {
-        Iterator iterator = (Iterator) left;
+        final Iterator iterator = (Iterator) left;
         while (iterator.hasNext()) {
-          Object next = iterator.next();
+          final Object next = iterator.next();
           if (!((Collection) right).contains(next)) {
             return false;
           }
@@ -63,13 +59,13 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
       if (left instanceof Iterable) {
         left = ((Iterable) left).iterator();
       }
-      Iterator leftIterator = (Iterator) left;
-      Iterator rightIterator = (Iterator) right;
+      final Iterator leftIterator = (Iterator) left;
+      final Iterator rightIterator = (Iterator) right;
       while (leftIterator.hasNext()) {
-        Object leftItem = leftIterator.next();
+        final Object leftItem = leftIterator.next();
         boolean found = false;
         while (rightIterator.hasNext()) {
-          Object rightItem = rightIterator.next();
+          final Object rightItem = rightIterator.next();
           if (leftItem != null && leftItem.equals(rightItem)) {
             found = true;
             break;
@@ -85,17 +81,12 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
   public InOperator copy() {
     return this;
   }
 
   @Override
-  public boolean equals( final Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

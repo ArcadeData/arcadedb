@@ -18,14 +18,22 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.time.*;
+import java.time.format.*;
 import java.util.*;
 
 /**
@@ -40,22 +48,22 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Override
   public void beginTest() {
-    DocumentType clazz = database.getSchema().createDocumentType("OUpdateStatementExecutionTest");
+    final DocumentType clazz = database.getSchema().createDocumentType("OUpdateStatementExecutionTest");
     className = clazz.getName();
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newDocument(className);
+      final MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("number", 4L);
 
-      List<String> tagsList = new ArrayList<>();
+      final List<String> tagsList = new ArrayList<>();
       tagsList.add("foo");
       tagsList.add("bar");
       tagsList.add("baz");
       doc.set("tagsList", tagsList);
 
-      Map<String, String> tagsMap = new HashMap<>();
+      final Map<String, String> tagsMap = new HashMap<>();
       tagsMap.put("foo", "foo");
       tagsMap.put("bar", "bar");
       tagsMap.put("baz", "baz");
@@ -68,7 +76,6 @@ public class UpdateStatementExecutionTest extends TestHelper {
   @Test
   public void testSetString() {
     ResultSet result = database.command("sql", "update " + className + " set surname = 'foo'");
-    printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -160,7 +167,6 @@ public class UpdateStatementExecutionTest extends TestHelper {
   @Test
   public void testSetOnList() {
     ResultSet result = database.command("sql", "update " + className + " set tagsList[0] = 'abc' where name = 'name3'");
-    printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -175,7 +181,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       item = result.next();
       Assertions.assertNotNull(item);
       if ("name3".equals(item.getProperty("name"))) {
-        List<String> tags = new ArrayList<>();
+        final List<String> tags = new ArrayList<>();
         tags.add("abc");
         tags.add("bar");
         tags.add("baz");
@@ -188,14 +194,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  private void printExecutionPlan(ResultSet result) {
-    //ExecutionPlanPrintUtils.printExecutionPlan(result);
-  }
-
   @Test
   public void testSetOnList2() {
     ResultSet result = database.command("sql", "update " + className + " set tagsList[6] = 'abc' where name = 'name3'");
-    printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -210,7 +211,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       item = result.next();
       Assertions.assertNotNull(item);
       if ("name3".equals(item.getProperty("name"))) {
-        List<String> tags = new ArrayList<>();
+        final List<String> tags = new ArrayList<>();
         tags.add("foo");
         tags.add("bar");
         tags.add("baz");
@@ -244,14 +245,14 @@ public class UpdateStatementExecutionTest extends TestHelper {
       item = result.next();
       Assertions.assertNotNull(item);
       if ("name3".equals(item.getProperty("name"))) {
-        Map<String, String> tags = new HashMap<>();
+        final Map<String, String> tags = new HashMap<>();
         tags.put("foo", "abc");
         tags.put("bar", "bar");
         tags.put("baz", "baz");
         Assertions.assertEquals(tags, item.getProperty("tagsMap"));
         found = true;
       } else {
-        Map<String, String> tags = new HashMap<>();
+        final Map<String, String> tags = new HashMap<>();
         tags.put("foo", "foo");
         tags.put("bar", "bar");
         tags.put("baz", "baz");
@@ -261,6 +262,83 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(found);
     Assertions.assertFalse(result.hasNext());
     result.close();
+  }
+
+  @Test
+  public void testPlusAssignCollection() {
+    ResultSet result = database.command("sql", "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
+    final RID rid = result.next().getIdentity().get();
+    result = database.command("sql", "update " + rid + " set listStrings += '!', listNumbers += 9");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    List<String> listStrings = item.getProperty("listStrings");
+    Assertions.assertEquals(5, listStrings.size());
+    Assertions.assertEquals("!", listStrings.get(4));
+
+    List<Number> listNumbers = item.getProperty("listNumbers");
+    Assertions.assertEquals(4, listNumbers.size());
+    Assertions.assertEquals(9, listNumbers.get(3));
+  }
+
+  @Test
+  public void testPlusAssignMap() {
+    ResultSet result = database.command("sql", "insert into " + className + " set map1 = {'name':'Jay'}, map2 = {'name':'Jay'}");
+    final RID rid = result.next().getIdentity().get();
+    result = database.command("sql", "update " + rid + " set map1 += { 'last': 'Miner'}, map2 += [ 'last', 'Miner']");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    Map<String, String> map1 = item.getProperty("map1");
+    Assertions.assertEquals(2, map1.size());
+    Assertions.assertEquals("Jay", map1.get("name"));
+    Assertions.assertEquals("Miner", map1.get("last"));
+
+    Map<String, String> map2 = item.getProperty("map2");
+    Assertions.assertEquals(2, map2.size());
+    Assertions.assertEquals("Jay", map2.get("name"));
+    Assertions.assertEquals("Miner", map2.get("last"));
+  }
+
+  /**
+   * Testcase for issue https://github.com/ArcadeData/arcadedb/issues/927
+   */
+  @Test
+  public void testPlusAssignNestedMaps() {
+    ResultSet result = database.command("sql", "insert into " + className + " set map1 = {}");
+    final RID rid = result.next().getIdentity().get();
+
+    database.command("sql", "update " + rid + " set bars = map( \"23-03-24\" , { \"volume\": 100 } )");
+
+    result = database.command("sql", "update " + rid + " set bars += { \"2023-03-08\": { \"volume\": 134 }}");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    Map<String, Object> map1 = item.getProperty("bars");
+    Assertions.assertEquals(2, map1.size());
+
+    Map nestedMap = (Map) map1.get("23-03-24");
+    Assertions.assertNotNull(nestedMap);
+    Assertions.assertEquals(100, nestedMap.get("volume"));
+
+    nestedMap = (Map) map1.get("2023-03-08");
+    Assertions.assertNotNull(nestedMap);
+    Assertions.assertEquals(134, nestedMap.get("volume"));
   }
 
   @Test
@@ -290,7 +368,6 @@ public class UpdateStatementExecutionTest extends TestHelper {
   @Test
   public void testMinusAssign() {
     ResultSet result = database.command("sql", "update " + className + " set number -= 5");
-    printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -307,6 +384,48 @@ public class UpdateStatementExecutionTest extends TestHelper {
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
+  }
+
+  @Test
+  public void testMinusAssignCollection() {
+    ResultSet result = database.command("sql", "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
+    final RID rid = result.next().getIdentity().get();
+    result = database.command("sql", "update " + rid + " set listStrings -= 'a', listNumbers -= 2");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    List<String> listStrings = item.getProperty("listStrings");
+    Assertions.assertEquals(3, listStrings.size());
+    Assertions.assertFalse(listStrings.contains("!"));
+
+    List<Number> listNumbers = item.getProperty("listNumbers");
+    Assertions.assertEquals(2, listNumbers.size());
+    Assertions.assertFalse(listNumbers.contains(2));
+  }
+
+  @Test
+  public void testMinusAssignMap() {
+    ResultSet result = database.command("sql", "insert into " + className + " set map1 = {'name':'Jay'}, map2 = {'name':'Jay'}");
+    final RID rid = result.next().getIdentity().get();
+    result = database.command("sql", "update " + rid + " set map1 -= {'name':'Jay'}, map2 -= [ 'name' ]");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertNotNull(result.next());
+
+    result = database.command("sql", "select from " + rid);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+
+    Map<String, String> map1 = item.getProperty("map1");
+    Assertions.assertEquals(0, map1.size());
+
+    Map<String, String> map2 = item.getProperty("map2");
+    Assertions.assertEquals(0, map2.size());
   }
 
   @Test
@@ -356,7 +475,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     ResultSet result = database.query("sql", "SElect from " + className);
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("surname"));
     }
@@ -365,7 +484,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     result = database.command("sql", "update " + className + " remove surname");
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals((Object) 10L, item.getProperty("count"));
     }
@@ -375,9 +494,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
     result = database.query("sql", "SElect from " + className);
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
-      Assertions.assertNull(item.getProperty("surname"));
+      Assertions.assertFalse(item.toElement().has("surname"));
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -432,6 +551,67 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  public void testUpsertBucket() {
+    final List<Bucket> buckets = database.getSchema().getType(className).getBuckets(false);
+
+    // BY BUCKET ID
+    ResultSet result = database.command("sql", "update bucket:" + buckets.get(0).getName() + " set foo = 'bar' upsert where name = 'name1'");
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    // BY BUCKET ID
+    result = database.command("sql", "update bucket:" + buckets.get(0).getId() + " set foo = 'bar' upsert where name = 'name1'");
+    Assertions.assertTrue(result.hasNext());
+    item = result.next();
+    Assertions.assertNotNull(item);
+    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    result = database.query("sql", "SElect from bucket:" + buckets.get(0).getName());
+    Assertions.assertTrue(result.hasNext());
+
+    while (result.hasNext()) {
+      item = result.next();
+      Assertions.assertNotNull(item);
+      final String name = item.getProperty("name");
+      Assertions.assertNotNull(name);
+      if ("name1".equals(name)) {
+        Assertions.assertEquals("bar", item.getProperty("foo"));
+      } else {
+        Assertions.assertNull(item.getProperty("foo"));
+      }
+    }
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    result = database.command("sql", "update bucket:" + buckets.get(0).getName() + " remove foo upsert where name = 'name1'");
+    Assertions.assertTrue(result.hasNext());
+    item = result.next();
+    Assertions.assertNotNull(item);
+    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    result = database.query("sql", "SElect from bucket:" + buckets.get(0).getName());
+    Assertions.assertTrue(result.hasNext());
+
+    while (result.hasNext()) {
+      item = result.next();
+      Assertions.assertNotNull(item);
+      final String name = item.getProperty("name");
+      Assertions.assertNotNull(name);
+      Assertions.assertNull(item.getProperty("foo"));
+    }
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+  }
+
+  @Test
   public void testUpsert1() {
     ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
@@ -446,7 +626,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
       item = result.next();
       Assertions.assertNotNull(item);
-      String name = item.getProperty("name");
+      final String name = item.getProperty("name");
       Assertions.assertNotNull(name);
       if ("name1".equals(name)) {
         Assertions.assertEquals("bar", item.getProperty("foo"));
@@ -466,12 +646,12 @@ public class UpdateStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE vertex TYPE extra_node");
     database.command("sql", "CREATE PROPERTY extra_node.extraitem STRING");
     database.command("sql", "CREATE INDEX ON extra_node (extraitem) UNIQUE");
-    ResultSet result = database.command("sql", "update extra_node set extraitem = 'Hugo2' upsert return after $current where extraitem = 'Hugo'");
+    final ResultSet result = database.command("sql", "update extra_node set extraitem = 'Hugo2' upsert return after $current where extraitem = 'Hugo'");
 
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
-    Vertex current = item.getProperty("$current");
+    final Vertex current = item.getProperty("$current");
     Assertions.assertEquals("Hugo2", current.getString("extraitem"));
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -479,10 +659,10 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testUpsertAndReturn() {
-    ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert  return after  where name = 'name1' ");
+    final ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert  return after  where name = 'name1' ");
 
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals("bar", item.getProperty("foo"));
     Assertions.assertFalse(result.hasNext());
@@ -505,7 +685,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
       item = result.next();
       Assertions.assertNotNull(item);
-      String name = item.getProperty("name");
+      final String name = item.getProperty("name");
       Assertions.assertNotNull(name);
       if ("name11".equals(name)) {
         Assertions.assertEquals("bar", item.getProperty("foo"));
@@ -519,13 +699,13 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRemove1() {
-    String className = "overridden" + this.className;
+    final String className = "overridden" + this.className;
 
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("theProperty", Type.LIST);
 
-    MutableDocument doc = database.newDocument(className);
-    List theList = new ArrayList();
+    final MutableDocument doc = database.newDocument(className);
+    final List theList = new ArrayList();
     for (int i = 0; i < 10; i++) {
       theList.add("n" + i);
     }
@@ -534,7 +714,6 @@ public class UpdateStatementExecutionTest extends TestHelper {
     doc.save();
 
     ResultSet result = database.command("sql", "update " + className + " remove theProperty[0]");
-    printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -545,7 +724,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     item = result.next();
     Assertions.assertNotNull(item);
-    List ls = item.getProperty("theProperty");
+    final List ls = item.getProperty("theProperty");
     Assertions.assertNotNull(ls);
     Assertions.assertEquals(9, ls.size());
     Assertions.assertFalse(ls.contains("n0"));
@@ -555,12 +734,12 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRemove2() {
-    String className = "overridden" + this.className;
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "overridden" + this.className;
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("theProperty", Type.LIST);
 
-    MutableDocument doc = database.newDocument(className);
-    List theList = new ArrayList();
+    final MutableDocument doc = database.newDocument(className);
+    final List theList = new ArrayList();
     for (int i = 0; i < 10; i++) {
       theList.add("n" + i);
     }
@@ -569,7 +748,6 @@ public class UpdateStatementExecutionTest extends TestHelper {
     doc.save();
 
     ResultSet result = database.command("sql", "update " + className + " remove theProperty[0, 1, 3]");
-    printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -580,7 +758,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     item = result.next();
     Assertions.assertNotNull(item);
-    List ls = item.getProperty("theProperty");
+    final List ls = item.getProperty("theProperty");
 
     Assertions.assertNotNull(ls);
     Assertions.assertEquals(ls.size(), 7);
@@ -596,12 +774,12 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRemove3() {
-    String className = "overridden" + this.className;
-    DocumentType clazz = database.getSchema().createDocumentType(className);
+    final String className = "overridden" + this.className;
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("theProperty", Type.EMBEDDED);
 
-    MutableDocument doc = database.newDocument(className);
-    MutableDocument emb = database.newDocument(className);
+    final MutableDocument doc = database.newDocument(className);
+    final MutableDocument emb = database.newDocument(className);
     emb.set("sub", "foo");
     emb.set("aaa", "bar");
     doc.set("theProperty", emb);
@@ -609,7 +787,6 @@ public class UpdateStatementExecutionTest extends TestHelper {
     doc.save();
 
     ResultSet result = database.command("sql", "update " + className + " remove theProperty.sub");
-    printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -620,7 +797,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     item = result.next();
     Assertions.assertNotNull(item);
-    ResultInternal ls = item.getProperty("theProperty");
+    final ResultInternal ls = item.getProperty("theProperty");
     Assertions.assertNotNull(ls);
     Assertions.assertFalse(ls.getPropertyNames().contains("sub"));
     Assertions.assertEquals("bar", ls.getProperty("aaa"));
@@ -633,11 +810,10 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     database.command("sql", "UPDATE " + className + " REMOVE tagsMap[\"bar\"]").close();
 
-    ResultSet result = database.query("sql", "SELECT tagsMap FROM " + className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "SELECT tagsMap FROM " + className);
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals(2, ((Map) item.getProperty("tagsMap")).size());
       Assertions.assertFalse(((Map) item.getProperty("tagsMap")).containsKey("bar"));
@@ -651,11 +827,10 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     database.command("sql", "UPDATE " + className + " REMOVE tagsMap = \"bar\"").close();
 
-    ResultSet result = database.query("sql", "SELECT tagsMap FROM " + className);
-    printExecutionPlan(result);
+    final ResultSet result = database.query("sql", "SELECT tagsMap FROM " + className);
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals(2, ((Map) item.getProperty("tagsMap")).size());
       Assertions.assertFalse(((Map) item.getProperty("tagsMap")).containsKey("bar"));
@@ -666,10 +841,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testReturnBefore() {
-    ResultSet result = database.command("sql", "update " + className + " set name = 'foo' RETURN BEFORE where name = 'name1'");
-    printExecutionPlan(result);
+    final ResultSet result = database.command("sql", "update " + className + " set name = 'foo' RETURN BEFORE where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
-    Result item = result.next();
+    final Result item = result.next();
     Assertions.assertNotNull(item);
     Assertions.assertEquals("name1", item.getProperty("name"));
 
@@ -682,18 +856,18 @@ public class UpdateStatementExecutionTest extends TestHelper {
     database.getSchema().createVertexType("UpsertableVertex");
 
     for (int i = 0; i < 10; i++) {
-      MutableDocument doc = database.newVertex("UpsertableVertex");
+      final MutableDocument doc = database.newVertex("UpsertableVertex");
       doc.set("name", "name" + i);
       doc.set("surname", "surname" + i);
       doc.set("number", 4L);
 
-      List<String> tagsList = new ArrayList<>();
+      final List<String> tagsList = new ArrayList<>();
       tagsList.add("foo");
       tagsList.add("bar");
       tagsList.add("baz");
       doc.set("tagsList", tagsList);
 
-      Map<String, String> tagsMap = new HashMap<>();
+      final Map<String, String> tagsMap = new HashMap<>();
       tagsMap.put("foo", "foo");
       tagsMap.put("bar", "bar");
       tagsMap.put("baz", "baz");
@@ -715,7 +889,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
       item = result.next();
       Assertions.assertNotNull(item);
-      String name = item.getProperty("name");
+      final String name = item.getProperty("name");
       Assertions.assertNotNull(name);
       if ("name1".equals(name)) {
         Assertions.assertEquals("bar", item.getProperty("foo"));
@@ -726,4 +900,174 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
+
+  @Test
+  public void testLocalDateTimeUpsertWithIndex() throws ClassNotFoundException {
+    database.transaction(() -> {
+      if (database.getSchema().existsType("Product"))
+        database.getSchema().dropType("Product");
+
+      DocumentType dtProduct = database.getSchema().createDocumentType("Product");
+      dtProduct.createProperty("start", Type.DATETIME_MICROS);
+      dtProduct.createProperty("stop", Type.DATETIME_MICROS);
+      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
+    });
+
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(java.time.LocalDateTime.class);
+
+    final LocalDateTime start = LocalDateTime.now();
+
+    for (int i = 0; i < 10; i++) {
+      database.transaction(() -> {
+        final LocalDateTime stop = LocalDateTime.now();
+        ResultSet resultSet = database.command("sql", "UPDATE Product SET start = ?, stop = ? UPSERT WHERE start = ? and stop = ?", start, stop);
+
+        Result result;
+        resultSet = database.query("sql", "SELECT from Product");
+        while (resultSet.hasNext()) {
+          result = resultSet.next();
+          Assertions.assertNotNull(result.getProperty("start"));
+          Assertions.assertNotNull(result.getProperty("stop"));
+        }
+      });
+    }
+  }
+
+  @Test
+  public void testLocalDateTimeUpsertWithIndexMicros() throws ClassNotFoundException {
+    database.transaction(() -> {
+      if (database.getSchema().existsType("Product"))
+        database.getSchema().dropType("Product");
+
+      DocumentType dtProduct = database.getSchema().createDocumentType("Product");
+      dtProduct.createProperty("start", Type.DATETIME_MICROS);
+      dtProduct.createProperty("stop", Type.DATETIME_MICROS);
+      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
+    });
+
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(java.time.LocalDateTime.class);
+
+    DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
+
+    database.transaction(() -> {
+      LocalDateTime start = LocalDateTime.parse("20220318T215523", FILENAME_TIME_FORMAT);
+      LocalDateTime stop = LocalDateTime.parse("20221129T002322", FILENAME_TIME_FORMAT);
+      database.command("sql", "INSERT INTO Product SET start = ?, stop = ?", start, stop);
+    });
+
+    database.transaction(() -> {
+      LocalDateTime start = LocalDateTime.parse("20220318T215523", FILENAME_TIME_FORMAT);
+      LocalDateTime stop = LocalDateTime.parse("20220320T002321", FILENAME_TIME_FORMAT);
+      database.command("sql", "INSERT INTO Product SET start = ?, stop = ?", start, stop);
+    });
+
+    database.transaction(() -> {
+      Result result;
+
+      /** ENTRIES:
+       2022-03-18T21:55:23 - 2022-11-29T00:23:22
+       2022-03-18T21:55:23 - 2022-03-20T00:23:21
+       *     */
+      LocalDateTime start = LocalDateTime.parse("2022-03-19T00:26:24.404379", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+      LocalDateTime stop = LocalDateTime.parse("2022-03-19T00:28:26.525650", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+      try (ResultSet resultSet = database.query("sql", "SELECT start, stop FROM Product WHERE start <= ? AND stop >= ? ORDER BY start DESC, stop DESC LIMIT 1",
+          start, stop)) {
+
+        Assertions.assertTrue(resultSet.hasNext());
+
+        while (resultSet.hasNext()) {
+          result = resultSet.next();
+          Assertions.assertNotNull(result.getProperty("start"));
+          Assertions.assertNotNull(result.getProperty("stop"));
+        }
+      }
+    });
+  }
+
+  @Test
+  public void testCompositeIndexLookup() {
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+    GlobalConfiguration.TX_RETRIES.setValue(0);
+    final TypeIndex[] typeIndex = new TypeIndex[1];
+
+    database.rollbackAllNested();
+
+    database.transaction(() -> {
+      DocumentType dtOrders = database.getSchema().createDocumentType("Order");
+      dtOrders.createProperty("id", Type.STRING);
+      dtOrders.createProperty("processor", Type.STRING);
+      dtOrders.createProperty("status", Type.STRING);
+      typeIndex[0] = dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+    });
+
+    String processor = "SIR1LRM-7.1";
+    String status = "PENDING";
+    for (int i = 0; i < 2; i++) {
+      int id = i + 1;
+      database.transaction(() -> {
+        String sqlString = "INSERT INTO Order SET id = ?, status = ?, processor = ?";
+        try (ResultSet resultSet1 = database.command("sql", sqlString, id, status, processor)) {
+        }
+      });
+    }
+    // update first record
+    database.transaction(() -> {
+      Object[] parameters2 = { "ERROR", 1 };
+      String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
+      try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
+      }
+    });
+    // select records with status = 'PENDING'
+    database.transaction(() -> {
+      Object[] parameters2 = { "PENDING" };
+      String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
+      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+        final Result record = resultSet1.next();
+        Assertions.assertEquals("PENDING", record.getProperty("status"));
+        Assertions.assertEquals("2", record.getProperty("id"));
+      }
+    });
+    // drop index
+    database.getSchema().dropIndex(typeIndex[0].getName());
+
+    // repeat select records with status = 'PENDING'
+    database.transaction(() -> {
+      Object[] parameters2 = { "PENDING" };
+      String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
+      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+        Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
+      }
+    });
+  }
+
+  //@Test
+  // STILL NOT SUPPORTED
+  // ISSUE REPORTED ON DISCORD CHANNEL
+  public void testUpdateVariable() {
+    database.transaction(() -> {
+      if (!database.getSchema().existsType("Account")) {
+        database.getSchema().createVertexType("Account");
+      }
+    });
+
+    for (int i = 0; i < 10; i++) {
+      database.transaction(() -> {
+        database.command("sqlscript", "let account = create vertex Account set name = 'Luke';\n" +//
+            "let e = Update [ #9:9 ] set name = 'bob';\n" +//
+            "commit retry 100;\n" +//
+            "return $e;");
+
+        ResultSet resultSet = database.query("sql", "SELECT from Account where name = 'bob'");
+        Assertions.assertTrue(resultSet.hasNext());
+        while (resultSet.hasNext())
+          Assertions.assertEquals("bob", resultSet.next().getProperty("name"));
+      });
+    }
+  }
+
 }

@@ -51,30 +51,30 @@ public class CountFromIndexStepTest {
   @Test
   public void shouldCountRecordsOfIndex() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      DocumentType clazz = TestHelper.createRandomType(db);
+      final DocumentType clazz = TestHelper.createRandomType(db);
       clazz.createProperty(PROPERTY_NAME, Type.STRING);
       String className = clazz.getName();
       indexName = className + "[" + PROPERTY_NAME + "]";
       clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, PROPERTY_NAME);
 
       for (int i = 0; i < 20; i++) {
-        MutableDocument document = db.newDocument(className);
+        final MutableDocument document = db.newDocument(className);
         document.set(PROPERTY_NAME, PROPERTY_VALUE);
         document.save();
       }
 
       className = TestHelper.createRandomType(db).getName();
-      Identifier name = new Identifier(indexName);
-      IndexIdentifier identifier = new IndexIdentifier(-1);
+      final Identifier name = new Identifier(indexName);
+      final IndexIdentifier identifier = new IndexIdentifier(-1);
       identifier.setIndexName(name);
       identifier.setIndexNameString(name.getValue());
       identifier.setType(identifierType);
 
-      BasicCommandContext context = new BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      CountFromIndexStep step = new CountFromIndexStep(identifier, ALIAS, context, false);
+      final CountFromIndexStep step = new CountFromIndexStep(identifier, ALIAS, context, false);
 
-      ResultSet result = step.syncPull(context, 20);
+      final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(20, (long) result.next().getProperty(ALIAS));
       Assertions.assertFalse(result.hasNext());
     });

@@ -55,7 +55,7 @@ public abstract class BaseRecord implements Record {
     if (rid != null && buffer == null && database.isOpen()) {
       try {
         buffer = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
         // IGNORE IT
       }
     }
@@ -80,7 +80,7 @@ public abstract class BaseRecord implements Record {
 
   @Override
   public int hashCode() {
-    return rid.hashCode();
+    return rid != null ? rid.hashCode() : super.hashCode();
   }
 
   @Override
@@ -111,7 +111,7 @@ public abstract class BaseRecord implements Record {
   }
 
   @Override
-  public Document asDocument(boolean loadContent) {
+  public Document asDocument(final boolean loadContent) {
     if (this instanceof Edge)
       throw new ClassCastException("Cannot cast the edge " + getIdentity() + " to a document");
     if (this instanceof Vertex)
@@ -147,7 +147,7 @@ public abstract class BaseRecord implements Record {
   }
 
   @Override
-  public Edge asEdge(boolean loadContent) {
+  public Edge asEdge(final boolean loadContent) {
     if (this instanceof Vertex)
       throw new ClassCastException("Cannot cast the vertex " + getIdentity() + " to an edge");
     if (this instanceof Document)

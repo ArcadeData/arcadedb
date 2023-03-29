@@ -26,23 +26,23 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 public class InsertStatementTest {
 
-  protected SimpleNode checkRightSyntax(String query) {
+  protected SimpleNode checkRightSyntax(final String query) {
     return checkSyntax(query, true);
   }
 
-  protected SimpleNode checkWrongSyntax(String query) {
+  protected SimpleNode checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected SimpleNode checkSyntax(String query, boolean isCorrect) {
-    SqlParser osql = getParserFor(query);
+  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
+    final SqlParser osql = getParserFor(query);
     try {
-      SimpleNode result = osql.parse();
+      final SimpleNode result = osql.Parse();
       if (!isCorrect) {
         fail();
       }
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (isCorrect) {
         e.printStackTrace();
         fail();
@@ -111,9 +111,40 @@ public class InsertStatementTest {
     checkRightSyntax("insert into Bookmark from (select expand($foo))");
   }
 
-  protected SqlParser getParserFor(String string) {
-    InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(is);
-    return osql;
+  @Test
+  public void testInsertJsonNewLines() {
+    checkRightSyntax("INSERT INTO doc CONTENT {\n" + //
+        "\"head\" : {\n" + //
+        "  \"vars\" : [ \"item\", \"itemLabel\" ]\n" + //
+        "},\n" + //
+        "\"results\" : {\n" + //
+        "  \"bindings\" : [ {\n" + //
+        "    \"item\" : {\n" + //
+        "          \"type\" : \"uri\",\n" + //
+        "              \"value\" : \"http://www.wikidata.org/entity/Q113997665\"\n" + //
+        "        },\n" + //
+        "        \"itemLabel\" : {\n" + //
+        "          \"xml:lang\" : \"en\",\n" + //
+        "              \"type\" : \"literal\",\n" + //
+        "              \"value\" : \"ArcadeDB\"\n" + //
+        "        }\n" + //
+        "      }, {\n" + //
+        "        \"item\" : {\n" + //
+        "          \"type\" : \"uri\",\n" + //
+        "              \"value\" : \"http://www.wikidata.org/entity/Q808716\"\n" + //
+        "        },\n" + //
+        "        \"itemLabel\" : {\n" + //
+        "          \"xml:lang\" : \"en\",\n" + //
+        "              \"type\" : \"literal\",\n" + //
+        "              \"value\" : \"OrientDB\"\n" + //
+        "        }\n" + //
+        "      } ]\n" + //
+        "    }\n" + //
+        "}");
+  }
+
+  protected SqlParser getParserFor(final String string) {
+    final InputStream is = new ByteArrayInputStream(string.getBytes());
+    return new SqlParser(null, is);
   }
 }

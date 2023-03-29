@@ -72,7 +72,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
   private void loadDocuments(final SourceSchema sourceSchema, final Parser parser, final Database database, final ImporterContext context,
       final ImporterSettings settings) throws ImportException {
-    AbstractParser csvParser = createCSVParser(settings, ",");
+    final AbstractParser csvParser = createCSVParser(settings, ",");
 
     LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
 
@@ -97,7 +97,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
 
-        for (AnalyzedProperty p : entity.getProperties()) {
+        for (final AnalyzedProperty p : entity.getProperties()) {
           if (propertiesSet.contains(p.getName())) {
             properties.add(p);
           }
@@ -139,7 +139,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       database.commit();
       database.async().waitCompletion();
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
@@ -183,8 +183,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     else if (expectedVertices > Integer.MAX_VALUE)
       expectedVertices = Integer.MAX_VALUE;
 
-    context.graphImporter = new GraphImporter((DatabaseInternal) database, (int) expectedVertices, (int) settings.expectedEdges,
-        Type.valueOf(settings.typeIdType.toUpperCase()));
+    try {
+      context.graphImporter = new GraphImporter((DatabaseInternal) database, (int) expectedVertices, (int) settings.expectedEdges,
+          Type.valueOf(settings.typeIdType.toUpperCase()));
+    } catch (ClassNotFoundException e) {
+      throw new ImportException("Error on creating internal component", e);
+    }
 
     final AbstractParser csvParser = createCSVParser(settings, ",");
 
@@ -210,7 +214,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
 
-        for (AnalyzedProperty p : entity.getProperties()) {
+        for (final AnalyzedProperty p : entity.getProperties()) {
           if (propertiesSet.contains(p.getName())) {
             properties.add(p);
           }
@@ -260,7 +264,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       database.async().waitCompletion();
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
@@ -275,7 +279,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
   private void loadEdges(final SourceSchema sourceSchema, final Parser parser, final DatabaseInternal database, final ImporterContext context,
       final ImporterSettings settings) throws ImportException {
-    AbstractParser csvParser = createCSVParser(settings, ",");
+    final AbstractParser csvParser = createCSVParser(settings, ",");
 
     final long beginTime = System.currentTimeMillis();
 
@@ -308,7 +312,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance()
         .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null, expectedVertices, expectedEdges);
 
-    context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
+    try {
+      if (context.graphImporter == null)
+        context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
+    } catch (ClassNotFoundException e) {
+      throw new ImportException("Error on creating internal component", e);
+    }
     context.graphImporter.startImportingEdges();
 
     database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception));
@@ -327,7 +336,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
 
-        for (AnalyzedProperty p : entity.getProperties()) {
+        for (final AnalyzedProperty p : entity.getProperties()) {
           if (propertiesSet.contains(p.getName())) {
             properties.add(p);
           }
@@ -350,20 +359,20 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         try {
           createEdgeFromRow(row, properties, from, to, context, settings);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
         }
       }
 
       context.graphImporter.close(linked -> context.linkedEdges.addAndGet(linked));
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       try {
         Thread.sleep(300);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
       LogManager.instance().log(this, Level.INFO, "Importing of edges from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
@@ -421,9 +430,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     if (settings.options.containsKey("delimiter"))
       delimiter = settings.options.get("delimiter");
 
-    CsvParserSettings csvParserSettings;
-    TsvParserSettings tsvParserSettings;
-    AbstractParser csvParser;
+    final CsvParserSettings csvParserSettings;
+    final TsvParserSettings tsvParserSettings;
+    final AbstractParser csvParser;
 
     if ("\t".equals(delimiter) || "\\t".equals(delimiter)) {
       tsvParserSettings = new TsvParserSettings();
@@ -515,9 +524,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       }
 
-    } catch (EOFException e) {
+    } catch (final EOFException e) {
       // REACHED THE LIMIT
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
     }
 
@@ -536,9 +545,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     if (settings.options.containsKey("delimiter"))
       delimiter = settings.options.get("delimiter");
 
-    CsvParserSettings csvParserSettings;
-    TsvParserSettings tsvParserSettings;
-    AbstractParser csvParser;
+    final CsvParserSettings csvParserSettings;
+    final TsvParserSettings tsvParserSettings;
+    final AbstractParser csvParser;
 
     if ("\t".equals(delimiter) || "\\t".equals(delimiter)) {
       tsvParserSettings = new TsvParserSettings();

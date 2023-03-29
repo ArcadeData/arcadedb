@@ -39,32 +39,32 @@ public class SQLFunctionModeTest {
 
     @Test
     public void testEmpty() {
-        Object result = mode.getResult();
+        final Object result = mode.getResult();
         assertNull(result);
     }
 
     @Test
     public void testSingleMode() {
-        int[] scores = {1, 2, 3, 3, 3, 2};
+        final int[] scores = {1, 2, 3, 3, 3, 2};
 
-        for (int s : scores) {
+        for (final int s : scores) {
             mode.execute(null, null, null, new Object[]{s}, null);
         }
 
-        Object result = mode.getResult();
+        final Object result = mode.getResult();
         assertEquals(3, (int) ((List<Integer>) result).get(0));
     }
 
     @Test
     public void testMultiMode() {
-        int[] scores = {1, 2, 3, 3, 3, 2, 2};
+        final int[] scores = {1, 2, 3, 3, 3, 2, 2};
 
-        for (int s : scores) {
+        for (final int s : scores) {
             mode.execute(null, null, null, new Object[]{s}, null);
         }
 
-        Object result = mode.getResult();
-        List<Integer> modes = (List<Integer>) result;
+        final Object result = mode.getResult();
+        final List<Integer> modes = (List<Integer>) result;
         assertEquals(2, modes.size());
         assertTrue(modes.contains(2));
         assertTrue(modes.contains(3));
@@ -72,15 +72,15 @@ public class SQLFunctionModeTest {
 
     @Test
     public void testMultiValue() {
-        List[] scores = new List[2];
+        final List[] scores = new List[2];
         scores[0] = Arrays.asList(1, 2, null, 3, 4);
         scores[1] = Arrays.asList(1, 1, 1, 2, null);
 
-        for (List s : scores) {
+        for (final List s : scores) {
             mode.execute(null, null, null, new Object[]{s}, null);
         }
 
-        Object result = mode.getResult();
+        final Object result = mode.getResult();
         assertEquals(1, (int) ((List<Integer>) result).get(0));
     }
 }

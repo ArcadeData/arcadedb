@@ -45,6 +45,7 @@ public class EdgeVertexIteratorFilter extends IteratorFilterBase<Pair<RID, RID>>
       return new Pair(nextEdge, next);
     } finally {
       next = null;
+      ++browsed;
     }
   }
 }

@@ -19,18 +19,16 @@
 package com.arcadedb.exception;
 
 public class ArcadeDBException extends RuntimeException {
-  public ArcadeDBException() {
-  }
 
-  public ArcadeDBException(String message) {
+  public ArcadeDBException(final String message) {
     super(message);
   }
 
-  public ArcadeDBException(String message, Throwable cause) {
+  public ArcadeDBException(final String message, final Throwable cause) {
     super(message, cause);
   }
 
-  public ArcadeDBException(Throwable cause) {
+  public ArcadeDBException(final Throwable cause) {
     super(cause);
   }
 }

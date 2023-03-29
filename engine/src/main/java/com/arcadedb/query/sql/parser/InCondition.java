@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
@@ -43,70 +44,66 @@ public class InCondition extends BooleanExpression {
   private static final Object UNSET           = new Object();
   private final        Object inputFinalValue = UNSET;
 
-  public InCondition(int id) {
+  public InCondition(final int id) {
     super(id);
   }
 
-  public InCondition(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    final Object leftVal = evaluateLeft(currentRecord, ctx);
-    final Object rightVal = evaluateRight(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftVal = evaluateLeft(currentRecord, context);
+    final Object rightVal = evaluateRight(currentRecord, context);
     if (rightVal == null)
       return false;
 
     return evaluateExpression(leftVal, rightVal);
   }
 
-  public Object evaluateRight(final Identifiable currentRecord, final CommandContext ctx) {
+  public Object evaluateRight(final Identifiable currentRecord, final CommandContext context) {
     Object rightVal = null;
     if (rightStatement != null)
-      rightVal = executeQuery(rightStatement, ctx);
+      rightVal = executeQuery(rightStatement, context);
     else if (rightParam != null)
-      rightVal = rightParam.getValue(ctx.getInputParameters());
+      rightVal = rightParam.getValue(context.getInputParameters());
     else if (rightMathExpression != null)
-      rightVal = rightMathExpression.execute(currentRecord, ctx);
+      rightVal = rightMathExpression.execute(currentRecord, context);
 
     return rightVal;
   }
 
-  public Object evaluateLeft(final Identifiable currentRecord, final CommandContext ctx) {
-    return left.execute(currentRecord, ctx);
+  public Object evaluateLeft(final Identifiable currentRecord, final CommandContext context) {
+    return left.execute(currentRecord, context);
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftVal = evaluateLeft(currentRecord, ctx);
-    final Object rightVal = evaluateRight(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftVal = evaluateLeft(currentRecord, context);
+    final Object rightVal = evaluateRight(currentRecord, context);
     if (rightVal == null)
       return false;
 
     return evaluateExpression(leftVal, rightVal);
   }
 
-  public Object evaluateRight(final Result currentRecord, final CommandContext ctx) {
+  public Object evaluateRight(final Result currentRecord, final CommandContext context) {
     Object rightVal = null;
     if (rightStatement != null)
-      rightVal = executeQuery(rightStatement, ctx);
+      rightVal = executeQuery(rightStatement, context);
     else if (rightParam != null)
-      rightVal = rightParam.getValue(ctx.getInputParameters());
+      rightVal = rightParam.getValue(context.getInputParameters());
     else if (rightMathExpression != null)
-      rightVal = rightMathExpression.execute(currentRecord, ctx);
+      rightVal = rightMathExpression.execute(currentRecord, context);
 
     return rightVal;
   }
 
-  public Object evaluateLeft(final Result currentRecord, final CommandContext ctx) {
-    return left.execute(currentRecord, ctx);
+  public Object evaluateLeft(final Result currentRecord, final CommandContext context) {
+    return left.execute(currentRecord, context);
   }
 
-  protected static Object executeQuery(final SelectStatement rightStatement, final CommandContext ctx) {
-    final BasicCommandContext subCtx = new BasicCommandContext();
-    subCtx.setParentWithoutOverridingChild(ctx);
-    final ResultSet result = rightStatement.execute(ctx.getDatabase(), ctx.getInputParameters());
+  protected static Object executeQuery(final SelectStatement rightStatement, final CommandContext context) {
+    final BasicCommandContext subcontext = new BasicCommandContext();
+    subcontext.setParentWithoutOverridingChild(context);
+    final ResultSet result = rightStatement.execute(context.getDatabase(), context.getInputParameters());
     return result.stream().collect(Collectors.toSet());
   }
 
@@ -171,56 +168,6 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    if (!left.supportsBasicCalculation())
-      return false;
-
-    if (!rightMathExpression.supportsBasicCalculation())
-      return false;
-
-    return operator.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (operator != null && !operator.supportsBasicCalculation())
-      total++;
-
-    if (!left.supportsBasicCalculation())
-      total++;
-
-    if (rightMathExpression != null && !rightMathExpression.supportsBasicCalculation())
-      total++;
-
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<>();
-
-    if (operator != null)
-      result.add(this);
-
-    if (!left.supportsBasicCalculation())
-      result.add(left);
-
-    if (rightMathExpression != null && !rightMathExpression.supportsBasicCalculation())
-      result.add(rightMathExpression);
-
-    return result;
-  }
-
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    if (left.needsAliases(aliases))
-      return true;
-
-    return rightMathExpression != null && rightMathExpression.needsAliases(aliases);
-  }
-
-  @Override
   public InCondition copy() {
     final InCondition result = new InCondition(-1);
     result.operator = operator == null ? null : operator.copy();
@@ -248,50 +195,8 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent())
-      return true;
-
-    if (rightStatement != null && rightStatement.refersToParent())
-      return true;
-
-    return rightMathExpression != null && rightMathExpression.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final InCondition that = (InCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(operator, that.operator))
-      return false;
-    if (!Objects.equals(rightStatement, that.rightStatement))
-      return false;
-    if (!Objects.equals(rightParam, that.rightParam))
-      return false;
-    if (!Objects.equals(rightMathExpression, that.rightMathExpression))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    return inputFinalValue != null ? inputFinalValue.equals(that.inputFinalValue) : that.inputFinalValue == null;
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (operator != null ? operator.hashCode() : 0);
-    result = 31 * result + (rightStatement != null ? rightStatement.hashCode() : 0);
-    result = 31 * result + (rightParam != null ? rightParam.hashCode() : 0);
-    result = 31 * result + (rightMathExpression != null ? rightMathExpression.hashCode() : 0);
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (inputFinalValue != null ? inputFinalValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, operator, rightStatement, rightParam, rightMathExpression, right, inputFinalValue };
   }
 
   @Override
@@ -310,14 +215,8 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable())
-      return false;
-
-    if (rightStatement != null && !rightStatement.executionPlanCanBeCached())
-      return false;
-
-    return rightMathExpression == null || rightMathExpression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, rightStatement, rightMathExpression };
   }
 
   public Expression getLeft() {
@@ -346,6 +245,50 @@ public class InCondition extends BooleanExpression {
 
   public void setRightMathExpression(final MathExpression rightMathExpression) {
     this.rightMathExpression = rightMathExpression;
+  }
+
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        if (rightMathExpression != null) {
+          return rightMathExpression.isEarlyCalculated(info.getContext());
+        } else
+          return rightParam != null;
+      }
+    }
+    return false;
+  }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    Expression item = new Expression(-1);
+    if (getRightMathExpression() != null) {
+      item.setMathExpression(getRightMathExpression());
+      return item;
+    } else if (getRightParam() != null) {
+      BaseExpression e = new BaseExpression(-1);
+      e.setInputParam(getRightParam().copy());
+      item.setMathExpression(e);
+      return item;
+    } else {
+      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    }
+  }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    Expression item = new Expression(-1);
+    if (getRightMathExpression() != null) {
+      item.setMathExpression(getRightMathExpression());
+      return item;
+    } else if (getRightParam() != null) {
+      BaseExpression e = new BaseExpression(-1);
+      e.setInputParam(getRightParam().copy());
+      item.setMathExpression(e);
+      return item;
+    } else {
+      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    }
   }
 }
 /* JavaCC - OriginalChecksum=00df7cb1877c0a12d24205c1700653c7 (do not edit this line) */

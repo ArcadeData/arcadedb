@@ -27,19 +27,22 @@ import java.util.logging.*;
  */
 public class CodeUtils {
 
-  public static void executeIgnoringExceptions(final CallableNoReturn callback, final String errorMessage) {
+  public static void executeIgnoringExceptions(final CallableNoReturn callback, final String errorMessage, final boolean logException) {
     try {
       callback.call();
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       // IGNORE IT
-      LogManager.instance().log(CodeUtils.class, Level.SEVERE, errorMessage);
+      if (logException)
+        LogManager.instance().log(CodeUtils.class, Level.SEVERE, errorMessage, e);
+      else
+        LogManager.instance().log(CodeUtils.class, Level.SEVERE, errorMessage);
     }
   }
 
   public static void executeIgnoringExceptions(final CallableNoReturn callback) {
     try {
       callback.call();
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       // IGNORE IT
     }
   }

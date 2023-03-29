@@ -22,25 +22,19 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
 
 public class ContainsAnyCondition extends BooleanExpression {
-
   protected Expression left;
-
   protected Expression right;
+  protected OrBlock    rightBlock;
 
-  protected OrBlock rightBlock;
-
-  public ContainsAnyCondition(int id) {
+  public ContainsAnyCondition(final int id) {
     super(id);
-  }
-
-  public ContainsAnyCondition(SqlParser p, int id) {
-    super(p, id);
   }
 
   public boolean execute(Object left, Object right) {
@@ -49,9 +43,9 @@ public class ContainsAnyCondition extends BooleanExpression {
         right = ((Iterable) right).iterator();
       }
       if (right instanceof Iterator) {
-        Iterator iterator = (Iterator) right;
+        final Iterator iterator = (Iterator) right;
         while (iterator.hasNext()) {
-          Object next = iterator.next();
+          final Object next = iterator.next();
           if (((Collection) left).contains(next)) {
             return true;
           }
@@ -68,12 +62,12 @@ public class ContainsAnyCondition extends BooleanExpression {
       }
       right = ((Iterable) right).iterator();
 
-      Iterator leftIterator = (Iterator) left;
-      Iterator rightIterator = (Iterator) right;
+      final Iterator leftIterator = (Iterator) left;
+      final Iterator rightIterator = (Iterator) right;
       while (rightIterator.hasNext()) {
-        Object leftItem = rightIterator.next();
+        final Object leftItem = rightIterator.next();
         while (leftIterator.hasNext()) {
-          Object rightItem = leftIterator.next();
+          final Object rightItem = leftIterator.next();
           if (leftItem != null && leftItem.equals(rightItem)) {
             return true;
           }
@@ -84,24 +78,24 @@ public class ContainsAnyCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
-      Object rightValue = right.execute(currentRecord, ctx);
+      final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
       if (!MultiValue.isMultiValue(leftValue)) {
         return false;
       }
-      Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
+      final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
-        Object item = iter.next();
+        final Object item = iter.next();
         if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, ctx)) {
+          if (!rightBlock.evaluate((Identifiable) item, context)) {
             return false;
           }
         } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, ctx)) {
+          if (!rightBlock.evaluate((Result) item, context)) {
             return false;
           }
         } else {
@@ -113,24 +107,24 @@ public class ContainsAnyCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
-      Object rightValue = right.execute(currentRecord, ctx);
+      final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
       if (!MultiValue.isMultiValue(leftValue)) {
         return false;
       }
-      Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
+      final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
-        Object item = iter.next();
+        final Object item = iter.next();
         if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, ctx)) {
+          if (!rightBlock.evaluate((Identifiable) item, context)) {
             return false;
           }
         } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, ctx)) {
+          if (!rightBlock.evaluate((Result) item, context)) {
             return false;
           }
         } else {
@@ -142,7 +136,7 @@ public class ContainsAnyCondition extends BooleanExpression {
 
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" CONTAINSANY ");
     if (right != null) {
@@ -158,7 +152,7 @@ public class ContainsAnyCondition extends BooleanExpression {
     return left;
   }
 
-  public void setLeft(Expression left) {
+  public void setLeft(final Expression left) {
     this.left = left;
   }
 
@@ -166,66 +160,13 @@ public class ContainsAnyCondition extends BooleanExpression {
     return right;
   }
 
-  public void setRight(Expression right) {
+  public void setRight(final Expression right) {
     this.right = right;
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    if (left != null && !left.supportsBasicCalculation()) {
-      return false;
-    }
-    if (right != null && !right.supportsBasicCalculation()) {
-      return false;
-    }
-    return rightBlock == null || rightBlock.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (left != null && !left.supportsBasicCalculation()) {
-      total++;
-    }
-    if (right != null && !right.supportsBasicCalculation()) {
-      total++;
-    }
-    if (rightBlock != null && !rightBlock.supportsBasicCalculation()) {
-      total++;
-    }
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
-    if (left != null && !left.supportsBasicCalculation()) {
-      result.add(left);
-    }
-    if (right != null && !right.supportsBasicCalculation()) {
-      result.add(right);
-    }
-    if (rightBlock != null) {
-      result.addAll(rightBlock.getExternalCalculationConditions());
-    }
-    return result;
-  }
-
-  @Override
-  public boolean needsAliases(Set<String> aliases) {
-    if (left.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (right != null && right.needsAliases(aliases)) {
-      return true;
-    }
-    return rightBlock != null && rightBlock.needsAliases(aliases);
-  }
-
-  @Override
   public ContainsAnyCondition copy() {
-    ContainsAnyCondition result = new ContainsAnyCondition(-1);
+    final ContainsAnyCondition result = new ContainsAnyCondition(-1);
     result.left = left.copy();
     result.right = right == null ? null : right.copy();
     result.rightBlock = rightBlock == null ? null : rightBlock.copy();
@@ -233,82 +174,70 @@ public class ContainsAnyCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     left.extractSubQueries(collector);
-    if (right != null) {
+    if (right != null)
       right.extractSubQueries(collector);
-    }
-    if (rightBlock != null) {
+
+    if (rightBlock != null)
       rightBlock.extractSubQueries(collector);
-    }
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent()) {
-      return true;
-    }
-    if (right != null && right.refersToParent()) {
-      return true;
-    }
-    return rightBlock != null && rightBlock.refersToParent();
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    ContainsAnyCondition that = (ContainsAnyCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    return Objects.equals(rightBlock, that.rightBlock);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightBlock != null ? rightBlock.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, right, rightBlock };
   }
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
-    List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
-    List<String> rightBlockX = rightBlock == null ? null : rightBlock.getMatchPatternInvolvedAliases();
+    final List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
+    final List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
+    final List<String> rightBlockX = rightBlock == null ? null : rightBlock.getMatchPatternInvolvedAliases();
 
-    List<String> result = new ArrayList<String>();
-    if (leftX != null) {
+    final List<String> result = new ArrayList<String>();
+    if (leftX != null)
       result.addAll(leftX);
-    }
-    if (rightX != null) {
+
+    if (rightX != null)
       result.addAll(rightX);
-    }
-    if (rightBlockX != null) {
+
+    if (rightBlockX != null)
       result.addAll(rightBlockX);
-    }
 
     return result.isEmpty() ? null : result;
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
-      return false;
-    }
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, right, rightBlock };
+  }
 
-    if (right != null && !right.isCacheable()) {
-      return false;
+  @Override
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        return right.isEarlyCalculated(info.getContext());
+      }
     }
+    return false;
+  }
 
-    return rightBlock == null || rightBlock.isCacheable();
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    if (getRight() != null) {
+      return getRight();
+    } else {
+      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    }
+  }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    if (getRight() != null) {
+      return getRight();
+    } else {
+      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    }
   }
 }
 /* JavaCC - OriginalChecksum=7992ab9e8e812c6d9358ede8b67b4506 (do not edit this line) */

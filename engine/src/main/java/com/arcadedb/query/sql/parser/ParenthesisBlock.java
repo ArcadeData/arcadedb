@@ -27,46 +27,26 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class ParenthesisBlock extends BooleanExpression {
-
   BooleanExpression subElement;
 
-  public ParenthesisBlock(int id) {
+  public ParenthesisBlock(final int id) {
     super(id);
   }
 
-  public ParenthesisBlock(SqlParser p, int id) {
-    super(p, id);
+  @Override
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    return subElement.evaluate(currentRecord, context);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    return subElement.evaluate(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    return subElement.evaluate(currentRecord, context);
   }
 
-  @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    return subElement.evaluate(currentRecord, ctx);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("(");
     subElement.toString(params, builder);
     builder.append(" )");
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return subElement.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return subElement.getNumberOfExternalCalculations();
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return subElement.getExternalCalculationConditions();
   }
 
   @Override
@@ -75,42 +55,20 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
-    return subElement.needsAliases(aliases);
-  }
-
-  @Override
   public ParenthesisBlock copy() {
-    ParenthesisBlock result = new ParenthesisBlock(-1);
+    final ParenthesisBlock result = new ParenthesisBlock(-1);
     result.subElement = subElement.copy();
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     this.subElement.extractSubQueries(collector);
   }
 
   @Override
-  public boolean refersToParent() {
-    return subElement.refersToParent();
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    ParenthesisBlock that = (ParenthesisBlock) o;
-
-    return Objects.equals(subElement, that.subElement);
-  }
-
-  @Override
-  public int hashCode() {
-    return subElement != null ? subElement.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { subElement };
   }
 
   @Override
@@ -119,8 +77,13 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return subElement.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { subElement };
+  }
+
+  @Override
+  public boolean isAlwaysTrue() {
+    return subElement.isAlwaysTrue();
   }
 }
 /* JavaCC - OriginalChecksum=9a16b6cf7d051382acb94c45067631a9 (do not edit this line) */

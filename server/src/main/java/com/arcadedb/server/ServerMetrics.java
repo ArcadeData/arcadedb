@@ -18,7 +18,16 @@
  */
 package com.arcadedb.server;
 
+import com.codahale.metrics.Meter;
+import com.codahale.metrics.Timer;
+
+import java.util.*;
+
 public interface ServerMetrics {
+  SortedMap<String, Timer> getTimers();
+
+  SortedMap<String, Meter> getMeters();
+
   interface MetricMeter {
     void mark();
   }

@@ -42,17 +42,17 @@ public class SQLMethodKeys extends AbstractSQLMethod {
       return ((Map<?, ?>) ioResult).keySet();
 
     if (ioResult instanceof Document)
-      return Arrays.asList(((Document) ioResult).getPropertyNames());
+      return Collections.singletonList(((Document) ioResult).getPropertyNames());
 
     if (ioResult instanceof Result) {
-      Result res = (Result) ioResult;
+      final Result res = (Result) ioResult;
       return res.getPropertyNames();
     }
 
     if (ioResult instanceof Collection) {
-      List result = new ArrayList();
-      for (Object o : (Collection) ioResult) {
-        result.addAll((Collection) execute(iThis, iCurrentRecord, iContext, o, iParams));
+      final List<Object> result = new ArrayList<>();
+      for (final Object o : (Collection<Object>) ioResult) {
+        result.addAll((Collection<Object>) execute(iThis, iCurrentRecord, iContext, o, iParams));
       }
       return result;
     }

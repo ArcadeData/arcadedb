@@ -27,19 +27,8 @@ public class OperationDefinition extends Definition {
   protected VariableDefinitions variableDefinitions;
   protected Directives          directives;
 
-  public OperationDefinition(int id) {
+  public OperationDefinition(final int id) {
     super(id);
-  }
-
-  public OperationDefinition(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public SelectionSet getSelectionSet() {

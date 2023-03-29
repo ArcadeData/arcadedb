@@ -33,19 +33,20 @@ import java.util.*;
 public class SQLFunctionPercentile extends SQLFunctionAbstract {
   public static final String NAME = "percentile";
 
-  protected     List<Double> quantiles = new ArrayList<Double>();
-  private final List<Number> values    = new ArrayList<Number>();
+  protected final List<Double> quantiles = new ArrayList<Double>();
+  private final   List<Number> values    = new ArrayList<Number>();
 
   public SQLFunctionPercentile() {
-    this(NAME, 2, -1);
+    this(NAME);
   }
 
-  public SQLFunctionPercentile(final String iName, final int iMinParams, final int iMaxParams) {
+  public SQLFunctionPercentile(final String iName) {
     super(iName);
   }
 
   @Override
-  public Object execute(final Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
 
     if (quantiles.isEmpty()) { // set quantiles once
       for (int i = 1; i < iParams.length; ++i) {
@@ -56,7 +57,7 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
     if (iParams[0] instanceof Number) {
       addValue((Number) iParams[0]);
     } else if (MultiValue.isMultiValue(iParams[0])) {
-      for (Object n : MultiValue.getMultiValueIterable(iParams[0])) {
+      for (final Object n : MultiValue.getMultiValueIterable(iParams[0])) {
         addValue((Number) n);
       }
     }
@@ -78,19 +79,19 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
     return NAME + "(<field>, <quantile> [,<quantile>*])";
   }
 
-  private void addValue(Number value) {
+  private void addValue(final Number value) {
     if (value != null) {
       this.values.add(value);
     }
   }
 
-  private Object evaluate(List<Number> iValues) {
+  private Object evaluate(final List<Number> iValues) {
     if (iValues.isEmpty())  // result set is empty
       return null;
 
     if (quantiles.size() > 1) {
-      List<Number> results = new ArrayList<Number>(this.quantiles.size());
-      for (Double q : this.quantiles)
+      final List<Number> results = new ArrayList<Number>(this.quantiles.size());
+      for (final Double q : this.quantiles)
         results.add(this.evaluate(iValues, q));
 
       return results;
@@ -100,9 +101,9 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
 
   private Number evaluate(final List<Number> iValues, final double iQuantile) {
     iValues.sort((o1, o2) -> {
-        final double d1 = o1.doubleValue();
-        final double d2 = o2.doubleValue();
-        return Double.compare(d1, d2);
+      final double d1 = o1.doubleValue();
+      final double d2 = o2.doubleValue();
+      return Double.compare(d1, d2);
     });
 
     final double n = iValues.size();

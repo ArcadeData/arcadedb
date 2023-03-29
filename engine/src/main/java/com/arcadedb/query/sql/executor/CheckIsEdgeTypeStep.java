@@ -36,35 +36,34 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
 
   private final String targetClass;
 
-  private long cost = 0;
-
   boolean found = false;
 
   /**
    * @param targetClass      a type to be checked
-   * @param ctx              execution context
+   * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckIsEdgeTypeStep(String targetClass, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CheckIsEdgeTypeStep(final String targetClass, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetClass = targetClass;
 
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
         return new InternalResultSet();
       }
 
-      Database db = ctx.getDatabase();
+      final Database db = context.getDatabase();
 
-      Schema schema = db.getSchema();
+      final Schema schema = db.getSchema();
 
-      DocumentType targettypez = schema.getType(this.targetClass);
+      final DocumentType targettypez = schema.getType(this.targetClass);
       if (targettypez == null) {
         throw new CommandExecutionException("Type not found: " + this.targetClass);
       }
@@ -85,19 +84,14 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK USERTYPE HIERARCHY (E)");
     if (profilingEnabled) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
   }
 }

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.io.*;
+import java.util.*;
 
 public class Importer extends AbstractImporter {
   public Importer(final String[] args) {
@@ -38,7 +39,7 @@ public class Importer extends AbstractImporter {
     System.exit(0);
   }
 
-  public void load() {
+  public Map<String, Object> load() {
     source = null;
 
     try {
@@ -58,15 +59,17 @@ public class Importer extends AbstractImporter {
       if (database.isTransactionActive())
         database.commit();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ImportException("Error on parsing source '" + source + "'", e);
     } finally {
+      stopImporting();
       if (database != null) {
-        stopImporting();
         closeDatabase();
       }
       closeInputFile();
     }
+
+    return context.toMap();
   }
 
   protected void loadFromSource(final String url, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema) throws IOException {

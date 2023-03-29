@@ -24,7 +24,7 @@ import java.util.*;
 /**
  * Created by luigidellaquila on 06/07/16.
  */
-public interface ExecutionPlan extends Serializable{
+public interface ExecutionPlan extends Serializable {
 
   List<ExecutionStep> getSteps();
 

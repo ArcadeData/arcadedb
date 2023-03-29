@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.RangeIndex;
 
 /**
@@ -26,10 +25,10 @@ import com.arcadedb.index.RangeIndex;
  */
 public class FetchFromIndexValuesStep extends FetchFromIndexStep {
 
-  private boolean asc;
+  private final boolean asc;
 
-  public FetchFromIndexValuesStep(RangeIndex index, boolean asc, CommandContext ctx, boolean profilingEnabled) {
-    super(index, null, null, ctx, profilingEnabled);
+  public FetchFromIndexValuesStep(final RangeIndex index, final boolean asc, final CommandContext context, final boolean profilingEnabled) {
+    super(index, null, null, context, profilingEnabled);
     this.asc = asc;
   }
 
@@ -39,28 +38,11 @@ public class FetchFromIndexValuesStep extends FetchFromIndexStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     if (isOrderAsc()) {
       return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VALUES ASC " + index.getName();
     } else {
       return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VALUES DESC " + index.getName();
-    }
-  }
-
-  @Override
-  public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
-    result.setProperty("asc", asc);
-    return result;
-  }
-
-  @Override
-  public void deserialize(Result fromResult) {
-    try {
-      super.deserialize(fromResult);
-      this.asc = fromResult.getProperty("asc");
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
     }
   }
 

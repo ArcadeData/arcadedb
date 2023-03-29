@@ -34,10 +34,10 @@ public class SQLFunctionIntersectTest {
   public void intersectInline() {
     final SQLFunctionIntersect function = new SQLFunctionIntersect();
 
-    List<Integer> coll1 = Arrays.asList(1, 1, 2, 3, 4, 5, 5, 6, 7, 9, 0, 1, 1, 1);
-    List<Integer> coll2 = Arrays.asList(1, 3, 0, 8);
+    final List<Integer> coll1 = Arrays.asList(1, 1, 2, 3, 4, 5, 5, 6, 7, 9, 0, 1, 1, 1);
+    final List<Integer> coll2 = Arrays.asList(1, 3, 0, 8);
 
-    ArrayList<Object> result = (ArrayList<Object>) function.execute(null, null, null, new Object[] { coll1, coll2 }, new BasicCommandContext());
+    final ArrayList<Object> result = (ArrayList<Object>) function.execute(null, null, null, new Object[] { coll1, coll2 }, new BasicCommandContext());
 
     Assertions.assertEquals(new HashSet<>(result), new HashSet<>(Arrays.asList(1, 3, 0)));
   }
@@ -46,8 +46,8 @@ public class SQLFunctionIntersectTest {
   public void intersectNotInline() {
     final SQLFunctionIntersect function = new SQLFunctionIntersect();
 
-    List<Integer> coll1 = Arrays.asList(1, 1, 2, 3, 4, 5, 5, 6, 7, 9, 0, 1, 1, 1);
-    List<Integer> coll2 = Arrays.asList(1, 3, 0, 8);
+    final List<Integer> coll1 = Arrays.asList(1, 1, 2, 3, 4, 5, 5, 6, 7, 9, 0, 1, 1, 1);
+    final List<Integer> coll2 = Arrays.asList(1, 3, 0, 8);
 
     function.execute(null, null, null, new Object[] { coll1 }, new BasicCommandContext());
     function.execute(null, null, null, new Object[] { coll2 }, new BasicCommandContext());

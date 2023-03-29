@@ -1,20 +1,22 @@
 /*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright 2023 Arcade Data Ltd
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
- * SPDX-License-Identifier: Apache-2.0
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 package com.arcadedb.gremlin.integration.importer;
 
@@ -46,7 +48,7 @@ public class GraphMLImporterIT {
   public void testImportCompressedOK() {
     final URL inputFile = GraphMLImporterIT.class.getClassLoader().getResource(FILE);
 
-    try (Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
 
       final Importer importer = new Importer(database, inputFile.getFile());
       importer.load();
@@ -57,7 +59,7 @@ public class GraphMLImporterIT {
           new HashSet<>(Arrays.asList("Friend", "Person")),//
           database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
-      for (DocumentType type : database.getSchema().getTypes()) {
+      for (final DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
       }
     }
@@ -76,7 +78,7 @@ public class GraphMLImporterIT {
       }
     }
 
-    try (Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
 
       final Importer importer = new Importer(database, UNCOMPRESSED_FILE);
       importer.load();
@@ -87,7 +89,7 @@ public class GraphMLImporterIT {
           new HashSet<>(Arrays.asList("Friend", "Person")),//
           database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
-      for (DocumentType type : database.getSchema().getTypes()) {
+      for (final DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
       }
     }
@@ -97,7 +99,7 @@ public class GraphMLImporterIT {
   public void testImportFromSQL() {
     final URL inputFile = GraphMLImporterIT.class.getClassLoader().getResource(FILE);
 
-    try (Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
 
       database.command("sql", "import database file://" + inputFile.getFile() + " WITH commitEvery = 1000");
 
@@ -107,7 +109,7 @@ public class GraphMLImporterIT {
           new HashSet<>(Arrays.asList("Friend", "Person")),//
           database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
-      for (DocumentType type : database.getSchema().getTypes()) {
+      for (final DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
       }
     }

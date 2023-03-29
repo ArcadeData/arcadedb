@@ -31,8 +31,6 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 
@@ -53,10 +51,6 @@ public class SelectStatement extends Statement {
 
   public SelectStatement(final int id) {
     super(id);
-  }
-
-  public SelectStatement(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public Projection getProjection() {
@@ -156,31 +150,28 @@ public class SelectStatement extends Statement {
 
   @Override
   public boolean executionPlanCanBeCached() {
-    if (originalStatement == null) {
+    if (originalStatementAsString == null && originalStatement == null)
       return false;
-    }
-    if (this.target != null && !this.target.isCacheable()) {
-      return false;
-    }
 
-    if (this.letClause != null && !this.letClause.isCacheable()) {
+    if (this.target != null && !this.target.isCacheable())
       return false;
-    }
 
-    if (projection != null && !this.projection.isCacheable()) {
+    if (this.letClause != null && !this.letClause.isCacheable())
       return false;
-    }
+
+    if (projection != null && !this.projection.isCacheable())
+      return false;
 
     return whereClause == null || whereClause.isCacheable();
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentcontext != null) {
+      context.setParentWithoutOverridingChild(parentcontext);
     }
-    ctx.setDatabase(db);
+    context.setDatabase(db);
     final Map<String, Object> params = new HashMap<>();
     if (args != null) {
       for (int i = 0; i < args.length; i++) {
@@ -190,117 +181,82 @@ public class SelectStatement extends Statement {
 
     setProfilingConstraints((DatabaseInternal) db);
 
-    ctx.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    context.setInputParameters(params);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
     final LocalResultSet result = new LocalResultSet(executionPlan);
     return result;
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentCtx, boolean usePlanCache) {
-    final BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
-      ctx.setParentWithoutOverridingChild(parentCtx);
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext, final boolean usePlanCache) {
+    final BasicCommandContext context = new BasicCommandContext();
+    if (parentContext != null) {
+      context.setParentWithoutOverridingChild(parentContext);
     }
-    ctx.setDatabase(db);
+    context.setDatabase(db);
 
     setProfilingConstraints((DatabaseInternal) db);
 
-    ctx.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
-    final LocalResultSet result = new LocalResultSet(executionPlan);
-    return result;
+    boolean profileExecution = false;
+    if (params != null && params.containsKey("$profileExecution")) {
+      profileExecution = (Boolean) params.remove("$profileExecution");
+    }
+
+    context.setInputParameters(params);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context, profileExecution);
+    return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx, enableProfiling);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+    final SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
+    return planner.createExecutionPlan(context, enableProfiling);
   }
 
   @Override
   public SelectStatement copy() {
-    SelectStatement result = null;
     try {
-      result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
-    } catch (Exception e) {
+      final SelectStatement result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      result.originalStatement = originalStatement;
+      result.target = target == null ? null : target.copy();
+      result.projection = projection == null ? null : projection.copy();
+      result.whereClause = whereClause == null ? null : whereClause.copy();
+      result.groupBy = groupBy == null ? null : groupBy.copy();
+      result.orderBy = orderBy == null ? null : orderBy.copy();
+      result.unwind = unwind == null ? null : unwind.copy();
+      result.skip = skip == null ? null : skip.copy();
+      result.limit = limit == null ? null : limit.copy();
+      result.letClause = letClause == null ? null : letClause.copy();
+      result.timeout = timeout == null ? null : timeout.copy();
+      return result;
+    } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }
-    result.originalStatement = originalStatement;
-    result.target = target == null ? null : target.copy();
-    result.projection = projection == null ? null : projection.copy();
-    result.whereClause = whereClause == null ? null : whereClause.copy();
-    result.groupBy = groupBy == null ? null : groupBy.copy();
-    result.orderBy = orderBy == null ? null : orderBy.copy();
-    result.unwind = unwind == null ? null : unwind.copy();
-    result.skip = skip == null ? null : skip.copy();
-    result.limit = limit == null ? null : limit.copy();
-    result.letClause = letClause == null ? null : letClause.copy();
-    result.timeout = timeout == null ? null : timeout.copy();
-
-    return result;
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    SelectStatement that = (SelectStatement) o;
-
-    if (!Objects.equals(target, that.target))
-      return false;
-    if (!Objects.equals(projection, that.projection))
-      return false;
-    if (!Objects.equals(whereClause, that.whereClause))
-      return false;
-    if (!Objects.equals(groupBy, that.groupBy))
-      return false;
-    if (!Objects.equals(orderBy, that.orderBy))
-      return false;
-    if (!Objects.equals(unwind, that.unwind))
-      return false;
-    if (!Objects.equals(skip, that.skip))
-      return false;
-    if (!Objects.equals(limit, that.limit))
-      return false;
-    if (!Objects.equals(letClause, that.letClause))
-      return false;
-    return Objects.equals(timeout, that.timeout);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = target != null ? target.hashCode() : 0;
-    result = 31 * result + (projection != null ? projection.hashCode() : 0);
-    result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
-    result = 31 * result + (groupBy != null ? groupBy.hashCode() : 0);
-    result = 31 * result + (orderBy != null ? orderBy.hashCode() : 0);
-    result = 31 * result + (unwind != null ? unwind.hashCode() : 0);
-    result = 31 * result + (skip != null ? skip.hashCode() : 0);
-    result = 31 * result + (limit != null ? limit.hashCode() : 0);
-    result = 31 * result + (letClause != null ? letClause.hashCode() : 0);
-    result = 31 * result + (timeout != null ? timeout.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { target, projection, whereClause, groupBy, orderBy, unwind, skip, limit, letClause, timeout };
   }
 
   @Override
   public boolean refersToParent() {
-    //no FROM, if a subquery refers to parent it does not make sense, so that reference will be just ignored
+    //no FROM, if a sub-query refers to parent it does not make sense, so that reference will be just ignored
 
-    if (projection != null && projection.refersToParent()) {
+    if (projection != null && projection.refersToParent())
       return true;
-    }
-    if (whereClause != null && whereClause.refersToParent()) {
+
+    if (target != null && target.refersToParent())
       return true;
-    }
-    if (groupBy != null && groupBy.refersToParent()) {
+
+    if (whereClause != null && whereClause.refersToParent())
       return true;
-    }
-    if (orderBy != null && orderBy.refersToParent()) {
+
+    if (groupBy != null && groupBy.refersToParent())
       return true;
-    }
+
+    if (orderBy != null && orderBy.refersToParent())
+      return true;
+
     return letClause != null && letClause.refersToParent();
   }
 
@@ -313,86 +269,8 @@ public class SelectStatement extends Statement {
     return true;
   }
 
-  public void setUnwind(Unwind unwind) {
+  public void setUnwind(final Unwind unwind) {
     this.unwind = unwind;
-  }
-
-  public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
-    if (target != null) {
-      result.setProperty("target", target.serialize());
-    }
-    if (projection != null) {
-      result.setProperty("projection", projection.serialize());
-    }
-    if (whereClause != null) {
-      result.setProperty("whereClause", whereClause.serialize());
-    }
-    if (groupBy != null) {
-      result.setProperty("groupBy", groupBy.serialize());
-    }
-    if (orderBy != null) {
-      result.setProperty("orderBy", orderBy.serialize());
-    }
-    if (unwind != null) {
-      result.setProperty("unwind", unwind.serialize());
-    }
-    if (skip != null) {
-      result.setProperty("skip", skip.serialize());
-    }
-    if (limit != null) {
-      result.setProperty("limit", limit.serialize());
-    }
-    if (letClause != null) {
-      result.setProperty("letClause", letClause.serialize());
-    }
-    if (timeout != null) {
-      result.setProperty("timeout", timeout.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("target") != null) {
-      target = new FromClause(-1);
-      target.deserialize(fromResult.getProperty("target"));
-    }
-    if (fromResult.getProperty("projection") != null) {
-      projection = new Projection(-1);
-      projection.deserialize(fromResult.getProperty("projection"));
-    }
-    if (fromResult.getProperty("whereClause") != null) {
-      whereClause = new WhereClause(-1);
-      whereClause.deserialize(fromResult.getProperty("whereClause"));
-    }
-    if (fromResult.getProperty("groupBy") != null) {
-      groupBy = new GroupBy(-1);
-      groupBy.deserialize(fromResult.getProperty("groupBy"));
-    }
-    if (fromResult.getProperty("orderBy") != null) {
-      orderBy = new OrderBy(-1);
-      orderBy.deserialize(fromResult.getProperty("orderBy"));
-    }
-    if (fromResult.getProperty("unwind") != null) {
-      unwind = new Unwind(-1);
-      unwind.deserialize(fromResult.getProperty("unwind"));
-    }
-    if (fromResult.getProperty("skip") != null) {
-      skip = new Skip(-1);
-      skip.deserialize(fromResult.getProperty("skip"));
-    }
-    if (fromResult.getProperty("limit") != null) {
-      limit = new Limit(-1);
-      limit.deserialize(fromResult.getProperty("limit"));
-    }
-    if (fromResult.getProperty("letClause") != null) {
-      letClause = new LetClause(-1);
-      letClause.deserialize(fromResult.getProperty("letClause"));
-    }
-    if (fromResult.getProperty("timeout") != null) {
-      timeout = new Timeout(-1);
-      timeout.deserialize(fromResult.getProperty("timeout"));
-    }
   }
 
   private void setProfilingConstraints(final DatabaseInternal db) {

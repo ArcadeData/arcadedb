@@ -70,7 +70,7 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
         // RESET POSITION IN PAGE AFTER THE 1ST PAGE
         posInPage = -1;
 
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new IndexException("Error on iterating cursor on compacted index", e);
       }
     }

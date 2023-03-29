@@ -23,7 +23,7 @@ public class NeedRetryException extends ArcadeDBException {
     super(s);
   }
 
-  public NeedRetryException(String s, Throwable e) {
+  public NeedRetryException(final String s, final Throwable e) {
     super(s, e);
   }
 }

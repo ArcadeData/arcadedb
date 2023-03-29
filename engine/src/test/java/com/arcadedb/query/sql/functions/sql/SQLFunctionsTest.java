@@ -23,15 +23,18 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
+import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
-import com.arcadedb.query.sql.function.text.SQLMethodHash;
+import com.arcadedb.query.sql.method.SQLMethodHash;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -51,20 +54,20 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryMax() {
-    ResultSet result = database.command("sql", "select max(id) as max from Account");
+    final ResultSet result = database.command("sql", "select max(id) as max from Account");
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("max"));
     }
   }
 
   @Test
   public void queryMaxInline() {
-    ResultSet result = database.command("sql", "select max(1,2,7,0,-2,3) as max");
+    final ResultSet result = database.command("sql", "select max(1,2,7,0,-2,3) as max");
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("max"));
 
       Assertions.assertEquals(((Number) d.getProperty("max")).intValue(), 7);
@@ -73,10 +76,10 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryMin() {
-    ResultSet result = database.command("sql", "select min(id) as min from Account");
+    final ResultSet result = database.command("sql", "select min(id) as min from Account");
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("min"));
       Assertions.assertEquals(((Number) d.getProperty("min")).longValue(), 0l);
     }
@@ -84,10 +87,10 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryMinInline() {
-    ResultSet result = database.command("sql", "select min(1,2,7,0,-2,3) as min");
+    final ResultSet result = database.command("sql", "select min(1,2,7,0,-2,3) as min");
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("min"));
       Assertions.assertEquals(((Number) d.getProperty("min")).intValue(), -2);
     }
@@ -95,20 +98,20 @@ public class SQLFunctionsTest {
 
   @Test
   public void querySum() {
-    ResultSet result = database.command("sql", "select sum(id) as sum from Account");
+    final ResultSet result = database.command("sql", "select sum(id) as sum from Account");
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("sum"));
     }
   }
 
   @Test
   public void queryCount() {
-    ResultSet result = database.command("sql", "select count(*) as total from Account");
+    final ResultSet result = database.command("sql", "select count(*) as total from Account");
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("total"));
       Assertions.assertTrue(((Number) d.getProperty("total")).longValue() > 0);
     }
@@ -116,7 +119,7 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryCountWithConditions() {
-    DocumentType indexed = database.getSchema().getOrCreateDocumentType("Indexed");
+    final DocumentType indexed = database.getSchema().getOrCreateDocumentType("Indexed");
     indexed.createProperty("key", Type.STRING);
 
     database.transaction(() -> {
@@ -125,11 +128,11 @@ public class SQLFunctionsTest {
       database.newDocument("Indexed").set("key", "one").save();
       database.newDocument("Indexed").set("key", "two").save();
 
-      ResultSet result = database.command("sql", "select count(*) as total from Indexed where key > 'one'");
+      final ResultSet result = database.command("sql", "select count(*) as total from Indexed where key > 'one'");
 
       Assertions.assertTrue(result.hasNext());
-      for (ResultSet it = result; it.hasNext(); ) {
-        Result d = it.next();
+      for (final ResultSet it = result; it.hasNext(); ) {
+        final Result d = it.next();
         Assertions.assertNotNull(d.getProperty("total"));
         Assertions.assertTrue(((Number) d.getProperty("total")).longValue() > 0);
       }
@@ -138,14 +141,14 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryDistinct() {
-    ResultSet result = database.command("sql", "select distinct(name) as name from City");
+    final ResultSet result = database.command("sql", "select distinct(name) as name from City");
 
     Assertions.assertTrue(result.hasNext());
 
-    Set<String> cities = new HashSet<>();
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result city = it.next();
-      String cityName = city.getProperty("name");
+    final Set<String> cities = new HashSet<>();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result city = it.next();
+      final String cityName = city.getProperty("name");
       Assertions.assertFalse(cities.contains(cityName));
       cities.add(cityName);
     }
@@ -153,12 +156,12 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryFunctionRenamed() {
-    ResultSet result = database.command("sql", "select distinct(name) from City");
+    final ResultSet result = database.command("sql", "select distinct(name) from City");
 
     Assertions.assertTrue(result.hasNext());
 
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result city = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result city = it.next();
       Assertions.assertTrue(city.hasProperty("name"));
     }
   }
@@ -167,25 +170,25 @@ public class SQLFunctionsTest {
   @Test
   public void queryUnionAllAsAggregationNotRemoveDuplicates() {
     ResultSet result = database.command("sql", "select from City");
-    int count = (int) result.countEntries();
+    final int count = (int) CollectionUtils.countEntries(result);
 
     result = database.command("sql", "select unionAll(name) as name from City");
     Assertions.assertTrue(result.hasNext());
-    Collection<Object> citiesFound = result.next().getProperty("name");
+    final Collection<Object> citiesFound = result.next().getProperty("name");
     Assertions.assertEquals(citiesFound.size(), count);
   }
 
   @Test
   public void querySetNotDuplicates() {
-    ResultSet result = database.command("sql", "select set(name) as name from City");
+    final ResultSet result = database.command("sql", "select set(name) as name from City");
 
     Assertions.assertTrue(result.hasNext());
 
-    Collection<Object> citiesFound = result.next().getProperty("name");
+    final Collection<Object> citiesFound = result.next().getProperty("name");
     Assertions.assertTrue(citiesFound.size() > 1);
 
-    Set<String> cities = new HashSet<String>();
-    for (Object city : citiesFound) {
+    final Set<String> cities = new HashSet<String>();
+    for (final Object city : citiesFound) {
       Assertions.assertFalse(cities.contains(city.toString()));
       cities.add(city.toString());
     }
@@ -193,25 +196,25 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryList() {
-    ResultSet result = database.command("sql", "select list(name) as names from City");
+    final ResultSet result = database.command("sql", "select list(name) as names from City");
 
     Assertions.assertTrue(result.hasNext());
 
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
-      List<Object> citiesFound = d.getProperty("names");
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
+      final List<Object> citiesFound = d.getProperty("names");
       Assertions.assertTrue(citiesFound.size() > 1);
     }
   }
 
   @Test
   public void testSelectMap() {
-    ResultSet result = database.query("sql", "select list( 1, 4, 5.00, 'john', map( 'kAA', 'vAA' ) ) as myresult");
+    final ResultSet result = database.query("sql", "select list( 1, 4, 5.00, 'john', map( 'kAA', 'vAA' ) ) as myresult");
 
     Assertions.assertTrue(result.hasNext());
 
-    Result document = result.next();
-    List myresult = document.getProperty("myresult");
+    final Result document = result.next();
+    final List myresult = document.getProperty("myresult");
     Assertions.assertNotNull(myresult);
 
     Assertions.assertTrue(myresult.remove(Integer.valueOf(1)));
@@ -222,9 +225,9 @@ public class SQLFunctionsTest {
     Assertions.assertEquals(myresult.size(), 1);
 
     Assertions.assertTrue(myresult.get(0) instanceof Map, "The object is: " + myresult.getClass());
-    Map map = (Map) myresult.get(0);
+    final Map map = (Map) myresult.get(0);
 
-    String value = (String) map.get("kAA");
+    final String value = (String) map.get("kAA");
     Assertions.assertEquals(value, "vAA");
 
     Assertions.assertEquals(map.size(), 1);
@@ -232,35 +235,35 @@ public class SQLFunctionsTest {
 
   @Test
   public void querySet() {
-    ResultSet result = database.command("sql", "select set(name) as names from City");
+    final ResultSet result = database.command("sql", "select set(name) as names from City");
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
-      Set<Object> citiesFound = d.getProperty("names");
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
+      final Set<Object> citiesFound = d.getProperty("names");
       Assertions.assertTrue(citiesFound.size() > 1);
     }
   }
 
   @Test
   public void queryMap() {
-    ResultSet result = database.command("sql", "select map(name, country.name) as names from City");
+    final ResultSet result = database.command("sql", "select map(name, country.name) as names from City");
 
     Assertions.assertTrue(result.hasNext());
 
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
-      Map<Object, Object> citiesFound = d.getProperty("names");
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
+      final Map<Object, Object> citiesFound = d.getProperty("names");
       Assertions.assertEquals(1, citiesFound.size());
     }
   }
 
   @Test
   public void queryUnionAllAsInline() {
-    ResultSet result = database.command("sql", "select unionAll(name, country) as edges from City");
+    final ResultSet result = database.command("sql", "select unionAll(name, country) as edges from City");
 
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertEquals(1, d.getPropertyNames().size());
       Assertions.assertTrue(d.hasProperty("edges"));
     }
@@ -268,11 +271,11 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryComposedAggregates() {
-    ResultSet result = database.command("sql", "select MIN(id) as min, max(id) as max, AVG(id) as average, sum(id) as total from Account");
+    final ResultSet result = database.command("sql", "select MIN(id) as min, max(id) as max, AVG(id) as average, sum(id) as total from Account");
 
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("min"));
       Assertions.assertNotNull(d.getProperty("max"));
       Assertions.assertNotNull(d.getProperty("average"));
@@ -287,22 +290,22 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryFormat() {
-    ResultSet result = database.command("sql", "select format('%d - %s (%s)', nr, street, type, dummy ) as output from Account");
+    final ResultSet result = database.command("sql", "select format('%d - %s (%s)', nr, street, type, dummy ) as output from Account");
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("output"));
     }
   }
 
   @Test
   public void querySysdateNoFormat() {
-    ResultSet result = database.command("sql", "select sysdate() as date from Account");
+    final ResultSet result = database.command("sql", "select sysdate() as date from Account");
 
     Assertions.assertTrue(result.hasNext());
     Object lastDate = null;
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("date"));
 
       if (lastDate != null)
@@ -314,12 +317,12 @@ public class SQLFunctionsTest {
 
   @Test
   public void querySysdateWithFormat() {
-    ResultSet result = database.command("sql", "select sysdate('dd-MM-yyyy') as date from Account");
+    ResultSet result = database.command("sql", "select sysdate().format('dd-MM-yyyy') as date from Account");
 
     Assertions.assertTrue(result.hasNext());
     Object lastDate = null;
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
 
       final String date = d.getProperty("date");
 
@@ -332,12 +335,12 @@ public class SQLFunctionsTest {
       lastDate = d.getProperty("date");
     }
 
-    result = database.command("sql", "select sysdate('yyyy-MM-dd HH:mm:ss') as date");
+    result = database.command("sql", "select sysdate().format('yyyy-MM-dd HH:mm:ss') as date");
 
     Assertions.assertTrue(result.hasNext());
     lastDate = null;
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
 
       final String date = d.getProperty("date");
 
@@ -350,12 +353,12 @@ public class SQLFunctionsTest {
       lastDate = d.getProperty("date");
     }
 
-    result = database.command("sql", "select sysdate('yyyy-MM-dd HH:mm:ss', 'GMT-5') as date");
+    result = database.command("sql", "select sysdate().format('yyyy-MM-dd HH:mm:ss', 'GMT-5') as date");
 
     Assertions.assertTrue(result.hasNext());
     lastDate = null;
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
 
       final String date = d.getProperty("date");
 
@@ -373,21 +376,21 @@ public class SQLFunctionsTest {
   public void queryDate() {
     ResultSet result = database.command("sql", "select count(*) as tot from Account");
     Assertions.assertTrue(result.hasNext());
-    int tot = ((Number) result.next().getProperty("tot")).intValue();
+    final int tot = ((Number) result.next().getProperty("tot")).intValue();
 
     database.transaction(() -> {
-      ResultSet result2 = database.command("sql", "update Account set created = date()");
+      final ResultSet result2 = database.command("sql", "update Account set created = date()");
       Assertions.assertEquals(tot, (Long) result2.next().getProperty("count"));
     });
 
-    String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
-    SimpleDateFormat dateFormat = new SimpleDateFormat(pattern);
+    final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+    final SimpleDateFormat dateFormat = new SimpleDateFormat(pattern);
 
     result = database.command("sql", "select from Account where created <= date('" + dateFormat.format(new Date()) + "', \"" + pattern + "\")");
 
     int count = 0;
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("created"));
       ++count;
     }
@@ -399,21 +402,22 @@ public class SQLFunctionsTest {
     try {
       database.command("sql", "select blaaaa(salary) as max from Account");
       Assertions.fail();
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       // EXPECTED
     }
   }
 
   @Test
   public void queryCustomFunction() {
-    SQLEngine.getInstance().getFunctionFactory().register(new SQLFunctionAbstract("bigger") {
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("bigger") {
       @Override
       public String getSyntax() {
         return "bigger(<first>, <second>)";
       }
 
       @Override
-      public Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
+      public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+          final CommandContext iContext) {
         if (iParams[0] == null || iParams[1] == null)
           // CHECK BOTH EXPECTED PARAMETERS
           return null;
@@ -430,26 +434,26 @@ public class SQLFunctionsTest {
       }
     });
 
-    ResultSet result = database.command("sql", "select from Account where bigger(id,1000) = 1000");
+    final ResultSet result = database.command("sql", "select from Account where bigger(id,1000) = 1000");
 
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertTrue((Integer) d.getProperty("id") <= 1000);
     }
 
-    SQLEngine.getInstance().getFunctionFactory().unregister("bigger");
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().unregister("bigger");
   }
 
   @Test
   public void queryAsLong() {
-    long moreThanInteger = 1 + (long) Integer.MAX_VALUE;
-    String sql = "select numberString.asLong() as value from ( select '" + moreThanInteger + "' as numberString from Account ) limit 1";
-    ResultSet result = database.command("sql", sql);
+    final long moreThanInteger = 1 + (long) Integer.MAX_VALUE;
+    final String sql = "select numberString.asLong() as value from ( select '" + moreThanInteger + "' as numberString from Account ) limit 1";
+    final ResultSet result = database.command("sql", sql);
 
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("value"));
       Assertions.assertTrue(d.getProperty("value") instanceof Long);
       Assertions.assertEquals(moreThanInteger, (Long) d.getProperty("value"));
@@ -458,11 +462,11 @@ public class SQLFunctionsTest {
 
   @Test
   public void testHashMethod() throws UnsupportedEncodingException, NoSuchAlgorithmException {
-    ResultSet result = database.command("sql", "select name, name.hash() as n256, name.hash('sha-512') as n512 from City");
+    final ResultSet result = database.command("sql", "select name, name.hash() as n256, name.hash('sha-512') as n512 from City");
 
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       final String name = d.getProperty("name");
 
       Assertions.assertEquals(SQLMethodHash.createHash(name, "SHA-256"), d.getProperty("n256"));
@@ -472,7 +476,7 @@ public class SQLFunctionsTest {
 
   @Test
   public void testFirstFunction() {
-    List<Long> sequence = new ArrayList<>(100);
+    final List<Long> sequence = new ArrayList<>(100);
     for (long i = 0; i < 100; ++i) {
       sequence.add(i);
     }
@@ -482,7 +486,7 @@ public class SQLFunctionsTest {
       database.newDocument("V").set("sequence", sequence).save();
     });
 
-    ResultSet result = database.command("sql", "select first(sequence) as first from V where sequence is not null");
+    final ResultSet result = database.command("sql", "select first(sequence) as first from V where sequence is not null");
 
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals(0, (Long) result.next().getProperty("first"));
@@ -493,7 +497,7 @@ public class SQLFunctionsTest {
   @Test
   public void testFirstAndLastFunctionsWithMultipleValues() {
     database.transaction(() -> {
-      database.execute("sql",//
+      database.command("sqlscript",//
           "CREATE DOCUMENT TYPE mytype;\n" +//
               "INSERT INTO mytype SET value = 1;\n" +//
               "INSERT INTO mytype SET value = [1,2,3];\n" +//
@@ -501,12 +505,12 @@ public class SQLFunctionsTest {
               "INSERT INTO mytype SET value = map(\"a\",1,\"b\",2);");
     });
 
-    ResultSet result = database.query("sql", "SELECT first(value) as first, last(value) as last FROM mytype");
+    final ResultSet result = database.query("sql", "SELECT first(value) as first, last(value) as last FROM mytype");
 
-    Object[] array = result.stream().toArray();
+    final Object[] array = result.stream().toArray();
 
     Assertions.assertEquals(4, array.length);
-    for (Object r : array) {
+    for (final Object r : array) {
       ((Result) r).hasProperty("first");
       Assertions.assertNotNull(((Result) r).getProperty("first"));
 
@@ -517,7 +521,7 @@ public class SQLFunctionsTest {
 
   @Test
   public void testLastFunction() {
-    List<Long> sequence = new ArrayList<Long>(100);
+    final List<Long> sequence = new ArrayList<Long>(100);
     for (long i = 0; i < 100; ++i) {
       sequence.add(i);
     }
@@ -528,7 +532,7 @@ public class SQLFunctionsTest {
       database.newDocument("V").set("sequence2", sequence).save();
     });
 
-    ResultSet result = database.command("sql", "select last(sequence2) as last from V where sequence2 is not null");
+    final ResultSet result = database.command("sql", "select last(sequence2) as last from V where sequence2 is not null");
 
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals(99, (Long) result.next().getProperty("last"));
@@ -538,22 +542,34 @@ public class SQLFunctionsTest {
 
   @Test
   public void querySplit() {
-    String sql = "select v.split('-') as value from ( select '1-2-3' as v ) limit 1";
+    final String sql = "select v.split('-') as value from ( select '1-2-3' as v ) limit 1";
 
-    ResultSet result = database.command("sql", sql);
+    final ResultSet result = database.command("sql", sql);
 
     Assertions.assertTrue(result.hasNext());
-    for (ResultSet it = result; it.hasNext(); ) {
-      Result d = it.next();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
       Assertions.assertNotNull(d.getProperty("value"));
       Assertions.assertTrue(d.getProperty("value").getClass().isArray());
 
-      Object[] array = d.getProperty("value");
+      final Object[] array = d.getProperty("value");
 
       Assertions.assertEquals(array.length, 3);
       Assertions.assertEquals(array[0], "1");
       Assertions.assertEquals(array[1], "2");
       Assertions.assertEquals(array[2], "3");
+    }
+  }
+
+  @Test
+  public void CheckAllFunctions() {
+    final DefaultSQLFunctionFactory fFactory = ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory();
+    for (String fName : fFactory.getFunctionNames()) {
+      final SQLFunction f = fFactory.getFunctionInstance(fName);
+      Assertions.assertNotNull(f);
+
+      Assertions.assertFalse(f.getName().isEmpty());
+      Assertions.assertFalse(f.getSyntax().isEmpty());
     }
   }
 
@@ -573,8 +589,8 @@ public class SQLFunctionsTest {
     database.getSchema().createDocumentType("City");
     database.getSchema().createDocumentType("Country");
     database.transaction(() -> {
-      MutableDocument italy = database.newDocument("Country").set("name", "Italy").save();
-      MutableDocument usa = database.newDocument("Country").set("name", "USA").save();
+      final MutableDocument italy = database.newDocument("Country").set("name", "Italy").save();
+      final MutableDocument usa = database.newDocument("Country").set("name", "USA").save();
 
       database.newDocument("City").set("name", "Rome").set("country", italy).save();
       database.newDocument("City").set("name", "Grosseto").set("country", italy).save();

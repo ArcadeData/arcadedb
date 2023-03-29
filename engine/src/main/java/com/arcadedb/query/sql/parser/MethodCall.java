@@ -22,10 +22,9 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.query.sql.executor.SQLMethod;
@@ -35,7 +34,7 @@ import java.util.stream.*;
 
 public class MethodCall extends SimpleNode {
 
-  static Map<String, String> bidirectionalMethods = Map.of(//
+  static final Map<String, String> bidirectionalMethods = Map.of(//
       "out", "in",//
       "in", "out", //
       "both", "both", //
@@ -51,12 +50,8 @@ public class MethodCall extends SimpleNode {
 
   private Boolean calculatedIsGraph = null;
 
-  public MethodCall(int id) {
+  public MethodCall(final int id) {
     super(id);
-  }
-
-  public MethodCall(SqlParser p, int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -64,7 +59,7 @@ public class MethodCall extends SimpleNode {
     methodName.toString(params, builder);
     builder.append("(");
     boolean first = true;
-    for (Expression param : this.params) {
+    for (final Expression param : this.params) {
       if (!first) {
         builder.append(", ");
       }
@@ -78,83 +73,73 @@ public class MethodCall extends SimpleNode {
     return bidirectionalMethods.containsKey(methodName.getStringValue().toLowerCase(Locale.ENGLISH));
   }
 
-  public Object execute(Object targetObjects, CommandContext ctx) {
-    return execute(targetObjects, ctx, methodName.getStringValue(), params, null);
+  public Object execute(final Object targetObjects, final CommandContext context) {
+    return execute(targetObjects, context, methodName.getStringValue(), params, null);
   }
 
-  public Object execute(Object targetObjects, Iterable<Identifiable> iPossibleResults, CommandContext ctx) {
-    return execute(targetObjects, ctx, methodName.getStringValue(), params, iPossibleResults);
+  public Object execute(final Object targetObjects, final Iterable<Identifiable> iPossibleResults, final CommandContext context) {
+    return execute(targetObjects, context, methodName.getStringValue(), params, iPossibleResults);
   }
 
-  private Object execute(final Object targetObjects, final CommandContext ctx, final String name, final List<Expression> iParams,
+  private Object execute(final Object targetObjects, final CommandContext context, final String name, final List<Expression> iParams,
       final Iterable<Identifiable> iPossibleResults) {
     final List<Object> paramValues = new ArrayList<Object>();
-    Object val = ctx.getVariable("$current");
+    Object val = context.getVariable("current");
     if (val == null && targetObjects == null) {
       return null;
     }
-    for (Expression expr : iParams) {
+    for (final Expression expr : iParams) {
       if (val instanceof Identifiable) {
-        paramValues.add(expr.execute((Identifiable) val, ctx));
+        paramValues.add(expr.execute((Identifiable) val, context));
       } else if (val instanceof Result) {
-        paramValues.add(expr.execute((Result) val, ctx));
+        paramValues.add(expr.execute((Result) val, context));
       } else if (targetObjects instanceof Identifiable) {
-        paramValues.add(expr.execute((Identifiable) targetObjects, ctx));
+        paramValues.add(expr.execute((Identifiable) targetObjects, context));
       } else if (targetObjects instanceof Result) {
-        paramValues.add(expr.execute((Result) targetObjects, ctx));
+        paramValues.add(expr.execute((Result) targetObjects, context));
       } else {
         throw new CommandExecutionException("Invalid value for $current: " + val);
       }
     }
     if (isGraphFunction()) {
-      SQLFunction function = SQLEngine.getInstance().getFunction(name);
+      final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
       if (function instanceof SQLFunctionFiltered) {
-        Object current = ctx.getVariable("$current");
+        Object current = context.getVariable("current");
         if (current instanceof Result) {
           current = ((Result) current).getElement().orElse(null);
         }
-        return ((SQLFunctionFiltered) function).execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, ctx);
+        return ((SQLFunctionFiltered) function).execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, context);
       } else {
-        final Object current = ctx.getVariable("$current");
+        final Object current = context.getVariable("current");
         if (current instanceof Identifiable) {
-          return function.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), ctx);
+          return function.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), context);
         } else if (current instanceof Result) {
-          return function.execute(targetObjects, ((Result) current).getElement().orElse(null), null, paramValues.toArray(), ctx);
+          return function.execute(targetObjects, ((Result) current).getElement().orElse(null), null, paramValues.toArray(), context);
         } else {
-          return function.execute(targetObjects, null, null, paramValues.toArray(), ctx);
+          return function.execute(targetObjects, null, null, paramValues.toArray(), context);
         }
       }
 
     }
 
-    final SQLMethod method = SQLEngine.getInstance().getMethod(name);
+    final SQLMethod method = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getMethod(name);
     if (method != null) {
       if (val instanceof Result)
         val = ((Result) val).getElement().orElse(null);
 
-      return method.execute(targetObjects, (Identifiable) val, ctx, targetObjects, paramValues.toArray());
+      return method.execute(targetObjects, (Identifiable) val, context, targetObjects, paramValues.toArray());
     }
     throw new UnsupportedOperationException("OMethod call, something missing in the implementation...?");
-
   }
 
-  public Object executeReverse(final Object targetObjects, final CommandContext ctx) {
+  public Object executeReverse(final Object targetObjects, final CommandContext context) {
     final String straightName = methodName.getStringValue().toLowerCase();
     final String inverseMethodName = bidirectionalMethods.get(straightName);
 
     if (inverseMethodName != null)
-      return execute(targetObjects, ctx, inverseMethodName, params, null);
+      return execute(targetObjects, context, inverseMethodName, params, null);
 
     throw new UnsupportedOperationException("Invalid reverse traversal: " + methodName);
-  }
-
-  public boolean needsAliases(Set<String> aliases) {
-    for (Expression param : params) {
-      if (param.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   public MethodCall copy() {
@@ -165,29 +150,13 @@ public class MethodCall extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final MethodCall that = (MethodCall) o;
-
-    if (!Objects.equals(methodName, that.methodName))
-      return false;
-    return Objects.equals(params, that.params);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = methodName != null ? methodName.hashCode() : 0;
-    result = 31 * result + (params != null ? params.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { methodName, params };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
     if (params != null) {
-      for (Expression param : params) {
+      for (final Expression param : params) {
         param.extractSubQueries(collector);
       }
     }
@@ -195,40 +164,13 @@ public class MethodCall extends SimpleNode {
 
   public boolean refersToParent() {
     if (params != null) {
-      for (Expression exp : params) {
+      for (final Expression exp : params) {
         if (exp.refersToParent()) {
           return true;
         }
       }
     }
     return false;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (methodName != null)
-      result.setProperty("methodName", methodName.serialize());
-
-    if (params != null)
-      result.setProperty("items", params.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("methodName") != null) {
-      methodName = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("methodName"));
-    }
-    if (fromResult.getProperty("params") != null) {
-      final List<Result> ser = fromResult.getProperty("params");
-      params = new ArrayList<>();
-      for (Result r : ser) {
-        Expression exp = new Expression(-1);
-        exp.deserialize(r);
-        params.add(exp);
-      }
-    }
   }
 
   public boolean isCacheable() {
@@ -241,7 +183,7 @@ public class MethodCall extends SimpleNode {
 
     final String methodNameLC = methodName.getStringValue().toLowerCase();
 
-    for (String graphMethod : bidirectionalMethods.keySet()) {
+    for (final String graphMethod : bidirectionalMethods.keySet()) {
       if (graphMethod.equals(methodNameLC)) {
         calculatedIsGraph = true;
         break;

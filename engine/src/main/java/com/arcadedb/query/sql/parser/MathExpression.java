@@ -28,56 +28,60 @@ import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.DateUtils;
 
 import java.math.*;
+import java.time.*;
+import java.time.temporal.*;
 import java.util.*;
 import java.util.stream.*;
 
 public class MathExpression extends SimpleNode {
-
-  private static final Object NULL_VALUE = new Object();
+  private static final Object               NULL_VALUE       = new Object();
+  protected            List<MathExpression> childExpressions = new ArrayList<MathExpression>();
+  protected final      List<Operator>       operators        = new ArrayList<>();
 
   public Expression getExpandContent() {
     throw new CommandExecutionException("Invalid expand expression");
   }
 
-  public boolean isDefinedFor(Result currentRecord) {
+  public boolean isDefinedFor(final Result currentRecord) {
     return true;
   }
 
-  public boolean isDefinedFor(Record currentRecord) {
+  public boolean isDefinedFor(final Record currentRecord) {
     return true;
   }
 
   public enum Operator {
     STAR(10) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left * right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left * right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left * right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return left * right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.multiply(right);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -85,7 +89,7 @@ public class MathExpression extends SimpleNode {
       }
     }, SLASH(10) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         if (left % right == 0) {
           return left / right;
         }
@@ -93,7 +97,7 @@ public class MathExpression extends SimpleNode {
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         if (left % right == 0) {
           return left / right;
         }
@@ -101,22 +105,22 @@ public class MathExpression extends SimpleNode {
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left / right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return left / right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.divide(right, RoundingMode.HALF_UP);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -125,41 +129,40 @@ public class MathExpression extends SimpleNode {
 
     }, REM(10) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left % right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left % right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left % right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return left % right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.remainder(right);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
-        if (left == null || right == null) {
+      public Object apply(final Object left, final Object right) {
+        if (left == null || right == null)
           return null;
-        }
         return super.apply(left, right);
       }
 
     }, PLUS(20) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         final int sum = left + right;
         if (sum < 0 && left > 0 && right > 0)
           // SPECIAL CASE: UPGRADE TO LONG
@@ -168,49 +171,79 @@ public class MathExpression extends SimpleNode {
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left + right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left + right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return left + right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.add(right);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
-        if (left == null && right == null) {
+      public Object apply(final Object left, final Object right) {
+        if (left == null && right == null)
           return null;
-        }
-        if (left == null) {
+        else if (left == null)
           return right;
-        }
-        if (right == null) {
+        else if (right == null)
           return left;
-        }
-        if (left instanceof Number && right instanceof Number) {
+        else if (left instanceof Number && right instanceof Number)
           return super.apply(left, right);
-        }
-        if (left instanceof Date || right instanceof Date) {
-          Number result = apply(toLong(left), toLong(right));
-          return new Date(result.longValue());
+        else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
+          final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
+          final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
+          final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
+
+          final Number r = apply(leftAsLong, rightAsLong);
+          return Duration.of(r.longValue(), highestPrecision);
+        } else if (left instanceof Collection) {
+          final Collection<Object> coll = (Collection<Object>) left;
+          coll.add(right);
+          return left;
+        } else if (left instanceof Map) {
+          final Map<String, Object> mapLeft = (Map<String, Object>) left;
+
+          if (right instanceof Map) {
+            final Map<String, Object> mapRight = (Map<String, Object>) right;
+            mapLeft.putAll(mapRight);
+          } else if (right instanceof Collection) {
+            final Collection<Object> arrayRight = (Collection<Object>) right;
+            if (arrayRight.size() % 2 != 0)
+              throw new IllegalArgumentException("Cannot add items to the maps because the collection contains odd entries");
+
+            for (final Iterator<Object> iter = arrayRight.iterator(); iter.hasNext(); ) {
+              final String key = iter.next().toString();
+              final Object value = iter.next();
+              mapLeft.put(key, value);
+            }
+          } else if (right.getClass().isArray()) {
+            final Object[] arrayRight = (Object[]) right;
+            if (arrayRight.length % 2 != 0)
+              throw new IllegalArgumentException("Cannot add items to the maps because the array contains odd entries");
+            for (int i = 0; i < arrayRight.length; i += 2)
+              mapLeft.put(arrayRight[i].toString(), arrayRight[i + 1]);
+          }
+          return left;
         }
         return String.valueOf(left) + right;
       }
-    }, MINUS(20) {
+    },
+
+    MINUS(20) {
       @Override
-      public Number apply(Integer left, Integer right) {
-        int result = left - right;
+      public Number apply(final Integer left, final Integer right) {
+        final int result = left - right;
         if (result > 0 && left < 0 && right > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return left.longValue() - right;
@@ -219,27 +252,27 @@ public class MathExpression extends SimpleNode {
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left - right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left - right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return left - right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.subtract(right);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         Object result = null;
         if (left == null && right == null) {
           result = null;
@@ -249,175 +282,212 @@ public class MathExpression extends SimpleNode {
           result = apply(0, this, (Number) right);
         } else if (left instanceof Number && right instanceof Number) {
           result = apply((Number) left, this, (Number) right);
-        } else if (left instanceof Date || right instanceof Date) {
-          Number r = apply(toLong(left), toLong(right));
-          result = new Date(r.longValue());
+        } else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
+          final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
+          final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
+          final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
+          final Number r = apply(leftAsLong, rightAsLong);
+          result = Duration.of(r.longValue(), highestPrecision);
+        } else if (left instanceof Collection) {
+          final Collection<Object> coll = (Collection<Object>) left;
+          coll.remove(right);
+          return left;
+        } else if (left instanceof Map) {
+          final Map<String, Object> mapLeft = (Map<String, Object>) left;
+
+          if (right instanceof Map) {
+            final Map<String, Object> mapRight = (Map<String, Object>) right;
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) mapRight).entrySet()) {
+              if (entry.getValue().equals(mapLeft.get(entry.getKey())))
+                mapLeft.remove(entry.getKey());
+            }
+          } else if (right instanceof Collection) {
+            final Collection<Object> arrayRight = (Collection<Object>) right;
+            for (final Iterator<Object> iter = arrayRight.iterator(); iter.hasNext(); ) {
+              final String key = iter.next().toString();
+              mapLeft.remove(key);
+            }
+          } else if (right.getClass().isArray()) {
+            final Object[] arrayRight = (Object[]) right;
+            for (int i = 0; i < arrayRight.length; ++i)
+              mapLeft.remove(arrayRight[i].toString());
+          }
+          return left;
         }
 
         return result;
       }
+    },
 
-    }, LSHIFT(30) {
+    LSHIFT(30) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left << right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left << right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
         return super.apply(left, right);
       }
-    }, RSHIFT(30) {
+    },
+
+    RSHIFT(30) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left >> right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left >> right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
         return super.apply(left, right);
       }
 
-    }, RUNSIGNEDSHIFT(30) {
+    },
+
+    RUNSIGNEDSHIFT(30) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left >>> right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left >>> right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
         return super.apply(left, right);
       }
 
-    }, BIT_AND(40) {
+    },
+
+    BIT_AND(40) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left & right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left & right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
         return super.apply(left, right);
       }
-    }, XOR(50) {
+    },
+
+    XOR(50) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left ^ right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left ^ right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null && right == null) {
           return null;
         }
@@ -435,106 +505,98 @@ public class MathExpression extends SimpleNode {
         return null;
       }
 
-    }, BIT_OR(60) {
+    },
+
+    BIT_OR(60) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left | right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left | right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null && right == null) {
           return null;
         }
         return super.apply(left == null ? 0 : left, right == null ? 0 : right);
       }
 
-    }, NULL_COALESCING(25) {
+    },
+
+    NULL_COALESCING(25) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         return left != null ? left : right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left != null ? left : right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left != null ? left : right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(final Double left, final Double right) {
         return left != null ? left : right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left != null ? left : right;
       }
 
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         return left != null ? left : right;
       }
     };
-
-    private static Long toLong(Object left) {
-      if (left instanceof Number) {
-        return ((Number) left).longValue();
-      }
-      if (left instanceof Date) {
-        return ((Date) left).getTime();
-      }
-      return null;
-    }
-
     private final int priority;
 
-    Operator(int priority) {
+    Operator(final int priority) {
       this.priority = priority;
     }
 
-    public abstract Number apply(Integer left, Integer right);
+    public abstract Number apply(Integer left, final Integer right);
 
-    public abstract Number apply(Long left, Long right);
+    public abstract Number apply(final Long left, final Long right);
 
-    public abstract Number apply(Float left, Float right);
+    public abstract Number apply(final Float left, final Float right);
 
-    public abstract Number apply(Double left, Double right);
+    public abstract Number apply(Double left, final Double right);
 
-    public abstract Number apply(BigDecimal left, BigDecimal right);
+    public abstract Number apply(final BigDecimal left, final BigDecimal right);
 
-    public Object apply(Object left, Object right) {
-      if (left == null) {
+    public Object apply(final Object left, final Object right) {
+      if (left == null)
         return right;
-      }
-      if (right == null) {
+
+      if (right == null)
         return left;
-      }
-      if (left instanceof Number && right instanceof Number) {
+
+      if (left instanceof Number && right instanceof Number)
         return apply((Number) left, this, (Number) right);
-      }
 
       return null;
     }
@@ -601,78 +663,66 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  protected List<MathExpression> childExpressions = new ArrayList<MathExpression>();
-  protected List<Operator>       operators        = new ArrayList<>();
-
-  public MathExpression(int id) {
+  public MathExpression(final int id) {
     super(id);
   }
 
-  public MathExpression(SqlParser p, int id) {
-    super(p, id);
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return childExpressions.toArray(new MathExpression[childExpressions.size()]);
   }
 
-  public boolean isCacheable() {
-    for (MathExpression exp : childExpressions) {
-      if (!exp.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
     if (childExpressions.isEmpty()) {
       return null;
     }
     if (childExpressions.size() == 1) {
-      return childExpressions.get(0).execute(iCurrentRecord, ctx);
+      return childExpressions.get(0).execute(iCurrentRecord, context);
     }
 
     if (childExpressions.size() == 2) {
-      Object leftValue = childExpressions.get(0).execute(iCurrentRecord, ctx);
-      Object rightValue = childExpressions.get(1).execute(iCurrentRecord, ctx);
+      final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, context);
+      final Object rightValue = childExpressions.get(1).execute(iCurrentRecord, context);
       return operators.get(0).apply(leftValue, rightValue);
     }
 
-    return calculateWithOpPriority(iCurrentRecord, ctx);
+    return calculateWithOpPriority(iCurrentRecord, context);
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
-    if (childExpressions.isEmpty()) {
+  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+    if (childExpressions.isEmpty())
       return null;
-    }
-    if (childExpressions.size() == 1) {
-      return childExpressions.get(0).execute(iCurrentRecord, ctx);
-    }
+
+    if (childExpressions.size() == 1)
+      return childExpressions.get(0).execute(iCurrentRecord, context);
 
     if (childExpressions.size() == 2) {
-      Object leftValue = childExpressions.get(0).execute(iCurrentRecord, ctx);
-      Object rightValue = childExpressions.get(1).execute(iCurrentRecord, ctx);
+      final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, context);
+      final Object rightValue = childExpressions.get(1).execute(iCurrentRecord, context);
       return operators.get(0).apply(leftValue, rightValue);
     }
 
-    return calculateWithOpPriority(iCurrentRecord, ctx);
+    return calculateWithOpPriority(iCurrentRecord, context);
   }
 
-  private Object calculateWithOpPriority(Result iCurrentRecord, CommandContext ctx) {
-    Deque valuesStack = new ArrayDeque<>();
-    Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
+  private Object calculateWithOpPriority(final Result iCurrentRecord, final CommandContext context) {
+    final Deque valuesStack = new ArrayDeque<>();
+    final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
-    MathExpression nextExpression = childExpressions.get(0);
-    Object val = nextExpression.execute(iCurrentRecord, ctx);
+    final MathExpression nextExpression = childExpressions.get(0);
+    final Object val = nextExpression.execute(iCurrentRecord, context);
     valuesStack.push(val == null ? NULL_VALUE : val);
 
     for (int i = 0; i < operators.size() && i + 1 < childExpressions.size(); i++) {
-      Operator nextOperator = operators.get(i);
-      Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, ctx);
+      final Operator nextOperator = operators.get(i);
+      final Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, context);
 
       if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
         Object right = valuesStack.poll();
         right = right == NULL_VALUE ? null : right;
         Object left = valuesStack.poll();
         left = left == NULL_VALUE ? null : left;
-        Object calculatedValue = operatorsStack.poll().apply(left, right);
+        final Object calculatedValue = operatorsStack.poll().apply(left, right);
         valuesStack.push(calculatedValue == null ? NULL_VALUE : calculatedValue);
       }
       operatorsStack.push(nextOperator);
@@ -683,24 +733,24 @@ public class MathExpression extends SimpleNode {
     return iterateOnPriorities(valuesStack, operatorsStack);
   }
 
-  private Object calculateWithOpPriority(Identifiable iCurrentRecord, CommandContext ctx) {
-    Deque valuesStack = new ArrayDeque<>();
-    Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
+  private Object calculateWithOpPriority(final Identifiable iCurrentRecord, final CommandContext context) {
+    final Deque valuesStack = new ArrayDeque<>();
+    final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
-    MathExpression nextExpression = childExpressions.get(0);
-    Object val = nextExpression.execute(iCurrentRecord, ctx);
+    final MathExpression nextExpression = childExpressions.get(0);
+    final Object val = nextExpression.execute(iCurrentRecord, context);
     valuesStack.push(val == null ? NULL_VALUE : val);
 
     for (int i = 0; i < operators.size() && i + 1 < childExpressions.size(); i++) {
-      Operator nextOperator = operators.get(i);
-      Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, ctx);
+      final Operator nextOperator = operators.get(i);
+      final Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, context);
 
       if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
         Object right = valuesStack.poll();
         right = right == NULL_VALUE ? null : right;
         Object left = valuesStack.poll();
         left = left == NULL_VALUE ? null : left;
-        Object calculatedValue = operatorsStack.poll().apply(left, right);
+        final Object calculatedValue = operatorsStack.poll().apply(left, right);
         valuesStack.push(calculatedValue == null ? NULL_VALUE : calculatedValue);
       }
       operatorsStack.push(nextOperator);
@@ -720,21 +770,21 @@ public class MathExpression extends SimpleNode {
         return values.getFirst();
       }
 
-      Deque valuesStack = new ArrayDeque<>();
-      Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
+      final Deque valuesStack = new ArrayDeque<>();
+      final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
       valuesStack.push(values.removeLast());
 
       while (!operators.isEmpty()) {
-        Operator nextOperator = operators.removeLast();
-        Object rightValue = values.removeLast();
+        final Operator nextOperator = operators.removeLast();
+        final Object rightValue = values.removeLast();
 
         if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
           Object right = valuesStack.poll();
           right = right == NULL_VALUE ? null : right;
           Object left = valuesStack.poll();
           left = left == NULL_VALUE ? null : left;
-          Object calculatedValue = operatorsStack.poll().apply(left, right);
+          final Object calculatedValue = operatorsStack.poll().apply(left, right);
           valuesStack.push(calculatedValue == null ? NULL_VALUE : calculatedValue);
         }
         operatorsStack.push(nextOperator);
@@ -745,7 +795,7 @@ public class MathExpression extends SimpleNode {
         right = right == NULL_VALUE ? null : right;
         Object left = valuesStack.poll();
         left = left == NULL_VALUE ? null : left;
-        Object val = operatorsStack.poll().apply(left, right);
+        final Object val = operatorsStack.poll().apply(left, right);
         valuesStack.push(val == null ? NULL_VALUE : val);
       }
 
@@ -758,7 +808,7 @@ public class MathExpression extends SimpleNode {
     return childExpressions;
   }
 
-  public void setChildExpressions(List<MathExpression> childExpressions) {
+  public void setChildExpressions(final List<MathExpression> childExpressions) {
     this.childExpressions = childExpressions;
   }
 
@@ -766,7 +816,7 @@ public class MathExpression extends SimpleNode {
     return operators;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     for (int i = 0; i < childExpressions.size(); i++) {
       if (i > 0) {
         builder.append(" ");
@@ -811,30 +861,22 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  protected boolean supportsBasicCalculation() {
-    for (MathExpression expr : this.childExpressions) {
-      if (!expr.supportsBasicCalculation()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  public boolean isIndexedFunctionCall() {
+  public boolean isIndexedFunctionCall(CommandContext context) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
-    return this.childExpressions.get(0).isIndexedFunctionCall();
+    return this.childExpressions.get(0).isIndexedFunctionCall(context);
   }
 
-  public long estimateIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     if (this.childExpressions.size() != 1) {
       return -1;
     }
     return this.childExpressions.get(0).estimateIndexedFunction(target, context, operator, right);
   }
 
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return null;
     }
@@ -850,7 +892,8 @@ public class MathExpression extends SimpleNode {
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -865,7 +908,8 @@ public class MathExpression extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -882,7 +926,8 @@ public class MathExpression extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -890,32 +935,14 @@ public class MathExpression extends SimpleNode {
   }
 
   public boolean isBaseIdentifier() {
-    if (childExpressions.size() == 1) {
+    if (this.childExpressions != null && childExpressions.size() == 1)
       return childExpressions.get(0).isBaseIdentifier();
-    }
-    return false;
-  }
 
-  public boolean isEarlyCalculated() {
-    for (MathExpression exp : childExpressions) {
-      if (!exp.isEarlyCalculated()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  public boolean needsAliases(Set<String> aliases) {
-    for (MathExpression expr : childExpressions) {
-      if (expr.needsAliases(aliases)) {
-        return true;
-      }
-    }
     return false;
   }
 
   public boolean isExpand() {
-    for (MathExpression expr : this.childExpressions) {
+    for (final MathExpression expr : this.childExpressions) {
       if (expr.isExpand()) {
         if (this.childExpressions.size() > 1) {
           throw new CommandExecutionException("Cannot calculate expand() with other expressions");
@@ -926,9 +953,18 @@ public class MathExpression extends SimpleNode {
     return false;
   }
 
-  public boolean isAggregate() {
-    for (MathExpression expr : this.childExpressions) {
-      if (expr.isAggregate()) {
+  public boolean isEarlyCalculated(final CommandContext context) {
+    for (final MathExpression exp : childExpressions) {
+      if (!exp.isEarlyCalculated(context)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  public boolean isAggregate(CommandContext context) {
+    for (final MathExpression expr : this.childExpressions) {
+      if (expr.isAggregate(context)) {
         return true;
       }
     }
@@ -942,18 +978,18 @@ public class MathExpression extends SimpleNode {
     return this.childExpressions.get(0).isCount();
   }
 
-  public SimpleNode splitForAggregation(AggregateProjectionSplit aggregateProj) {
-    if (isAggregate()) {
-      MathExpression result = new MathExpression(-1);
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
+      final MathExpression result = new MathExpression(-1);
       int i = 0;
-      for (MathExpression expr : this.childExpressions) {
-        if (i > 0) {
+      for (final MathExpression expr : this.childExpressions) {
+        if (i > 0)
           result.operators.add(operators.get(i - 1));
-        }
-        SimpleNode splitResult = expr.splitForAggregation(aggregateProj);
+
+        final SimpleNode splitResult = expr.splitForAggregation(aggregateProj, context);
         if (splitResult instanceof MathExpression) {
-          MathExpression res = (MathExpression) splitResult;
-          if (res.isEarlyCalculated() || res.isAggregate()) {
+          final MathExpression res = (MathExpression) splitResult;
+          if (res.isEarlyCalculated(context) || res.isAggregate(context)) {
             result.childExpressions.add(res);
           } else {
             throw new CommandExecutionException("Cannot mix aggregate and single record attribute values in the same projection");
@@ -969,7 +1005,7 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext context) {
     throw new UnsupportedOperationException("multiple math expressions do not allow plain aggregation");
   }
 
@@ -977,7 +1013,7 @@ public class MathExpression extends SimpleNode {
     MathExpression result = null;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }
     result.childExpressions = childExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -985,52 +1021,26 @@ public class MathExpression extends SimpleNode {
     return result;
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
-    for (MathExpression expr : this.childExpressions) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
+    for (final MathExpression expr : this.childExpressions) {
       expr.extractSubQueries(letAlias, collector);
     }
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
-    for (MathExpression expr : this.childExpressions) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    for (final MathExpression expr : this.childExpressions) {
       expr.extractSubQueries(collector);
     }
   }
 
-  public boolean refersToParent() {
-    for (MathExpression expr : this.childExpressions) {
-      if (expr.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    MathExpression that = (MathExpression) o;
-
-    if (!Objects.equals(childExpressions, that.childExpressions))
-      return false;
-    return Objects.equals(operators, that.operators);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = childExpressions != null ? childExpressions.hashCode() : 0;
-    result = 31 * result + (operators != null ? operators.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { childExpressions, operators };
   }
 
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<String>();
-    for (MathExpression exp : childExpressions) {
-      List<String> x = exp.getMatchPatternInvolvedAliases();
+    final List<String> result = new ArrayList<String>();
+    for (final MathExpression exp : childExpressions) {
+      final List<String> x = exp.getMatchPatternInvolvedAliases();
       if (x != null) {
         result.addAll(x);
       }
@@ -1041,56 +1051,11 @@ public class MathExpression extends SimpleNode {
     return result;
   }
 
-  public void applyRemove(ResultInternal result, CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext context) {
     if (childExpressions.size() != 1) {
       throw new CommandExecutionException("cannot apply REMOVE " + this);
     }
-    childExpressions.get(0).applyRemove(result, ctx);
-  }
-
-  public static MathExpression deserializeFromResult(Result fromResult) {
-    String className = fromResult.getProperty("__class");
-    try {
-      MathExpression result = (MathExpression) Class.forName(className).getConstructor(Integer.class).newInstance(-1);
-      result.deserialize(fromResult);
-      return result;
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
-
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("__class", getClass().getName());
-    if (childExpressions != null) {
-      result.setProperty("childExpressions", childExpressions.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (operators != null) {
-      result.setProperty("operators", operators.stream().map(x -> serializeOperator(x)).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("childExpressions") != null) {
-      List<Result> ser = fromResult.getProperty("childExpressions");
-      childExpressions = ser.stream().map(x -> deserializeFromResult(x)).collect(Collectors.toList());
-
-    }
-    if (fromResult.getProperty("operators") != null) {
-      List<String> ser = fromResult.getProperty("operators");
-      operators = ser.stream().map(x -> deserializeOperator(x)).collect(Collectors.toList());
-
-    }
-  }
-
-  private String serializeOperator(Operator x) {
-    return x.toString();
-  }
-
-  private Operator deserializeOperator(String x) {
-    return Operator.valueOf(x);
+    childExpressions.get(0).applyRemove(result, context);
   }
 }
 /* JavaCC - OriginalChecksum=c255bea24e12493e1005ba2a4d1dbb9d (do not edit this line) */

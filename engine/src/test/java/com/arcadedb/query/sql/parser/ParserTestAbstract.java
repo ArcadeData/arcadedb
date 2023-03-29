@@ -24,52 +24,42 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 public abstract class ParserTestAbstract {
 
-  protected SimpleNode checkRightSyntax(String query) {
-    SimpleNode result = checkSyntax(query, true);
-    StringBuilder builder = new StringBuilder();
+  protected SimpleNode checkRightSyntax(final String query) {
+    final SimpleNode result = checkSyntax(query, true);
+    final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntax(builder.toString(), true);
     //    return checkSyntax(query, true);
   }
 
-  protected SimpleNode checkRightSyntaxServer(String query) {
-    SimpleNode result = checkSyntaxServer(query, true);
-    StringBuilder builder = new StringBuilder();
+  protected SimpleNode checkRightSyntaxServer(final String query) {
+    final SimpleNode result = checkSyntaxServer(query, true);
+    final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntaxServer(builder.toString(), true);
     //    return checkSyntax(query, true);
   }
 
-  protected SimpleNode checkWrongSyntax(String query) {
+  protected SimpleNode checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected SimpleNode checkWrongSyntaxServer(String query) {
+  protected SimpleNode checkWrongSyntaxServer(final String query) {
     return checkSyntaxServer(query, false);
   }
 
-  protected SimpleNode checkSyntax(String query, boolean isCorrect) {
-    SqlParser osql = getParserFor(query);
+  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
+    final SqlParser osql = getParserFor(query);
     try {
-      Statement result = osql.parse();
+      final Statement result = osql.Parse();
 
       result.validate();
 
-      if (!isCorrect) {
-        //        System.out.println(query);
-        //        if (result != null) {
-        //          System.out.println("->");
-        //          StringBuilder builder = new StringBuilder();
-        //          result.toString(null, builder);
-        //          System.out.println(builder.toString());
-        //          System.out.println("............");
-        //        }
-
+      if (!isCorrect)
         fail();
-      }
 
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (isCorrect) {
         System.out.println(query);
         e.printStackTrace();
@@ -79,25 +69,15 @@ public abstract class ParserTestAbstract {
     return null;
   }
 
-  protected SimpleNode checkSyntaxServer(String query, boolean isCorrect) {
-    SqlParser osql = getParserFor(query);
+  protected SimpleNode checkSyntaxServer(final String query, final boolean isCorrect) {
+    final SqlParser osql = getParserFor(query);
     try {
-      SimpleNode result = osql.parse();//parseServerStatement();
-      if (!isCorrect) {
-        //        System.out.println(query);
-        //        if (result != null) {
-        //          System.out.println("->");
-        //          StringBuilder builder = new StringBuilder();
-        //          result.toString(null, builder);
-        //          System.out.println(builder.toString());
-        //          System.out.println("............");
-        //        }
-
+      final SimpleNode result = osql.Parse();
+      if (!isCorrect)
         fail();
-      }
 
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (isCorrect) {
         System.out.println(query);
         e.printStackTrace();
@@ -107,19 +87,19 @@ public abstract class ParserTestAbstract {
     return null;
   }
 
-  private void printTree(String s) {
-    SqlParser osql = getParserFor(s);
-    try {
-      SimpleNode n = osql.parse();
-
-    } catch (ParseException e) {
-      e.printStackTrace();
-    }
-  }
-
-  protected SqlParser getParserFor(String string) {
-    InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(is);
+  protected SqlParser getParserFor(final String string) {
+    final InputStream is = new ByteArrayInputStream(string.getBytes());
+    final SqlParser osql = new SqlParser(null, is);
     return osql;
   }
+
+//  private void printTree(final String s) {
+//    final SqlParser osql = getParserFor(s);
+//    try {
+//      final SimpleNode n = osql.parse();
+//
+//    } catch (final ParseException e) {
+//      e.printStackTrace();
+//    }
+//  }
 }

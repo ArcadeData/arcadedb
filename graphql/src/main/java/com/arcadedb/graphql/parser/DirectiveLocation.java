@@ -23,19 +23,8 @@ package com.arcadedb.graphql.parser;
 public class DirectiveLocation extends SimpleNode {
   protected Name name;
 
-  public DirectiveLocation(int id) {
+  public DirectiveLocation(final int id) {
     super(id);
-  }
-
-  public DirectiveLocation(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public String getName() {

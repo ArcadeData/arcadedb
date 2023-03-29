@@ -67,7 +67,7 @@ public class Backup {
 
       return settings.file;
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new BackupException(
           "Error during backup of database '" + (database != null ? database.getName() : settings.databaseURL) + "' to file '" + settings.file + "'", e);
     } finally {

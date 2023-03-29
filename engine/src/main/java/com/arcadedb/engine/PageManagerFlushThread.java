@@ -72,24 +72,24 @@ public class PageManagerFlushThread extends Thread {
 
         flushPagesFromQueueToDisk();
 
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         running = false;
         return;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on processing page flush requests", e);
       }
     }
   }
 
-  private void flushPagesFromQueueToDisk() throws InterruptedException, IOException {
-    final List<MutablePage> pages = queue.poll(300L, TimeUnit.MILLISECONDS);
+  protected void flushPagesFromQueueToDisk() throws InterruptedException, IOException {
+    final List<MutablePage> pages = queue.poll(1000L, TimeUnit.MILLISECONDS);
 
     if (pages != null) {
-      for (MutablePage page : pages)
+      for (final MutablePage page : pages)
         try {
           pageManager.flushPage(page);
-        } catch (DatabaseMetadataException e) {
+        } catch (final DatabaseMetadataException e) {
           // FILE DELETED, CONTINUE WITH THE NEXT PAGES
           LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
         }

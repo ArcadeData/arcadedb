@@ -34,15 +34,25 @@ import java.util.*;
 public interface Result {
 
   /**
-   * returns a property from the result
+   * Returns the value for the property.
    *
    * @param name the property name
-   * @param <T>
    *
    * @return the property value. If the property value is a persistent record, it only returns the RID. See also  {@link
    * #getElementProperty(String)}
    */
   <T> T getProperty(String name);
+
+  /**
+   * Returns the value for the property. If the property does not exist, then the `defaultValue` is returned.
+   *
+   * @param name         the property name
+   * @param defaultValue default value to return in case the property is missing
+   *
+   * @return the property value. If the property value is a persistent record, it only returns the RID. See also  {@link
+   * #getElementProperty(String)}
+   */
+  <T> T getProperty(String name, Object defaultValue);
 
   /**
    * returns an OElement property from the result
@@ -94,7 +104,7 @@ public interface Result {
     final StringBuilder result = new StringBuilder();
     result.append("{");
     boolean first = true;
-    for (String prop : getPropertyNames()) {
+    for (final String prop : getPropertyNames()) {
       if (!first) {
         result.append(", ");
       }
@@ -118,16 +128,16 @@ public interface Result {
     } else if (val instanceof Result) {
       jsonVal = ((Result) val).toJSON();
     } else if (val instanceof Record) {
-      RID id = ((Record) val).getIdentity();
+      final RID id = ((Record) val).getIdentity();
 
       jsonVal = "\"" + id + "\"";
     } else if (val instanceof RID) {
       jsonVal = "\"" + val + "\"";
     } else if (val instanceof Iterable) {
-      StringBuilder builder = new StringBuilder();
+      final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      for (Object o : (Iterable) val) {
+      for (final Object o : (Iterable) val) {
         if (!first) {
           builder.append(", ");
         }
@@ -137,10 +147,10 @@ public interface Result {
       builder.append("]");
       jsonVal = builder.toString();
     } else if (val instanceof Iterator) {
-      StringBuilder builder = new StringBuilder();
+      final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      Iterator iterator = (Iterator) val;
+      final Iterator iterator = (Iterator) val;
       while (iterator.hasNext()) {
         if (!first) {
           builder.append(", ");
@@ -151,11 +161,11 @@ public interface Result {
       builder.append("]");
       jsonVal = builder.toString();
     } else if (val instanceof Map) {
-      StringBuilder builder = new StringBuilder();
+      final StringBuilder builder = new StringBuilder();
       builder.append("{");
       boolean first = true;
-      Map<String, Object> map = (Map) val;
-      for (Map.Entry entry : map.entrySet()) {
+      final Map<String, Object> map = (Map) val;
+      for (final Map.Entry entry : map.entrySet()) {
         if (!first) {
           builder.append(", ");
         }
@@ -181,7 +191,7 @@ public interface Result {
     return jsonVal;
   }
 
-  default String encode(String s) {
+  default String encode(final String s) {
     String result = s.replaceAll("\"", "\\\\\"");
     result = result.replaceAll("\n", "\\\\n");
     result = result.replaceAll("\t", "\\\\t");

@@ -20,7 +20,10 @@ package com.arcadedb.query;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.java.JavaQueryEngine;
+import com.arcadedb.query.polyglot.PolyglotQueryEngine;
 import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.query.sql.SQLScriptQueryEngine;
 
 import java.util.*;
 import java.util.logging.*;
@@ -29,11 +32,17 @@ public class QueryEngineManager {
   private final Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
 
   public QueryEngineManager() {
-    // REGISTER QUERY ENGINES IF AVAILABLE ON CLASSPATH AT RUN-TIME
-    register(new SQLQueryEngine.SQLQueryEngineFactory());
+    // REGISTER ALL THE SUPPORTED LANGUAGE FROM POLYGLOT ENGINE
+    for (final String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())
+      register(new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
 
+    register(new JavaQueryEngine.JavaQueryEngineFactory());
+    register(new SQLQueryEngine.SQLQueryEngineFactory());
+    register(new SQLScriptQueryEngine.SQLScriptQueryEngineFactory());
+
+    // REGISTER QUERY ENGINES IF AVAILABLE ON CLASSPATH AT RUN-TIME
     register("com.arcadedb.gremlin.query.GremlinQueryEngineFactory");
-    register("com.arcadedb.gremlin.query.CypherQueryEngineFactory");
+    register("com.arcadedb.cypher.query.CypherQueryEngineFactory");
     register("com.arcadedb.mongo.query.MongoQueryEngineFactory");
     register("com.arcadedb.graphql.query.GraphQLQueryEngineFactory");
   }
@@ -41,7 +50,7 @@ public class QueryEngineManager {
   public void register(final String className) {
     try {
       register((QueryEngine.QueryEngineFactory) Class.forName(className).getConstructor().newInstance());
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Unable to register engine '%s' (%s)", className, e.getMessage());
     }
   }
@@ -50,16 +59,16 @@ public class QueryEngineManager {
     implementations.put(impl.getLanguage().toLowerCase(), impl);
   }
 
-  public QueryEngine getInstance(final String language, DatabaseInternal database) {
+  public QueryEngine getInstance(final String language, final DatabaseInternal database) {
     final QueryEngine.QueryEngineFactory impl = implementations.get(language.toLowerCase());
     if (impl == null)
-      throw new IllegalArgumentException("Query engine '" + language + "' was not found");
+      throw new IllegalArgumentException("Query engine '" + language + "' was not found. Check your configuration");
     return impl.getInstance(database);
   }
 
   public List<String> getAvailableLanguages() {
     final List<String> available = new ArrayList<>();
-    for (QueryEngine.QueryEngineFactory impl : implementations.values()) {
+    for (final QueryEngine.QueryEngineFactory impl : implementations.values()) {
       available.add(impl.getLanguage());
     }
     return available;

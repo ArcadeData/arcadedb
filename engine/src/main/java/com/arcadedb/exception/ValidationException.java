@@ -24,15 +24,15 @@ package com.arcadedb.exception;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ValidationException extends ArcadeDBException {
-  public ValidationException(String message) {
+  public ValidationException(final String message) {
     super(message);
   }
 
-  public ValidationException(String message, Throwable cause) {
+  public ValidationException(final String message, final Throwable cause) {
     super(message, cause);
   }
 
-  public ValidationException(Throwable cause) {
+  public ValidationException(final Throwable cause) {
     super(cause);
   }
 }

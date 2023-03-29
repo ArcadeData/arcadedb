@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
@@ -32,6 +33,7 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public abstract class DatabaseAbstractHandler extends AbstractHandler {
@@ -41,30 +43,34 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     super(httpServer);
   }
 
-  protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user, Database database) throws Exception;
+  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, Database database) throws Exception;
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
     final Database database;
     HttpSession activeSession = null;
     boolean atomicTransaction = false;
     if (requiresDatabase()) {
       final Deque<String> databaseName = exchange.getQueryParameters().get("database");
-      if (databaseName.isEmpty()) {
-        exchange.setStatusCode(400);
-        exchange.getResponseSender().send("{ \"error\" : \"Database parameter is null\"}");
-        return;
-      }
+      if (databaseName.isEmpty())
+        return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
       database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
 
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
-      if (current != null && !current.transactions.isEmpty()) {
-        LogManager.instance().log(this, Level.WARNING, "Found pending transaction from a previous operation. Rolling back it...");
+      DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+      if (current != null && !current.transactions.isEmpty() && current.transactions.get(0).isActive()) {
+        LogManager.instance().log(this, Level.WARNING, "Found a pending transaction from a previous operation. Rolling it back...");
         cleanTL(database, current);
       }
 
-      activeSession = setTransactionInThreadLocal(exchange, database, user, false);
+      activeSession = setTransactionInThreadLocal(exchange, database, user);
+
+      current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+      if (current == null)
+        // INITIALIZE THE DATABASE CONTEXT
+        current = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
+
+      current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
 
       if (requiresTransaction() && activeSession == null) {
         atomicTransaction = true;
@@ -74,15 +80,21 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     } else
       database = null;
 
+    final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
       if (activeSession != null)
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
-          execute(exchange, user, database);
+          response.set(execute(exchange, user, database));
           return null;
         });
       else
-        execute(exchange, user, database);
+        response.set(execute(exchange, user, database));
+
+      if (database != null && atomicTransaction && database.isTransactionActive())
+        // STARTED ATOMIC TRANSACTION, COMMIT
+        database.commit();
+
     } finally {
 
       if (activeSession != null)
@@ -90,11 +102,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
       else if (database != null) {
         try {
-          if (atomicTransaction) {
-            if (database.isTransactionActive())
-              // STARTED ATOMIC TRANSACTION, COMMIT
-              database.commit();
-          } else
+          if (!atomicTransaction)
             // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
             database.rollbackAllNested();
         } finally {
@@ -102,6 +110,8 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         }
       }
     }
+
+    return response.get();
   }
 
   private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {
@@ -129,33 +139,22 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     return true;
   }
 
-  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, ServerSecurityUser user,
-      final boolean mandatory) {
+  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, final ServerSecurityUser user) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
-    if (sessionId == null || sessionId.isEmpty()) {
-      if (mandatory) {
+    if (sessionId != null && !sessionId.isEmpty()) {
+      // LOOK UP FOR THE SESSION ID
+      final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
+      if (session == null) {
         exchange.setStatusCode(401);
-        exchange.getResponseSender().send("{ \"error\" : \"Transaction id not found in request headers\" }");
+        throw new TransactionException("Remote transaction not found or expired");
       }
-      return null;
-    }
 
-    final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
-    if (session == null) {
-      if (mandatory) {
-        exchange.setStatusCode(401);
-        exchange.getResponseSender().send("{ \"error\" : \"Transaction not found or expired\" }");
-        return null;
-      }
-    }
-
-    if (session != null) {
       // FORCE THE RESET OF TL
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
-      current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
+      DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
       exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
-    }
 
-    return session;
+      return session;
+    }
+    return null;
   }
 }

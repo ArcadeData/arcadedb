@@ -54,7 +54,7 @@ public class Restore {
       formatImplementation = createFormatImplementation();
       formatImplementation.restoreDatabase();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new RestoreException("Error during restore of database from file '" + settings.inputFileURL + "'", e);
     }
   }

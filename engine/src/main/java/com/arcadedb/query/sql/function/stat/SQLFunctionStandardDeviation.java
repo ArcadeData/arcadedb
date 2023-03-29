@@ -28,7 +28,7 @@ public class SQLFunctionStandardDeviation extends SQLFunctionVariance {
   public static final String NAME = "stddev";
 
   public SQLFunctionStandardDeviation() {
-    super(NAME, 1, 1);
+    super(NAME);
   }
 
   @Override
@@ -41,7 +41,7 @@ public class SQLFunctionStandardDeviation extends SQLFunctionVariance {
     return NAME + "(<field>)";
   }
 
-  private Double evaluate(Object variance) {
+  private Double evaluate(final Object variance) {
     Double result = null;
     if (variance != null) {
       result = Math.sqrt((Double) variance);

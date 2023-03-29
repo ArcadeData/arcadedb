@@ -35,14 +35,14 @@ class SQLMethodTrimTest {
 
     @Test
     void testNulIReturnedAsNull() {
-        Object result = method.execute(null, null, null, null, null);
+        final Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
 
     @Test
     void testTrimSpaces() {
-        Object result = method.execute(null, null, null, "trim me    ", null);
+        final Object result = method.execute(null, null, null, "trim me    ", null);
         assertThat(result).isEqualTo("trim me");
 
     }

@@ -22,54 +22,45 @@ package com.arcadedb.query.sql.parser;
 
 import java.util.*;
 
-public class SimpleNode implements Node {
-  protected Node      parent;
-  protected Node[]    children;
-  protected int       id;
-  protected Object    value;
-  protected SqlParser parser;
-  protected Token     firstToken;
-  protected Token     lastToken;
+public abstract class SimpleNode implements Node {
+  protected Node[] children;
+  protected Object value;
+  protected String cachedStringForm;
 
   public SimpleNode() {
-    id = -1;
   }
 
-  public SimpleNode(int i) {
-    id = i;
-  }
-
-  public SimpleNode(SqlParser p, int i) {
-    this(i);
-    parser = p;
+  public SimpleNode(final int i) {
   }
 
   public void jjtOpen() {
+    // NO ACTIONS
   }
 
   public void jjtClose() {
+    // NO ACTIONS
   }
 
-  public void jjtSetParent(Node n) {
-    parent = n;
+  public void jjtSetParent(final Node n) {
+    // parent = n;
   }
 
   public Node jjtGetParent() {
-    return parent;
+    return null;//parent;
   }
 
-  public void jjtAddChild(Node n, int i) {
+  public void jjtAddChild(final Node n, final int i) {
     if (children == null) {
       children = new Node[i + 1];
     } else if (i >= children.length) {
-      Node[] c = new Node[i + 1];
+      final Node[] c = new Node[i + 1];
       System.arraycopy(children, 0, c, 0, children.length);
       children = c;
     }
     children[i] = n;
   }
 
-  public Node jjtGetChild(int i) {
+  public Node jjtGetChild(final int i) {
     return children[i];
   }
 
@@ -77,7 +68,7 @@ public class SimpleNode implements Node {
     return (children == null) ? 0 : children.length;
   }
 
-  public void jjtSetValue(Object value) {
+  public void jjtSetValue(final Object value) {
     this.value = value;
   }
 
@@ -86,38 +77,21 @@ public class SimpleNode implements Node {
   }
 
   public Token jjtGetFirstToken() {
-    return firstToken;
+    //return firstToken;
+    return null;
   }
 
-  public void jjtSetFirstToken(Token token) {
-    this.firstToken = token;
+  public void jjtSetFirstToken(final Token token) {
+    //this.firstToken = token;
   }
 
   public Token jjtGetLastToken() {
-    return lastToken;
+    //return lastToken;
+    return null;
   }
 
-  public void jjtSetLastToken(Token token) {
-    this.lastToken = token;
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public final Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object childrenAccept(SqlParserVisitor visitor, Object data) {
-    if (children != null) {
-      for (int i = 0; i < children.length; ++i) {
-        children[i].jjtAccept(visitor, data);
-      }
-    }
-    return data;
+  public void jjtSetLastToken(final Token token) {
+    //this.lastToken = token;
   }
 
   /*
@@ -125,14 +99,16 @@ public class SimpleNode implements Node {
    * If your output uses more than one line you should override toString(String), otherwise overriding toString() is probably all
    * you need to do.
    */
-
   public String toString() {
-    StringBuilder result = new StringBuilder();
-    toString(null, result);
-    return result.toString();
+    if (cachedStringForm == null) {
+      final StringBuilder result = new StringBuilder();
+      toString(null, result);
+      cachedStringForm = result.toString();
+    }
+    return cachedStringForm;
   }
 
-  public String toString(String prefix) {
+  public String toString(final String prefix) {
     return prefix + this;
   }
 
@@ -140,11 +116,11 @@ public class SimpleNode implements Node {
    * Override this method if you want to customize how the node dumps out its children.
    */
 
-  public void dump(String prefix) {
+  public void dump(final String prefix) {
     System.out.println(toString(prefix));
     if (children != null) {
       for (int i = 0; i < children.length; ++i) {
-        SimpleNode n = (SimpleNode) children[i];
+        final SimpleNode n = (SimpleNode) children[i];
         if (n != null) {
           n.dump(prefix + " ");
         }
@@ -152,8 +128,61 @@ public class SimpleNode implements Node {
     }
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-    throw new UnsupportedOperationException("not implemented in " + getClass().getSimpleName());
+  @Override
+  public boolean equals(final Object other) {
+    if (this == other)
+      return true;
+    if (other == null || getClass() != other.getClass())
+      return false;
+
+    final Object[] ownElements = getIdentityElements();
+    if (ownElements.length == 0)
+      // NOT IMPLEMENTED, USE THE DEFAULT IMPLEMENTATION
+      return super.equals(other);
+
+    final Object[] otherElements = ((SimpleNode) other).getIdentityElements();
+
+    for (int i = 0; i < ownElements.length; i++)
+      if (!Objects.equals(ownElements[i], otherElements[i]))
+        return false;
+
+    return true;
+  }
+
+  @Override
+  public int hashCode() {
+    final Object[] elements = getIdentityElements();
+    if (elements.length == 0)
+      // NOT IMPLEMENTED, USE THE DEFAULT IMPLEMENTATION
+      return super.hashCode();
+
+    return Objects.hashCode(elements);
+  }
+
+  protected Object[] getIdentityElements() {
+    return new Object[0];
+  }
+
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[0];
+  }
+
+  public boolean isCacheable() {
+    for (SimpleNode e : getCacheableElements())
+      if (e != null && !e.isCacheable())
+        return false;
+    return true;
+  }
+
+  public boolean refersToParent() {
+    for (SimpleNode e : getCacheableElements())
+      if (e != null && e.refersToParent())
+        return true;
+    return false;
+  }
+
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    throw new UnsupportedOperationException("Not implemented in " + getClass().getSimpleName());
   }
 
   public Object getValue() {
@@ -164,5 +193,4 @@ public class SimpleNode implements Node {
     throw new UnsupportedOperationException();
   }
 }
-
 /* JavaCC - OriginalChecksum=d5ed710e8a3f29d574adbb1d37e08f3b (do not edit this line) */

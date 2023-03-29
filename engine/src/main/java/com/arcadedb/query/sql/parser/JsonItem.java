@@ -18,8 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.*;
 
@@ -31,7 +30,7 @@ public class JsonItem {
   protected String     leftString;
   protected Expression right;
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (leftIdentifier != null) {
       builder.append("\"");
       leftIdentifier.toString(params, builder);
@@ -56,23 +55,16 @@ public class JsonItem {
     return null;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
-    if (aliases.contains(leftIdentifier.getStringValue())) {
-      return true;
-    }
-    return right.needsAliases(aliases);
+  public boolean isAggregate(final CommandContext context) {
+    return right.isAggregate(context);
   }
 
-  public boolean isAggregate() {
-    return right.isAggregate();
-  }
-
-  public JsonItem splitForAggregation(AggregateProjectionSplit aggregateSplit) {
-    if (isAggregate()) {
-      JsonItem item = new JsonItem();
+  public JsonItem splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
+    if (isAggregate(context)) {
+      final JsonItem item = new JsonItem();
       item.leftIdentifier = leftIdentifier;
       item.leftString = leftString;
-      item.right = right.splitForAggregation(aggregateSplit);
+      item.right = right.splitForAggregation(aggregateSplit, context);
       return item;
     } else {
       return this;
@@ -80,14 +72,14 @@ public class JsonItem {
   }
 
   public JsonItem copy() {
-    JsonItem result = new JsonItem();
+    final JsonItem result = new JsonItem();
     result.leftIdentifier = leftIdentifier == null ? null : leftIdentifier.copy();
     result.leftString = leftString;
     result.right = right.copy();
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     right.extractSubQueries(collector);
   }
 
@@ -96,13 +88,13 @@ public class JsonItem {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final  JsonItem oJsonItem = (JsonItem) o;
+    final JsonItem oJsonItem = (JsonItem) o;
 
     if (!Objects.equals(leftIdentifier, oJsonItem.leftIdentifier))
       return false;
@@ -118,28 +110,4 @@ public class JsonItem {
     result = 31 * result + (right != null ? right.hashCode() : 0);
     return result;
   }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("leftIdentifier", leftIdentifier.serialize());
-    result.setProperty("leftString", leftString);
-    result.setProperty("right", right.serialize());
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("leftIdentifier") != null) {
-      leftIdentifier = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("leftIdentifier"));
-    }
-    if (fromResult.getProperty("leftString") != null) {
-      leftString = fromResult.getProperty("leftString");
-    }
-    if (fromResult.getProperty("right") != null) {
-      right = new Expression(-1);
-      right.deserialize(fromResult.getProperty("right"));
-    }
-
-  }
-
 }

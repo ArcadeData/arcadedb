@@ -33,34 +33,30 @@ public class BetweenCondition extends BooleanExpression {
   protected Expression second;
   protected Expression third;
 
-  public BetweenCondition(int id) {
+  public BetweenCondition(final int id) {
     super(id);
   }
 
-  public BetweenCondition(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    final Object firstValue = first.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object firstValue = first.execute(currentRecord, context);
     if (firstValue == null) {
       return false;
     }
 
-    Object secondValue = second.execute(currentRecord, ctx);
+    Object secondValue = second.execute(currentRecord, context);
     if (secondValue == null) {
       return false;
     }
 
-    secondValue = Type.convert(ctx.getDatabase(), secondValue, firstValue.getClass());
+    secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
 
-    Object thirdValue = third.execute(currentRecord, ctx);
+    Object thirdValue = third.execute(currentRecord, context);
     if (thirdValue == null) {
       return false;
     }
 
-    thirdValue = Type.convert(ctx.getDatabase(), thirdValue, firstValue.getClass());
+    thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
 
     final int leftResult = ((Comparable<Object>) firstValue).compareTo(secondValue);
     final int rightResult = ((Comparable<Object>) firstValue).compareTo(thirdValue);
@@ -69,24 +65,24 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    final Object firstValue = first.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object firstValue = first.execute(currentRecord, context);
     if (firstValue == null) {
       return false;
     }
 
-    Object secondValue = second.execute(currentRecord, ctx);
+    Object secondValue = second.execute(currentRecord, context);
     if (secondValue == null) {
       return false;
     }
 
-    secondValue = Type.convert(ctx.getDatabase(), secondValue, firstValue.getClass());
+    secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
 
-    Object thirdValue = third.execute(currentRecord, ctx);
+    Object thirdValue = third.execute(currentRecord, context);
     if (thirdValue == null) {
       return false;
     }
-    thirdValue = Type.convert(ctx.getDatabase(), thirdValue, firstValue.getClass());
+    thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
 
     final int leftResult = ((Comparable<Object>) firstValue).compareTo(secondValue);
     final int rightResult = ((Comparable<Object>) firstValue).compareTo(thirdValue);
@@ -98,27 +94,15 @@ public class BetweenCondition extends BooleanExpression {
     return first;
   }
 
-  public void setFirst(Expression first) {
-    this.first = first;
-  }
-
   public Expression getSecond() {
     return second;
-  }
-
-  public void setSecond(Expression second) {
-    this.second = second;
   }
 
   public Expression getThird() {
     return third;
   }
 
-  public void setThird(Expression third) {
-    this.third = third;
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     first.toString(params, builder);
     builder.append(" BETWEEN ");
     second.toString(params, builder);
@@ -127,34 +111,8 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return Collections.EMPTY_LIST;
-  }
-
-  @Override
-  public boolean needsAliases(Set<String> aliases) {
-    if (first.needsAliases(aliases)) {
-      return true;
-    }
-    if (second.needsAliases(aliases)) {
-      return true;
-    }
-    return third.needsAliases(aliases);
-  }
-
-  @Override
   public BooleanExpression copy() {
-    BetweenCondition result = new BetweenCondition(-1);
+    final BetweenCondition result = new BetweenCondition(-1);
     result.first = first.copy();
     result.second = second.copy();
     result.third = third.copy();
@@ -162,39 +120,15 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     first.extractSubQueries(collector);
     second.extractSubQueries(collector);
     third.extractSubQueries(collector);
   }
 
   @Override
-  public boolean refersToParent() {
-    return first.refersToParent() || second.refersToParent() || third.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BetweenCondition that = (BetweenCondition) o;
-
-    if (!Objects.equals(first, that.first))
-      return false;
-    if (!Objects.equals(second, that.second))
-      return false;
-    return Objects.equals(third, that.third);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = first != null ? first.hashCode() : 0;
-    result = 31 * result + (second != null ? second.hashCode() : 0);
-    result = 31 * result + (third != null ? third.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
   @Override
@@ -220,14 +154,8 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (first != null && !first.isCacheable()) {
-      return false;
-    }
-    if (second != null && !second.isCacheable()) {
-      return false;
-    }
-    return third == null || third.isCacheable();
+  protected Expression[] getCacheableElements() {
+    return new Expression[] { first, second, third };
   }
 }
 /* JavaCC - OriginalChecksum=f94f4779c4a6c6d09539446045ceca89 (do not edit this line) */

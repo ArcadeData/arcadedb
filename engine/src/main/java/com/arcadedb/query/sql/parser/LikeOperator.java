@@ -25,16 +25,12 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryHelper;
 
 public class LikeOperator extends SimpleNode implements BinaryCompareOperator {
-  public LikeOperator(int id) {
+  public LikeOperator(final int id) {
     super(id);
   }
 
-  public LikeOperator(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
+  public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     if (MultiValue.isMultiValue(iLeft) || MultiValue.isMultiValue(iRight))
       return false;
 
@@ -50,17 +46,12 @@ public class LikeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
   public LikeOperator copy() {
     return this;
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

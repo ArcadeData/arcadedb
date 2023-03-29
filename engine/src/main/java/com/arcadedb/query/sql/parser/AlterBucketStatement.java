@@ -32,16 +32,12 @@ public class AlterBucketStatement extends DDLStatement {
   protected Identifier attributeName;
   protected Expression attributeValue;
 
-  public AlterBucketStatement(int id) {
+  public AlterBucketStatement(final int id) {
     super(id);
   }
 
-  public AlterBucketStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALTER BUCKET ");
     name.toString(params, builder);
     if (starred) {
@@ -55,7 +51,7 @@ public class AlterBucketStatement extends DDLStatement {
 
   @Override
   public AlterBucketStatement copy() {
-    AlterBucketStatement result = new AlterBucketStatement(-1);
+    final AlterBucketStatement result = new AlterBucketStatement(-1);
     result.name = name == null ? null : name.copy();
     result.attributeName = attributeName == null ? null : attributeName.copy();
     result.starred = starred;
@@ -64,10 +60,10 @@ public class AlterBucketStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
 //    InternalResultSet result = new InternalResultSet();
-//    List<com.orientechnologies.orient.core.storage.OCluster> clustersToUpdate = getClusters(ctx);
-//    Object finalValue = attributeValue.execute((PIdentifiable) null, ctx);
+//    List<com.orientechnologies.orient.core.storage.OCluster> clustersToUpdate = getClusters(context);
+//    Object finalValue = attributeValue.execute((PIdentifiable) null, context);
 //
 //    com.orientechnologies.orient.core.storage.OCluster.ATTRIBUTES attribute;
 //    try {
@@ -96,12 +92,12 @@ public class AlterBucketStatement extends DDLStatement {
     throw new UnsupportedOperationException();
   }
 
-//  private OCluster.ATTRIBUTES getClusterAttribute(OIdentifier attributeName) {
+  //  private OCluster.ATTRIBUTES getClusterAttribute(OIdentifier attributeName) {
 //    return null;
 //  }
 //
-//  private List<com.orientechnologies.orient.core.storage.OCluster> getClusters(OCommandContext ctx) {
-//    OStorage storage = ((ODatabaseDocumentInternal) ctx.getDatabase()).getStorage();
+//  private List<com.orientechnologies.orient.core.storage.OCluster> getClusters(OCommandContext context) {
+//    OStorage storage = ((ODatabaseDocumentInternal) context.getDatabase()).getStorage();
 //    if (starred) {
 //      List<com.orientechnologies.orient.core.storage.OCluster> result = new ArrayList<>();
 //      for (String bucketName : storage.getClusterNames()) {
@@ -111,7 +107,7 @@ public class AlterBucketStatement extends DDLStatement {
 //      }
 //      return result;
 //    } else {
-//      int bucketId = ctx.getDatabase().getClusterIdByName(name.getStringValue());
+//      int bucketId = context.getDatabase().getClusterIdByName(name.getStringValue());
 //      if (bucketId <= 0) {
 //        throw new PCommandExecutionException("Cannot find bucket " + name);
 //      }
@@ -119,32 +115,9 @@ public class AlterBucketStatement extends DDLStatement {
 //      return Collections.singletonList(bucket);
 //    }
 //  }
-
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    AlterBucketStatement that = (AlterBucketStatement) o;
-
-    if (starred != that.starred)
-      return false;
-    if (!Objects.equals(name, that.name))
-      return false;
-    if (!Objects.equals(attributeName, that.attributeName))
-      return false;
-    return Objects.equals(attributeValue, that.attributeValue);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (attributeName != null ? attributeName.hashCode() : 0);
-    result = 31 * result + (starred ? 1 : 0);
-    result = 31 * result + (attributeValue != null ? attributeValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, attributeName, starred, attributeValue };
   }
 }
 /* JavaCC - OriginalChecksum=ed78ea0f1a05b0963db625ed1f338bd6 (do not edit this line) */

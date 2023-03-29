@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
@@ -36,24 +37,20 @@ public class ContainsValueCondition extends BooleanExpression {
     super(id);
   }
 
-  public ContainsValueCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (leftValue instanceof Map) {
-      Map map = (Map) leftValue;
+      final Map map = (Map) leftValue;
       if (condition != null) {
-        for (Object o : map.values()) {
-          if (condition.evaluate(o, ctx)) {
+        for (final Object o : map.values()) {
+          if (condition.evaluate(o, context)) {
             return true;
           }
         }
         return false;
       } else {
-        Object rightValue = expression.execute(currentRecord, ctx);
+        final Object rightValue = expression.execute(currentRecord, context);
         return map.containsValue(rightValue);//TODO type conversions...?
       }
 
@@ -62,19 +59,19 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftValue = left.execute(currentRecord, context);
     if (leftValue instanceof Map) {
-      Map map = (Map) leftValue;
+      final Map map = (Map) leftValue;
       if (condition != null) {
-        for (Object o : map.values()) {
-          if (condition.evaluate(o, ctx)) {
+        for (final Object o : map.values()) {
+          if (condition.evaluate(o, context)) {
             return true;
           }
         }
         return false;
       } else {
-        final Object rightValue = expression.execute(currentRecord, ctx);
+        final Object rightValue = expression.execute(currentRecord, context);
         return map.containsValue(rightValue);//TODO type conversions...?
       }
 
@@ -92,38 +89,6 @@ public class ContainsValueCondition extends BooleanExpression {
     } else {
       expression.toString(params, builder);
     }
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    if (condition == null)
-      return 0;
-
-    return condition.getNumberOfExternalCalculations();
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    if (condition == null)
-      return Collections.EMPTY_LIST;
-
-    return condition.getExternalCalculationConditions();
-  }
-
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    if (left != null && left.needsAliases(aliases))
-      return true;
-
-    if (condition != null && condition.needsAliases(aliases))
-      return true;
-
-    return expression != null && expression.needsAliases(aliases);
   }
 
   @Override
@@ -147,41 +112,8 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent())
-      return true;
-
-    if (condition != null && condition.refersToParent())
-      return true;
-
-    return expression != null && condition.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ContainsValueCondition that = (ContainsValueCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(operator, that.operator))
-      return false;
-    if (!Objects.equals(condition, that.condition))
-      return false;
-    return Objects.equals(expression, that.expression);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (operator != null ? operator.hashCode() : 0);
-    result = 31 * result + (condition != null ? condition.hashCode() : 0);
-    result = 31 * result + (expression != null ? expression.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, operator, condition, expression };
   }
 
   @Override
@@ -204,14 +136,17 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable())
-      return false;
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, condition, expression };
+  }
 
-    if (condition != null && !condition.isCacheable())
-      return false;
-
-    return expression == null || expression.isCacheable();
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        return expression != null && expression.isEarlyCalculated(info.getContext()) && info.isMap() && info.isIndexByValue();
+      }
+    }
+    return false;
   }
 }
 /* JavaCC - OriginalChecksum=6fda752f10c8d8731f43efa706e39459 (do not edit this line) */

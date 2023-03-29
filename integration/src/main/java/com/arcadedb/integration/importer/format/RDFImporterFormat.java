@@ -34,9 +34,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
   @Override
-  public void load(final SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
-    AbstractParser csvParser = createCSVParser(settings, ",");
+    final AbstractParser csvParser = createCSVParser(settings, ",");
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
     if (settings.edgesSkipEntries == null)
@@ -76,7 +76,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
 
       database.commit();
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
     }
   }

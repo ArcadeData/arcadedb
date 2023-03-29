@@ -25,23 +25,17 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public class EdgeIterator implements Iterator<Edge>, Iterable<Edge> {
+public class EdgeIterator extends ResettableIteratorBase<Edge> {
   private final RID              vertex;
   private final Vertex.DIRECTION direction;
-  private       EdgeSegment      currentContainer;
-  private final AtomicInteger    currentPosition     = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
   private       int              lastElementPosition = currentPosition.get();
   private       RID              nextEdgeRID;
   private       RID              nextVertexRID;
 
   public EdgeIterator(final EdgeSegment current, final RID vertex, final Vertex.DIRECTION direction) {
-    if (current == null)
-      throw new IllegalArgumentException("Edge chunk is null");
-
-    this.currentContainer = current;
+    super(null, current);
     this.vertex = vertex;
     this.direction = direction;
   }
@@ -54,7 +48,7 @@ public class EdgeIterator implements Iterator<Edge>, Iterable<Edge> {
     if (currentPosition.get() < currentContainer.getUsed())
       return true;
 
-    currentContainer = currentContainer.getNext();
+    currentContainer = currentContainer.getPrevious();
     if (currentContainer != null) {
       currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
       return currentPosition.get() < currentContainer.getUsed();
@@ -83,9 +77,12 @@ public class EdgeIterator implements Iterator<Edge>, Iterable<Edge> {
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex);
       }
 
+      ++browsed;
+
       try {
-        return nextEdgeRID.asEdge();
-      } catch (RecordNotFoundException e) {
+        // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
+        return nextEdgeRID.asEdge(false);
+      } catch (final RecordNotFoundException e) {
         // SKIP
       }
     }
@@ -107,9 +104,9 @@ public class EdgeIterator implements Iterator<Edge>, Iterable<Edge> {
           new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex).delete();
       } else
         nextEdgeRID.asEdge().delete();
-    } catch (RecordNotFoundException e) {
+    } catch (final RecordNotFoundException e) {
       // IGNORE IT
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error on deleting edge record %s", e, nextEdgeRID);
     }
 
@@ -117,10 +114,5 @@ public class EdgeIterator implements Iterator<Edge>, Iterable<Edge> {
     ((DatabaseInternal) vertex.getDatabase()).updateRecord(currentContainer);
 
     currentPosition.set(lastElementPosition);
-  }
-
-  @Override
-  public Iterator<Edge> iterator() {
-    return this;
   }
 }

@@ -20,39 +20,25 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-
 import java.util.*;
 
 public class PNumber extends SimpleNode {
-  public PNumber(int id) {
+  public PNumber(final int id) {
     super(id);
   }
 
-  public PNumber(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public java.lang.Number getValue() {
+  public Number getValue() {
     return null;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(value);
   }
 
   public PNumber copy() {
-    PNumber result = new PNumber(-1);
+    final PNumber result = new PNumber(-1);
     result.value = value;
     return result;
-  }
-
-  public Result serialize() {
-    throw new UnsupportedOperationException();
-  }
-
-  public void deserialize(Result fromResult) {
-    throw new UnsupportedOperationException();
   }
 }
 /* JavaCC - OriginalChecksum=ebedbca280f59eb8ba8f21dc6132ba10 (do not edit this line) */

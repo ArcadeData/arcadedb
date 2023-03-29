@@ -38,14 +38,14 @@ public class MultiIndexCursor implements IndexCursor {
     this.cursors = cursors;
     this.limit = limit;
     this.ascendingOrder = ascendingOrder;
-    this.keyTypes = cursors.get(0).getKeyTypes();
+    this.keyTypes = cursors.get(0).getBinaryKeyTypes();
     initCursors();
   }
 
   public MultiIndexCursor(final List<IndexInternal> indexes, final boolean ascendingOrder, final int limit) {
     this.cursors = new ArrayList<>(indexes.size());
     this.limit = limit;
-    for (Index i : indexes) {
+    for (final Index i : indexes) {
       if (!(i instanceof RangeIndex))
         throw new IllegalArgumentException("Cannot iterate an index that does not support ordered iteration");
 
@@ -60,7 +60,7 @@ public class MultiIndexCursor implements IndexCursor {
       final int limit) {
     this.cursors = new ArrayList<>(indexes.size());
     this.limit = limit;
-    for (Index i : indexes) {
+    for (final Index i : indexes) {
       if (!(i instanceof RangeIndex))
         throw new IllegalArgumentException("Cannot iterate an index that does not support ordered iteration");
 
@@ -152,20 +152,15 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public void close() {
-    for (IndexCursor cursor : cursors)
+    for (final IndexCursor cursor : cursors)
       cursor.close();
   }
 
   @Override
-  public String dumpStats() {
-    return "no-stats";
-  }
-
-  @Override
-  public long size() {
-    long tot = 0;
-    for (IndexCursor cursor : cursors)
-      tot += cursor.size();
+  public long estimateSize() {
+    long tot = 0L;
+    for (final IndexCursor cursor : cursors)
+      tot += cursor.estimateSize();
     return tot;
   }
 
@@ -176,7 +171,7 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public BinaryComparator getComparator() {
-    for (IndexCursor cursor : cursors) {
+    for (final IndexCursor cursor : cursors) {
       if (cursor != null && cursor.hasNext())
         return cursor.getComparator();
     }
@@ -184,29 +179,22 @@ public class MultiIndexCursor implements IndexCursor {
   }
 
   @Override
-  public byte[] getKeyTypes() {
-    for (IndexCursor cursor : cursors) {
+  public byte[] getBinaryKeyTypes() {
+    for (final IndexCursor cursor : cursors) {
       if (cursor != null && cursor.hasNext())
-        return cursor.getKeyTypes();
+        return cursor.getBinaryKeyTypes();
     }
     return null;
   }
 
   private void initCursors() {
     cursorsNextValues = new ArrayList<>(cursors.size());
-    for (int i = 0; i < cursors.size(); ++i) {
-      cursorsNextValues.add(null);
-
-      final IndexCursor cursor = cursors.get(i);
-      if (cursor == null)
-        continue;
-
-      if (!cursor.hasNext()) {
-        cursors.set(i, null);
-        continue;
-      }
-
-      cursorsNextValues.set(i, cursor.next());
+    for (Iterator<IndexCursor> c = cursors.iterator(); c.hasNext(); ) {
+      final IndexCursor cursor = c.next();
+      if (cursor == null || !cursor.hasNext()) {
+        c.remove();
+      } else
+        cursorsNextValues.add(cursor.next());
     }
   }
 }

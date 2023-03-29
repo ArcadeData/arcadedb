@@ -65,9 +65,9 @@ public class SQLFunctionCoalesce extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams,
-      CommandContext iContext) {
-    int length = iParams.length;
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
+    final int length = iParams.length;
     for (int i = 0; i < length; i++) {
       if (iParams[i] != null)
         return iParams[i];

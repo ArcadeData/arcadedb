@@ -10,11 +10,11 @@ function make_base_auth(user, password) {
 }
 
 function login(){
-  var userName = escapeHtml( $("#inputUserName").val().trim() );
+  var userName = $("#inputUserName").val().trim();
   if( userName.length == 0 )
     return;
 
-  var userPassword = escapeHtml( $("#inputUserPassword").val().trim() );
+  var userPassword = $("#inputUserPassword").val().trim();
   if( userPassword.length == 0 )
     return;
 
@@ -41,11 +41,14 @@ function editorFocus(){
 }
 
 function updateDatabases( callback ){
-  let selected = $("#inputDatabase").val();
+  let selected = getCurrentDatabase();
+  if( selected == null || selected == "" )
+    selected = globalStorageLoad("database.current");
 
   jQuery.ajax({
-    type: "GET",
-    url: "/api/v1/databases",
+    type: "POST",
+    url: "/api/v1/server",
+    data: "{ command: 'list databases' }",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
@@ -61,22 +64,16 @@ function updateDatabases( callback ){
     if( selected != null && selected != "" )
       $("#inputDatabase").val(selected);
 
-    $("#currentDatabase").html( escapeHtml( $("#inputDatabase").val() ) );
+    $("#currentDatabase").html( getCurrentDatabase() );
 
     $("#user").html(data.user);
-
-    let version = data.version;
-    let pos = data.version.indexOf("(build");
-    if( pos > -1 ) {
-      version = version.substring( 0, pos ) + " <span style='font-size: 70%'>" + version.substring( pos ) + "</span>";
-    }
-    $("#version").html(version);
 
     $("#loginPopup").modal("hide");
     $("#welcomePanel").hide();
     $("#studioPanel").show();
 
     displaySchema();
+    displayDatabaseSettings();
 
     if( callback )
       callback();
@@ -89,9 +86,8 @@ function updateDatabases( callback ){
   });
 }
 
-
 function createDatabase(){
-  let html = "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input id='inputCreateDatabaseName'>";
+  let html = "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='inputCreateDatabaseName'>";
 
   Swal.fire({
     title: 'Create a new database',
@@ -105,7 +101,7 @@ function createDatabase(){
     confirmButtonText: 'Send',
   }).then((result) => {
     if (result.value) {
-      let database = escapeHtml( $("#inputCreateDatabaseName").val().trim() );
+      let database = encodeURI( $("#inputCreateDatabaseName").val().trim() );
       if( database == "" ){
         globalNotify( "Error", "Database name empty", "danger");
         return;
@@ -113,8 +109,8 @@ function createDatabase(){
 
       jQuery.ajax({
         type: "POST",
-        url: "/api/v1/create/" + database,
-        data: "",
+        url: "/api/v1/server",
+        data: "{ 'command': 'create database " + database + "' }",
         beforeSend: function (xhr){
           xhr.setRequestHeader('Authorization', globalCredentials);
         }
@@ -133,7 +129,7 @@ function createDatabase(){
 }
 
 function dropDatabase(){
-  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  let database = escapeHtml( getCurrentDatabase() );
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -142,8 +138,8 @@ function dropDatabase(){
   globalConfirm("Drop database", "Are you sure you want to drop the database '"+database+"'?<br>WARNING: The operation cannot be undone.", "warning", function(){
     jQuery.ajax({
       type: "POST",
-      url: "/api/v1/drop/" + database,
-      data: "",
+      url: "/api/v1/server",
+      data: "{ 'command': 'drop database " + database + "' }",
       beforeSend: function (xhr){
         xhr.setRequestHeader('Authorization', globalCredentials);
       }
@@ -158,7 +154,7 @@ function dropDatabase(){
 }
 
 function backupDatabase(){
-  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  let database = getCurrentDatabase();
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -189,7 +185,7 @@ function backupDatabase(){
 }
 
 function dropProperty(type, property){
-  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  let database = getCurrentDatabase();
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -221,7 +217,7 @@ function dropProperty(type, property){
 
 
 function dropIndex(indexName){
-  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  let database = getCurrentDatabase();
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -251,15 +247,78 @@ function dropIndex(indexName){
   });
 }
 
+function getCurrentDatabase(){
+  let db = $("#inputDatabase").val();
+  return db != null ? db.trim() : null;
+}
+
+function setCurrentDatabase( dbName ){
+  $("#currentDatabase").html( dbName );
+  $("#inputDatabase").val( dbName );
+  globalStorageSave("database.current", dbName);
+}
+
+function getQueryHistory(){
+  let queryHistory = globalStorageLoad("database.query.history");
+  if( queryHistory == null )
+    queryHistory = [];
+  else {
+    try{
+      queryHistory = JSON.parse(queryHistory);
+    } catch(e) {
+      // RESET HISTORY
+      globalStorageSave("database.query.history", "[]");
+      queryHistory = [];
+    }
+  }
+
+  return queryHistory;
+}
+
+function loadQueryHistory(){
+  $("#inputHistory").html("");
+  $("#inputHistory").append( "<option value=''></option>" );
+
+  let queryHistory = getQueryHistory();
+  if( queryHistory != null && queryHistory.length > 0 ){
+    let database = escapeHtml( getCurrentDatabase() );
+    for( let index = 0; index < queryHistory.length; ++index ) {
+      let q = queryHistory[index];
+      if( q != null && q.d == database && q.l != null && q.c != null )
+        $("#inputHistory").append( "<option value='" + index + "'>("+q.l+") "+q.c+"</option>" );
+    }
+  }
+}
+
+function copyQueryFromHistory(){
+  let index = $("#inputHistory").val();
+  if( index != "" ){
+    let queryHistory = getQueryHistory();
+    let q = queryHistory[index];
+    if( q != null ) {
+      setCurrentDatabase( q.d );
+       $("#inputLanguage").val( q.l );
+      editor.setValue( q.c );
+    }
+  }
+}
+
 function executeCommand(language, query){
   globalResultset = null;
 
   if( language != null )
     $("#inputLanguage").val( language );
+  else
+    language = $("#inputLanguage").val();
+
   if( query != null )
     editor.setValue( query );
+  else
+    query = editor.getValue();
 
-  if( escapeHtml( $("#inputDatabase").val() ) == "" )
+  let database = getCurrentDatabase();
+
+  if( database == "" )
     return;
   if( escapeHtml( $("#inputLanguage").val() ) == "" )
     return;
@@ -269,16 +328,41 @@ function executeCommand(language, query){
   globalActivateTab("tab-query");
 
   let activeTab = $("#tabs-command .active").attr("id");
-  if( activeTab == "tab-table-sel" )
-    executeCommandTable();
-  else if( activeTab == "tab-graph-sel" )
+  if( activeTab == "tab-graph-sel" )
     executeCommandGraph();
+  else
+    executeCommandTable();
+
+  let queryHistory = getQueryHistory();
+
+  for( index in queryHistory ){
+    let q = queryHistory[index];
+    if( q == null ||
+        ( q.d == database &&
+          q.l == language &&
+          q.c == query ) ) {
+      // RE-EXECUTED OLD QUERY, REMOVE OLD ENTRY AND INSERT AT THE TOP OF THE LIST
+      queryHistory.splice(index,1);
+    }
+  }
+
+  // REMOVE OLD QUERIES
+  while( queryHistory.length > 20 )
+    queryHistory.pop();
+
+  queryHistory = [ {"d": database, "l": language, "c": query} ].concat(queryHistory);
+  globalStorageSave("database.query.history", JSON.stringify( queryHistory ) );
+
+  loadQueryHistory();
 }
 
+
 function executeCommandTable(){
-  let database = escapeHtml( $("#inputDatabase").val() );
+  let database = getCurrentDatabase();
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( editor.getValue() );
+  let limit = parseInt( $("#inputLimit").val() );
+  let profileExecution = $('#profileCommand').prop('checked') ? "detailed" : "basic";
 
   $("#executeSpinner").show();
 
@@ -291,7 +375,9 @@ function executeCommandTable(){
       {
         language: language,
         command: command,
-        serializer: "graph"
+        limit: limit,
+        profileExecution: profileExecution,
+        serializer: "studio"
       }
     ),
     beforeSend: function (xhr){
@@ -304,6 +390,7 @@ function executeCommandTable(){
 
     $("#result-num").html( data.result.records.length );
     $("#resultJson").val( JSON.stringify(data, null, 2) );
+    $("#resultExplain").val( data.explain != null ? data.explain : "'" );
 
     globalResultset = data.result;
     globalCy = null;
@@ -318,9 +405,11 @@ function executeCommandTable(){
 }
 
 function executeCommandGraph(){
-  let database = escapeHtml( $("#inputDatabase").val() );
+  let database = getCurrentDatabase();
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( editor.getValue() );
+  let limit = parseInt( $("#inputLimit").val() );
+  let profileExecution = $('#profileCommand').prop('checked') ? "detailed" : "basic";
 
   $("#executeSpinner").show();
 
@@ -333,7 +422,9 @@ function executeCommandGraph(){
       {
         language: language,
         command: command,
-        serializer: "graph"
+        limit: limit,
+        profileExecution: profileExecution,
+        serializer: "studio"
       }
     ),
     beforeSend: function (xhr){
@@ -344,8 +435,9 @@ function executeCommandGraph(){
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
 
-    $("#result-num").html( data.result.vertices.length + data.result.edges.length );
+    $("#result-num").html( data.result.records.length );
     $("#resultJson").val( JSON.stringify(data, null, 2) );
+    $("#resultExplain").val( data.explain != null ? data.explain : "'" );
 
     globalResultset = data.result;
     globalCy = null;
@@ -376,7 +468,7 @@ function executeCommandGraph(){
 }
 
 function displaySchema(){
-  let database = escapeHtml( $("#inputDatabase").val() );
+  let database = getCurrentDatabase();
   if( database == null || database == "" )
     return;
 
@@ -444,9 +536,10 @@ function displaySchema(){
 
       panelHtml += "<br><h6>Actions</h6>";
       panelHtml += "<ul>";
-      panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select from "+row.name+" limit 30\")'>Display the first 30 records of "+row.name+"</a>";
+      panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select from `"+row.name+"` limit 30\")'>Display the first 30 records of "+row.name+"</a>";
       if( row.type == "vertex" )
-        panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select *, bothE() from "+row.name+" limit 30\")'>Display the first 30 records of "+row.name+" together with all the vertices that are directly connected</a>";
+        panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select *, bothE() as `@edges` from `"+row.name+"` limit 30\")'>Display the first 30 records of "+row.name+" together with all the vertices that are directly connected</a>";
+      panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select count(*) from `"+row.name+"`\")'>Count the records of type "+row.name+"</a>";
       panelHtml += "</ul>";
 
       panelHtml += "</div>";
@@ -476,5 +569,104 @@ function displaySchema(){
   })
   .always(function(data) {
     $("#executeSpinner").hide();
+  });
+}
+
+function displayDatabaseSettings(){
+  let database = getCurrentDatabase();
+  if( database == null || database == "" )
+    return;
+
+  jQuery.ajax({
+    type: "POST",
+    url: "/api/v1/query/" + database,
+    data: JSON.stringify(
+      {
+        language: "sql",
+        command: "select expand( settings ) from schema:database"
+      }
+    ),
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    if ( $.fn.dataTable.isDataTable( '#dbSettings' ) )
+      try{ $('#dbSettings').DataTable().destroy(); $('#serverMetrics').empty(); } catch(e){};
+
+    var tableRecords = [];
+
+    for( let i in data.result ){
+      let row = data.result[i];
+
+      let record = [];
+      record.push( row.key );
+      record.push( row.value );
+      record.push( row.description );
+      record.push( row.default );
+      record.push( row.overridden );
+      tableRecords.push( record );
+    }
+
+   $("#dbSettings").DataTable({
+      paging: false,
+      ordering: false,
+      autoWidth: false,
+      columns: [
+        {title: "Key", width: "25%"},
+        {title: "Value", width: "20%",
+         render: function ( data, type, row) {
+           return "<a href='#' onclick='updateDatabaseSetting(\""+row[0]+"\", \""+row[1]+"\")' style='color: green;'><b>"+data+"</b></a>";
+         }},
+        {title: "Description", width: "33%"},
+        {title: "Default", width: "15%"},
+        {title: "Overridden", width: "7%"},
+      ],
+      data: tableRecords,
+    });
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotifyError( jqXHR.responseText );
+  })
+  .always(function(data) {
+    $("#executeSpinner").hide();
+  });
+}
+
+function updateDatabaseSetting(key, value){
+  let html = "<b>" + key + "</b> = <input id='updateSettingInput' value='"+value+"'>";
+  html += "<br><p><i>The setting will be saved in the database configuration.</i></p>";
+
+  Swal.fire({
+    title: "Update Database Setting",
+    html: html,
+    showCancelButton: true,
+    width: 600,
+    confirmButtonColor: '#3ac47d',
+    cancelButtonColor: 'red',
+  }).then((result) => {
+    if (result.value) {
+      jQuery.ajax({
+       type: "POST",
+       url: "/api/v1/server",
+       data: JSON.stringify(
+         {
+           language: "sql",
+           command: "set database setting " + getCurrentDatabase() + " " + key + " " +$("#updateSettingInput").val()
+         }
+       ),
+       beforeSend: function (xhr){
+         xhr.setRequestHeader('Authorization', globalCredentials);
+       }
+      })
+      .done(function(data){
+        if( data.error ) {
+          $("#authorizationCodeMessage").html(data.error);
+          return false;
+        }
+        displayDatabaseSettings();
+        return true;
+      });
+    }
   });
 }

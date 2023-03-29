@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
@@ -32,68 +31,30 @@ import java.util.concurrent.atomic.*;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class BasicCommandContext implements CommandContext {
-  protected DatabaseInternal    database;
-  protected boolean             recordMetrics           = false;
-  protected CommandContext      parent;
-  protected CommandContext      child;
-  protected Map<String, Object> variables;
-  protected Map<String, Object> inputParameters;
-  protected Set<String>         declaredScriptVariables = new HashSet<>();
+  protected       DatabaseInternal    database;
+  protected       boolean             recordMetrics           = false;
+  protected       CommandContext      parent;
+  protected       CommandContext      child;
+  protected       Map<String, Object> variables;
+  protected       Map<String, Object> inputParameters;
+  protected final Set<String>         declaredScriptVariables = new HashSet<>();
+  protected final AtomicLong          resultsProcessed        = new AtomicLong(0);
 
-  protected final AtomicLong resultsProcessed = new AtomicLong(0);
-
-  public BasicCommandContext() {
+  public Object getVariable(final String name) {
+    return getVariable(name, null);
   }
 
-  public Object getVariable(String iName) {
-    return getVariable(iName, null);
-  }
-
-  public Object getVariable(String iName, final Object iDefault) {
-    if (iName == null)
+  public Object getVariable(String name, final Object iDefault) {
+    if (name == null)
       return iDefault;
 
-    Object result;
+    final Object result;
 
-    if (iName.startsWith("$"))
-      iName = iName.substring(1);
+    if (name.startsWith("$"))
+      name = name.substring(1);
 
-    int pos = getLowerIndexOf(iName, 0, ".", "[");
-
-    String firstPart;
-    String lastPart;
-    if (pos > -1) {
-      firstPart = iName.substring(0, pos);
-      if (iName.charAt(pos) == '.')
-        pos++;
-      lastPart = iName.substring(pos);
-      if (firstPart.equalsIgnoreCase("PARENT") && parent != null) {
-        // UP TO THE PARENT
-        if (lastPart.startsWith("$"))
-          result = parent.getVariable(lastPart.substring(1));
-        else
-//          result = ODocumentHelper.getFieldValue(parent, lastPart);
-          result = parent.getVariable(lastPart);
-
-        return result != null ? result : iDefault;
-
-      } else if (firstPart.equalsIgnoreCase("ROOT")) {
-        CommandContext p = this;
-        while (p.getParent() != null)
-          p = p.getParent();
-
-        if (lastPart.startsWith("$"))
-          result = p.getVariable(lastPart.substring(1));
-        else
-//          result = ODocumentHelper.getFieldValue(p, lastPart, this);
-          result = p.getVariable(lastPart);
-
-        return result != null ? result : iDefault;
-      }
-    } else {
-      firstPart = iName;
-      lastPart = null;
-    }
+    final String firstPart;
+    firstPart = name;
 
     if (firstPart.equalsIgnoreCase("CONTEXT"))
       result = getVariables();
@@ -115,14 +76,10 @@ public class BasicCommandContext implements CommandContext {
       }
     }
 
-    if (pos > -1) {
-      result = ((Document) result).get(lastPart);
-    }
-
     return result != null ? result : iDefault;
   }
 
-  protected Object getVariableFromParentHierarchy(String varName) {
+  protected Object getVariableFromParentHierarchy(final String varName) {
     if (this.variables != null && variables.containsKey(varName)) {
       return variables.get(varName);
     }
@@ -132,64 +89,51 @@ public class BasicCommandContext implements CommandContext {
     return null;
   }
 
-  public CommandContext setVariable(String iName, final Object iValue) {
-    if (iName == null)
+  public CommandContext setVariable(String name, final Object value) {
+    if (name == null)
       return null;
 
-    if (iName.startsWith("$"))
-      iName = iName.substring(1);
+    if (name.startsWith("$"))
+      name = name.substring(1);
 
     init();
 
-    int pos = getHigherIndexOf(iName, 0, ".", "[");
-    if (pos > -1) {
-      Object nested = getVariable(iName.substring(0, pos));
-      if (nested instanceof CommandContext)
-        ((CommandContext) nested).setVariable(iName.substring(pos + 1), iValue);
+    if (variables.containsKey(name)) {
+      variables.put(name, value);//this is a local existing variable, so it's bound to current context
+    } else if (parent != null && parent instanceof BasicCommandContext && ((BasicCommandContext) parent).hasVariable(name)) {
+      parent.setVariable(name, value);// it is an existing variable in parent context, so it's bound to parent context
     } else {
-      if (variables.containsKey(iName)) {
-        variables.put(iName, iValue);//this is a local existing variable, so it's bound to current context
-      } else if (parent != null && parent instanceof BasicCommandContext && ((BasicCommandContext) parent).hasVariable(iName)) {
-        parent.setVariable(iName, iValue);// it is an existing variable in parent context, so it's bound to parent context
-      } else {
-        variables.put(iName, iValue); //it's a new variable, so it's created in this context
-      }
+      variables.put(name, value); //it's a new variable, so it's created in this context
     }
+
     return this;
   }
 
-  boolean hasVariable(String iName) {
-    if (variables != null && variables.containsKey(iName)) {
+  boolean hasVariable(final String name) {
+    if (variables != null && variables.containsKey(name)) {
       return true;
     }
     if (parent != null && parent instanceof BasicCommandContext) {
-      return ((BasicCommandContext) parent).hasVariable(iName);
+      return ((BasicCommandContext) parent).hasVariable(name);
     }
     return false;
   }
 
   @Override
-  public CommandContext incrementVariable(String iName) {
-    if (iName != null) {
-      if (iName.startsWith("$"))
-        iName = iName.substring(1);
+  public CommandContext incrementVariable(String name) {
+    if (name != null) {
+      if (name.startsWith("$"))
+        name = name.substring(1);
 
       init();
 
-      int pos = getHigherIndexOf(iName, 0, ".", "[");
-      if (pos > -1) {
-        Object nested = getVariable(iName.substring(0, pos));
-        if (nested instanceof CommandContext)
-          ((CommandContext) nested).incrementVariable(iName.substring(pos + 1));
-      } else {
-        final Object v = variables.get(iName);
-        if (v == null)
-          variables.put(iName, 1);
-        else if (v instanceof Number)
-          variables.put(iName, ((Number) v).longValue() + 1);
-        else
-          throw new IllegalArgumentException("Variable '" + iName + "' is not a number, but: " + v.getClass());
-      }
+      final Object v = variables.get(name);
+      if (v == null)
+        variables.put(name, 1);
+      else if (v instanceof Number)
+        variables.put(name, ((Number) v).longValue() + 1);
+      else
+        throw new IllegalArgumentException("Variable '" + name + "' is not a number, but: " + v.getClass());
     }
     return this;
   }
@@ -266,44 +210,6 @@ public class BasicCommandContext implements CommandContext {
     return getVariables().toString();
   }
 
-  public boolean isRecordingMetrics() {
-    return recordMetrics;
-  }
-
-  public CommandContext setRecordingMetrics(final boolean recordMetrics) {
-    this.recordMetrics = recordMetrics;
-    return this;
-  }
-
-  @Override
-  public void beginExecution(final long iTimeout, final TIMEOUT_STRATEGY iStrategy) {
-//    if (iTimeout > 0) {
-    // MANAGES THE TIMEOUT
-    //long executionStartedOn = System.currentTimeMillis();
-    //      timeoutStrategy = iStrategy;
-//    }
-  }
-
-  public boolean checkTimeout() {
-//    if (timeoutMs > 0) {
-//      if (System.currentTimeMillis() - executionStartedOn > timeoutMs) {
-//        // TIMEOUT!
-//        switch (timeoutStrategy) {
-//        case RETURN:
-//          return false;
-//        case EXCEPTION:
-//          throw new PTimeoutException("Command execution timeout exceed (" + timeoutMs + "ms)");
-//        }
-//      }
-//    } else if (parent != null)
-//      // CHECK THE TIMER OF PARENT CONTEXT
-//      return parent.checkTimeout();
-
-    //TODO
-
-    return true;
-  }
-
   @Override
   public CommandContext copy() {
     final BasicCommandContext copy = new BasicCommandContext();
@@ -331,7 +237,7 @@ public class BasicCommandContext implements CommandContext {
     return parent == null ? null : parent.getInputParameters();
   }
 
-  public void setInputParameters(Map<String, Object> inputParameters) {
+  public void setInputParameters(final Map<String, Object> inputParameters) {
     this.inputParameters = inputParameters;
   }
 
@@ -344,13 +250,6 @@ public class BasicCommandContext implements CommandContext {
     }
   }
 
-  /**
-   * Returns the number of results processed. This is intended to be used with LIMIT in SQL statements
-   */
-  public AtomicLong getResultsProcessed() {
-    return resultsProcessed;
-  }
-
   public DatabaseInternal getDatabase() {
     if (database != null) {
       return database;
@@ -361,57 +260,13 @@ public class BasicCommandContext implements CommandContext {
     return null;
   }
 
-  public void setDatabase(final Database database) {
+  public CommandContext setDatabase(final Database database) {
     this.database = (DatabaseInternal) database;
-  }
-
-  public static int getLowerIndexOf(final String iText, final int iBeginOffset, final String... iToSearch) {
-    int lowest = -1;
-    for (String toSearch : iToSearch) {
-      boolean singleQuote = false;
-      boolean doubleQuote = false;
-      boolean backslash = false;
-      for (int i = iBeginOffset; i < iText.length(); i++) {
-        if (lowest == -1 || i < lowest) {
-          if (backslash && (iText.charAt(i) == '\'' || iText.charAt(i) == '"')) {
-            backslash = false;
-            continue;
-          }
-          if (iText.charAt(i) == '\\') {
-            backslash = true;
-            continue;
-          }
-          if (iText.charAt(i) == '\'' && !doubleQuote) {
-            singleQuote = !singleQuote;
-            continue;
-          }
-          if (iText.charAt(i) == '"' && !singleQuote) {
-            doubleQuote = !doubleQuote;
-            continue;
-          }
-
-          if (!singleQuote && !doubleQuote && iText.startsWith(toSearch, i)) {
-            lowest = i;
-          }
-        }
-      }
-    }
-
-    return lowest;
-  }
-
-  public static int getHigherIndexOf(final String iText, final int iBeginOffset, final String... iToSearch) {
-    int lowest = -1;
-    for (String toSearch : iToSearch) {
-      int index = iText.indexOf(toSearch, iBeginOffset);
-      if (index > -1 && (lowest == -1 || index > lowest))
-        lowest = index;
-    }
-    return lowest;
+    return this;
   }
 
   @Override
-  public void declareScriptVariable(String varName) {
+  public void declareScriptVariable(final String varName) {
     this.declaredScriptVariables.add(varName);
   }
 

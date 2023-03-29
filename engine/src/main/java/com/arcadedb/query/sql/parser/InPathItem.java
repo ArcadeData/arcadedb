@@ -25,20 +25,16 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class InPathItem extends MatchPathItem {
-  public InPathItem(int id) {
+  public InPathItem(final int id) {
     super(id);
   }
 
-  public InPathItem(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("<-");
     boolean first = true;
     if (this.method.params != null) {
-      for (Expression exp : this.method.params) {
+      for (final Expression exp : this.method.params) {
         if (!first) {
           builder.append(", ");
         }

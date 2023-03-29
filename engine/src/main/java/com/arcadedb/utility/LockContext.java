@@ -45,7 +45,7 @@ public class LockContext {
 
       return callable.call();
 
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       throw manageExceptionInLock(e);
 
     } finally {

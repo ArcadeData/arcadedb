@@ -28,14 +28,12 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.LRUCache;
-import io.undertow.server.handlers.PathHandler;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
@@ -83,7 +81,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
 
     usersRepository = new SecurityUserFileRepository(configPath);
     groupRepository = new SecurityGroupFileRepository(configPath).onReload((latestConfiguration) -> {
-      for (String databaseName : server.getDatabaseNames()) {
+      for (final String databaseName : server.getDatabaseNames()) {
         updateSchema((DatabaseInternal) server.getDatabase(databaseName));
       }
       return null;
@@ -91,18 +89,19 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
 
     try {
       secretKeyFactory = SecretKeyFactory.getInstance(algorithm);
-    } catch (NoSuchAlgorithmException e) {
+    } catch (final NoSuchAlgorithmException e) {
       LogManager.instance().log(this, Level.SEVERE, "Security algorithm '%s' not available (error=%s)", e, algorithm);
       throw new ServerSecurityException("Security algorithm '" + algorithm + "' not available", e);
     }
   }
 
   @Override
-  public void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration) {
+  public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
   }
 
   @Override
   public void startService() {
+    // NO ACTION
   }
 
   public void loadUsers() {
@@ -110,13 +109,13 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
       users.clear();
 
       try {
-        for (JSONObject userJson : usersRepository.getUsers()) {
+        for (final JSONObject userJson : usersRepository.getUsers()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
           users.put(user.getName(), user);
         }
-      } catch (JSONException e) {
+      } catch (final JSONException e) {
         groupRepository.saveInError(e);
-        for (JSONObject userJson : SecurityUserFileRepository.createDefault()) {
+        for (final JSONObject userJson : SecurityUserFileRepository.createDefault()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
           users.put(user.getName(), user);
         }
@@ -139,7 +138,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         }, CHECK_USER_RELOAD_EVERY_MS, CHECK_USER_RELOAD_EVERY_MS);
       }
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ServerException("Error on starting Security service", e);
     }
   }
@@ -211,7 +210,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     if (database == null)
       return;
 
-    for (ServerSecurityUser user : users.values()) {
+    for (final ServerSecurityUser user : users.values()) {
       final ServerSecurityDatabaseUser databaseUser = user.getDatabaseUser(database);
       if (databaseUser != null) {
         final JSONObject groupConfiguration = getDatabaseGroupsConfiguration(database.getName());
@@ -229,7 +228,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     final SecretKey secret;
     try {
       secret = secretKeyFactory.generateSecret(keySpec);
-    } catch (InvalidKeySpecException e) {
+    } catch (final InvalidKeySpecException e) {
       throw new ServerSecurityException("Error on generating security key", e);
     }
 
@@ -237,10 +236,6 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     final byte[] hashBase64 = Base64.getEncoder().encode(rawHash);
 
     return new String(hashBase64, DatabaseFactory.getDefaultCharset());
-  }
-
-  @Override
-  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 
   protected String encodePassword(final String password, final String salt) {
@@ -292,7 +287,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
   public List<JSONObject> usersToJSON() {
     final List<JSONObject> jsonl = new ArrayList<>(users.size());
 
-    for (ServerSecurityUser user : users.values())
+    for (final ServerSecurityUser user : users.values())
       jsonl.add(user.toJSON());
 
     return jsonl;
@@ -311,7 +306,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
   public void saveUsers() {
     try {
       usersRepository.save(usersToJSON());
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityUserFileRepository.FILE_NAME);
     }
   }
@@ -319,7 +314,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
   public void saveGroups() {
     try {
       groupRepository.save(groupsToJSON());
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityGroupFileRepository.FILE_NAME);
     }
   }
@@ -386,7 +381,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
             System.out.println(AnsiCode.format("$ANSI{red ERROR: Passwords do not match, please reinsert both of them, or press ENTER to auto generate it}"));
             try {
               Thread.sleep(500);
-            } catch (InterruptedException e) {
+            } catch (final InterruptedException e) {
               return;
             }
             rootPassword = null;
@@ -397,12 +392,12 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
               credentialsValidator.validateCredentials("root", rootPassword);
               // PASSWORD IS STRONG ENOUGH
               break;
-            } catch (ServerSecurityException ex) {
+            } catch (final ServerSecurityException ex) {
               System.out.println(AnsiCode.format(
                   "$ANSI{red ERROR: Root password does not match the password policies" + (ex.getMessage() != null ? ": " + ex.getMessage() : "") + "}"));
               try {
                 Thread.sleep(500);
-              } catch (InterruptedException e) {
+              } catch (final InterruptedException e) {
                 return;
               }
               rootPassword = null;

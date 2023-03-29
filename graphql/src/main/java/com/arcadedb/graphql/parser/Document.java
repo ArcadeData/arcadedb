@@ -26,19 +26,8 @@ public class Document extends SimpleNode {
 
   protected List<Definition> definitions = new ArrayList<>();
 
-  public Document(int id) {
+  public Document(final int id) {
     super(id);
-  }
-
-  public Document(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public List<Definition> getDefinitions() {

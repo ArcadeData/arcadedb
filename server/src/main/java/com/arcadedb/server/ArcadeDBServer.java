@@ -29,8 +29,12 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ChannelBinary;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
@@ -39,8 +43,6 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import java.io.*;
 import java.lang.reflect.*;
@@ -57,6 +59,7 @@ public class ArcadeDBServer {
   public static final String                                  CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
   private final       ContextConfiguration                    configuration;
   private final       String                                  serverName;
+  private             String                                  hostAddress;
   private final       boolean                                 testEnabled;
   private final       Map<String, ServerPlugin>               plugins                              = new LinkedHashMap<>();
   private             String                                  serverRootPath;
@@ -66,25 +69,23 @@ public class ArcadeDBServer {
   private final       ConcurrentMap<String, DatabaseInternal> databases                            = new ConcurrentHashMap<>();
   private final       List<TestCallback>                      testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                  status                               = STATUS.OFFLINE;
-  private             ServerMetrics                           serverMetrics                        = new NoServerMetrics();
+  private             ServerMetrics                           serverMetrics                        = new DefaultServerMetrics();
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
-
-    setRootPath(configuration);
-
+    serverRootPath = IntegrationUtils.setRootPath(configuration);
     loadConfiguration();
-
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
+    init();
   }
 
   public ArcadeDBServer(final ContextConfiguration configuration) {
     this.configuration = configuration;
+    serverRootPath = IntegrationUtils.setRootPath(configuration);
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
-
-    setRootPath(configuration);
+    init();
   }
 
   public static void main(final String[] args) {
@@ -98,7 +99,7 @@ public class ArcadeDBServer {
   public synchronized void start() {
     LogManager.instance().setContext(getServerName());
 
-    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server v" + Constants.getVersion() + " is starting up...");
+    welcomeBanner();
 
     if (status != STATUS.OFFLINE)
       return;
@@ -107,11 +108,12 @@ public class ArcadeDBServer {
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_STARTING, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
-    LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server with plugins %s ...", getPluginNames());
+    LogManager.instance()
+        .log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...", GlobalConfiguration.SERVER_MODE.getValueAsString(), getPluginNames());
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
@@ -127,34 +129,54 @@ public class ArcadeDBServer {
 
     security.loadUsers();
 
-    loadDefaultDatabases();
-
     httpServer = new HttpServer(this);
-
-    registerPlugins();
-
-    httpServer.startService();
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       haServer = new HAServer(this, configuration);
       haServer.startService();
     }
 
+    loadDefaultDatabases();
+
+    registerPlugins();
+
+    // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
+    loadDatabases();
+
+    httpServer.startService();
+
     status = STATUS.ONLINE;
 
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
 
-    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
+    final String mode = GlobalConfiguration.SERVER_MODE.getValueAsString();
+
+    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)", mode, Runtime.getRuntime().availableProcessors(),
         FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
 
-    LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
+    if (!"production".equals(mode))
+      LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://%s:%d ", hostAddress, httpServer.getPort());
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
+  }
+
+  private void welcomeBanner() {
+    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server v" + Constants.getVersion() + " is starting up...");
+
+    final String osName = System.getProperty("os.name");
+    final String osVersion = System.getProperty("os.version");
+    final String vmName = System.getProperty("java.vm.name");
+    final String vmVendorVersion = System.getProperty("java.vendor.version");
+    if (vmName != null)
+      LogManager.instance().log(this, Level.INFO,
+          "Running on " + osName + " " + osVersion + " - " + vmName + " " + (vmVendorVersion != null ? vmVendorVersion : System.getProperty("java.version")));
+    else
+      LogManager.instance().log(this, Level.INFO, "Running on " + osName + " " + osVersion + " - Java " + System.getProperty(" java.version"));
   }
 
   private Set<String> getPluginNames() {
@@ -162,7 +184,7 @@ public class ArcadeDBServer {
     final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
       final String[] pluginEntries = registeredPlugins.split(",");
-      for (String p : pluginEntries) {
+      for (final String p : pluginEntries) {
         final String[] pluginPair = p.split(":");
         final String pluginName = pluginPair[0];
         result.add(pluginName);
@@ -175,7 +197,7 @@ public class ArcadeDBServer {
     final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
       final String[] pluginEntries = registeredPlugins.split(",");
-      for (String p : pluginEntries) {
+      for (final String p : pluginEntries) {
         try {
           final String[] pluginPair = p.split(":");
 
@@ -192,7 +214,7 @@ public class ArcadeDBServer {
 
           LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
 
-        } catch (Exception e) {
+        } catch (final Exception e) {
           throw new ServerException("Error on loading plugin from class '" + p + ";", e);
         }
       }
@@ -205,7 +227,7 @@ public class ArcadeDBServer {
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_SHUTTING_DOWN, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
@@ -213,35 +235,35 @@ public class ArcadeDBServer {
 
     status = STATUS.SHUTTING_DOWN;
 
-    for (Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
+    for (final Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
-      CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(), "Error on halting '" + pEntry.getKey() + "' plugin");
+      CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(), "Error on halting '" + pEntry.getKey() + "' plugin", false);
     }
 
     if (haServer != null)
-      CodeUtils.executeIgnoringExceptions(haServer::stopService, "Error on stopping HA service");
+      CodeUtils.executeIgnoringExceptions(haServer::stopService, "Error on stopping HA service", false);
 
     if (httpServer != null)
-      CodeUtils.executeIgnoringExceptions(httpServer::stopService, "Error on stopping HTTP service");
+      CodeUtils.executeIgnoringExceptions(httpServer::stopService, "Error on stopping HTTP service", false);
 
     if (security != null)
-      CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service");
+      CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service", false);
 
-    for (Database db : databases.values())
-      CodeUtils.executeIgnoringExceptions(db::close, "Error closing database '" + db.getName() + "'");
+    for (final Database db : databases.values())
+      CodeUtils.executeIgnoringExceptions(db::close, "Error closing database '" + db.getName() + "'", false);
     databases.clear();
 
     CodeUtils.executeIgnoringExceptions(() -> {
       LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics");
       serverMetrics.stop();
-      serverMetrics = new NoServerMetrics();
-    }, "Error on stopping JMX Metrics");
+      serverMetrics = new DefaultServerMetrics();
+    }, "Error on stopping JMX Metrics", false);
 
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_DOWN, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
@@ -298,6 +320,7 @@ public class ArcadeDBServer {
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
 
+    // FORCE LOADING INTO THE SERVER
     databases.put(databaseName, db);
 
     return db;
@@ -315,6 +338,10 @@ public class ArcadeDBServer {
     return serverName;
   }
 
+  public String getHostAddress() {
+    return hostAddress;
+  }
+
   public HAServer getHA() {
     return haServer;
   }
@@ -329,7 +356,7 @@ public class ArcadeDBServer {
 
   public void lifecycleEvent(final TestCallback.TYPE type, final Object object) throws Exception {
     if (testEnabled)
-      for (TestCallback c : testEventListeners)
+      for (final TestCallback c : testEventListeners)
         c.onEvent(type, object, this);
   }
 
@@ -390,7 +417,7 @@ public class ArcadeDBServer {
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
         final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
-        for (File f : databaseDirectories)
+        for (final File f : databaseDirectories)
           getDatabase(f.getName());
       }
     }
@@ -405,7 +432,7 @@ public class ArcadeDBServer {
 
       // CREATE DEFAULT DATABASES
       final String[] dbs = defaultDatabases.split(";");
-      for (String db : dbs) {
+      for (final String db : dbs) {
         final int credentialBegin = db.indexOf('[');
         if (credentialBegin < 0) {
           LogManager.instance().log(this, Level.WARNING, "Error in default databases format: '%s'", defaultDatabases);
@@ -425,7 +452,7 @@ public class ArcadeDBServer {
           final String commands = db.substring(credentialEnd + 2, db.length() - 1);
 
           final String[] commandParts = commands.split(",");
-          for (String command : commandParts) {
+          for (final String command : commandParts) {
             final int commandSeparator = command.indexOf(":");
             if (commandSeparator < 0) {
               LogManager.instance().log(this, Level.WARNING, "Error in startup command configuration format: '%s'", commands);
@@ -441,7 +468,7 @@ public class ArcadeDBServer {
                 ((DatabaseInternal) database).getEmbedded().drop();
                 databases.remove(dbName);
               }
-              String dbPath = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
+              final String dbPath = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
 //              new Restore(commandParams, dbPath).restoreDatabase();
 
               try {
@@ -450,9 +477,9 @@ public class ArcadeDBServer {
 
                 clazz.getMethod("restoreDatabase").invoke(restorer);
 
-              } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+              } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
                 throw new CommandExecutionException("Error on restoring database, restore libs not found in classpath", e);
-              } catch (InvocationTargetException e) {
+              } catch (final InvocationTargetException e) {
                 throw new CommandExecutionException("Error on restoring database", e.getTargetException());
               }
 
@@ -485,7 +512,7 @@ public class ArcadeDBServer {
 
   private void parseCredentials(final String dbName, final String credentials) {
     final String[] credentialPairs = credentials.split(",");
-    for (String credential : credentialPairs) {
+    for (final String credential : credentialPairs) {
 
       final String[] credentialParts = credential.split(":");
 
@@ -498,21 +525,29 @@ public class ArcadeDBServer {
       } else {
         final String userName = credentialParts[0];
         final String userPassword = credentialParts[1];
-        final String userRole = credentialParts.length > 2 ? credentialParts[2] : null;
+        final String userGroup = credentialParts.length > 2 ? credentialParts[2] : null;
 
         if (security.existsUser(userName)) {
           // EXISTING USER: CHECK CREDENTIALS
-          try {
-            final ServerSecurityUser user = security.authenticate(userName, userPassword, dbName);
-            if (!user.getAuthorizedDatabases().contains(dbName)) {
-              // UPDATE DB LIST
-              user.addDatabase(dbName, new String[] { userRole });
-              security.saveUsers();
-            }
+          ServerSecurityUser user = security.getUser(userName);
+          if (user.canAccessToDatabase(dbName)) {
+            try {
+              user = security.authenticate(userName, userPassword, dbName);
+              if (!user.getAuthorizedDatabases().contains(dbName)) {
+                // UPDATE DB LIST
+                user.addDatabase(dbName, new String[] { userGroup });
+                security.saveUsers();
+              }
 
-          } catch (ServerSecurityException e) {
-            LogManager.instance()
-                .log(this, Level.WARNING, "Cannot create database '%s' because the user '%s' already exists with a different password", null, dbName, userName);
+            } catch (final ServerSecurityException e) {
+              LogManager.instance()
+                  .log(this, Level.WARNING, "Cannot create database '%s' because the user '%s' already exists with a different password", null, dbName,
+                      userName);
+            }
+          } else {
+            // UPDATE DB LIST
+            user.addDatabase(dbName, new String[] { userGroup });
+            security.saveUsers();
           }
         } else {
           // CREATE A NEW USER
@@ -532,18 +567,56 @@ public class ArcadeDBServer {
         configuration.reset();
         configuration.fromJSON(content);
 
-      } catch (IOException e) {
+      } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, file);
       }
     }
   }
 
-  private void setRootPath(final ContextConfiguration configuration) {
-    serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
-    if (serverRootPath == null) {
-      serverRootPath = new File("config").exists() ? "." : new File("../config").exists() ? ".." : ".";
-      configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, serverRootPath);
-    }
+  private void init() {
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      stop();
+    }));
+
+    hostAddress = assignHostAddress();
   }
 
+  private String assignHostAddress() {
+    String hostAddress;
+
+    // GET THE HOST NAME FROM ENV VARIABLE
+    String hostNameEnvVariable = System.getenv("HOSTNAME");
+    if (hostNameEnvVariable != null && !hostNameEnvVariable.trim().isEmpty())
+      hostNameEnvVariable = hostNameEnvVariable.trim();
+    else
+      hostNameEnvVariable = null;
+
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
+      if (hostNameEnvVariable == null) {
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server will be halted");
+        stop();
+        System.exit(1);
+        return null;
+      }
+
+      hostAddress = hostNameEnvVariable + configuration.getValueAsString(GlobalConfiguration.HA_K8S_DNS_SUFFIX);
+      LogManager.instance().log(this, Level.INFO, "Server is running inside Kubernetes. Hostname: %s", null, hostAddress);
+
+    } else if (hostNameEnvVariable != null) {
+      hostAddress = hostNameEnvVariable;
+    } else {
+      // READ HOST FROM NETWORK INTERFACE
+      hostAddress = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
+      if (hostAddress.equals("0.0.0.0")) {
+        try {
+          hostAddress = ChannelBinary.getLocalIpAddress(true);
+        } catch (Exception e) {
+          // IGNORE IT
+          hostAddress = "localhost";
+        }
+      }
+    }
+    return hostAddress;
+  }
 }

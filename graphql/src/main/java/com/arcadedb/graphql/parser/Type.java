@@ -25,12 +25,8 @@ public class Type extends SimpleNode {
   protected ListType listType;
   protected boolean  bang = false;
 
-  public Type(int id) {
+  public Type(final int id) {
     super(id);
-  }
-
-  public Type(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   public ListType getListType() {
@@ -45,12 +41,6 @@ public class Type extends SimpleNode {
     return bang;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public String treeToString(final String prefix) {
     return prefix + "Type{" + (typeName != null ? typeName.getName() : listType.getType().getTypeName().getName()) + "}";

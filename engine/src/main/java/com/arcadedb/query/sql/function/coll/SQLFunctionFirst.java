@@ -32,10 +32,10 @@ public class SQLFunctionFirst extends SQLFunctionConfigurableAbstract {
   public static final String NAME = "first";
 
   public SQLFunctionFirst() {
-    super(NAME, 1, 1);
+    super(NAME);
   }
 
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams,
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     final Object value = iParams[0];
 

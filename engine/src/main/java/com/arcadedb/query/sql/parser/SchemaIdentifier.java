@@ -20,23 +20,16 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class SchemaIdentifier extends SimpleNode {
   protected String name;
 
-  public SchemaIdentifier(int id) {
+  public SchemaIdentifier(final int id) {
     super(id);
   }
 
-  public SchemaIdentifier(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("schema:");
     builder.append(name);
   }
@@ -52,7 +45,7 @@ public class SchemaIdentifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -66,16 +59,6 @@ public class SchemaIdentifier extends SimpleNode {
   @Override
   public int hashCode() {
     return name != null ? name.hashCode() : 0;
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("name", name);
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    name = fromResult.getProperty("name");
   }
 }
 /* JavaCC - OriginalChecksum=ef4081789ce8f5ab15ca3ac3fdcbe748 (do not edit this line) */

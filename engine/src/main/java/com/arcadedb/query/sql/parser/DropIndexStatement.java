@@ -36,21 +36,17 @@ public class DropIndexStatement extends DDLStatement {
   protected Identifier name;
   protected boolean    ifExists = false;
 
-  public DropIndexStatement(int id) {
+  public DropIndexStatement(final int id) {
     super(id);
   }
 
-  public DropIndexStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
     final InternalResultSet rs = new InternalResultSet();
-    final Database db = ctx.getDatabase();
+    final Database db = context.getDatabase();
 
     if (all) {
-      for (Index idx : db.getSchema().getIndexes()) {
+      for (final Index idx : db.getSchema().getIndexes()) {
         db.getSchema().dropIndex(idx.getName());
 
         final ResultInternal result = new ResultInternal();
@@ -76,7 +72,7 @@ public class DropIndexStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DROP INDEX ");
     if (all) {
       builder.append("*");
@@ -90,7 +86,7 @@ public class DropIndexStatement extends DDLStatement {
 
   @Override
   public DropIndexStatement copy() {
-    DropIndexStatement result = new DropIndexStatement(-1);
+    final DropIndexStatement result = new DropIndexStatement(-1);
     result.all = all;
     result.name = name == null ? null : name.copy();
     return result;

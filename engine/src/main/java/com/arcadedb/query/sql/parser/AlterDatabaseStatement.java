@@ -30,7 +30,9 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
@@ -44,38 +46,70 @@ public class AlterDatabaseStatement extends DDLStatement {
     super(id);
   }
 
-  public AlterDatabaseStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
     final InternalResultSet result = new InternalResultSet();
-    result.add(executeSimpleAlter(settingName, settingValue, ctx));
+    result.add(executeSimpleAlter(settingName, settingValue, context));
     return result;
   }
 
-  private Result executeSimpleAlter(Identifier settingName, Expression settingValue, CommandContext ctx) {
-    final DatabaseInternal db = ctx.getDatabase();
+  private Result executeSimpleAlter(final Identifier settingName, final Expression settingValue, final CommandContext context) {
+    final DatabaseInternal db = context.getDatabase();
     db.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
 
-    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(settingName.getStringValue());
+    final String settingNameAsString = settingName.getStringValue();
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(settingNameAsString);
     if (cfg == null)
-      throw new DatabaseOperationException("Database setting '" + settingName.getStringValue() + "' not found");
+      throw new DatabaseOperationException("Database setting '" + settingNameAsString + "' not found");
 
     final Object oldValue = db.getConfiguration().getValue(cfg);
-    final Object finalValue = settingValue.execute((Identifiable) null, ctx);
+    Object finalValue = settingValue.execute((Identifiable) null, context);
 
-    db.getConfiguration().setValue(cfg, finalValue);
-    try {
-      db.saveConfiguration();
-    } catch (IOException e) {
-      throw new CommandExecutionException("Error on saving database configuration");
+    boolean saveInDatabaseConfiguration = false;
+
+    switch (cfg) {
+    case DATE_FORMAT:
+      db.getSchema().setDateFormat(finalValue.toString());
+      ((EmbeddedSchema) db.getSchema()).saveConfiguration();
+      break;
+    case DATE_TIME_FORMAT:
+      db.getSchema().setDateTimeFormat(finalValue.toString());
+      ((EmbeddedSchema) db.getSchema()).saveConfiguration();
+      break;
+    case DATE_IMPLEMENTATION:
+      try {
+        finalValue = FileUtils.getStringContent(settingValue);
+        context.getDatabase().getSerializer().setDateImplementation(Class.forName(finalValue.toString()));
+        saveInDatabaseConfiguration = true;
+      } catch (ClassNotFoundException e) {
+        throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
+      }
+      break;
+    case DATE_TIME_IMPLEMENTATION:
+      try {
+        finalValue = FileUtils.getStringContent(settingValue);
+        context.getDatabase().getSerializer().setDateTimeImplementation(Class.forName(finalValue.toString()));
+        saveInDatabaseConfiguration = true;
+      } catch (ClassNotFoundException e) {
+        throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
+      }
+      break;
+    default:
+      saveInDatabaseConfiguration = true;
+    }
+
+    if (saveInDatabaseConfiguration) {
+      db.getConfiguration().setValue(cfg, finalValue);
+      try {
+        db.saveConfiguration();
+      } catch (final IOException e) {
+        throw new CommandExecutionException("Error on saving database configuration");
+      }
     }
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "alter database");
-    result.setProperty("attribute", settingName.getStringValue());
+    result.setProperty("attribute", settingNameAsString);
     result.setProperty("oldValue", oldValue);
     result.setProperty("newValue", finalValue);
     return result;
@@ -98,23 +132,9 @@ public class AlterDatabaseStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AlterDatabaseStatement that = (AlterDatabaseStatement) o;
-    if (!Objects.equals(settingName, that.settingName))
-      return false;
-    return Objects.equals(settingValue, that.settingValue);
+  protected Object[] getIdentityElements() {
+    return new Object[] { settingName, settingValue };
   }
 
-  @Override
-  public int hashCode() {
-    int result = settingName != null ? settingName.hashCode() : 0;
-    result = 31 * result + (settingValue != null ? settingValue.hashCode() : 0);
-    return result;
-  }
 }
 /* JavaCC - OriginalChecksum=8fec57db8dd2a3b52aaa52dec7367cd4 (do not edit this line) */

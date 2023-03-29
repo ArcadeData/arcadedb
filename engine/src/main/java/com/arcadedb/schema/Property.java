@@ -18,9 +18,16 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Record;
 import com.arcadedb.index.Index;
-import org.json.JSONObject;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.ParseException;
+import com.arcadedb.query.sql.parser.SqlParser;
+import com.arcadedb.serializer.json.JSONObject;
 
+import java.io.*;
 import java.util.*;
 
 public class Property {
@@ -81,16 +88,36 @@ public class Property {
   }
 
   public Object getDefaultValue() {
+    if (defaultValue != null) {
+      if (defaultValue instanceof String) {
+        // TODO: OPTIMIZE THE CASE WHERE FUNCTIONS ARE DEFAULT
+        final Database database = owner.getSchema().getEmbedded().getDatabase();
+        final Expression expr;
+        try {
+          expr = new SqlParser(database, new ByteArrayInputStream(defaultValue.toString().getBytes())).ParseExpression();
+          final Object result = expr.execute((Record) null, new BasicCommandContext().setDatabase(database));
+          return Type.convert(database, result, type.javaDefaultType);
+        } catch (ParseException e) {
+          // IGNORE IT
+        }
+      }
+    }
+
     return defaultValue;
   }
 
   public Property setDefaultValue(final Object defaultValue) {
-    if (!Objects.equals(this.defaultValue, defaultValue)) {
-      this.defaultValue = defaultValue;
+    final Database database = owner.getSchema().getEmbedded().getDatabase();
+
+    // TODO: OPTIMIZE THE CASE WHERE FUNCTIONS ARE DEFAULT
+    final Object convertedValue = defaultValue instanceof String ? defaultValue : Type.convert(database, defaultValue, type.javaDefaultType);
+
+    if (!Objects.equals(this.defaultValue, convertedValue)) {
+      this.defaultValue = convertedValue;
 
       // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
       final Set<String> propertiesWithDefaultDefined = new HashSet<>(owner.propertiesWithDefaultDefined);
-      if (defaultValue == null)
+      if (convertedValue == null)
         propertiesWithDefaultDefined.remove(name);
       else
         propertiesWithDefaultDefined.add(name);
@@ -149,6 +176,21 @@ public class Property {
   public Property setMax(final String max) {
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {
+      switch (type) {
+      case LINK:
+      case BOOLEAN:
+      case EMBEDDED:
+        throw new IllegalArgumentException("Maximum value not applicable for type " + type);
+
+      case STRING:
+      case BINARY:
+      case LIST:
+      case MAP:
+        if (Integer.parseInt(max) < 0)
+          throw new IllegalArgumentException("Maximum value for type " + type + " is 0");
+        break;
+      }
+
       this.max = max;
       owner.getSchema().getEmbedded().saveConfiguration();
     }
@@ -162,6 +204,21 @@ public class Property {
   public Property setMin(final String min) {
     final boolean changed = !Objects.equals(this.min, min);
     if (changed) {
+      switch (type) {
+      case LINK:
+      case BOOLEAN:
+      case EMBEDDED:
+        throw new IllegalArgumentException("Minimum value not applicable for type " + type);
+
+      case STRING:
+      case BINARY:
+      case LIST:
+      case MAP:
+        if (Integer.parseInt(min) < 0)
+          throw new IllegalArgumentException("Minimum value for type " + type + " is 0");
+        break;
+      }
+
       this.min = min;
       owner.getSchema().getEmbedded().saveConfiguration();
     }
@@ -193,8 +250,35 @@ public class Property {
     return custom.get(key);
   }
 
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+
+    json.put("type", type.name);
+
+    final Object defValue = defaultValue;
+    if (defValue != null)
+      json.put("default", defValue);
+
+    if (readonly)
+      json.put("readonly", readonly);
+    if (mandatory)
+      json.put("mandatory", mandatory);
+    if (notNull)
+      json.put("notNull", notNull);
+    if (max != null)
+      json.put("max", max);
+    if (min != null)
+      json.put("min", min);
+    if (regexp != null)
+      json.put("regexp", regexp);
+
+    json.put("custom", new JSONObject(custom));
+
+    return json;
+  }
+
   public Object setCustomValue(final String key, final Object value) {
-    Object prev;
+    final Object prev;
     if (value == null)
       prev = custom.remove(key);
     else
@@ -219,32 +303,5 @@ public class Property {
   @Override
   public int hashCode() {
     return id;
-  }
-
-  public JSONObject toJSON() {
-    final JSONObject json = new JSONObject();
-
-    json.put("type", type);
-
-    final Object defValue = getDefaultValue();
-    if (defValue != null)
-      json.put("default", defValue);
-
-    if (readonly)
-      json.put("readonly", readonly);
-    if (mandatory)
-      json.put("mandatory", mandatory);
-    if (notNull)
-      json.put("notNull", notNull);
-    if (max != null)
-      json.put("max", max);
-    if (min != null)
-      json.put("min", min);
-    if (regexp != null)
-      json.put("regexp", regexp);
-
-    json.put("custom", new JSONObject(custom));
-
-    return json;
   }
 }

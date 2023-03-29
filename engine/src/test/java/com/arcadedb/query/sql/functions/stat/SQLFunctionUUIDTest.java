@@ -38,20 +38,20 @@ public class SQLFunctionUUIDTest {
 
   @Test
   public void testEmpty() {
-    Object result = uuid.getResult();
+    final Object result = uuid.getResult();
     assertNull(result);
   }
 
   @Test
   public void testResult() {
-    String result = (String) uuid.execute(null, null, null, null, null);
+    final String result = (String) uuid.execute(null, null, null, null, null);
     assertNotNull(result);
   }
 
   @Test
   public void testQuery() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionUUIDTest", (db) -> {
-      ResultSet result = db.query("sql", "select uuid() as uuid");
+      final ResultSet result = db.query("sql", "select uuid() as uuid");
       assertNotNull(result);
       assertNotNull(result.next().getProperty("uuid"));
     });

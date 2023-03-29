@@ -27,34 +27,24 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class SingleOpExecutionPlan implements InternalExecutionPlan {
-
   protected final SimpleExecStatement statement;
-
-  final CommandContext ctx;
-
+  final           CommandContext      context;
   boolean executed = false;
-
   private ResultSet result;
 
-  public SingleOpExecutionPlan(CommandContext ctx, SimpleExecStatement stm) {
-    this.ctx = ctx;
+  public SingleOpExecutionPlan(final CommandContext context, final SimpleExecStatement stm) {
+    this.context = context;
     this.statement = stm;
   }
 
   @Override
-  public void close() {
-
-  }
-
-  @Override
-  public ResultSet fetchNext(int n) {
-
-    if (executed && result == null) {
+  public ResultSet fetchNext(final int n) {
+    if (executed && result == null)
       return new InternalResultSet();
-    }
+
     if (!executed) {
       executed = true;
-      result = statement.executeSimple(this.ctx);
+      result = statement.executeSimple(this.context);
       if (result instanceof InternalResultSet) {
         ((InternalResultSet) result).plan = this;
       }
@@ -70,7 +60,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
       @Override
       public Result next() {
         if (fetched >= n) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         fetched++;
         return result.next();
@@ -81,25 +71,11 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
         result.close();
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  public void reset(CommandContext ctx) {
+  public void reset(final CommandContext context) {
     executed = false;
-  }
-
-  @Override
-  public long getCost() {
-    return 0;
   }
 
   @Override
@@ -107,12 +83,12 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     return false;
   }
 
-  public ResultSet executeInternal(BasicCommandContext ctx) throws CommandExecutionException {
+  public ResultSet executeInternal() throws CommandExecutionException {
     if (executed) {
       throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
     }
     executed = true;
-    result = statement.executeSimple(this.ctx);
+    result = statement.executeSimple(this.context);
     if (result instanceof InternalResultSet) {
       ((InternalResultSet) result).plan = this;
     }
@@ -125,15 +101,14 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ " + statement.toString();
-    return result;
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    return spaces + "+ " + statement.toString();
   }
 
   @Override
   public Result toResult() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", "QueryExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("stmText", statement.toString());

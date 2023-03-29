@@ -24,13 +24,13 @@ import com.arcadedb.exception.TimeoutException;
  * Created by luigidellaquila on 08/07/16.
  */
 public class EmptyStep extends AbstractExecutionStep {
-  public EmptyStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public EmptyStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
     return new InternalResultSet();
   }
 
@@ -40,5 +40,4 @@ public class EmptyStep extends AbstractExecutionStep {
     // This step is there most of the cases because the query was early optimized based on DATA, eg. an empty bucket,
     // so this execution plan cannot be cached!!!
   }
-
 }

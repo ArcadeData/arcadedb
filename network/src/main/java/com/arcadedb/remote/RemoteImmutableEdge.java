@@ -30,10 +30,10 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
   private final RID out;
   private final RID in;
 
-  public RemoteImmutableEdge(final RemoteDatabase database, Map<String, Object> properties) {
+  public RemoteImmutableEdge(final RemoteDatabase database, final Map<String, Object> properties) {
     super(database, properties);
-    this.out = new RID(null, (String) properties.get("@out"));
-    this.in = new RID(null, (String) properties.get("@in"));
+    this.out = new RID(remoteDatabase, (String) properties.get("@out"));
+    this.in = new RID(remoteDatabase, (String) properties.get("@in"));
 
     map.remove("@cat");
     map.remove("@type");

@@ -21,35 +21,23 @@
 package com.arcadedb.graphql.parser;
 
 public class FieldWithAlias extends SimpleNode {
-
   Name alias;
   protected Name         name;
   protected Arguments    arguments;
   protected Directives   directives;
   protected SelectionSet selectionSet;
 
-  public FieldWithAlias(Name alias, int line, int column, int tokenId) {
+  public FieldWithAlias(final Name alias, final int line, final int column, final int tokenId) {
     this(-1);
     this.alias = alias;
   }
 
-  public FieldWithAlias(int id) {
+  public FieldWithAlias(final int id) {
     super(id);
-  }
-
-  public FieldWithAlias(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   public String getName() {
     return name != null ? name.value : null;
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=46c98ffd2c99423a541cd9d46c3fc779 (do not edit this line) */

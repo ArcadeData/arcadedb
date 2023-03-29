@@ -26,24 +26,24 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 public class CreateEdgeStatementTest {
 
-  protected SimpleNode checkRightSyntax(String query) {
-    SimpleNode result = checkSyntax(query, true);
+  protected SimpleNode checkRightSyntax(final String query) {
+    final SimpleNode result = checkSyntax(query, true);
     return checkSyntax(result.toString(), true);
   }
 
-  protected SimpleNode checkWrongSyntax(String query) {
+  protected SimpleNode checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected SimpleNode checkSyntax(String query, boolean isCorrect) {
-    SqlParser osql = getParserFor(query);
+  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
+    final SqlParser osql = getParserFor(query);
     try {
-      SimpleNode result = osql.parse();
+      final SimpleNode result = osql.Parse();
       if (!isCorrect) {
         fail();
       }
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (isCorrect) {
         e.printStackTrace();
         fail();
@@ -107,18 +107,18 @@ public class CreateEdgeStatementTest {
         "create edge Foo from (MATCH {type:Person, as:A} return $elements) to (select from bar)");
   }
 
-  private void printTree(String s) {
-    SqlParser osql = getParserFor(s);
+  private void printTree(final String s) {
+    final SqlParser osql = getParserFor(s);
     try {
-      SimpleNode n = osql.parse();
-    } catch (ParseException e) {
+      final SimpleNode n = osql.Parse();
+    } catch (final ParseException e) {
       e.printStackTrace();
     }
   }
 
-  protected SqlParser getParserFor(String string) {
-    InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(is);
+  protected SqlParser getParserFor(final String string) {
+    final InputStream is = new ByteArrayInputStream(string.getBytes());
+    final SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 }

@@ -50,7 +50,6 @@ public class CompressedAny2RIDIndex<K> {
 
   public class EntryIterator implements Iterator<RID> {
     private int posInHashTable = 0;
-    private int posInChunk     = 0;
     private int nextKeyPos;
 
     private RID nextVertexRID;
@@ -75,7 +74,7 @@ public class CompressedAny2RIDIndex<K> {
 
       // NEXT POSITION IN HASHTABLE
       for (; posInHashTable < keys; ++posInHashTable) {
-        posInChunk = chunk.getInt(posInHashTable * Binary.INT_SERIALIZED_SIZE);
+        int posInChunk = chunk.getInt(posInHashTable * Binary.INT_SERIALIZED_SIZE);
         if (posInChunk > 0) {
           chunk.position(posInChunk);
 
@@ -103,7 +102,7 @@ public class CompressedAny2RIDIndex<K> {
     }
   }
 
-  public CompressedAny2RIDIndex(final Database database, final Type keyType, final int expectedSize) {
+  public CompressedAny2RIDIndex(final Database database, final Type keyType, final int expectedSize) throws ClassNotFoundException {
     this.database = database;
 
     this.keys = expectedSize;
@@ -112,7 +111,7 @@ public class CompressedAny2RIDIndex<K> {
     this.chunk.setAllocationChunkSize(expectedSize);
     this.chunk.fill((byte) 0, keys * Binary.INT_SERIALIZED_SIZE);
 
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
 
     this.keyType = keyType;
     this.keyBinaryType = keyType.getBinaryType();
@@ -160,7 +159,7 @@ public class CompressedAny2RIDIndex<K> {
     // SLOT OCCUPIED, CHECK FOR THE KEY
     threadBuffer.position(pos);
     while (true) {
-      Object slotKey = serializer.deserializeValue(database, threadBuffer, keyBinaryType, null);
+      final Object slotKey = serializer.deserializeValue(database, threadBuffer, keyBinaryType, null);
 
       if (BinaryComparator.equals(slotKey, key)) {
         threadBuffer.position(threadBuffer.position() + Binary.INT_SERIALIZED_SIZE);
@@ -209,7 +208,7 @@ public class CompressedAny2RIDIndex<K> {
         chunk.position(pos);
         int lastNextPos;
         while (true) {
-          Object slotKey = serializer.deserializeValue(database, chunk, keyBinaryType, null);
+          final Object slotKey = serializer.deserializeValue(database, chunk, keyBinaryType, null);
 
           if (BinaryComparator.equals(slotKey, key))
             throw new IllegalArgumentException("Key '" + key + "' is already present in the map");

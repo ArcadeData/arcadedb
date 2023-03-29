@@ -38,21 +38,21 @@ public class ConvertToResultInternalStepTest {
     TestHelper.executeInNewDatabase((database) -> {
       database.getSchema().createDocumentType("test");
 
-      CommandContext context = new BasicCommandContext();
-      ConvertToResultInternalStep step = new ConvertToResultInternalStep(context, false);
-      AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CommandContext context = new BasicCommandContext();
+      final ConvertToResultInternalStep step = new ConvertToResultInternalStep(context, false);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
         boolean done = false;
 
         @Override
-        public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-          InternalResultSet result = new InternalResultSet();
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+          final InternalResultSet result = new InternalResultSet();
           if (!done) {
             for (int i = 0; i < 10; i++) {
-              MutableDocument document = database.newDocument("test");
+              final MutableDocument document = database.newDocument("test");
               document.set(STRING_PROPERTY, UUID.randomUUID());
               document.set(INTEGER_PROPERTY, new Random().nextInt());
               documents.add(document);
-              UpdatableResult item = new UpdatableResult(document);
+              final UpdatableResult item = new UpdatableResult(document);
               result.add(item);
             }
             done = true;
@@ -62,11 +62,11 @@ public class ConvertToResultInternalStepTest {
       };
 
       step.setPrevious(previous);
-      ResultSet result = step.syncPull(context, 10);
+      final ResultSet result = step.syncPull(context, 10);
 
       int counter = 0;
       while (result.hasNext()) {
-        Result currentItem = result.next();
+        final Result currentItem = result.next();
         if (!(currentItem.getClass().equals(ResultInternal.class))) {
           Assertions.fail("There is an item in result set that is not an instance of ResultInternal");
         }

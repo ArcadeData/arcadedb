@@ -22,14 +22,21 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.JSONSerializer;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 public class RemoteMutableVertex extends MutableVertex {
   protected final RemoteDatabase remoteDatabase;
   protected final String         typeName;
+
+  protected RemoteMutableVertex(final RemoteDatabase database, final String typeName) {
+    super(null, null, null);
+    this.remoteDatabase = database;
+    this.typeName = typeName;
+  }
 
   protected RemoteMutableVertex(final RemoteImmutableVertex source) {
     super(null, null, source.getIdentity());
@@ -45,28 +52,21 @@ public class RemoteMutableVertex extends MutableVertex {
 
   @Override
   public synchronized MutableVertex save() {
-    dirty = true;
-    if (rid != null)
-      remoteDatabase.command("sql", "update " + rid + " content " + toJSON());
-    else
-      remoteDatabase.command("sql", "insert into " + typeName + " content " + toJSON());
+    rid = remoteDatabase.saveRecord(this);
     dirty = false;
     return this;
   }
 
   @Override
   public synchronized MutableVertex save(final String bucketName) {
-    dirty = true;
-    if (rid != null)
-      throw new IllegalStateException("Cannot update a record in a custom bucket");
-    remoteDatabase.command("sql", "insert into " + typeName + " bucket " + bucketName + " content " + toJSON());
+    rid = remoteDatabase.saveRecord(this, bucketName);
     dirty = false;
     return this;
   }
 
   @Override
   public void delete() {
-    remoteDatabase.command("sql", "delete from " + rid);
+    remoteDatabase.deleteRecord(this);
   }
 
   @Override
@@ -78,7 +78,8 @@ public class RemoteMutableVertex extends MutableVertex {
       map.clear();
       map.putAll(document.propertiesAsMap());
       dirty = false;
-    }
+    } else
+      throw new RecordNotFoundException("Record " + rid + " not found", rid);
   }
 
   @Override
@@ -107,12 +108,13 @@ public class RemoteMutableVertex extends MutableVertex {
   }
 
   @Override
-  public synchronized void setBuffer(Binary buffer) {
+  public synchronized void setBuffer(final Binary buffer) {
     throw new UnsupportedOperationException("Raw buffer API not supported in remote database");
   }
 
   @Override
   protected void checkForLazyLoadingProperties() {
+    // NO ACTIONS
   }
 
   @Override

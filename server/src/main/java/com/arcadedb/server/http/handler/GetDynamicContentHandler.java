@@ -29,7 +29,6 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
 import java.io.*;
-import java.nio.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -45,15 +44,12 @@ public class GetDynamicContentHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
     String uri = exchange.getRequestURI();
 
-    if (uri.contains("..")) {
+    if (uri.contains(".."))
       // UNAUTHORIZED ACCESS TO RELATIVE PATH
-      exchange.setStatusCode(404);
-      exchange.getResponseSender().send("Not Found");
-      return;
-    }
+      return new ExecutionResponse(404, "Not Found");
 
     if (uri.isEmpty() || uri.equals("/"))
       uri = "/index.html";
@@ -97,11 +93,8 @@ public class GetDynamicContentHandler extends AbstractHandler {
     LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/static" + uri);
 
     final InputStream file = getClass().getClassLoader().getResourceAsStream("static" + uri);
-    if (file == null) {
-      exchange.setStatusCode(404);
-      exchange.getResponseSender().send("Not Found");
-      return;
-    }
+    if (file == null)
+      return new ExecutionResponse(404, "Not Found");
 
     final Binary fileContent = FileUtils.readStreamAsBinary(file);
     file.close();
@@ -114,9 +107,7 @@ public class GetDynamicContentHandler extends AbstractHandler {
     if (!processTemplate)
       exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "max-age=86400");
 
-    exchange.setStatusCode(200);
-    exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, bytes.length);
-    exchange.getResponseSender().send(ByteBuffer.wrap(bytes));
+    return new ExecutionResponse(200, bytes);
   }
 
   protected String templating(final HttpServerExchange exchange, final String file, final Map<String, Object> variables) throws IOException {
@@ -149,7 +140,7 @@ public class GetDynamicContentHandler extends AbstractHandler {
           include = include.substring(0, sep);
 
           final String[] parameterPairs = params.split(" ");
-          for (String pair : parameterPairs) {
+          for (final String pair : parameterPairs) {
             final String[] kv = pair.split("=");
             variables.put(kv[0].trim(), kv[1].trim());
           }
@@ -193,7 +184,7 @@ public class GetDynamicContentHandler extends AbstractHandler {
 
         final Set<String> currentUserRoles = exchange.getSecurityContext().getAuthenticatedAccount().getRoles();
 
-        for (String role : protect.split(","))
+        for (final String role : protect.split(","))
           if (currentUserRoles.contains(role)) {
             final String subContent = file.substring(pos, beginTokenPos);
             buffer.append(templating(exchange, subContent, variables));

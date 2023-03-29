@@ -18,33 +18,29 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
-
-import java.util.*;
 
 /**
  * Created by luigidellaquila on 03/08/16.
  */
 public class LetExpressionStep extends AbstractExecutionStep {
-  private Identifier varname;
-  private Expression expression;
+  private final Identifier varName;
+  private final Expression expression;
 
-  public LetExpressionStep(Identifier varName, Expression expression, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
-    this.varname = varName;
+  public LetExpressionStep(final Identifier varName, final Expression expression, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
+    this.varName = varName;
     this.expression = expression;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (getPrev().isEmpty()) {
-      throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
-    }
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    checkForPrevious("Cannot execute a local LET on a query without a target");
+
     return new ResultSet() {
-      final ResultSet source = getPrev().get().syncPull(ctx, nRecords);
+      final ResultSet source = getPrev().syncPull(context, nRecords);
 
       @Override
       public boolean hasNext() {
@@ -53,10 +49,10 @@ public class LetExpressionStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        ResultInternal result = (ResultInternal) source.next();
-        Object value = expression.execute(result, ctx);
-        result.setMetadata(varname.getStringValue(), value);
-        ctx.setVariable(varname.getStringValue(), value);
+        final ResultInternal result = (ResultInternal) source.next();
+        final Object value = expression.execute(result, context);
+        result.setMetadata(varName.getStringValue(), value);
+        context.setVariable(varName.getStringValue(), value);
         return result;
       }
 
@@ -64,51 +60,12 @@ public class LetExpressionStep extends AbstractExecutionStep {
       public void close() {
         source.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (for each record)\n" + spaces + "  " + varname + " = " + expression;
-  }
-
-  @Override
-  public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (varname != null) {
-      result.setProperty("varname", varname.serialize());
-    }
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    return result;
-  }
-
-  @Override
-  public void deserialize(Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      if (fromResult.getProperty("varname") != null) {
-        varname = Identifier.deserialize(fromResult.getProperty("varname"));
-      }
-      if (fromResult.getProperty("expression") != null) {
-        expression = new Expression(-1);
-        expression.deserialize(fromResult.getProperty("expression"));
-      }
-      reset();
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    return spaces + "+ LET (for each record)\n" + spaces + "  " + varName + " = " + expression;
   }
 }

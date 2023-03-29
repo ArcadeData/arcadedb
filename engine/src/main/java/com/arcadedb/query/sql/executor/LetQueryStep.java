@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.LocalResultSet;
@@ -30,23 +29,21 @@ import java.util.*;
  * Created by luigidellaquila on 03/08/16.
  */
 public class LetQueryStep extends AbstractExecutionStep {
-
   private final Identifier varName;
   private final Statement  query;
 
-  public LetQueryStep(final Identifier varName, final Statement query, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public LetQueryStep(final Identifier varName, final Statement query, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.varName = varName;
     this.query = query;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    if (getPrev().isEmpty()) {
-      throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
-    }
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    checkForPrevious("Cannot execute a local LET on a query without a target");
+
     return new ResultSet() {
-      final ResultSet source = getPrev().get().syncPull(ctx, nRecords);
+      final ResultSet source = getPrev().syncPull(context, nRecords);
 
       @Override
       public boolean hasNext() {
@@ -55,21 +52,21 @@ public class LetQueryStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        ResultInternal result = (ResultInternal) source.next();
+        final ResultInternal result = (ResultInternal) source.next();
         if (result != null) {
-          calculate(result, ctx);
+          calculate(result, context);
         }
         return result;
       }
 
-      private void calculate(final ResultInternal result, final CommandContext ctx) {
+      private void calculate(final ResultInternal result, final CommandContext context) {
         final BasicCommandContext subCtx = new BasicCommandContext();
-        subCtx.setDatabase(ctx.getDatabase());
-        subCtx.setParentWithoutOverridingChild(ctx);
+        subCtx.setDatabase(context.getDatabase());
+        subCtx.setParentWithoutOverridingChild(context);
         final InternalExecutionPlan subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
         final List<Result> value = toList(new LocalResultSet(subExecutionPlan));
         result.setMetadata(varName.getStringValue(), value);
-        ctx.setVariable(varName.getStringValue(), value);
+        context.setVariable(varName.getStringValue(), value);
       }
 
       private List<Result> toList(final LocalResultSet oLocalResultSet) {
@@ -86,20 +83,11 @@ public class LetQueryStep extends AbstractExecutionStep {
         source.close();
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ LET (for each record)\n" + spaces + "  " + varName + " = (" + query + ")";
   }

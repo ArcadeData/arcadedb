@@ -28,17 +28,17 @@ public class CheckSafeDeleteStepTest {
   @Test
   public void shouldSafelyDeleteRecord() throws Exception {
     TestHelper.executeInNewDatabase((database) -> {
-      CommandContext context = new BasicCommandContext();
-      CheckSafeDeleteStep step = new CheckSafeDeleteStep(context, false);
-      AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CommandContext context = new BasicCommandContext();
+      final CheckSafeDeleteStep step = new CheckSafeDeleteStep(context, false);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
         boolean done = false;
 
         @Override
-        public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-          InternalResultSet result = new InternalResultSet();
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+          final InternalResultSet result = new InternalResultSet();
           if (!done) {
             for (int i = 0; i < 10; i++) {
-              ResultInternal item = new ResultInternal();
+              final ResultInternal item = new ResultInternal();
               item.setElement(database.newDocument(TestHelper.createRandomType(database).getName()));
               result.add(item);
             }
@@ -49,7 +49,7 @@ public class CheckSafeDeleteStepTest {
       };
 
       step.setPrevious(previous);
-      ResultSet result = step.syncPull(context, 10);
+      final ResultSet result = step.syncPull(context, 10);
       Assertions.assertEquals(10, result.stream().count());
       Assertions.assertFalse(result.hasNext());
     });

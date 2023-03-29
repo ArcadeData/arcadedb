@@ -23,8 +23,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.*;
-
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
@@ -32,18 +30,18 @@ public class SaveElementStep extends AbstractExecutionStep {
 
   private final Identifier bucket;
 
-  public SaveElementStep(CommandContext ctx, Identifier bucket, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.bucket = bucket;
   }
 
-  public SaveElementStep(CommandContext ctx, boolean profilingEnabled) {
-    this(ctx, null, profilingEnabled);
+  public SaveElementStep(final CommandContext context, final boolean profilingEnabled) {
+    this(context, null, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -52,7 +50,7 @@ public class SaveElementStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
+        final Result result = upstream.next();
         if (result != null && result.isElement()) {
           final Document doc = result.getElement().orElse(null);
 
@@ -69,23 +67,13 @@ public class SaveElementStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ SAVE RECORD");
     if (bucket != null) {
@@ -97,7 +85,7 @@ public class SaveElementStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    return new SaveElementStep(ctx, bucket == null ? null : bucket.copy(), profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new SaveElementStep(context, bucket == null ? null : bucket.copy(), profilingEnabled);
   }
 }

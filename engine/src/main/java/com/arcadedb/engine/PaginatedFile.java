@@ -68,7 +68,7 @@ public class PaginatedFile {
         file = null;
       }
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing file %s (id=%d)", e, filePath, fileId);
     }
     this.open = false;
@@ -129,20 +129,24 @@ public class PaginatedFile {
    * performance and (2) in case a page is modified multiple times before the flush now it's overwritten in the writeCache map.
    */
   public int write(final MutablePage page) throws IOException {
-    if (page.pageId.getPageNumber() < 0)
-      throw new IllegalArgumentException("Invalid page number to write: " + page.pageId.getPageNumber());
+    final int pageNumber = page.pageId.getPageNumber();
+    if (pageNumber < 0)
+      throw new IllegalArgumentException("Invalid page number to write: " + pageNumber);
 
-    assert page.getPageId().getFileId() == fileId;
+    assert page.pageId.getFileId() == fileId;
     final ByteBuffer buffer = page.getContent();
 
+    // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
     buffer.rewind();
     try {
-      channel.write(buffer, (page.getPhysicalSize() * (long) page.getPageId().getPageNumber()));
-    } catch (ClosedChannelException e) {
+      channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
+    } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
       open(filePath, mode);
-      channel.write(buffer, (page.getPhysicalSize() * (long) page.getPageId().getPageNumber()));
+      buffer.rewind();
+      channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
     }
+
     return pageSize;
 //
 //    final int[] range = page.getModifiedRange();
@@ -167,17 +171,16 @@ public class PaginatedFile {
 //    return range[1] - range[0] + 1;
   }
 
-  public void read(final ImmutablePage page) throws IOException {
-    if (page.pageId.getPageNumber() < 0)
-      throw new IllegalArgumentException("Invalid page number to read: " + page.pageId.getPageNumber());
+  public void read(final CachedPage page) throws IOException {
+    if (page.getPageId().getPageNumber() < 0)
+      throw new IllegalArgumentException("Invalid page number to read: " + page.getPageId().getPageNumber());
 
     assert page.getPageId().getFileId() == fileId;
-    final ByteBuffer buffer = page.getContent();
-    buffer.clear();
+    final ByteBuffer buffer = page.getByteBuffer();
 
     try {
       channel.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
-    } catch (ClosedChannelException e) {
+    } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
       open(filePath, mode);
       channel.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
@@ -245,11 +248,11 @@ public class PaginatedFile {
     final int fileIdPos = filePrefix.lastIndexOf(".");
     if (fileIdPos > -1) {
       fileId = Integer.parseInt(filePrefix.substring(fileIdPos + 1));
-      int pos = filePrefix.lastIndexOf(File.separator);
+      final int pos = filePrefix.lastIndexOf(File.separator);
       componentName = filePrefix.substring(pos + 1, filePrefix.lastIndexOf("."));
     } else {
       fileId = -1;
-      int pos = filePrefix.lastIndexOf(File.separator);
+      final int pos = filePrefix.lastIndexOf(File.separator);
       componentName = filePrefix.substring(pos + 1);
     }
 

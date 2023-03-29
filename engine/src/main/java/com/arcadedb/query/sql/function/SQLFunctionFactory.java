@@ -44,6 +44,6 @@ public interface SQLFunctionFactory {
    *
    * @throws CommandExecutionException : when function creation fail
    */
-  SQLFunction createFunction(String name) throws CommandExecutionException;
+  SQLFunction getFunctionInstance(String name) throws CommandExecutionException;
 
 }

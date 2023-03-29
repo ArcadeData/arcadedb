@@ -31,7 +31,7 @@ import java.math.*;
 public class NullSafeEqualsCompareOperatorTest {
   @Test
   public void test() {
-    NullSafeEqualsCompareOperator op = new NullSafeEqualsCompareOperator(-1);
+    final NullSafeEqualsCompareOperator op = new NullSafeEqualsCompareOperator(-1);
 
     Assertions.assertFalse(op.execute(null, null, 1));
     Assertions.assertFalse(op.execute(null, 1, null));

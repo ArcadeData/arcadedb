@@ -36,20 +36,19 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   protected       List<Result> entryPoints = null;
   protected final List<Result> results     = new ArrayList<>();
-  private         long         cost        = 0;
 
   final Set<RID> traversed = new RidSet();
 
-  public AbstractTraverseStep(List<TraverseProjectionItem> projections, WhereClause whileClause, PInteger maxDepth, CommandContext ctx,
-      boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
+      final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.whileClause = whileClause;
     this.maxDepth = maxDepth;
     this.projections = projections.stream().map(TraverseProjectionItem::copy).collect(Collectors.toList());
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) {
     //TODO
 
     return new ResultSet() {
@@ -61,7 +60,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
           return false;
         }
         if (results.isEmpty()) {
-          fetchNextBlock(ctx, nRecords);
+          fetchNextBlock(context, nRecords);
         }
         return !results.isEmpty();
       }
@@ -69,69 +68,46 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (localFetched >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (results.isEmpty()) {
-          fetchNextBlock(ctx, nRecords);
+          fetchNextBlock(context, nRecords);
           if (results.isEmpty()) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
         }
         localFetched++;
-        Result result = results.remove(0);
+        final Result result = results.remove(0);
         if (result.isElement()) {
           traversed.add(result.getElement().get().getIdentity());
         }
         return result;
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private void fetchNextBlock(CommandContext ctx, int nRecords) {
+  private void fetchNextBlock(final CommandContext context, final int nRecords) {
     if (this.entryPoints == null) {
       this.entryPoints = new ArrayList<>();
     }
 
     while (this.results.isEmpty()) {
       if (this.entryPoints.isEmpty()) {
-        fetchNextEntryPoints(ctx, nRecords);
+        fetchNextEntryPoints(context, nRecords);
       }
       if (this.entryPoints.isEmpty()) {
         return;
       }
-      long begin = profilingEnabled ? System.nanoTime() : 0;
-      fetchNextResults(ctx, nRecords);
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
+      fetchNextResults(context, nRecords);
       if (profilingEnabled) {
         cost += (System.nanoTime() - begin);
       }
     }
   }
 
-  protected abstract void fetchNextEntryPoints(CommandContext ctx, int nRecords);
+  protected abstract void fetchNextEntryPoints(CommandContext context, int nRecords);
 
-  protected abstract void fetchNextResults(CommandContext ctx, int nRecords);
-
-  protected boolean isFinished() {
-    return entryPoints != null && entryPoints.isEmpty() && results.isEmpty();
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
-  }
+  protected abstract void fetchNextResults(CommandContext context, int nRecords);
 }

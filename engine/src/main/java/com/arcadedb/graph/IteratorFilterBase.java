@@ -20,38 +20,30 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> {
-  protected final DatabaseInternal database;
-  protected       EdgeSegment      currentContainer;
-  protected final AtomicInteger    currentPosition     = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
-  private         int              lastElementPosition = currentPosition.get();
-  protected       RID              nextEdge;
-  protected       RID              nextVertex;
-  protected       RID              next;
-  protected       Set<Integer>     validBuckets;
+public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
+  private         int          lastElementPosition = currentPosition.get();
+  protected       RID          nextEdge;
+  protected       RID          nextVertex;
+  protected       RID          next;
+  protected final Set<Integer> validBuckets;
 
   protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
-    this.database = database;
-    this.currentContainer = current;
+    super(database, current);
 
     validBuckets = new HashSet<>();
-    for (String e : edgeTypes) {
+    for (final String e : edgeTypes) {
       if (!database.getSchema().existsType(e))
         continue;
 
       final EdgeType type = (EdgeType) database.getSchema().getType(e);
 
-      final List<Bucket> buckets = type.getBuckets(true);
-      for (Bucket b : buckets)
-        validBuckets.add(b.getId());
+      validBuckets.addAll(type.getBucketIds(true));
     }
   }
 
@@ -72,8 +64,8 @@ public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> 
 
           if (nextEdge.getPosition() > -1)
             try {
-              database.lookupByRID(nextEdge, true);
-            } catch (Exception e) {
+              database.lookupByRID(nextEdge, false);
+            } catch (final Exception e) {
               handleCorruption(e, nextEdge, nextVertex);
               continue;
             }
@@ -83,8 +75,8 @@ public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> 
           nextVertex = next = currentContainer.getRID(currentPosition);
 
           try {
-            database.lookupByRID(nextVertex, true);
-          } catch (Exception e) {
+            database.lookupByRID(nextVertex, false);
+          } catch (final Exception e) {
             handleCorruption(e, nextEdge, nextVertex);
             continue;
           }
@@ -95,7 +87,7 @@ public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> 
 
       } else {
         // FETCH NEXT CHUNK
-        currentContainer = currentContainer.getNext();
+        currentContainer = currentContainer.getPrevious();
         if (currentContainer != null) {
           currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
           lastElementPosition = currentPosition.get();
@@ -122,10 +114,5 @@ public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> 
 
   public RID getNextVertex() {
     return nextVertex;
-  }
-
-  @Override
-  public Iterator<T> iterator() {
-    return this;
   }
 }

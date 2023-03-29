@@ -21,12 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 public class StatementSemicolon extends SimpleNode {
-  public StatementSemicolon(int id) {
+  public StatementSemicolon(final int id) {
     super(id);
-  }
-
-  public StatementSemicolon(SqlParser p, int id) {
-    super(p, id);
   }
 }
 /* JavaCC - OriginalChecksum=dd666171278492fc7540b6aed7c08733 (do not edit this line) */

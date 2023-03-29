@@ -38,15 +38,14 @@ public class SQLMethodAsList extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
     if (ioResult instanceof List)
       // ALREADY A LIST
       return ioResult;
 
     if (ioResult == null)
       // NULL VALUE, RETURN AN EMPTY LIST
-      return Collections.EMPTY_LIST;
+      return Collections.emptyList();
 
     if (ioResult instanceof Collection<?>) {
       return new ArrayList<>((Collection<Object>) ioResult);
@@ -57,7 +56,7 @@ public class SQLMethodAsList extends AbstractSQLMethod {
     if (ioResult instanceof Iterator<?>) {
       final List<Object> list = new ArrayList<>();
 
-      for (Iterator<Object> iter = (Iterator<Object>) ioResult; iter.hasNext(); ) {
+      for (final Iterator<Object> iter = (Iterator<Object>) ioResult; iter.hasNext(); ) {
         list.add(iter.next());
       }
       return list;

@@ -3,6 +3,7 @@
 package com.arcadedb.graphql.parser;
 
 import java.io.*;
+import com.arcadedb.query.sql.parser.JavaCharStream;
 
 public class GraphQLParser/*@bgen(jjtree)*/implements GraphQLParserTreeConstants, GraphQLParserConstants {/*@bgen(jjtree)*/
   protected JJTGraphQLParserState jjtree = new JJTGraphQLParserState();private int tokenId = 0;

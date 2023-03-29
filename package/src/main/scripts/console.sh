@@ -48,12 +48,21 @@ fi
 
 
 if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
-    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
+    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError --add-opens java.base/java.io=ALL-UNNAMED -Dpolyglot.engine.WarnInterpreterOnly=false -Djava.awt.headless=true -Dfile.encoding=UTF8 --illegal-access=deny"
 fi
 
-exec "$JAVA" $JAVA_OPTS \
-    $ARCADEDB_OPTS_MEMORY \
-    $JAVA_OPTS_SCRIPT \
-    $ARCADEDB_SETTINGS \
-    -cp "$ARCADEDB_HOME/lib/*" \
-    $ARGS com.arcadedb.console.Console $*
+if [ $# -gt 0 ] ; then
+    exec "$JAVA" $JAVA_OPTS \
+        $ARCADEDB_OPTS_MEMORY \
+        $JAVA_OPTS_SCRIPT \
+        $ARCADEDB_SETTINGS \
+        -cp "$ARCADEDB_HOME/lib/*" \
+        $ARGS com.arcadedb.console.Console "$*"
+else
+    exec "$JAVA" $JAVA_OPTS \
+        $ARCADEDB_OPTS_MEMORY \
+        $JAVA_OPTS_SCRIPT \
+        $ARCADEDB_SETTINGS \
+        -cp "$ARCADEDB_HOME/lib/*" \
+        $ARGS com.arcadedb.console.Console
+fi

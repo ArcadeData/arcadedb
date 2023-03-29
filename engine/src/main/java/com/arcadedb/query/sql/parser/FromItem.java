@@ -20,16 +20,17 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 import java.util.stream.*;
 
 public class FromItem extends SimpleNode {
-
   protected List<Rid>            rids;
   protected List<InputParameter> inputParams;
+  protected ResultSet            resultSet;
   protected Bucket               bucket;
   protected BucketList           bucketList;
   protected IndexIdentifier      index;
@@ -40,15 +41,11 @@ public class FromItem extends SimpleNode {
   protected FunctionCall         functionCall;
   protected Modifier             modifier;
 
-  public FromItem(int id) {
+  public FromItem(final int id) {
     super(id);
   }
 
-  public FromItem(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (rids != null && rids.size() > 0) {
       if (rids.size() == 1) {
         rids.get(0).toString(params, builder);
@@ -56,7 +53,7 @@ public class FromItem extends SimpleNode {
       } else {
         builder.append("[");
         boolean first = true;
-        for (Rid rid : rids) {
+        for (final Rid rid : rids) {
           if (!first) {
             builder.append(", ");
           }
@@ -73,7 +70,7 @@ public class FromItem extends SimpleNode {
       } else {
         builder.append("[");
         boolean first = true;
-        for (InputParameter rid : inputParams) {
+        for (final InputParameter rid : inputParams) {
           if (!first) {
             builder.append(", ");
           }
@@ -108,14 +105,19 @@ public class FromItem extends SimpleNode {
       functionCall.toString(params, builder);
     } else if (identifier != null) {
       identifier.toString(params, builder);
-    }
-    if (modifier != null) {
+    } else if (resultSet != null)
+      builder.append("resultSet");
+
+    if (modifier != null)
       modifier.toString(params, builder);
-    }
   }
 
   public Identifier getIdentifier() {
     return identifier;
+  }
+
+  public ResultSet getResultSet() {
+    return resultSet;
   }
 
   public List<Rid> getRids() {
@@ -159,7 +161,7 @@ public class FromItem extends SimpleNode {
   }
 
   public FromItem copy() {
-    FromItem result = new FromItem(-1);
+    final FromItem result = new FromItem(-1);
     if (rids != null) {
       result.rids = rids.stream().map(r -> r.copy()).collect(Collectors.toList());
     }
@@ -175,18 +177,19 @@ public class FromItem extends SimpleNode {
     result.identifier = identifier == null ? null : identifier.copy();
     result.functionCall = functionCall == null ? null : functionCall.copy();
     result.modifier = modifier == null ? null : modifier.copy();
+    result.resultSet = resultSet == null ? null : resultSet.copy();
 
     return result;
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final    FromItem oFromItem = (FromItem) o;
+    final FromItem oFromItem = (FromItem) o;
 
     if (!Objects.equals(rids, oFromItem.rids))
       return false;
@@ -208,6 +211,8 @@ public class FromItem extends SimpleNode {
       return false;
     if (!Objects.equals(functionCall, oFromItem.functionCall))
       return false;
+    if (!Objects.equals(resultSet, oFromItem.resultSet))
+      return false;
     return Objects.equals(modifier, oFromItem.modifier);
   }
 
@@ -223,167 +228,97 @@ public class FromItem extends SimpleNode {
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     result = 31 * result + (identifier != null ? identifier.hashCode() : 0);
     result = 31 * result + (functionCall != null ? functionCall.hashCode() : 0);
+    result = 31 * result + (resultSet != null ? resultSet.hashCode() : 0);
     result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
     return result;
   }
 
-  public void setRids(List<Rid> rids) {
+  public void setRids(final List<Rid> rids) {
     this.rids = rids;
   }
 
-  public void setBucket(Bucket bucket) {
+  public void setBucket(final Bucket bucket) {
     this.bucket = bucket;
   }
 
-  public void setBucketList(BucketList bucketList) {
+  public void setBucketList(final BucketList bucketList) {
     this.bucketList = bucketList;
   }
 
-  public void setIndex(IndexIdentifier index) {
+  public void setIndex(final IndexIdentifier index) {
     this.index = index;
   }
 
-  public void setSchema(SchemaIdentifier schema) {
+  public void setSchema(final SchemaIdentifier schema) {
     this.schema = schema;
   }
 
-  public void setStatement(Statement statement) {
+  public void setStatement(final Statement statement) {
     this.statement = statement;
   }
 
-  public void setInputParam(InputParameter inputParam) {
+  public void setInputParam(final InputParameter inputParam) {
     this.inputParam = inputParam;
   }
 
-  public void setIdentifier(Identifier identifier) {
+  public void setIdentifier(final Identifier identifier) {
     this.identifier = identifier;
   }
 
-  public void setFunctionCall(FunctionCall functionCall) {
+  public void setFunctionCall(final FunctionCall functionCall) {
     this.functionCall = functionCall;
   }
 
-  public void setModifier(Modifier modifier) {
+  public void setModifier(final Modifier modifier) {
     this.modifier = modifier;
   }
 
-  public void setInputParams(List<InputParameter> inputParams) {
+  public void setInputParams(final List<InputParameter> inputParams) {
     this.inputParams = inputParams;
   }
 
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (rids != null) {
-      result.setProperty("rids", rids.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (inputParams != null) {
-      result.setProperty("inputParams", rids.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (bucket != null) {
-      result.setProperty("bucket", bucket.serialize());
-    }
-    if (bucketList != null) {
-      result.setProperty("bucketList", bucketList.serialize());
-    }
-    if (index != null) {
-      result.setProperty("index", index.serialize());
-    }
-    if (schema != null) {
-      result.setProperty("schema", schema.serialize());
-    }
-    if (statement != null) {
-      result.setProperty("statement", statement.serialize());
-    }
-    if (inputParam != null) {
-      result.setProperty("inputParam", inputParam.serialize());
-    }
-    if (identifier != null) {
-      result.setProperty("identifier", identifier.serialize());
-    }
-    if (functionCall != null) {
-      result.setProperty("functionCall", functionCall.serialize());
-    }
-    if (modifier != null) {
-      result.setProperty("modifier", modifier.serialize());
-    }
-
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    if (fromResult.getProperty("rids") != null) {
-      List<Result> serRids = fromResult.getProperty("rids");
-      rids = new ArrayList<>();
-      for (Result res : serRids) {
-        Rid rid = new Rid(-1);
-        rid.deserialize(res);
-        rids.add(rid);
-      }
-    }
-
-    if (fromResult.getProperty("inputParams") != null) {
-      List<Result> ser = fromResult.getProperty("inputParams");
-      inputParams = new ArrayList<>();
-      for (Result res : ser) {
-        inputParams.add(InputParameter.deserializeFromOResult(res));
-      }
-    }
-
-    if (fromResult.getProperty("bucket") != null) {
-      bucket = new Bucket(-1);
-      bucket.deserialize(fromResult.getProperty("bucket"));
-    }
-    if (fromResult.getProperty("bucketList") != null) {
-      bucketList = new BucketList(-1);
-      bucketList.deserialize(fromResult.getProperty("bucketList"));
-    }
-
-    if (fromResult.getProperty("index") != null) {
-      index = new IndexIdentifier(-1);
-      index.deserialize(fromResult.getProperty("index"));
-    }
-    if (fromResult.getProperty("schema") != null) {
-      schema = new SchemaIdentifier(-1);
-      schema.deserialize(fromResult.getProperty("schema"));
-    }
-    if (fromResult.getProperty("statement") != null) {
-      statement = Statement.deserializeFromOResult(fromResult.getProperty("statement"));
-    }
-    if (fromResult.getProperty("inputParam") != null) {
-      inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
-    }
-    if (fromResult.getProperty("identifier") != null) {
-      identifier = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("identifier"));
-    }
-    if (fromResult.getProperty("functionCall") != null) {
-      functionCall = new FunctionCall(-1);
-      functionCall.deserialize(fromResult.getProperty("functionCall"));
-    }
-    if (fromResult.getProperty("modifier") != null) {
-      modifier = new Modifier(-1);
-      modifier.deserialize(fromResult.getProperty("modifier"));
-    }
-  }
-
+  @Override
   public boolean isCacheable() {
-    if (modifier != null) {
+    if (modifier != null)
       return false;
-    }
-    if (inputParam != null) {
+
+    if (inputParam != null)
       return false;
-    }
-    if (inputParams != null && !inputParams.isEmpty()) {
+
+    if (inputParams != null && !inputParams.isEmpty())
       return false;
-    }
-    if (statement != null) {
+
+    if (statement != null)
       return statement.executionPlanCanBeCached();
-    }
-    if (functionCall != null) {
+
+    if (functionCall != null)
       return functionCall.isCacheable();
-    }
 
     return true;
+  }
+
+  public boolean refersToParent() {
+    if (modifier != null && modifier.refersToParent())
+      return true;
+
+    if (statement != null && statement.refersToParent())
+      return true;
+
+    return functionCall != null && functionCall.refersToParent();
+  }
+
+  public void setValue(final Object value) {
+    if (value instanceof Identifiable)
+      rids.add(new Rid(((Identifiable) value).getIdentity()));
+    else if (value instanceof ResultSet) {
+      resultSet = (ResultSet) value;
+    } else if (value instanceof Result) {
+      final Result r = (Result) value;
+      if (r.isElement())
+        setValue(((Result) value).toElement());
+      else
+        setValue(r.toMap());
+    }
   }
 }
 /* JavaCC - OriginalChecksum=f64e3b4d2a2627a1b5d04a7dcb95fa94 (do not edit this line) */

@@ -41,7 +41,7 @@ public class EventWatcherSubscription {
     if (channel != null)
       try {
         channel.close();
-      } catch (IOException e) {
+      } catch (final IOException e) {
         // IGNORE THIS
       }
 
@@ -51,10 +51,6 @@ public class EventWatcherSubscription {
   public void add(final String type, final Set<ChangeEvent.TYPE> changeTypes) {
     final var key = type == null ? "*" : type; // ConcurrentHashMap can't have null keys, so use * for "all types."
     typeSubscriptions.computeIfAbsent(key, k -> new HashSet<>()).addAll(changeTypes == null ? allTypes : changeTypes);
-  }
-
-  public String getDatabase() {
-    return database;
   }
 
   public WebSocketChannel getChannel() {

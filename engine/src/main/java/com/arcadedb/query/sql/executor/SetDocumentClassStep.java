@@ -24,8 +24,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.*;
-
 /**
  * Assigns a class to documents coming from upstream
  *
@@ -34,14 +32,14 @@ import java.util.*;
 public class SetDocumentClassStep extends AbstractExecutionStep {
   private final String targetClass;
 
-  public SetDocumentClassStep(Identifier targetClass, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public SetDocumentClassStep(final Identifier targetClass, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.targetClass = targetClass.getStringValue();
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -53,7 +51,7 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
         Result result = upstream.next();
 
         if (result.isElement()) {
-          Record element = result.getElement().get().getRecord();
+          final Record element = result.getElement().get().getRecord();
           if (!(result instanceof ResultInternal)) {
             result = new UpdatableResult((MutableDocument) element);
           } else {
@@ -67,23 +65,13 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ SET TYPE\n" + spaces + "  " + this.targetClass;
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String result = spaces + "+ SET TYPE\n" + spaces + "  " + this.targetClass;
     return result;
   }
 }

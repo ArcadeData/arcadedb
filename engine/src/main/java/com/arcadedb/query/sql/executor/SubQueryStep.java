@@ -25,30 +25,60 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class SubQueryStep extends AbstractExecutionStep {
   private final InternalExecutionPlan subExecutionPlan;
+  private final boolean               sameContextAsParent;
 
   /**
    * executes a sub-query
    *
    * @param subExecutionPlan the execution plan of the sub-query
-   * @param ctx              the context of the current execution plan
+   * @param context          the context of the current execution plan
    * @param subCtx           the context of the subquery execution plan
    */
-  public SubQueryStep(InternalExecutionPlan subExecutionPlan, CommandContext ctx, CommandContext subCtx,
-      boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext context, final CommandContext subCtx, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.subExecutionPlan = subExecutionPlan;
+    this.sameContextAsParent = (context == subCtx);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    return subExecutionPlan.fetchNext(nRecords);
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
+    ResultSet parentRs = subExecutionPlan.fetchNext(nRecords);
+    return new ResultSet() {
+      @Override
+      public boolean hasNext() {
+        return parentRs.hasNext();
+      }
+
+      @Override
+      public Result next() {
+        Result item = parentRs.next();
+        context.setVariable("current", item);
+        return item;
+      }
+
+      @Override
+      public void close() {
+        parentRs.close();
+      }
+    };
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder builder = new StringBuilder();
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+  public boolean canBeCached() {
+    return sameContextAsParent && subExecutionPlan.canBeCached();
+  }
+
+  @Override
+  public ExecutionStep copy(CommandContext context) {
+    return new SubQueryStep(subExecutionPlan.copy(context), context, context, profilingEnabled);
+  }
+
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder builder = new StringBuilder();
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM SUBQUERY \n");
     builder.append(subExecutionPlan.prettyPrint(depth + 1, indent));

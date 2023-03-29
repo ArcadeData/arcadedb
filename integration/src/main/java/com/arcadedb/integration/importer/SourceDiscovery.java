@@ -69,7 +69,7 @@ public class SourceDiscovery {
       LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
           FileUtils.getSizeAsString(limitBytes), limitEntries);
       if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
-        for (Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
+        for (final Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
           LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
       }
     }
@@ -110,11 +110,12 @@ public class SourceDiscovery {
 
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-        else if (source.inputStream instanceof ZipInputStream)
+        else if (source.inputStream instanceof ZipInputStream) {
           source.inputStream = new ZipInputStream(connection1.getInputStream());
-        else
+          ((ZipInputStream) source.inputStream).getNextEntry();
+        } else
           source.inputStream = new BufferedInputStream(connection1.getInputStream());
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new ImportException("Error on reset remote resource", e);
       }
       return null;
@@ -152,11 +153,12 @@ public class SourceDiscovery {
         source.inputStream.close();
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-        else if (source.inputStream instanceof ZipInputStream)
+        else if (source.inputStream instanceof ZipInputStream) {
           source.inputStream = new ZipInputStream(new FileInputStream(file));
-        else
+          ((ZipInputStream) source.inputStream).getNextEntry();
+        } else
           source.inputStream = new BufferedInputStream(new FileInputStream(file));
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new ImportException("Error on reset local resource", e);
       }
       return null;
@@ -174,48 +176,23 @@ public class SourceDiscovery {
 
     switch (entityType) {
     case DOCUMENT:
-      knownFileType = settings.documentsFileType;
+      knownFileType = settings.documentsFileType != null ? settings.documentsFileType : getFileTypeByExtension(settings.documents);
       knownDelimiter = settings.documentsDelimiter;
       break;
 
     case VERTEX:
-      knownFileType = settings.verticesFileType;
+      knownFileType = settings.verticesFileType != null ? settings.verticesFileType : getFileTypeByExtension(settings.vertices);
       knownDelimiter = settings.verticesDelimiter;
       break;
 
     case EDGE:
-      knownFileType = settings.edgesFileType;
+      knownFileType = settings.edgesFileType != null ? settings.edgesFileType : getFileTypeByExtension(settings.edgeTypeName);
       knownDelimiter = settings.edgesDelimiter;
       break;
 
     case DATABASE:
       // NO SPECIAL SETTINGS
-      String fileExtensionForFormat = settings.url;
-      if (fileExtensionForFormat.lastIndexOf(File.separator) > -1)
-        fileExtensionForFormat = fileExtensionForFormat.substring(fileExtensionForFormat.lastIndexOf(File.separator) + 1);
-
-      if (fileExtensionForFormat.endsWith(".tgz"))
-        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".tgz".length());
-      else if (fileExtensionForFormat.endsWith(".gz"))
-        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".gz".length());
-      else if (fileExtensionForFormat.endsWith(".zip"))
-        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".zip".length());
-
-      if (fileExtensionForFormat.lastIndexOf('.') > -1)
-        fileExtensionForFormat = fileExtensionForFormat.substring(fileExtensionForFormat.lastIndexOf('.') + 1);
-
-      switch (fileExtensionForFormat) {
-      case "csv":
-        knownFileType = "csv";
-        break;
-      case "graphml":
-        knownFileType = "graphml";
-        break;
-      case "graphson":
-        knownFileType = "graphson";
-        break;
-      }
-
+      knownFileType = getFileTypeByExtension(settings.url);
       break;
 
     default:
@@ -235,7 +212,7 @@ public class SourceDiscovery {
         try {
           final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
           return clazz.getConstructor().newInstance();
-        } catch (ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
           LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphml' ", e);
         }
 
@@ -244,7 +221,7 @@ public class SourceDiscovery {
         try {
           final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
           return clazz.getConstructor().newInstance();
-        } catch (ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
           LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphson' ", e);
         }
 
@@ -317,6 +294,18 @@ public class SourceDiscovery {
     throw new ImportException("Cannot determine the file type. If it is a CSV file, please specify the header via settings");
   }
 
+  private String getFileTypeByExtension(final String fileName) {
+    switch (getFormatFromExtension(fileName)) {
+    case "csv":
+      return "csv";
+    case "graphml":
+      return "graphml";
+    case "graphson":
+      return "graphson";
+    }
+    return null;
+  }
+
   private void skipLine(final Parser parser) throws IOException {
     while (parser.isAvailable() && parser.nextChar() != '\n')
       ;
@@ -349,7 +338,7 @@ public class SourceDiscovery {
 
       if (!delimiters.isEmpty() && beginTag == endTag) {
         boolean allDelimitersAreTheSame = true;
-        char delimiter = delimiters.get(0);
+        final char delimiter = delimiters.get(0);
         for (int i = 1; i < delimiters.size() - 1; ++i) {
           if (delimiters.get(i) != delimiter) {
             allDelimitersAreTheSame = false;
@@ -413,7 +402,6 @@ public class SourceDiscovery {
     in.mark(0);
 
     final ZipInputStream zip = new ZipInputStream(in);
-
     ZipEntry entry = zip.getNextEntry();
     if (entry != null) {
       // ZIPPED FILE
@@ -439,7 +427,7 @@ public class SourceDiscovery {
     try {
       final GZIPInputStream gzip = new GZIPInputStream(in, 8192);
       return new Source(url, gzip, totalSize, true, resetCallback, closeCallback);
-    } catch (IOException e) {
+    } catch (final IOException e) {
       // NOT GZIP
     }
 
@@ -447,5 +435,22 @@ public class SourceDiscovery {
 
     // ANALYZE THE INPUT AS TEXT
     return new Source(url, in, totalSize, false, resetCallback, closeCallback);
+  }
+
+  private String getFormatFromExtension(String fileName) {
+    if (fileName.lastIndexOf(File.separator) > -1)
+      fileName = fileName.substring(fileName.lastIndexOf(File.separator) + 1);
+
+    if (fileName.endsWith(".tgz"))
+      fileName = fileName.substring(0, fileName.length() - ".tgz".length());
+    else if (fileName.endsWith(".gz"))
+      fileName = fileName.substring(0, fileName.length() - ".gz".length());
+    else if (fileName.endsWith(".zip"))
+      fileName = fileName.substring(0, fileName.length() - ".zip".length());
+
+    if (fileName.lastIndexOf('.') > -1)
+      fileName = fileName.substring(fileName.lastIndexOf('.') + 1);
+
+    return fileName;
   }
 }

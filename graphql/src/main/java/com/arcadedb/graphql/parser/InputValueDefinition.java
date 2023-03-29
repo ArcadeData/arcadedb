@@ -21,25 +21,13 @@
 package com.arcadedb.graphql.parser;
 
 public class InputValueDefinition extends SimpleNode {
-
   protected Name         name;
   protected Type         type;
   protected DefaultValue defaultValue;
   protected Directives   directives;
 
-  public InputValueDefinition(int id) {
+  public InputValueDefinition(final int id) {
     super(id);
-  }
-
-  public InputValueDefinition(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public Name getName() {

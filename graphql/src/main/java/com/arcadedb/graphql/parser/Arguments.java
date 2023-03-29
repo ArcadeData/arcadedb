@@ -25,20 +25,10 @@ import java.util.*;
 public class Arguments extends SimpleNode {
   protected final List<Argument> arguments = new ArrayList<>();
 
-  public Arguments(int id) {
+  public Arguments(final int id) {
     super(id);
   }
 
-  public Arguments(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 
   public List<Argument> getList() {
     return arguments;

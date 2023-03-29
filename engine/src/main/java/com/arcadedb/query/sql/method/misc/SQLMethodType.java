@@ -29,26 +29,22 @@ import com.arcadedb.schema.Type;
  */
 public class SQLMethodType extends AbstractSQLMethod {
 
-    public static final String NAME = "type";
+  public static final String NAME = "type";
 
-    public SQLMethodType() {
-        super(NAME);
-    }
+  public SQLMethodType() {
+    super(NAME);
+  }
 
-    @Override
-    public Object execute(final Object iThis,
-                          final Identifiable iCurrentRecord,
-                          final CommandContext iContext,
-                          final Object result,
-                          final Object[] iParams) {
-        if (result == null)
-            return null;
+  @Override
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object result, final Object[] iParams) {
+    if (result == null)
+      return null;
 
-        final Type type = Type.getTypeByValue(result);
+    final Type type = Type.getTypeByValue(result);
 
-        if (type != null)
-            return type.toString();
+    if (type != null)
+      return type.toString();
 
-        return null;
-    }
+    return null;
+  }
 }

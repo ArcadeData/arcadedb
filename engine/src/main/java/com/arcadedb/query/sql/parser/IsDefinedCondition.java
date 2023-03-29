@@ -27,24 +27,19 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class IsDefinedCondition extends BooleanExpression implements SimpleBooleanExpression {
-
   protected Expression expression;
 
   public IsDefinedCondition(final int id) {
     super(id);
   }
 
-  public IsDefinedCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     return expression.isDefinedFor(currentRecord.getRecord());
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     return expression.isDefinedFor(currentRecord);
   }
 
@@ -54,57 +49,20 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return Collections.EMPTY_LIST;
-  }
-
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    return expression.needsAliases(aliases);
-  }
-
-  @Override
   public IsDefinedCondition copy() {
-    IsDefinedCondition result = new IsDefinedCondition(-1);
+    final IsDefinedCondition result = new IsDefinedCondition(-1);
     result.expression = expression.copy();
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     this.expression.extractSubQueries(collector);
   }
 
   @Override
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final IsDefinedCondition that = (IsDefinedCondition) o;
-
-    return Objects.equals(expression, that.expression);
-  }
-
-  @Override
-  public int hashCode() {
-    return expression != null ? expression.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression };
   }
 
   @Override
@@ -113,8 +71,8 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
   }
 
   @Override
-  public boolean isCacheable() {
-    return expression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression };
   }
 }
 /* JavaCC - OriginalChecksum=075954b212c8cb44c8538bf5dea047d3 (do not edit this line) */

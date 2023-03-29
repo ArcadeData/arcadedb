@@ -35,15 +35,11 @@ public class InsertBody extends SimpleNode {
     super(id);
   }
 
-  public InsertBody(final SqlParser p, int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (identifierList != null) {
       builder.append("(");
       boolean first = true;
-      for (Identifier item : identifierList) {
+      for (final Identifier item : identifierList) {
         if (!first) {
           builder.append(", ");
         }
@@ -53,14 +49,14 @@ public class InsertBody extends SimpleNode {
       builder.append(") VALUES ");
       if (valueExpressions != null) {
         boolean firstList = true;
-        for (List<Expression> itemList : valueExpressions) {
+        for (final List<Expression> itemList : valueExpressions) {
           if (firstList) {
             builder.append("(");
           } else {
             builder.append("),(");
           }
           first = true;
-          for (Expression item : itemList) {
+          for (final Expression item : itemList) {
             if (!first) {
               builder.append(", ");
             }
@@ -77,7 +73,7 @@ public class InsertBody extends SimpleNode {
     if (setExpressions != null) {
       builder.append("SET ");
       boolean first = true;
-      for (InsertSetExpression item : setExpressions) {
+      for (final InsertSetExpression item : setExpressions) {
         if (!first) {
           builder.append(", ");
         }

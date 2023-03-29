@@ -34,18 +34,18 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
 
   private AtomicLong totalTime = new AtomicLong(0);
 
-  public AccumulatingTimeoutStep(Timeout timeout, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public AccumulatingTimeoutStep(final Timeout timeout, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.timeout = timeout;
     this.timeoutMillis = this.timeout.getVal().longValue();
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws CommandExecutionException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws CommandExecutionException {
 
-    final ResultSet internal = getPrev().get().syncPull(ctx, nRecords);
+    final ResultSet internal = getPrev().syncPull(context, nRecords);
 
-    if (getPrev().get().isTimedOut())
+    if (getPrev().isTimedOut())
       fail();
 
     return new ResultSet() {
@@ -55,7 +55,7 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
         if (timedOut || totalTime.get() / 1_000_000 > timeoutMillis) {
           fail();
         }
-        long begin = System.nanoTime();
+        final long begin = System.nanoTime();
 
         try {
           return internal.hasNext();
@@ -69,7 +69,7 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
         if (totalTime.get() / 1_000_000 > timeoutMillis) {
           fail();
         }
-        long begin = System.nanoTime();
+        final long begin = System.nanoTime();
         try {
           return internal.next();
         } finally {
@@ -108,8 +108,8 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    return new AccumulatingTimeoutStep(timeout.copy(), ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new AccumulatingTimeoutStep(timeout.copy(), context, profilingEnabled);
   }
 
   @Override
@@ -118,7 +118,7 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ TIMEOUT (" + timeout.getVal().toString() + "ms)";
   }
 }

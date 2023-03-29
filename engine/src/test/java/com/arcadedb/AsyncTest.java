@@ -147,12 +147,12 @@ public class AsyncTest extends TestHelper {
 
       database.async().query("sql", "select from " + TYPE_NAME, new AsyncResultsetCallback() {
         @Override
-        public void onStart(ResultSet resultset) {
+        public void onStart(final ResultSet resultset) {
           startCallbackInvoked.incrementAndGet();
         }
 
         @Override
-        public boolean onNext(Result result) {
+        public boolean onNext(final Result result) {
           nextCallbackInvoked.incrementAndGet();
           return true;
         }
@@ -163,7 +163,7 @@ public class AsyncTest extends TestHelper {
         }
 
         @Override
-        public void onError(Exception exception) {
+        public void onError(final Exception exception) {
           errorCallbackInvoked.incrementAndGet();
         }
       });
@@ -191,12 +191,12 @@ public class AsyncTest extends TestHelper {
 
       database.async().command("sql", "select from " + TYPE_NAME, new AsyncResultsetCallback() {
         @Override
-        public void onStart(ResultSet resultset) {
+        public void onStart(final ResultSet resultset) {
           startCallbackInvoked.incrementAndGet();
         }
 
         @Override
-        public boolean onNext(Result result) {
+        public boolean onNext(final Result result) {
           nextCallbackInvoked.incrementAndGet();
           return true;
         }
@@ -207,7 +207,7 @@ public class AsyncTest extends TestHelper {
         }
 
         @Override
-        public void onError(Exception exception) {
+        public void onError(final Exception exception) {
           errorCallbackInvoked.incrementAndGet();
         }
       });
@@ -254,12 +254,12 @@ public class AsyncTest extends TestHelper {
 
       database.async().command("sql", "select from " + TYPE_NAME + " where id = ?", new AsyncResultsetCallback() {
         @Override
-        public void onStart(ResultSet resultset) {
+        public void onStart(final ResultSet resultset) {
           startCallbackInvoked.incrementAndGet();
         }
 
         @Override
-        public boolean onNext(Result result) {
+        public boolean onNext(final Result result) {
           nextCallbackInvoked.incrementAndGet();
           return true;
         }
@@ -270,7 +270,7 @@ public class AsyncTest extends TestHelper {
         }
 
         @Override
-        public void onError(Exception exception) {
+        public void onError(final Exception exception) {
           errorCallbackInvoked.incrementAndGet();
         }
       }, 0);
@@ -298,12 +298,12 @@ public class AsyncTest extends TestHelper {
 
       database.async().command("sql", "select from " + TYPE_NAME + " where id = :id", new AsyncResultsetCallback() {
         @Override
-        public void onStart(ResultSet resultset) {
+        public void onStart(final ResultSet resultset) {
           startCallbackInvoked.incrementAndGet();
         }
 
         @Override
-        public boolean onNext(Result result) {
+        public boolean onNext(final Result result) {
           nextCallbackInvoked.incrementAndGet();
           return true;
         }
@@ -314,7 +314,7 @@ public class AsyncTest extends TestHelper {
         }
 
         @Override
-        public void onError(Exception exception) {
+        public void onError(final Exception exception) {
           errorCallbackInvoked.incrementAndGet();
         }
       }, Map.of("id", 0));
@@ -342,12 +342,12 @@ public class AsyncTest extends TestHelper {
 
       database.async().command("sql", "select from " + TYPE_NAME, new AsyncResultsetCallback() {
         @Override
-        public void onStart(ResultSet resultset) {
+        public void onStart(final ResultSet resultset) {
           startCallbackInvoked.incrementAndGet();
         }
 
         @Override
-        public boolean onNext(Result result) {
+        public boolean onNext(final Result result) {
           return nextCallbackInvoked.incrementAndGet() < 3;
         }
 
@@ -357,7 +357,7 @@ public class AsyncTest extends TestHelper {
         }
 
         @Override
-        public void onError(Exception exception) {
+        public void onError(final Exception exception) {
           errorCallbackInvoked.incrementAndGet();
         }
       });
@@ -385,12 +385,12 @@ public class AsyncTest extends TestHelper {
 
       database.async().command("sql", "select from DSdededde", new AsyncResultsetCallback() {
         @Override
-        public void onStart(ResultSet resultset) {
+        public void onStart(final ResultSet resultset) {
           startCallbackInvoked.incrementAndGet();
         }
 
         @Override
-        public boolean onNext(Result result) {
+        public boolean onNext(final Result result) {
           return nextCallbackInvoked.incrementAndGet() < 3;
         }
 
@@ -400,7 +400,7 @@ public class AsyncTest extends TestHelper {
         }
 
         @Override
-        public void onError(Exception exception) {
+        public void onError(final Exception exception) {
           errorCallbackInvoked.incrementAndGet();
         }
       });

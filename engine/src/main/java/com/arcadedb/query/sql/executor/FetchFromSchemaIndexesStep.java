@@ -37,23 +37,22 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
 
   private final List<ResultInternal> result = new ArrayList<>();
 
-  private int  cursor = 0;
-  private long cost   = 0;
+  private int cursor = 0;
 
-  public FetchFromSchemaIndexesStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public FetchFromSchemaIndexesStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
 
     if (cursor == 0) {
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
-        final Schema schema = ctx.getDatabase().getSchema();
+        final Schema schema = context.getDatabase().getSchema();
 
-        for (Index index : schema.getIndexes()) {
+        for (final Index index : schema.getIndexes()) {
           final ResultInternal r = new ResultInternal();
           result.add(r);
 
@@ -67,7 +66,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
           // KEY TYPES
           final List<String> keyTypes = new ArrayList<>();
           if (((IndexInternal) index).getKeyTypes() != null)
-            for (Type k : ((IndexInternal) index).getKeyTypes())
+            for (final Type k : ((IndexInternal) index).getKeyTypes())
               keyTypes.add(k.name());
           r.setProperty("keyTypes", keyTypes);
 
@@ -77,8 +76,8 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
           if (fileId > -1) {
             r.setProperty("fileId", fileId);
             try {
-              r.setProperty("size", FileUtils.getSizeAsString(ctx.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
-            } catch (IOException e) {
+              r.setProperty("size", FileUtils.getSizeAsString(context.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
+            } catch (final IOException e) {
               // IGNORE IT, NO SIZE AVAILABLE
             }
           }
@@ -110,16 +109,6 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
       }
 
       @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
-
-      @Override
       public void reset() {
         cursor = 0;
       }
@@ -127,8 +116,8 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA INDEXES";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -136,8 +125,4 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

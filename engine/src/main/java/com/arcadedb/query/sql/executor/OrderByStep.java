@@ -33,17 +33,15 @@ public class OrderByStep extends AbstractExecutionStep {
   private       Integer maxResults;
   private final long    timeoutMillis;
 
-  private long cost = 0;
-
   List<Result> cachedResult = null;
   int          nextElement  = 0;
 
-  public OrderByStep(OrderBy orderBy, CommandContext ctx, long timeoutMillis, boolean profilingEnabled) {
-    this(orderBy, null, ctx, timeoutMillis, profilingEnabled);
+  public OrderByStep(final OrderBy orderBy, final CommandContext context, final long timeoutMillis, final boolean profilingEnabled) {
+    this(orderBy, null, context, timeoutMillis, profilingEnabled);
   }
 
-  public OrderByStep(OrderBy orderBy, Integer maxResults, CommandContext ctx, long timeoutMillis, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public OrderByStep(final OrderBy orderBy, final Integer maxResults, final CommandContext context, final long timeoutMillis, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.orderBy = orderBy;
     this.maxResults = maxResults;
     if (this.maxResults != null && this.maxResults < 0) {
@@ -53,10 +51,11 @@ public class OrderByStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (cachedResult == null) {
       cachedResult = new ArrayList<>();
-      prev.ifPresent(p -> init(p, ctx));
+      if (prev != null)
+        init(prev, context);
     }
 
     return new ResultSet() {
@@ -73,15 +72,15 @@ public class OrderByStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (currentBatchReturned >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (cachedResult.size() <= nextElement) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
-          Result result = cachedResult.get(offset + currentBatchReturned);
+          final Result result = cachedResult.get(offset + currentBatchReturned);
           nextElement++;
           currentBatchReturned++;
           return result;
@@ -94,12 +93,8 @@ public class OrderByStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        prev.ifPresent(p -> p.close());
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
+        if (prev != null)
+          prev.close();
       }
 
       @Override
@@ -109,25 +104,24 @@ public class OrderByStep extends AbstractExecutionStep {
     };
   }
 
-  private void init(ExecutionStepInternal p, CommandContext ctx) {
-    long timeoutBegin = System.currentTimeMillis();
+  private void init(final ExecutionStepInternal p, final CommandContext context) {
+    final long timeoutBegin = System.currentTimeMillis();
     final long maxElementsAllowed = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
     boolean sorted = true;
     do {
-      ResultSet lastBatch = p.syncPull(ctx, 100);
-      if (!lastBatch.hasNext()) {
+      final ResultSet lastBatch = p.syncPull(context, 100);
+      if (!lastBatch.hasNext())
         break;
-      }
-      while (lastBatch.hasNext()) {
-        if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
-          sendTimeout();
-        }
 
-        if (this.timedOut) {
+      while (lastBatch.hasNext()) {
+        if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis())
+          sendTimeout();
+
+        if (this.timedOut)
           break;
-        }
-        Result item = lastBatch.next();
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+
+        final Result item = lastBatch.next();
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           cachedResult.add(item);
           if (maxElementsAllowed >= 0 && maxElementsAllowed < cachedResult.size()) {
@@ -139,9 +133,9 @@ public class OrderByStep extends AbstractExecutionStep {
           sorted = false;
           // compact, only at twice as the buffer, to avoid to do it at each add
           if (this.maxResults != null) {
-            long compactThreshold = 2L * maxResults;
+            final long compactThreshold = 2L * maxResults;
             if (compactThreshold < cachedResult.size()) {
-              cachedResult.sort((a, b) -> orderBy.compare(a, b, ctx));
+              cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
               cachedResult = new ArrayList<>(cachedResult.subList(0, maxResults));
               sorted = true;
             }
@@ -155,11 +149,11 @@ public class OrderByStep extends AbstractExecutionStep {
       if (timedOut) {
         break;
       }
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         // compact at each batch, if needed
         if (!sorted && this.maxResults != null && maxResults < cachedResult.size()) {
-          cachedResult.sort((a, b) -> orderBy.compare(a, b, ctx));
+          cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
           cachedResult = new ArrayList<>(cachedResult.subList(0, maxResults));
           sorted = true;
         }
@@ -169,10 +163,10 @@ public class OrderByStep extends AbstractExecutionStep {
         }
       }
     } while (true);
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (!sorted) {
-        cachedResult.sort((a, b) -> orderBy.compare(a, b, ctx));
+        cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
       }
     } finally {
       if (profilingEnabled) {
@@ -182,7 +176,7 @@ public class OrderByStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ " + orderBy;
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -191,8 +185,4 @@ public class OrderByStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

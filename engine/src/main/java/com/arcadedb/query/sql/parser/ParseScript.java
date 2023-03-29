@@ -21,12 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 public class ParseScript extends SimpleNode {
-  public ParseScript(int id) {
+  public ParseScript(final int id) {
     super(id);
-  }
-
-  public ParseScript(SqlParser p, int id) {
-    super(p, id);
   }
 }
 /* JavaCC - OriginalChecksum=c4b5a47c139799464ac46d2f482dc3ac (do not edit this line) */

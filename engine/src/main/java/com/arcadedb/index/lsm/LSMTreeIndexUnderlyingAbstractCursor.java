@@ -50,5 +50,6 @@ public abstract class LSMTreeIndexUnderlyingAbstractCursor {
   public abstract int getCurrentPositionInPage();
 
   public void close() {
+    // EMPTY METHOD
   }
 }

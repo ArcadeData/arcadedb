@@ -39,15 +39,11 @@ public class ArrayRangeSelector extends SimpleNode {
   protected ArrayNumberSelector fromSelector;
   protected ArrayNumberSelector toSelector;
 
-  public ArrayRangeSelector(int id) {
+  public ArrayRangeSelector(final int id) {
     super(id);
   }
 
-  public ArrayRangeSelector(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (from != null) {
       builder.append(from);
     } else {
@@ -68,7 +64,7 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  public Object execute(Identifiable iCurrentRecord, Object result, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final Object result, final CommandContext context) {
     if (result == null) {
       return null;
     }
@@ -77,14 +73,14 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     Integer lFrom = from;
     if (fromSelector != null) {
-      lFrom = fromSelector.getValue(iCurrentRecord, result, ctx);
+      lFrom = fromSelector.getValue(iCurrentRecord, result, context);
     }
     if (lFrom == null) {
       lFrom = 0;
     }
     Integer lTo = to;
     if (toSelector != null) {
-      lTo = toSelector.getValue(iCurrentRecord, result, ctx);
+      lTo = toSelector.getValue(iCurrentRecord, result, context);
     }
     if (included) {
       lTo++;
@@ -92,7 +88,7 @@ public class ArrayRangeSelector extends SimpleNode {
     if (lFrom > lTo) {
       return null;
     }
-    Object[] arrayResult = MultiValue.array(result);
+    final Object[] arrayResult = MultiValue.array(result);
 
     if (arrayResult == null || arrayResult.length == 0) {
       return arrayResult;
@@ -108,7 +104,7 @@ public class ArrayRangeSelector extends SimpleNode {
     return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
   }
 
-  public Object execute(Result iCurrentRecord, Object result, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final Object result, final CommandContext context) {
     if (result == null) {
       return null;
     }
@@ -117,14 +113,14 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     Integer lFrom = from;
     if (fromSelector != null) {
-      lFrom = fromSelector.getValue(iCurrentRecord, result, ctx);
+      lFrom = fromSelector.getValue(iCurrentRecord, result, context);
     }
     if (lFrom == null) {
       lFrom = 0;
     }
     Integer lTo = to;
     if (toSelector != null) {
-      lTo = toSelector.getValue(iCurrentRecord, result, ctx);
+      lTo = toSelector.getValue(iCurrentRecord, result, context);
     }
     if (included) {
       lTo++;
@@ -132,76 +128,33 @@ public class ArrayRangeSelector extends SimpleNode {
     if (lFrom > lTo) {
       return null;
     }
-    Object[] arrayResult = MultiValue.array(result);
+    final Object[] arrayResult = MultiValue.array(result);
 
     if (arrayResult == null || arrayResult.length == 0) {
       return arrayResult;
     }
     lFrom = Math.max(lFrom, 0);
-    if (arrayResult.length < lFrom) {
+    if (arrayResult.length < lFrom)
       return null;
-    }
-    lFrom = Math.min(lFrom, arrayResult.length - 1);
 
+    lFrom = Math.min(lFrom, arrayResult.length - 1);
     lTo = Math.min(lTo, arrayResult.length);
 
     return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
-  }
-
-  public boolean needsAliases(Set<String> aliases) {
-    if (fromSelector != null && fromSelector.needsAliases(aliases)) {
-      return true;
-    }
-    return toSelector != null && toSelector.needsAliases(aliases);
   }
 
   public ArrayRangeSelector copy() {
-    ArrayRangeSelector result = new ArrayRangeSelector(-1);
+    final ArrayRangeSelector result = new ArrayRangeSelector(-1);
     result.from = from;
     result.to = to;
     result.newRange = newRange;
     result.included = included;
-
     result.fromSelector = fromSelector == null ? null : fromSelector.copy();
     result.toSelector = toSelector == null ? null : toSelector.copy();
-
     return result;
   }
 
-  @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    ArrayRangeSelector that = (ArrayRangeSelector) o;
-
-    if (newRange != that.newRange)
-      return false;
-    if (included != that.included)
-      return false;
-    if (!Objects.equals(from, that.from))
-      return false;
-    if (!Objects.equals(to, that.to))
-      return false;
-    if (!Objects.equals(fromSelector, that.fromSelector))
-      return false;
-    return Objects.equals(toSelector, that.toSelector);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = from != null ? from.hashCode() : 0;
-    result = 31 * result + (to != null ? to.hashCode() : 0);
-    result = 31 * result + (newRange ? 1 : 0);
-    result = 31 * result + (included ? 1 : 0);
-    result = 31 * result + (fromSelector != null ? fromSelector.hashCode() : 0);
-    result = 31 * result + (toSelector != null ? toSelector.hashCode() : 0);
-    return result;
-  }
-
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (fromSelector != null) {
       fromSelector.extractSubQueries(collector);
     }
@@ -210,21 +163,19 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  public boolean refersToParent() {
-    if (fromSelector != null && fromSelector.refersToParent()) {
-      return true;
-    }
-    return toSelector != null && toSelector.refersToParent();
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { fromSelector, toSelector };
   }
 
-  public void setValue(Object target, Object value, CommandContext ctx) {
+  public void setValue(final Object target, final Object value, final CommandContext context) {
     if (target == null) {
       return;
     }
     if (target.getClass().isArray()) {
-      setArrayValue(target, value, ctx);
+      setArrayValue(target, value, context);
     } else if (target instanceof List) {
-      setValue((List) target, value, ctx);
+      setValue((List) target, value, context);
     } else if (MultiValue.isMultiValue(value)) {
       //TODO
     }
@@ -232,8 +183,8 @@ public class ArrayRangeSelector extends SimpleNode {
 
   }
 
-  public void setValue(List target, Object value, CommandContext ctx) {
-    int from = this.from == null ? 0 : this.from;
+  public void setValue(final List target, final Object value, final CommandContext context) {
+    final int from = this.from == null ? 0 : this.from;
     int to = target.size() - 1;
     if (this.to != null) {
       to = this.to;
@@ -255,9 +206,9 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  public void setValue(Set target, Object value, CommandContext ctx) {
-    Set result = new LinkedHashSet<>();
-    int from = this.from == null ? 0 : this.from;
+  public void setValue(final Set target, final Object value, final CommandContext context) {
+    final Set result = new LinkedHashSet<>();
+    final int from = this.from == null ? 0 : this.from;
     int to = target.size() - 1;
     if (this.to != null) {
       to = this.to;
@@ -269,7 +220,7 @@ public class ArrayRangeSelector extends SimpleNode {
       target.clear();
       return;
     }
-    Iterator targetIterator = target.iterator();
+    final Iterator targetIterator = target.iterator();
     for (int i = 0; i <= to; i++) {
       Object next = null;
       if (targetIterator.hasNext()) {
@@ -287,8 +238,8 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  public void setValue(Map target, Object value, CommandContext ctx) {
-    int from = this.from == null ? 0 : this.from;
+  public void setValue(final Map target, final Object value, final CommandContext context) {
+    final int from = this.from == null ? 0 : this.from;
     int to = this.to;
     if (!included) {
       to--;
@@ -302,9 +253,9 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  private void setArrayValue(Object target, Object value, CommandContext ctx) {
+  private void setArrayValue(final Object target, final Object value, final CommandContext context) {
 
-    int from = this.from == null ? 0 : this.from;
+    final int from = this.from == null ? 0 : this.from;
     int to = Array.getLength(target) - 1;
     if (this.to != null) {
       to = this.to;
@@ -321,17 +272,17 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  public void applyRemove(Object currentValue, ResultInternal originalRecord, CommandContext ctx) {
+  public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext context) {
     if (currentValue == null) {
       return;
     }
     Integer from = this.from;
     if (fromSelector != null) {
-      from = fromSelector.getValue(originalRecord, null, ctx);
+      from = fromSelector.getValue(originalRecord, null, context);
     }
     Integer to = this.to;
     if (toSelector != null) {
-      to = toSelector.getValue(originalRecord, null, ctx);
+      to = toSelector.getValue(originalRecord, null, context);
     }
     if (from == null || to == null) {
       throw new CommandExecutionException("Invalid range expression: " + this + " one of the elements is null");
@@ -345,9 +296,9 @@ public class ArrayRangeSelector extends SimpleNode {
     if (from >= to) {
       return;
     }
-    int range = to - from;
+    final int range = to - from;
     if (currentValue instanceof List) {
-      List list = (List) currentValue;
+      final List list = (List) currentValue;
       for (int i = 0; i < range; i++) {
         if (list.size() > from) {
           list.remove(from);
@@ -356,7 +307,7 @@ public class ArrayRangeSelector extends SimpleNode {
         }
       }
     } else if (currentValue instanceof Set) {
-      Iterator iter = ((Set) currentValue).iterator();
+      final Iterator iter = ((Set) currentValue).iterator();
       int count = 0;
       while (iter.hasNext()) {
         iter.next();
@@ -371,38 +322,6 @@ public class ArrayRangeSelector extends SimpleNode {
       }
     } else {
       throw new CommandExecutionException("Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
-    }
-  }
-
-  public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("from", from);
-    result.setProperty("to", to);
-    result.setProperty("newRange", newRange);
-    result.setProperty("included", included);
-
-    if (fromSelector != null) {
-      result.setProperty("fromSelector", fromSelector.serialize());
-    }
-    if (toSelector != null) {
-      result.setProperty("toSelector", toSelector.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    from = fromResult.getProperty("from");
-    to = fromResult.getProperty("to");
-    newRange = fromResult.getProperty("newRange");
-    included = fromResult.getProperty("included");
-
-    if (fromResult.getProperty("fromSelector") != null) {
-      fromSelector = new ArrayNumberSelector(-1);
-      fromSelector.deserialize(fromResult.getProperty("fromSelector"));
-    }
-    if (fromResult.getProperty("toSelector") != null) {
-      toSelector = new ArrayNumberSelector(-1);
-      toSelector.deserialize(fromResult.getProperty("toSelector"));
     }
   }
 }

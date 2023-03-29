@@ -29,10 +29,6 @@ public class ContainsValueOperator extends SimpleNode implements BinaryCompareOp
     super(id);
   }
 
-  public ContainsValueOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     if (iLeft instanceof Map<?, ?>) {
@@ -40,11 +36,6 @@ public class ContainsValueOperator extends SimpleNode implements BinaryCompareOp
       return map.containsValue(iRight);
     }
     return false;
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

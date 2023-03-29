@@ -30,14 +30,14 @@ import java.util.*;
 public class InOperatorTest {
   @Test
   public void test() {
-    InOperator op = new InOperator(-1);
+    final InOperator op = new InOperator(-1);
 
     Assertions.assertFalse(op.execute(null, null, null));
     Assertions.assertFalse(op.execute(null, null, "foo"));
     Assertions.assertFalse(op.execute(null, "foo", null));
     Assertions.assertFalse(op.execute(null, "foo", "foo"));
 
-    List<Object> list1 = new ArrayList<Object>();
+    final List<Object> list1 = new ArrayList<Object>();
     Assertions.assertFalse(op.execute(null, "foo", list1));
     Assertions.assertFalse(op.execute(null, null, list1));
     Assertions.assertTrue(op.execute(null, list1, list1));

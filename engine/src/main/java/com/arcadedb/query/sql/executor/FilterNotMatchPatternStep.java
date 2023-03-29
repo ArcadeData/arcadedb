@@ -28,19 +28,14 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   private ResultSet prevResult = null;
 
-  private long cost;
-
-  public FilterNotMatchPatternStep(List<AbstractExecutionStep> steps, CommandContext ctx, boolean enableProfiling) {
-    super(ctx, enableProfiling);
+  public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext context, final boolean enableProfiling) {
+    super(context, enableProfiling);
     this.subSteps = steps;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
-      throw new IllegalStateException("filter step requires a previous step");
-    }
-    ExecutionStepInternal prevStep = prev.get();
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final ExecutionStepInternal prevStep = checkForPrevious();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -54,7 +49,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
           return;
         }
         if (prevResult == null) {
-          prevResult = prevStep.syncPull(ctx, nRecords);
+          prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
             finished = true;
             return;
@@ -62,16 +57,16 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
         }
         while (!finished) {
           while (!prevResult.hasNext()) {
-            prevResult = prevStep.syncPull(ctx, nRecords);
+            prevResult = prevStep.syncPull(context, nRecords);
             if (!prevResult.hasNext()) {
               finished = true;
               return;
             }
           }
           nextItem = prevResult.next();
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
-            if (!matchesPattern(nextItem, ctx)) {
+            if (!matchesPattern(nextItem, context)) {
               break;
             }
 
@@ -100,15 +95,15 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (fetched >= nRecords || finished) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextItem == null) {
           fetchNextItem();
         }
         if (nextItem == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         return result;
@@ -118,34 +113,24 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
       public void close() {
         FilterNotMatchPatternStep.this.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private boolean matchesPattern(Result nextItem, CommandContext ctx) {
-    SelectExecutionPlan plan = createExecutionPlan(nextItem, ctx);
-    try (ResultSet rs = plan.fetchNext(1)) {
+  private boolean matchesPattern(final Result nextItem, final CommandContext context) {
+    final SelectExecutionPlan plan = createExecutionPlan(nextItem, context);
+    try (final ResultSet rs = plan.fetchNext(1)) {
       return rs.hasNext();
     }
   }
 
-  private SelectExecutionPlan createExecutionPlan(Result nextItem, CommandContext ctx) {
-    SelectExecutionPlan plan = new SelectExecutionPlan(ctx);
-    plan.chain(new AbstractExecutionStep(ctx, profilingEnabled) {
+  private SelectExecutionPlan createExecutionPlan(final Result nextItem, final CommandContext context) {
+    final SelectExecutionPlan plan = new SelectExecutionPlan(context);
+    plan.chain(new AbstractExecutionStep(context, profilingEnabled) {
       private boolean executed = false;
 
       @Override
-      public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-        InternalResultSet result = new InternalResultSet();
+      public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+        final InternalResultSet result = new InternalResultSet();
         if (!executed) {
           result.add(copy(nextItem));
           executed = true;
@@ -153,12 +138,12 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
         return result;
       }
 
-      private Result copy(Result nextItem) {
-        ResultInternal result = new ResultInternal();
-        for (String prop : nextItem.getPropertyNames()) {
+      private Result copy(final Result nextItem) {
+        final ResultInternal result = new ResultInternal();
+        for (final String prop : nextItem.getPropertyNames()) {
           result.setProperty(prop, nextItem.getProperty(prop));
         }
-        for (String md : nextItem.getMetadataKeys()) {
+        for (final String md : nextItem.getMetadataKeys()) {
           result.setMetadata(md, nextItem.getMetadata(md));
         }
         return result;
@@ -174,9 +159,9 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ NOT (\n");
     this.subSteps.forEach(x -> result.append(x.prettyPrint(depth + 1, indent)).append("\n"));

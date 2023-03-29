@@ -39,7 +39,7 @@ public class SQLFunctionDijkstraTest {
   private MutableVertex       v4;
   private SQLFunctionDijkstra functionDijkstra;
 
-  public void setUp(Database graph) throws Exception {
+  public void setUp(final Database graph) throws Exception {
     graph.transaction((() -> {
       graph.getSchema().createVertexType("node");
       graph.getSchema().createEdgeType("weight");
@@ -54,19 +54,19 @@ public class SQLFunctionDijkstraTest {
       v3.set("node_id", "C").save();
       v4.set("node_id", "D").save();
 
-      MutableEdge e1 = v1.newEdge("weight", v2, true);
+      final MutableEdge e1 = v1.newEdge("weight", v2, true);
       e1.set("weight", 1.0f);
       e1.save();
 
-      MutableEdge e2 = v2.newEdge("weight", v3, true);
+      final MutableEdge e2 = v2.newEdge("weight", v3, true);
       e2.set("weight", 1.0f);
       e2.save();
 
-      MutableEdge e3 = v1.newEdge("weight", v3, true);
+      final MutableEdge e3 = v1.newEdge("weight", v3, true);
       e3.set("weight", 100.0f);
       e3.save();
 
-      MutableEdge e4 = v3.newEdge("weight", v4, true);
+      final MutableEdge e4 = v3.newEdge("weight", v4, true);
       e4.set("weight", 1.0f);
       e4.save();
 

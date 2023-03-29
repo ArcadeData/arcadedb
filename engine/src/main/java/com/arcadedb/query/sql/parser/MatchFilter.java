@@ -29,16 +29,12 @@ public class MatchFilter extends SimpleNode {
   // TODO transform in a map
   protected List<MatchFilterItem> items = new ArrayList<MatchFilterItem>();
 
-  public MatchFilter(int id) {
+  public MatchFilter(final int id) {
     super(id);
   }
 
-  public MatchFilter(SqlParser p, int id) {
-    super(p, id);
-  }
-
   public String getAlias() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.alias != null) {
         return item.alias.getStringValue();
       }
@@ -46,9 +42,9 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public void setAlias(String alias) {
+  public void setAlias(final String alias) {
     boolean found = false;
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.alias != null) {
         item.alias = new Identifier(alias);
         found = true;
@@ -56,14 +52,14 @@ public class MatchFilter extends SimpleNode {
       }
     }
     if (!found) {
-      MatchFilterItem newItem = new MatchFilterItem(-1);
+      final MatchFilterItem newItem = new MatchFilterItem(-1);
       newItem.alias = new Identifier(alias);
       items.add(newItem);
     }
   }
 
   public WhereClause getFilter() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.filter != null) {
         return item.filter;
       }
@@ -71,9 +67,9 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public void setFilter(WhereClause filter) {
+  public void setFilter(final WhereClause filter) {
     boolean found = false;
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.filter != null) {
         item.filter = filter;
         found = true;
@@ -81,14 +77,14 @@ public class MatchFilter extends SimpleNode {
       }
     }
     if (!found) {
-      MatchFilterItem newItem = new MatchFilterItem(-1);
+      final MatchFilterItem newItem = new MatchFilterItem(-1);
       newItem.filter = filter;
       items.add(newItem);
     }
   }
 
   public WhereClause getWhileCondition() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.whileCondition != null) {
         return item.whileCondition;
       }
@@ -96,14 +92,13 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public String getTypeName(CommandContext context) {
-    for (MatchFilterItem item : items) {
+  public String getTypeName(final CommandContext context) {
+    for (final MatchFilterItem item : items) {
       if (item.typeName != null) {
         if (item.typeName.value instanceof String)
           return (String) item.typeName.value;
         else if (item.typeName.value instanceof SimpleNode) {
-          StringBuilder builder = new StringBuilder();
-
+          final StringBuilder builder = new StringBuilder();
           ((SimpleNode) item.typeName.value).toString(context == null ? null : context.getInputParameters(), builder);
           return builder.toString();
         } else if (item.typeName.isBaseIdentifier()) {
@@ -116,13 +111,13 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public String getBucketName(CommandContext context) {
-    for (MatchFilterItem item : items) {
+  public String getBucketName(final CommandContext context) {
+    for (final MatchFilterItem item : items) {
       if (item.bucketName != null) {
         return item.bucketName.getStringValue();
       } else if (item.bucketId != null) {
-        int cid = item.bucketId.value.intValue();
-        String bucketName = context.getDatabase().getSchema().getBucketById(cid).getName();
+        final int cid = item.bucketId.value.intValue();
+        final String bucketName = context.getDatabase().getSchema().getBucketById(cid).getName();
         if (bucketName != null) {
           return bucketName;
         }
@@ -131,8 +126,8 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public Rid getRid(CommandContext context) {
-    for (MatchFilterItem item : items) {
+  public Rid getRid(final CommandContext context) {
+    for (final MatchFilterItem item : items) {
       if (item.rid != null) {
         return item.rid;
       }
@@ -141,7 +136,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public Integer getMaxDepth() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.maxDepth != null) {
         return item.maxDepth.value.intValue();
       }
@@ -150,7 +145,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public boolean isOptional() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (Boolean.TRUE.equals(item.optional)) {
         return true;
       }
@@ -159,7 +154,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public String getDepthAlias() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.depthAlias != null) {
         return item.depthAlias.getStringValue();
       }
@@ -168,7 +163,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public String getPathAlias() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.pathAlias != null) {
         return item.pathAlias.getStringValue();
       }
@@ -176,10 +171,10 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("{");
     boolean first = true;
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (!first) {
         builder.append(", ");
       }
@@ -191,19 +186,19 @@ public class MatchFilter extends SimpleNode {
 
   @Override
   public MatchFilter copy() {
-    MatchFilter result = new MatchFilter(-1);
+    final MatchFilter result = new MatchFilter(-1);
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    MatchFilter that = (MatchFilter) o;
+    final MatchFilter that = (MatchFilter) o;
 
     return Objects.equals(items, that.items);
   }

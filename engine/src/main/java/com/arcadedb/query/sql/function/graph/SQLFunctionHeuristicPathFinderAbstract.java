@@ -56,17 +56,19 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   protected String              paramCustomHeuristicFormula = "";
 
   protected              CommandContext context;
-  protected              List<Vertex>   route = new LinkedList<Vertex>();
+  protected final        List<Vertex>   route = new LinkedList<Vertex>();
   protected static final float          MIN   = 0f;
 
-  public SQLFunctionHeuristicPathFinderAbstract(final String iName, final int iMinParams, final int iMaxParams) {
-    super(iName, iMinParams, iMaxParams);
+  public SQLFunctionHeuristicPathFinderAbstract(final String iName) {
+    super(iName);
   }
 
   // Approx Great-circle distance.  Args in degrees, result in kilometers
   // obtains from https://github.com/enderceylan/CS-314--Data-Structures/blob/master/HW10-Graph.java
-  public double gcdist(double lata, double longa, double latb, double longb) {
-    double midlat, psi, dist;
+  public double gcdist(final double lata, final double longa, final double latb, final double longb) {
+    final double midlat;
+    final double psi;
+    final double dist;
     midlat = 0.5 * (lata + latb);
     psi = 0.0174532925 * Math.sqrt(Math.pow(lata - latb, 2) + Math.pow((longa - longb) * Math.cos(0.0174532925 * midlat), 2));
     dist = 6372.640112 * psi;
@@ -91,7 +93,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
     final Set<Vertex> neighbors = new HashSet<Vertex>();
     if (node != null) {
-      for (Vertex v : node.getVertices(paramDirection, paramEdgeTypeNames)) {
+      for (final Vertex v : node.getVertices(paramDirection, paramEdgeTypeNames)) {
         final Vertex ov = v;
         if (ov != null)
           neighbors.add(ov);
@@ -101,74 +103,76 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
-  protected double getSimpleHeuristicCost(double x, double g, double dFactor) {
-    double dx = Math.abs(x - g);
+  protected double getSimpleHeuristicCost(final double x, final double g, final double dFactor) {
+    final double dx = Math.abs(x - g);
     return dFactor * (dx);
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
-  protected double getManhattanHeuristicCost(double x, double y, double gx, double gy, double dFactor) {
-    double dx = Math.abs(x - gx);
-    double dy = Math.abs(y - gy);
+  protected double getManhattanHeuristicCost(final double x, final double y, final double gx, final double gy, final double dFactor) {
+    final double dx = Math.abs(x - gx);
+    final double dy = Math.abs(y - gy);
     return dFactor * (dx + dy);
   }
 
-  protected double getMaxAxisHeuristicCost(double x, double y, double gx, double gy, double dFactor) {
-    double dx = Math.abs(x - gx);
-    double dy = Math.abs(y - gy);
+  protected double getMaxAxisHeuristicCost(final double x, final double y, final double gx, final double gy, final double dFactor) {
+    final double dx = Math.abs(x - gx);
+    final double dy = Math.abs(y - gy);
     return dFactor * Math.max(dx, dy);
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
-  protected double getDiagonalHeuristicCost(double x, double y, double gx, double gy, double dFactor) {
-    double dx = Math.abs(x - gx);
-    double dy = Math.abs(y - gy);
-    double h_diagonal = Math.min(dx, dy);
-    double h_straight = dx + dy;
+  protected double getDiagonalHeuristicCost(final double x, final double y, final double gx, final double gy, final double dFactor) {
+    final double dx = Math.abs(x - gx);
+    final double dy = Math.abs(y - gy);
+    final double h_diagonal = Math.min(dx, dy);
+    final double h_straight = dx + dy;
     return (dFactor * 2) * h_diagonal + dFactor * (h_straight - 2 * h_diagonal);
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
-  protected double getEuclideanHeuristicCost(double x, double y, double gx, double gy, double dFactor) {
-    double dx = Math.abs(x - gx);
-    double dy = Math.abs(y - gy);
+  protected double getEuclideanHeuristicCost(final double x, final double y, final double gx, final double gy, final double dFactor) {
+    final double dx = Math.abs(x - gx);
+    final double dy = Math.abs(y - gy);
 
     return (dFactor * Math.sqrt(Math.pow(dx, 2) + Math.pow(dy, 2)));
   }
 
-  protected double getEuclideanNoSQRHeuristicCost(double x, double y, double gx, double gy, double dFactor) {
-    double dx = Math.abs(x - gx);
-    double dy = Math.abs(y - gy);
+  protected double getEuclideanNoSQRHeuristicCost(final double x, final double y, final double gx, final double gy, final double dFactor) {
+    final double dx = Math.abs(x - gx);
+    final double dy = Math.abs(y - gy);
 
     return (dFactor * (Math.pow(dx, 2) + Math.pow(dy, 2)));
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
-  protected double getTieBreakingHeuristicCost(double x, double y, double sx, double sy, double gx, double gy, double heuristic) {
-    double dx1 = x - gx;
-    double dy1 = y - gy;
-    double dx2 = sx - gx;
-    double dy2 = sy - gy;
-    double cross = Math.abs(dx1 * dy2 - dx2 * dy1);
+  protected double getTieBreakingHeuristicCost(final double x, final double y, final double sx, final double sy, final double gx, final double gy,
+      double heuristic) {
+    final double dx1 = x - gx;
+    final double dy1 = y - gy;
+    final double dx2 = sx - gx;
+    final double dy2 = sy - gy;
+    final double cross = Math.abs(dx1 * dy2 - dx2 * dy1);
     heuristic += (cross * 0.0001);
     return heuristic;
   }
 
-  protected double getTieBreakingRandomHeuristicCost(double x, double y, double sx, double sy, double gx, double gy, double heuristic) {
-    double dx1 = x - gx;
-    double dy1 = y - gy;
-    double dx2 = sx - gx;
-    double dy2 = sy - gy;
-    double cross = Math.abs(dx1 * dy2 - dx2 * dy1) + rnd.nextFloat();
+  protected double getTieBreakingRandomHeuristicCost(final double x, final double y, final double sx, final double sy, final double gx, final double gy,
+      double heuristic) {
+    final double dx1 = x - gx;
+    final double dy1 = y - gy;
+    final double dx2 = sx - gx;
+    final double dy2 = sy - gy;
+    final double cross = Math.abs(dx1 * dy2 - dx2 * dy1) + rnd.nextFloat();
     heuristic += (cross * heuristic);
     return heuristic;
   }
 
   protected double getManhattanHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
-      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
-    double heuristic;
+      final Map<String, Double> plist, final Map<String, Double> glist, final long depth, final double dFactor) {
+    final double heuristic;
     double res = 0.0;
-    for (String str : axisNames) {
+    for (final String str : axisNames) {
       res += Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0));
     }
     heuristic = dFactor * res;
@@ -176,10 +180,10 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected double getMaxAxisHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
-      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
-    double heuristic;
+      final Map<String, Double> plist, final Map<String, Double> glist, final long depth, final double dFactor) {
+    final double heuristic;
     double res = 0.0;
-    for (String str : axisNames) {
+    for (final String str : axisNames) {
       res = Math.max(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), res);
     }
     heuristic = dFactor * res;
@@ -187,12 +191,12 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected double getDiagonalHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
-      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
+      final Map<String, Double> plist, final Map<String, Double> glist, final long depth, final double dFactor) {
 
-    double heuristic;
+    final double heuristic;
     double h_diagonal = 0.0;
     double h_straight = 0.0;
-    for (String str : axisNames) {
+    for (final String str : axisNames) {
       h_diagonal = Math.min(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), h_diagonal);
       h_straight += Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0));
     }
@@ -201,10 +205,10 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected double getEuclideanHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
-      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
-    double heuristic;
+      final Map<String, Double> plist, final Map<String, Double> glist, final long depth, final double dFactor) {
+    final double heuristic;
     double res = 0.0;
-    for (String str : axisNames) {
+    for (final String str : axisNames) {
       res += Math.pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), 2);
     }
     heuristic = Math.sqrt(res);
@@ -212,10 +216,10 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected double getEuclideanNoSQRHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
-      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
-    double heuristic;
+      final Map<String, Double> plist, final Map<String, Double> glist, final long depth, final double dFactor) {
+    final double heuristic;
     double res = 0.0;
-    for (String str : axisNames) {
+    for (final String str : axisNames) {
       res += Math.pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), 2);
     }
     heuristic = dFactor * res;
@@ -223,23 +227,23 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected double getTieBreakingHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
-      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double heuristic) {
+      final Map<String, Double> plist, final Map<String, Double> glist, final long depth, double heuristic) {
 
     double res = 0.0;
-    for (String str : axisNames) {
+    for (final String str : axisNames) {
       res += Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0));
     }
-    double cross = res;
+    final double cross = res;
     heuristic += (cross * 0.0001);
     return heuristic;
   }
 
-  protected String[] stringArray(Object fromObject) {
+  protected String[] stringArray(final Object fromObject) {
     if (fromObject == null) {
       return new String[] {};
     }
     if (fromObject instanceof String) {
-      String[] arr = fromObject.toString().replace("},{", " ,").split(",");
+      final String[] arr = fromObject.toString().replace("},{", " ,").split(",");
       return (arr);
     }
     if (fromObject instanceof Object) {
@@ -249,7 +253,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return new String[] {};
   }
 
-  protected Boolean booleanOrDefault(Object fromObject, boolean defaultValue) {
+  protected Boolean booleanOrDefault(final Object fromObject, final boolean defaultValue) {
     if (fromObject == null) {
       return defaultValue;
     }
@@ -262,14 +266,14 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return defaultValue;
   }
 
-  protected String stringOrDefault(Object fromObject, String defaultValue) {
+  protected String stringOrDefault(final Object fromObject, final String defaultValue) {
     if (fromObject == null) {
       return defaultValue;
     }
     return (String) fromObject;
   }
 
-  protected Integer integerOrDefault(Object fromObject, int defaultValue) {
+  protected Integer integerOrDefault(final Object fromObject, final int defaultValue) {
     if (fromObject == null) {
       return defaultValue;
     }
@@ -279,13 +283,13 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     if (fromObject instanceof String) {
       try {
         return Integer.parseInt(fromObject.toString());
-      } catch (NumberFormatException ignore) {
+      } catch (final NumberFormatException ignore) {
       }
     }
     return defaultValue;
   }
 
-  protected Long longOrDefault(Object fromObject, long defaultValue) {
+  protected Long longOrDefault(final Object fromObject, final long defaultValue) {
     if (fromObject == null) {
       return defaultValue;
     }
@@ -295,13 +299,13 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     if (fromObject instanceof String) {
       try {
         return Long.parseLong(fromObject.toString());
-      } catch (NumberFormatException ignore) {
+      } catch (final NumberFormatException ignore) {
       }
     }
     return defaultValue;
   }
 
-  protected Double doubleOrDefault(Object fromObject, double defaultValue) {
+  protected Double doubleOrDefault(final Object fromObject, final double defaultValue) {
     if (fromObject == null) {
       return defaultValue;
     }
@@ -311,7 +315,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     if (fromObject instanceof String) {
       try {
         return Double.parseDouble(fromObject.toString());
-      } catch (NumberFormatException ignore) {
+      } catch (final NumberFormatException ignore) {
       }
     }
     return defaultValue;

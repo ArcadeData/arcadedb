@@ -43,13 +43,13 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
   ResultSet currentResultSet;
   int       currentStep = 0;
 
-  protected FetchFromClassExecutionStep(final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  protected FetchFromClassExecutionStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
-  public FetchFromClassExecutionStep(final String className, final Set<String> clusters, final CommandContext ctx, final Boolean ridOrder,
+  public FetchFromClassExecutionStep(final String className, final Set<String> clusters, final CommandContext context, final Boolean ridOrder,
       final boolean profilingEnabled) {
-    this(className, clusters, null, ctx, ridOrder, profilingEnabled);
+    this(className, clusters, null, context, ridOrder, profilingEnabled);
   }
 
   /**
@@ -57,12 +57,12 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
    *
    * @param className the class name
    * @param clusters  if present (it can be null), filter by only these clusters
-   * @param ctx       the query context
+   * @param context   the query context
    * @param ridOrder  true to sort by RID asc, false to sort by RID desc, null for no sort.
    */
-  public FetchFromClassExecutionStep(final String className, final Set<String> clusters, final QueryPlanningInfo planningInfo, final CommandContext ctx,
+  public FetchFromClassExecutionStep(final String className, final Set<String> clusters, final QueryPlanningInfo planningInfo, final CommandContext context,
       final Boolean ridOrder, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+    super(context, profilingEnabled);
 
     this.className = className;
 
@@ -71,20 +71,20 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     } else if (Boolean.FALSE.equals(ridOrder)) {
       orderByRidDesc = true;
     }
-    final DocumentType type = ctx.getDatabase().getSchema().getType(className);
+    final DocumentType type = context.getDatabase().getSchema().getType(className);
     if (type == null) {
       throw new CommandExecutionException("Type " + className + " not found");
     }
 
     final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getId()).distinct().sorted().toArray();
-    List<Integer> filteredTypeBuckets = new ArrayList<>();
-    for (int bucketId : typeBuckets) {
-      String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
+    final List<Integer> filteredTypeBuckets = new ArrayList<>();
+    for (final int bucketId : typeBuckets) {
+      final String bucketName = context.getDatabase().getSchema().getBucketById(bucketId).getName();
       if (clusters == null || clusters.contains(bucketName) || clusters.contains("*")) {
         filteredTypeBuckets.add(bucketId);
       }
     }
-    int[] bucketIds = new int[filteredTypeBuckets.size() + 1];
+    final int[] bucketIds = new int[filteredTypeBuckets.size() + 1];
     for (int i = 0; i < filteredTypeBuckets.size(); i++) {
       bucketIds[i] = filteredTypeBuckets.get(i);
     }
@@ -93,11 +93,11 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     long typeFileSize = 0;
     for (final int fileId : bucketIds) {
       if (fileId > -1) {
-        final PaginatedFile f = ctx.getDatabase().getFileManager().getFile(fileId);
+        final PaginatedFile f = context.getDatabase().getFileManager().getFile(fileId);
         if (f != null) {
           try {
             typeFileSize += f.getSize();
-          } catch (IOException e) {
+          } catch (final IOException e) {
             // IGNORE IT
           }
         }
@@ -111,9 +111,9 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     }
 
     sortBuckets(bucketIds);
-    for (int bucketId : bucketIds) {
+    for (final int bucketId : bucketIds) {
       if (bucketId > 0) {
-        FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, ctx, profilingEnabled);
+        final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, context, profilingEnabled);
         if (orderByRidAsc) {
           step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
         } else if (orderByRidDesc) {
@@ -139,10 +139,10 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    return new ResultSet() {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
 
+    return new ResultSet() {
       int totDispatched = 0;
 
       @Override
@@ -157,9 +157,9 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
             if (currentStep >= getSubSteps().size()) {
               return false;
             }
-            currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep)).syncPull(ctx, nRecords);
+            currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep)).syncPull(context, nRecords);
             if (!currentResultSet.hasNext()) {
-              currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep++)).syncPull(ctx, nRecords);
+              currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep++)).syncPull(context, nRecords);
             }
           }
         }
@@ -169,20 +169,20 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
       public Result next() {
         while (true) {
           if (totDispatched >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (currentResultSet != null && currentResultSet.hasNext()) {
             totDispatched++;
-            Result result = currentResultSet.next();
-            ctx.setVariable("$current", result);
+            final Result result = currentResultSet.next();
+            context.setVariable("current", result);
             return result;
           } else {
             if (currentStep >= getSubSteps().size()) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
-            currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep)).syncPull(ctx, nRecords);
+            currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep)).syncPull(context, nRecords);
             if (!currentResultSet.hasNext()) {
-              currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep++)).syncPull(ctx, nRecords);
+              currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep++)).syncPull(context, nRecords);
             }
           }
         }
@@ -190,14 +190,9 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        for (ExecutionStep step : getSubSteps()) {
+        for (final ExecutionStep step : getSubSteps()) {
           ((AbstractExecutionStep) step).close();
         }
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
       }
 
       @Override
@@ -210,24 +205,27 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void sendTimeout() {
-    for (ExecutionStep step : getSubSteps()) {
+    for (final ExecutionStep step : getSubSteps())
       ((AbstractExecutionStep) step).sendTimeout();
-    }
-    prev.ifPresent(p -> p.sendTimeout());
+
+    if (prev != null)
+      prev.sendTimeout();
   }
 
   @Override
   public void close() {
-    for (ExecutionStep step : getSubSteps()) {
+    for (final ExecutionStep step : getSubSteps()) {
       ((AbstractExecutionStep) step).close();
     }
-    prev.ifPresent(p -> p.close());
+
+    if (prev != null)
+      prev.close();
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder builder = new StringBuilder();
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder builder = new StringBuilder();
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM TYPE ").append(className);
     if (profilingEnabled) {
@@ -235,7 +233,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     }
     builder.append("\n");
     for (int i = 0; i < getSubSteps().size(); i++) {
-      ExecutionStepInternal step = (ExecutionStepInternal) getSubSteps().get(i);
+      final ExecutionStepInternal step = (ExecutionStepInternal) getSubSteps().get(i);
       builder.append(step.prettyPrint(depth + 1, indent));
       if (i < getSubSteps().size() - 1) {
         builder.append("\n");
@@ -246,28 +244,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public long getCost() {
-    return getSubSteps().stream().map(x -> x.getCost()).reduce((a, b) -> a + b).orElse(0L);
-  }
-
-  @Override
-  public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    result.setProperty("typeName", className);
-    result.setProperty("orderByRidAsc", orderByRidAsc);
-    result.setProperty("orderByRidDesc", orderByRidDesc);
-    return result;
-  }
-
-  @Override
-  public void deserialize(Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      this.className = fromResult.getProperty("typeName");
-      this.orderByRidAsc = fromResult.getProperty("orderByRidAsc");
-      this.orderByRidDesc = fromResult.getProperty("orderByRidDesc");
-    } catch (Exception e) {
-      throw new CommandExecutionException("", e);
-    }
+    return subSteps.stream().map(ExecutionStep::getCost).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L).orElse(-1L);
   }
 
   @Override
@@ -281,12 +258,12 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    FetchFromClassExecutionStep result = new FetchFromClassExecutionStep(ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    final FetchFromClassExecutionStep result = new FetchFromClassExecutionStep(context, profilingEnabled);
     result.className = this.className;
     result.orderByRidAsc = this.orderByRidAsc;
     result.orderByRidDesc = this.orderByRidDesc;
-    result.subSteps = this.subSteps.stream().map(x -> ((ExecutionStepInternal) x).copy(ctx)).collect(Collectors.toList());
+    result.subSteps = this.subSteps.stream().map(x -> ((ExecutionStepInternal) x).copy(context)).collect(Collectors.toList());
     return result;
   }
 }

@@ -51,17 +51,14 @@ public class QueryPlanningInfo {
 
   LetClause perRecordLetClause = null;
 
-  /**
-   * in a sharded execution plan, this maps the single server to the clusters it will be queried for to execute the query.
-   */
-  Map<String, Set<String>> serverToClusters;
+  Set<String> buckets;
 
-  Map<String, SelectExecutionPlan> distributedFetchExecutionPlans;
+  SelectExecutionPlan fetchExecutionPlan;
 
   /**
    * set to true when the distributedFetchExecutionPlans are aggregated in the main execution plan
    */
-  public boolean distributedPlanCreated = false;
+  public boolean planCreated = false;
 
   FromClause     target;
   WhereClause    whereClause;
@@ -77,7 +74,7 @@ public class QueryPlanningInfo {
 
   public QueryPlanningInfo copy() {
     //TODO check what has to be copied and what can be just referenced as it is
-    QueryPlanningInfo result = new QueryPlanningInfo();
+    final QueryPlanningInfo result = new QueryPlanningInfo();
     result.distinct = this.distinct;
     result.expand = this.expand;
     result.preAggregateProjection = this.preAggregateProjection;
@@ -87,8 +84,8 @@ public class QueryPlanningInfo {
     result.globalLetClause = this.globalLetClause;
     result.globalLetPresent = this.globalLetPresent;
     result.perRecordLetClause = this.perRecordLetClause;
-    result.serverToClusters = this.serverToClusters;
-    result.distributedPlanCreated = this.distributedPlanCreated;
+    result.buckets = this.buckets;
+    result.planCreated = this.planCreated;
     result.target = this.target;
     result.whereClause = this.whereClause;
     result.flattenedWhereClause = this.flattenedWhereClause;

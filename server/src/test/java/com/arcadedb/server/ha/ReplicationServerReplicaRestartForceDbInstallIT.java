@@ -66,7 +66,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
               try {
                 LogManager.instance().log(this, Level.FINE, "TEST: Slowing down response from replica server 2...");
                 Thread.sleep(10000);
-              } catch (InterruptedException e) {
+              } catch (final InterruptedException e) {
                 // IGNORE IT
                 LogManager.instance().log(this, Level.SEVERE, "TEST: ArcadeDB_2 HA event listener thread interrupted");
                 Thread.currentThread().interrupt();
@@ -100,7 +100,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
               GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(512);
               try {
                 Thread.sleep(1000);
-              } catch (InterruptedException e) {
+              } catch (final InterruptedException e) {
                 LogManager.instance().log(this, Level.SEVERE, "TEST: ArcadeDB_0 HA event listener thread interrupted");
                 Thread.currentThread().interrupt();
               }

@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.ValidationException;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
@@ -34,27 +33,25 @@ import java.util.*;
 public class DocumentValidator {
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
-    final DocumentType type = document.getType();
-    for (String pName : type.getPropertyNames())
-      validateField(document, type.getProperty(pName));
+    for (Property entry : document.getType().getProperties())
+      validateField(document, entry);
   }
 
   public static void validateField(final MutableDocument document, final Property p) throws ValidationException {
     if (p.isMandatory() && !document.has(p.getName()))
-      throwValidationException(p, "is mandatory, but not found on document: " + document);
+      throwValidationException(p, "is mandatory, but not found on record: " + document);
 
     final Object fieldValue = document.get(p.getName());
 
     if (fieldValue == null) {
-      if (p.isNotNull())
+      if (p.isNotNull() && document.has(p.getName()))
         // NULLITY
         throwValidationException(p, "cannot be null, record: " + document);
     } else {
       if (p.getRegexp() != null)
         // REGEXP
         if (!(fieldValue.toString()).matches(p.getRegexp()))
-          throwValidationException(p,
-              "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", document: " + document);
+          throwValidationException(p, "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: " + document);
 
       final Type propertyType = p.getType();
 
@@ -69,7 +66,7 @@ public class DocumentValidator {
           if (!(fieldValue instanceof List))
             throwValidationException(p, "has been declared as LIST but an incompatible type is used. Value: " + fieldValue);
 
-          for (Object item : ((List<?>) fieldValue)) {
+          for (final Object item : ((List<?>) fieldValue)) {
             if (item instanceof MutableEmbeddedDocument)
               ((MutableEmbeddedDocument) item).validate();
           }
@@ -79,7 +76,7 @@ public class DocumentValidator {
           if (!(fieldValue instanceof Map))
             throwValidationException(p, "has been declared as MAP but an incompatible type is used. Value: " + fieldValue);
 
-          for (Object item : ((Map<?, ?>) fieldValue).values()) {
+          for (final Object item : ((Map<?, ?>) fieldValue).values()) {
             if (item instanceof MutableEmbeddedDocument)
               ((MutableEmbeddedDocument) item).validate();
           }

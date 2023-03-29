@@ -31,39 +31,39 @@ public class ProjectionTest {
 
   @Test
   public void testIsExpand() throws ParseException {
-    SqlParser parser = getParserFor("select expand(foo)  from V");
-    SelectStatement stm = (SelectStatement) parser.parse();
+    final SqlParser parser = getParserFor("select expand(foo)  from V");
+    final SelectStatement stm = (SelectStatement) parser.Parse();
     Assertions.assertTrue(stm.getProjection().isExpand());
 
-    SqlParser parser2 = getParserFor("select foo  from V");
-    SelectStatement stm2 = (SelectStatement) parser2.parse();
+    final SqlParser parser2 = getParserFor("select foo  from V");
+    final SelectStatement stm2 = (SelectStatement) parser2.Parse();
     Assertions.assertFalse(stm2.getProjection().isExpand());
 
-    SqlParser parser3 = getParserFor("select expand  from V");
-    SelectStatement stm3 = (SelectStatement) parser3.parse();
+    final SqlParser parser3 = getParserFor("select expand  from V");
+    final SelectStatement stm3 = (SelectStatement) parser3.Parse();
     Assertions.assertFalse(stm3.getProjection().isExpand());
   }
 
   @Test
   public void testValidate() throws ParseException {
-    SqlParser parser = getParserFor("select expand(foo)  from V");
-    SelectStatement stm = (SelectStatement) parser.parse();
+    final SqlParser parser = getParserFor("select expand(foo)  from V");
+    final SelectStatement stm = (SelectStatement) parser.Parse();
     stm.getProjection().validate();
 
     try {
-      getParserFor("select expand(foo), bar  from V").parse();
+      getParserFor("select expand(foo), bar  from V").Parse();
 
       Assertions.fail();
-    } catch (CommandSQLParsingException ex) {
+    } catch (final CommandSQLParsingException ex) {
 
-    } catch (Exception x) {
+    } catch (final Exception x) {
       Assertions.fail();
     }
   }
 
-  protected SqlParser getParserFor(String string) {
-    InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(is);
+  protected SqlParser getParserFor(final String string) {
+    final InputStream is = new ByteArrayInputStream(string.getBytes());
+    final SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 }

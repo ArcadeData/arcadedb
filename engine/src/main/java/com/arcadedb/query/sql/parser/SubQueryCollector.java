@@ -43,13 +43,13 @@ import java.util.*;
  */
 public class SubQueryCollector {
 
-  protected static final String GENERATED_ALIAS_PREFIX = "_$$$SUBQUERY$$_";
+  protected static final String GENERATED_ALIAS_PREFIX = "_$$$SUBQUERY$$$_";
   protected              int    nextAliasId            = 0;
 
   protected final Map<Identifier, Statement> subQueries = new LinkedHashMap<>();
 
   protected Identifier getNextAlias() {
-    Identifier result = new Identifier(GENERATED_ALIAS_PREFIX + (nextAliasId++));
+    final Identifier result = new Identifier(GENERATED_ALIAS_PREFIX + (nextAliasId++));
     result.internalAlias = true;
     return result;
   }
@@ -67,7 +67,7 @@ public class SubQueryCollector {
   }
 
   public Identifier addStatement(final Statement stm) {
-    Identifier alias = getNextAlias();
+    final Identifier alias = getNextAlias();
     return addStatement(alias, stm);
   }
 

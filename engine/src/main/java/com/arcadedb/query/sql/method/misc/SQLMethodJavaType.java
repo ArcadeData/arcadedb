@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLMethodJavaType extends AbstractSQLMethod {
-
   public static final String NAME = "javatype";
 
   public SQLMethodJavaType() {
@@ -35,11 +34,10 @@ public class SQLMethodJavaType extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
-    if (ioResult == null) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+    if (ioResult == null)
       return null;
-    }
+
     return ioResult.getClass().getName();
   }
 }

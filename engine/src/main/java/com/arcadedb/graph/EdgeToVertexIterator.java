@@ -18,19 +18,19 @@
  */
 package com.arcadedb.graph;
 
-import java.util.*;
+import com.arcadedb.utility.ResettableIterator;
 
 /**
  * Created by luigidellaquila on 02/07/16.
  */
-public class EdgeToVertexIterator implements Iterator<Vertex> {
-  private final Iterator<Edge>   edgeIterator;
+public class EdgeToVertexIterator implements ResettableIterator<Vertex> {
+  private final EdgeIterator     edgeIterator;
   private final Vertex.DIRECTION direction;
 
-  public EdgeToVertexIterator(Iterator<Edge> iterator, Vertex.DIRECTION direction) {
-    if (direction == Vertex.DIRECTION.BOTH) {
+  public EdgeToVertexIterator(final EdgeIterator iterator, final Vertex.DIRECTION direction) {
+    if (direction == Vertex.DIRECTION.BOTH)
       throw new IllegalArgumentException("edge to vertex iterator does not support BOTH as direction");
-    }
+
     this.edgeIterator = iterator;
     this.direction = direction;
   }
@@ -43,5 +43,20 @@ public class EdgeToVertexIterator implements Iterator<Vertex> {
   @Override
   public Vertex next() {
     return edgeIterator.next().getVertex(direction);
+  }
+
+  @Override
+  public void reset() {
+    edgeIterator.reset();
+  }
+
+  @Override
+  public long countEntries() {
+    return edgeIterator.countEntries();
+  }
+
+  @Override
+  public long getBrowsed() {
+    return edgeIterator.getBrowsed();
   }
 }

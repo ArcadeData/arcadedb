@@ -39,24 +39,20 @@ public class NotInCondition extends BooleanExpression {
   private static final Object UNSET           = new Object();
   private final        Object inputFinalValue = UNSET;
 
-  public NotInCondition(int id) {
+  public NotInCondition(final int id) {
     super(id);
   }
 
-  public NotInCondition(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    Object leftVal = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    final Object leftVal = left.execute(currentRecord, context);
     Object rightVal = null;
     if (rightStatement != null) {
-      rightVal = InCondition.executeQuery(rightStatement, ctx);
+      rightVal = InCondition.executeQuery(rightStatement, context);
     } else if (rightParam != null) {
-      rightVal = rightParam.getValue(ctx.getInputParameters());
+      rightVal = rightParam.getValue(context.getInputParameters());
     } else if (rightMathExpression != null) {
-      rightVal = rightMathExpression.execute(currentRecord, ctx);
+      rightVal = rightMathExpression.execute(currentRecord, context);
     }
     if (rightVal == null) {
       return true;
@@ -65,15 +61,15 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    Object leftVal = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftVal = left.execute(currentRecord, context);
     Object rightVal = null;
     if (rightStatement != null) {
-      rightVal = InCondition.executeQuery(rightStatement, ctx);
+      rightVal = InCondition.executeQuery(rightStatement, context);
     } else if (rightParam != null) {
-      rightVal = rightParam.getValue(ctx.getInputParameters());
+      rightVal = rightParam.getValue(context.getInputParameters());
     } else if (rightMathExpression != null) {
-      rightVal = rightMathExpression.execute(currentRecord, ctx);
+      rightVal = rightMathExpression.execute(currentRecord, context);
     }
     if (rightVal == null) {
       return true;
@@ -81,7 +77,7 @@ public class NotInCondition extends BooleanExpression {
     return !InCondition.evaluateExpression(leftVal, rightVal);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     left.toString(params, builder);
     builder.append(" NOT IN ");
@@ -98,7 +94,7 @@ public class NotInCondition extends BooleanExpression {
     }
   }
 
-  private String convertToString(Object o) {
+  private String convertToString(final Object o) {
     if (o instanceof String) {
       return "\"" + ((String) o).replaceAll("\"", "\\\"") + "\"";
     }
@@ -106,57 +102,8 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-
-    if (operator != null && !operator.supportsBasicCalculation()) {
-      return false;
-    }
-    if (left != null && !left.supportsBasicCalculation()) {
-      return false;
-    }
-    return rightMathExpression == null || rightMathExpression.supportsBasicCalculation();
-
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (operator != null && !operator.supportsBasicCalculation()) {
-      total++;
-    }
-    if (left != null && !left.supportsBasicCalculation()) {
-      total++;
-    }
-    if (rightMathExpression != null && !rightMathExpression.supportsBasicCalculation()) {
-      total++;
-    }
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
-    if (operator != null && !operator.supportsBasicCalculation()) {
-      result.add(this);
-    }
-    if (rightMathExpression != null && !rightMathExpression.supportsBasicCalculation()) {
-      result.add(rightMathExpression);
-    }
-    return result;
-  }
-
-  @Override
-  public boolean needsAliases(Set<String> aliases) {
-    if (left.needsAliases(aliases)) {
-      return true;
-    }
-
-    return rightMathExpression != null && rightMathExpression.needsAliases(aliases);
-  }
-
-  @Override
   public NotInCondition copy() {
-    NotInCondition result = new NotInCondition(-1);
+    final NotInCondition result = new NotInCondition(-1);
     result.operator = operator == null ? null : operator.copy();
     result.left = left == null ? null : left.copy();
     result.rightMathExpression = rightMathExpression == null ? null : rightMathExpression.copy();
@@ -167,66 +114,22 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
-    if (left != null) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    if (left != null)
       left.extractSubQueries(collector);
-    }
 
     if (rightMathExpression != null) {
       rightMathExpression.extractSubQueries(collector);
     } else if (rightStatement != null) {
-      Identifier alias = collector.addStatement(rightStatement);
+      final Identifier alias = collector.addStatement(rightStatement);
       rightMathExpression = new BaseExpression(alias);
       rightStatement = null;
     }
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent()) {
-      return true;
-    }
-    if (rightStatement != null && rightStatement.refersToParent()) {
-      return true;
-    }
-    return rightMathExpression != null && rightMathExpression.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final NotInCondition that = (NotInCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(operator, that.operator))
-      return false;
-    if (!Objects.equals(rightStatement, that.rightStatement))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    if (!Objects.equals(rightParam, that.rightParam))
-      return false;
-    if (!Objects.equals(rightMathExpression, that.rightMathExpression))
-      return false;
-    final boolean b = inputFinalValue != null ? inputFinalValue.equals(that.inputFinalValue) : that.inputFinalValue == null;
-    return b;
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (operator != null ? operator.hashCode() : 0);
-    result = 31 * result + (rightStatement != null ? rightStatement.hashCode() : 0);
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightParam != null ? rightParam.hashCode() : 0);
-    result = 31 * result + (rightMathExpression != null ? rightMathExpression.hashCode() : 0);
-    result = 31 * result + (inputFinalValue != null ? inputFinalValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, operator, rightStatement, right, rightParam, rightMathExpression, inputFinalValue };
   }
 
   @Override
@@ -246,17 +149,8 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
-      return false;
-    }
-
-    if (rightStatement != null && !rightStatement.executionPlanCanBeCached()) {
-      return false;
-    }
-
-    return rightMathExpression == null || rightMathExpression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, rightStatement, rightMathExpression };
   }
-
 }
 /* JavaCC - OriginalChecksum=8fb82bf72cc7d9cbdf2f9e2323ca8ee1 (do not edit this line) */

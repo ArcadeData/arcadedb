@@ -34,28 +34,24 @@ public class InstanceofCondition extends BooleanExpression {
   protected Identifier right;
   protected String     rightString;
 
-  public InstanceofCondition(int id) {
+  public InstanceofCondition(final int id) {
     super(id);
   }
 
-  public InstanceofCondition(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (currentRecord == null) {
       return false;
     }
-    Record record = currentRecord.getRecord();
+    final Record record = currentRecord.getRecord();
     if (record == null) {
       return false;
     }
     if (!(record instanceof Document)) {
       return false;
     }
-    Document doc = (Document) record;
-    String typez = doc.getTypeName();
+    final Document doc = (Document) record;
+    final String typez = doc.getTypeName();
     if (typez == null) {
       return false;
     }
@@ -68,22 +64,22 @@ public class InstanceofCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (currentRecord == null) {
       return false;
     }
     if (!currentRecord.isElement()) {
       return false;
     }
-    Record record = currentRecord.getElement().get().getRecord();
+    final Record record = currentRecord.getElement().get().getRecord();
     if (record == null) {
       return false;
     }
     if (!(record instanceof Document)) {
       return false;
     }
-    Document doc = (Document) record;
-    String typez = doc.getTypeName();
+    final Document doc = (Document) record;
+    final String typez = doc.getTypeName();
     if (typez == null) {
       return false;
     }
@@ -95,14 +91,14 @@ public class InstanceofCondition extends BooleanExpression {
     return false;
   }
 
-  private String decode(String rightString) {
+  private String decode(final String rightString) {
     if (rightString == null) {
       return null;
     }
     return BaseExpression.decode(rightString.substring(1, rightString.length() - 1));
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" instanceof ");
     if (right != null) {
@@ -113,34 +109,8 @@ public class InstanceofCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return left.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    if (!left.supportsBasicCalculation()) {
-      return 1;
-    }
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    if (!left.supportsBasicCalculation()) {
-      return Collections.singletonList(left);
-    }
-    return Collections.EMPTY_LIST;
-  }
-
-  @Override
-  public boolean needsAliases(Set<String> aliases) {
-    return left.needsAliases(aliases);
-  }
-
-  @Override
   public InstanceofCondition copy() {
-    InstanceofCondition result = new InstanceofCondition(-1);
+    final InstanceofCondition result = new InstanceofCondition(-1);
     result.left = left.copy();
     result.right = right == null ? null : right.copy();
     result.rightString = rightString;
@@ -148,37 +118,13 @@ public class InstanceofCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     left.extractSubQueries(collector);
   }
 
   @Override
-  public boolean refersToParent() {
-    return left != null && left.refersToParent();
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final  InstanceofCondition that = (InstanceofCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    return Objects.equals(rightString, that.rightString);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightString != null ? rightString.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, right, rightString };
   }
 
   @Override
@@ -187,9 +133,8 @@ public class InstanceofCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return left.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left };
   }
-
 }
 /* JavaCC - OriginalChecksum=0b5eb529744f307228faa6b26f0592dc (do not edit this line) */

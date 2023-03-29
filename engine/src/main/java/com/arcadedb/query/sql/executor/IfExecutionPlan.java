@@ -29,46 +29,52 @@ import java.util.*;
  */
 public class IfExecutionPlan implements InternalExecutionPlan {
 
-  private final CommandContext ctx;
+  private final CommandContext context;
 
   protected IfStep step;
 
-  public IfExecutionPlan(CommandContext ctx) {
-    this.ctx = ctx;
+  public IfExecutionPlan(final CommandContext context) {
+    this.context = context;
   }
 
-  @Override public void reset(CommandContext ctx) {
+  @Override
+  public void reset(final CommandContext context) {
     //TODO
     throw new UnsupportedOperationException();
   }
 
-  @Override public void close() {
+  @Override
+  public void close() {
     step.close();
   }
 
-  @Override public ResultSet fetchNext(int n) {
-    return step.syncPull(ctx, n);
+  @Override
+  public ResultSet fetchNext(final int n) {
+    return step.syncPull(context, n);
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
     return step.prettyPrint(depth, indent);
   }
 
-  public void chain(IfStep step) {
+  public void chain(final IfStep step) {
     this.step = step;
   }
 
-  @Override public List<ExecutionStep> getSteps() {
+  @Override
+  public List<ExecutionStep> getSteps() {
     //TODO do a copy of the steps
     return Collections.singletonList(step);
   }
 
-  public void setSteps(List<ExecutionStepInternal> steps) {
+  public void setSteps(final List<ExecutionStepInternal> steps) {
     this.step = (IfStep) steps.get(0);
   }
 
-  @Override public Result toResult() {
-    ResultInternal result = new ResultInternal();
+  @Override
+  public Result toResult() {
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", "IfExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("cost", getCost());
@@ -77,26 +83,17 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     return result;
   }
 
-  @Override public long getCost() {
-    return 0L;
-  }
-
   @Override
   public boolean canBeCached() {
     return false;
   }
 
-  public boolean containsReturn() {
-    return step.getPositivePlan().containsReturn() || step.getNegativePlan() != null && step.getPositivePlan().containsReturn();
-  }
-
   public ExecutionStepInternal executeUntilReturn() {
-    step.init(ctx);
-    if (step.condition.evaluate(new ResultInternal(), ctx)) {
-      step.initPositivePlan(ctx);
+    if (step.evaluate(context)) {
+      step.initPositivePlan(context);
       return step.positivePlan.executeUntilReturn();
     } else {
-      step.initNegativePlan(ctx);
+      step.initNegativePlan(context);
       if (step.negativePlan != null) {
         return step.negativePlan.executeUntilReturn();
       }

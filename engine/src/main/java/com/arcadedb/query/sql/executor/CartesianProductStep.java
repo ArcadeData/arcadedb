@@ -39,15 +39,14 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   ResultInternal nextRecord;
 
-  private long cost = 0;
-
-  public CartesianProductStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CartesianProductStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    pullPrevious(context, nRecords);
+
     init();
     //    return new OInternalResultSet();
     return new ResultSet() {
@@ -64,27 +63,12 @@ public class CartesianProductStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (currentCount >= nRecords || nextRecord == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
-        ResultInternal result = nextRecord;
+        final ResultInternal result = nextRecord;
         fetchNextRecord();
         currentCount++;
         return result;
-      }
-
-      @Override
-      public void close() {
-        // EMPTY METHOD
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
       }
     };
     //    throw new UnsupportedOperationException("cartesian product is not yet implemented in MATCH statement");
@@ -92,14 +76,13 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   private void init() {
-    if (subPlans.isEmpty()) {
+    if (subPlans.isEmpty())
       return;
-    }
-    if (inited) {
-      return;
-    }
 
-    for (InternalExecutionPlan plan : subPlans) {
+    if (inited)
+      return;
+
+    for (final InternalExecutionPlan plan : subPlans) {
       resultSets.add(new LocalResultSet(plan));
       this.preFetches.add(new InternalResultSet());
     }
@@ -108,12 +91,12 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   private void fetchFirstRecord() {
-    for (ResultSet rs : resultSets) {
+    for (final ResultSet rs : resultSets) {
       if (!rs.hasNext()) {
         nextRecord = null;
         return;
       }
-      Result item = rs.next();
+      final Result item = rs.next();
       currentTuple.add(item);
       completedPrefetch.add(false);
     }
@@ -124,7 +107,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
     fetchNextRecord(resultSets.size() - 1);
   }
 
-  private void fetchNextRecord(int level) {
+  private void fetchNextRecord(final int level) {
     ResultSet currentRs = resultSets.get(level);
     if (!currentRs.hasNext()) {
       if (level <= 0) {
@@ -144,7 +127,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   private void buildNextRecord() {
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (currentTuple == null) {
         nextRecord = null;
@@ -153,8 +136,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
       nextRecord = new ResultInternal();
 
       for (int i = 0; i < this.currentTuple.size(); i++) {
-        Result res = this.currentTuple.get(i);
-        for (String s : res.getPropertyNames()) {
+        final Result res = this.currentTuple.get(i);
+        for (final String s : res.getPropertyNames()) {
           nextRecord.setProperty(s, res.getProperty(s));
         }
         if (!completedPrefetch.get(i)) {
@@ -171,26 +154,26 @@ public class CartesianProductStep extends AbstractExecutionStep {
     }
   }
 
-  public void addSubPlan(InternalExecutionPlan subPlan) {
+  public void addSubPlan(final InternalExecutionPlan subPlan) {
     this.subPlans.add(subPlan);
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = "";
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
 
-    int[] blockSizes = new int[subPlans.size()];
+    final int[] blockSizes = new int[subPlans.size()];
 
     for (int i = 0; i < subPlans.size(); i++) {
-      InternalExecutionPlan currentPlan = subPlans.get(subPlans.size() - 1 - i);
-      String partial = currentPlan.prettyPrint(0, indent);
+      final InternalExecutionPlan currentPlan = subPlans.get(subPlans.size() - 1 - i);
+      final String partial = currentPlan.prettyPrint(0, indent);
 
-      String[] partials = partial.split("\n");
+      final String[] partials = partial.split("\n");
       blockSizes[subPlans.size() - 1 - i] = partials.length + 2;
       result = "+-------------------------\n" + result;
       for (int j = 0; j < partials.length; j++) {
-        String p = partials[partials.length - 1 - j];
+        final String p = partials[partials.length - 1 - j];
         if (result.length() > 0) {
           result = appendPipe(p) + "\n" + result;
         } else {
@@ -207,12 +190,12 @@ public class CartesianProductStep extends AbstractExecutionStep {
     return result;
   }
 
-  private String addArrows(String input, int[] blockSizes) {
+  private String addArrows(final String input, final int[] blockSizes) {
     String result = "";
-    String[] rows = input.split("\n");
+    final String[] rows = input.split("\n");
     int rowNum = 0;
     for (int block = 0; block < blockSizes.length; block++) {
-      int blockSize = blockSizes[block];
+      final int blockSize = blockSizes[block];
       for (int subRow = 0; subRow < blockSize; subRow++) {
         for (int col = 0; col < blockSizes.length * 3; col++) {
           if (isHorizontalRow(col, subRow, block, blockSize)) {
@@ -233,21 +216,21 @@ public class CartesianProductStep extends AbstractExecutionStep {
     return result;
   }
 
-  private boolean isHorizontalRow(int col, int subRow, int block, int blockSize) {
+  private boolean isHorizontalRow(final int col, final int subRow, final int block, final int blockSize) {
     if (col < block * 3 + 2) {
       return false;
     }
     return subRow == blockSize / 2;
   }
 
-  private boolean isPlus(int col, int subRow, int block, int blockSize) {
+  private boolean isPlus(final int col, final int subRow, final int block, final int blockSize) {
     if (col == block * 3 + 1) {
       return subRow == blockSize / 2;
     }
     return false;
   }
 
-  private boolean isVerticalRow(int col, int subRow, int block, int blockSize) {
+  private boolean isVerticalRow(final int col, final int subRow, final int block, final int blockSize) {
     if (col == block * 3 + 1) {
       return subRow > blockSize / 2;
     } else
@@ -255,8 +238,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   }
 
-  private String head(int depth, int indent) {
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+  private String head(final int depth, final int indent) {
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
     String result = ind + "+ CARTESIAN PRODUCT";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -264,7 +247,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
     return result;
   }
 
-  private String foot(int[] blockSizes) {
+  private String foot(final int[] blockSizes) {
     String result = "";
     for (int i = 0; i < blockSizes.length; i++) {
       result += " V ";//TODO
@@ -272,12 +255,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
     return result;
   }
 
-  private String appendPipe(String p) {
+  private String appendPipe(final String p) {
     return "| " + p;
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
   }
 }

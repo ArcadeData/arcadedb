@@ -29,48 +29,42 @@ import java.util.*;
 
 public class LetStatement extends SimpleExecStatement {
   protected Identifier name;
-
   protected Statement  statement;
   protected Expression expression;
 
-  public LetStatement(int id) {
+  public LetStatement(final int id) {
     super(id);
   }
 
-  public LetStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     Object result;
     if (expression != null) {
-      result = expression.execute((Result) null, ctx);
+      result = expression.execute((Result) null, context);
     } else {
-      Map<String, Object> params = ctx.getInputParameters();
-      result = statement.execute(ctx.getDatabase(), params, ctx);
+      final Map<String, Object> params = context.getInputParameters();
+      result = statement.execute(context.getDatabase(), params, context);
     }
     if (result instanceof ResultSet) {
-      InternalResultSet rs = new InternalResultSet();
+      final InternalResultSet rs = new InternalResultSet();
       ((ResultSet) result).stream().forEach(x -> rs.add(x));
       rs.setPlan(((ResultSet) result).getExecutionPlan().orElse(null));
       ((ResultSet) result).close();
       result = rs;
     }
 
-    if (ctx != null) {
-      if (ctx.getParent() != null) {
-
-        ctx.getParent().setVariable(name.getStringValue(), result);
+    if (context != null) {
+      if (context.getParent() != null) {
+        context.getParent().setVariable(name.getStringValue(), result);
       } else {
-        ctx.setVariable(name.getStringValue(), result);
+        context.setVariable(name.getStringValue(), result);
       }
     }
     return new InternalResultSet();
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("LET ");
     name.toString(params, builder);
     builder.append(" = ");
@@ -83,7 +77,7 @@ public class LetStatement extends SimpleExecStatement {
 
   @Override
   public LetStatement copy() {
-    LetStatement result = new LetStatement(-1);
+    final LetStatement result = new LetStatement(-1);
     result.name = name == null ? null : name.copy();
     result.statement = statement == null ? null : statement.copy();
     result.expression = expression == null ? null : expression.copy();
@@ -91,7 +85,7 @@ public class LetStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

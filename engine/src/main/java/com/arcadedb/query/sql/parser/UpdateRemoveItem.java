@@ -27,19 +27,14 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class UpdateRemoveItem extends SimpleNode {
-
   Expression left;
   Expression right;
 
-  public UpdateRemoveItem(int id) {
+  public UpdateRemoveItem(final int id) {
     super(id);
   }
 
-  public UpdateRemoveItem(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     if (right != null) {
       builder.append(" = ");
@@ -48,20 +43,20 @@ public class UpdateRemoveItem extends SimpleNode {
   }
 
   public UpdateRemoveItem copy() {
-    UpdateRemoveItem result = new UpdateRemoveItem(-1);
+    final UpdateRemoveItem result = new UpdateRemoveItem(-1);
     result.left = left == null ? null : left.copy();
     result.right = right == null ? null : right.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    UpdateRemoveItem that = (UpdateRemoveItem) o;
+    final UpdateRemoveItem that = (UpdateRemoveItem) o;
 
     if (!Objects.equals(left, that.left))
       return false;
@@ -75,15 +70,15 @@ public class UpdateRemoveItem extends SimpleNode {
     return result;
   }
 
-  public void applyUpdate(ResultInternal result, CommandContext ctx) {
+  public void applyUpdate(final ResultInternal result, final CommandContext context) {
     if (right != null) {
-      Object leftVal = left.execute(result, ctx);
-      Object rightVal = right.execute(result, ctx);
+      final Object leftVal = left.execute(result, context);
+      final Object rightVal = right.execute(result, context);
       if (MultiValue.isMultiValue(leftVal)) {
         MultiValue.remove(leftVal, rightVal, false);
       }
     } else {
-      left.applyRemove(result, ctx);
+      left.applyRemove(result, context);
     }
   }
 }

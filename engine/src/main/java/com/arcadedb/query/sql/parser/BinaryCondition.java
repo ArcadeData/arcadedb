@@ -20,13 +20,10 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -36,77 +33,28 @@ public class BinaryCondition extends BooleanExpression {
   protected BinaryCompareOperator operator;
   protected Expression            right;
 
-  public BinaryCondition(int id) {
+  public BinaryCondition(final int id) {
     super(id);
   }
 
-  public BinaryCondition(SqlParser p, int id) {
-    super(p, id);
+  @Override
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    return operator.execute(context.getDatabase(), left.execute(currentRecord, context), right.execute(currentRecord, context));
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    return operator.execute(ctx.getDatabase(), left.execute(currentRecord, ctx), right.execute(currentRecord, ctx));
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    final Object leftVal = left.execute(currentRecord, context);
+    final Object rightVal = right.execute(currentRecord, context);
+    return operator.execute(context.getDatabase(), leftVal, rightVal);
   }
 
-  @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    final Object leftVal = left.execute(currentRecord, ctx);
-    final Object rightVal = right.execute(currentRecord, ctx);
-    return operator.execute(ctx.getDatabase(), leftVal, rightVal);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" ");
     builder.append(operator.toString());
     builder.append(" ");
     right.toString(params, builder);
-  }
-
-  protected boolean supportsBasicCalculation() {
-    if (!operator.supportsBasicCalculation()) {
-      return false;
-    }
-    return left.supportsBasicCalculation() && right.supportsBasicCalculation();
-
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (!operator.supportsBasicCalculation()) {
-      total++;
-    }
-    if (!left.supportsBasicCalculation()) {
-      total++;
-    }
-    if (!right.supportsBasicCalculation()) {
-      total++;
-    }
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<>();
-    if (!operator.supportsBasicCalculation()) {
-      result.add(this);
-    }
-    if (!left.supportsBasicCalculation()) {
-      result.add(left);
-    }
-    if (!right.supportsBasicCalculation()) {
-      result.add(right);
-    }
-    return result;
-  }
-
-  public BinaryCondition isIndexedFunctionCondition(final DocumentType iSchemaClass, final Database database) {
-    if (left.isIndexedFunctionCal()) {
-      return this;
-    }
-    return null;
   }
 
   public long estimateIndexed(final FromClause target, final CommandContext context) {
@@ -156,19 +104,11 @@ public class BinaryCondition extends BooleanExpression {
     return left.executeIndexedFunctionAfterIndexSearch(target, context, operator, right.execute((Result) null, context));
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
-    if (left.isIndexedFunctionCal()) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
+    if (left.isIndexedFunctionCal(context)) {
       return Collections.singletonList(this);
     }
     return null;
-  }
-
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    if (left.needsAliases(aliases)) {
-      return true;
-    }
-    return right.needsAliases(aliases);
   }
 
   @Override
@@ -187,17 +127,12 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return left.refersToParent() || right.refersToParent();
-  }
-
-  @Override
   public Optional<UpdateItem> transformToUpdateItem() {
     if (!checkCanTransformToUpdate()) {
       return Optional.empty();
     }
     if (operator instanceof EqualsCompareOperator) {
-      UpdateItem result = new UpdateItem(-1);
+      final UpdateItem result = new UpdateItem(-1);
       result.operator = UpdateItem.OPERATOR_EQ;
       final BaseExpression baseExp = ((BaseExpression) left.mathExpression);
       result.left = baseExp.identifier.suffix.identifier.copy();
@@ -228,40 +163,21 @@ public class BinaryCondition extends BooleanExpression {
     return right;
   }
 
-  public void setLeft(Expression left) {
+  public void setLeft(final Expression left) {
     this.left = left;
   }
 
-  public void setOperator(BinaryCompareOperator operator) {
+  public void setOperator(final BinaryCompareOperator operator) {
     this.operator = operator;
   }
 
-  public void setRight(Expression right) {
+  public void setRight(final Expression right) {
     this.right = right;
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BinaryCondition that = (BinaryCondition) o;
-
-    if (Objects.equals(left, that.left))
-      return false;
-    if (Objects.equals(operator, that.operator))
-      return false;
-    return Objects.equals(right, that.right);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (operator != null ? operator.hashCode() : 0);
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, operator, right };
   }
 
   @Override
@@ -275,44 +191,59 @@ public class BinaryCondition extends BooleanExpression {
       return leftX;
     }
 
-    final List<String> result = new ArrayList<>();
+    final List<String> result = new ArrayList<>(leftX.size() + rightX.size());
     result.addAll(leftX);
     result.addAll(rightX);
     return result;
   }
 
-  private Expression identifierToStringExpr(Identifier identifier) {
-    final BaseExpression bExp = new BaseExpression(identifier.getStringValue());
-
-    final Expression result = new Expression(-1);
-    result.mathExpression = bExp;
-    return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("left", left.serialize());
-    result.setProperty("operator", operator.getClass().getName());
-    result.setProperty("right", right.serialize());
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    left = new Expression(-1);
-    left.deserialize(fromResult.getProperty("left"));
-    try {
-      operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).getConstructor().newInstance();
-    } catch (Exception e) {
-      throw new CommandExecutionException(e);
-    }
-    right = new Expression(-1);
-    right.deserialize(fromResult.getProperty("right"));
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, right };
   }
 
   @Override
-  public boolean isCacheable() {
-    return left.isCacheable() && right.isCacheable();
+  public boolean createRangeWith(final BooleanExpression match) {
+    if (!(match instanceof BinaryCondition))
+      return false;
+
+    final BinaryCondition metchingCondition = (BinaryCondition) match;
+    if (!metchingCondition.getLeft().equals(this.getLeft()))
+      return false;
+
+    final BinaryCompareOperator leftOperator = metchingCondition.getOperator();
+    final BinaryCompareOperator rightOperator = this.getOperator();
+    if (leftOperator instanceof GeOperator || leftOperator instanceof GtOperator)
+      return rightOperator instanceof LeOperator || rightOperator instanceof LtOperator;
+
+    if (leftOperator instanceof LeOperator || leftOperator instanceof LtOperator)
+      return rightOperator instanceof GeOperator || rightOperator instanceof GtOperator;
+
+    return false;
   }
 
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    BinaryCompareOperator operator = getOperator();
+    if ((operator instanceof EqualsCompareOperator) || (operator instanceof GtOperator) || (operator instanceof GeOperator)
+        || (operator instanceof ContainsKeyOperator) || (operator instanceof ContainsValueOperator)) {
+      return getRight();
+    } else if (additional != null) {
+      return additional.getRight();
+    }
+    return null;
+  }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    BinaryCompareOperator operator = this.getOperator();
+    if ((operator instanceof EqualsCompareOperator) || (operator instanceof LtOperator) || (operator instanceof LeOperator)
+        || (operator instanceof ContainsKeyOperator) || (operator instanceof ContainsValueOperator)) {
+      return getRight();
+    } else if (additional != null) {
+      return additional.getRight();
+    }
+    return null;
+  }
 }
 /* JavaCC - OriginalChecksum=99ed1dd2812eb730de8e1931b1764da5 (do not edit this line) */

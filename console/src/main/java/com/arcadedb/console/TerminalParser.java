@@ -31,12 +31,12 @@ public class TerminalParser extends DefaultParser {
   }
 
   @Override
-  public ParsedLine parse(String line, int cursor, ParseContext context) {
+  public ParsedLine parse(final String line, final int cursor, final ParseContext context) {
     if (line == null)
       return null;
 
-    List<String> words = new LinkedList();
-    StringBuilder current = new StringBuilder();
+    final List<String> words = new LinkedList();
+    final StringBuilder current = new StringBuilder();
     int wordCursor = -1;
     int wordIndex = -1;
     int quoteStart = -1;
@@ -93,7 +93,7 @@ public class TerminalParser extends DefaultParser {
       rawWordLength = rawWordCursor;
     }
 
-    String openingQuote = quoteStart >= 0 ? line.substring(quoteStart, quoteStart + 1) : null;
+    final String openingQuote = quoteStart >= 0 ? line.substring(quoteStart, quoteStart + 1) : null;
     return new DefaultParser.ArgumentList(line, words, wordIndex, wordCursor, cursor, openingQuote, rawWordCursor, rawWordLength);
   }
 }

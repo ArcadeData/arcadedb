@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Unwind;
 
@@ -32,25 +31,22 @@ import java.util.stream.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class UnwindStep extends AbstractExecutionStep {
-
   private final Unwind       unwind;
   private final List<String> unwindFields;
-
   ResultSet        lastResult      = null;
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
-  public UnwindStep(Unwind unwind, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public UnwindStep(final Unwind unwind, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.unwind = unwind;
     unwindFields = unwind.getItems().stream().map(x -> x.getStringValue()).collect(Collectors.toList());
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (prev == null || prev.isEmpty()) {
-      throw new CommandExecutionException("Cannot expand without a target");
-    }
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    checkForPrevious("Cannot expand without a target");
+
     return new ResultSet() {
       long localCount = 0;
 
@@ -60,7 +56,7 @@ public class UnwindStep extends AbstractExecutionStep {
           return false;
         }
         if (nextElement == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         return nextElement != null;
       }
@@ -68,40 +64,26 @@ public class UnwindStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (localCount >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextElement == null) {
-          fetchNext(ctx, nRecords);
+          fetchNext(context, nRecords);
         }
         if (nextElement == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
 
-        Result result = nextElement;
+        final Result result = nextElement;
         localCount++;
         nextElement = null;
-        fetchNext(ctx, nRecords);
+        fetchNext(context, nRecords);
         return result;
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private void fetchNext(CommandContext ctx, int n) {
+  private void fetchNext(final CommandContext context, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
         nextElement = nextSubsequence.next();
@@ -110,15 +92,15 @@ public class UnwindStep extends AbstractExecutionStep {
 
       if (nextSubsequence == null || !nextSubsequence.hasNext()) {
         if (lastResult == null || !lastResult.hasNext()) {
-          lastResult = getPrev().get().syncPull(ctx, n);
+          lastResult = getPrev().syncPull(context, n);
         }
         if (!lastResult.hasNext()) {
           return;
         }
       }
 
-      Result nextAggregateItem = lastResult.next();
-      nextSubsequence = unwind(nextAggregateItem, unwindFields, ctx).iterator();
+      final Result nextAggregateItem = lastResult.next();
+      nextSubsequence = unwind(nextAggregateItem, unwindFields, context).iterator();
 
     } while (true);
 
@@ -130,10 +112,10 @@ public class UnwindStep extends AbstractExecutionStep {
     if (unwindFields.isEmpty()) {
       result.add(doc);
     } else {
-      String firstField = unwindFields.get(0);
+      final String firstField = unwindFields.get(0);
       final List<String> nextFields = unwindFields.subList(1, unwindFields.size());
 
-      Object fieldValue = doc.getProperty(firstField);
+      final Object fieldValue = doc.getProperty(firstField);
       if (fieldValue == null || fieldValue instanceof Record) {
         result.addAll(unwind(doc, nextFields, iContext));
         return result;
@@ -144,22 +126,22 @@ public class UnwindStep extends AbstractExecutionStep {
         return result;
       }
 
-      Iterator iterator;
+      final Iterator iterator;
       if (fieldValue.getClass().isArray()) {
         iterator = MultiValue.getMultiValueIterator(fieldValue);
       } else {
         iterator = ((Iterable) fieldValue).iterator();
       }
       if (!iterator.hasNext()) {
-        ResultInternal unwindedDoc = new ResultInternal();
+        final ResultInternal unwindedDoc = new ResultInternal();
         copy(doc, unwindedDoc);
 
         unwindedDoc.setProperty(firstField, null);
         result.addAll(unwind(unwindedDoc, nextFields, iContext));
       } else {
         do {
-          Object o = iterator.next();
-          ResultInternal unwindedDoc = new ResultInternal();
+          final Object o = iterator.next();
+          final ResultInternal unwindedDoc = new ResultInternal();
           copy(doc, unwindedDoc);
           unwindedDoc.setProperty(firstField, o);
           result.addAll(unwind(unwindedDoc, nextFields, iContext));
@@ -170,15 +152,15 @@ public class UnwindStep extends AbstractExecutionStep {
     return result;
   }
 
-  private void copy(Result from, ResultInternal to) {
-    for (String prop : from.getPropertyNames()) {
+  private void copy(final Result from, final ResultInternal to) {
+    for (final String prop : from.getPropertyNames()) {
       to.setProperty(prop, from.getProperty(prop));
     }
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ " + unwind;
   }
 }

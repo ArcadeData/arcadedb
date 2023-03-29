@@ -23,16 +23,12 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 
 public class NearOperator extends SimpleNode implements BinaryCompareOperator {
-  public NearOperator(int id) {
+  public NearOperator(final int id) {
     super(id);
   }
 
-  public NearOperator(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean execute(DatabaseInternal database, Object left, Object right) {
+  public boolean execute(final DatabaseInternal database, final Object left, final Object right) {
     throw new UnsupportedOperationException(this + " operator cannot be evaluated in this context");
   }
 
@@ -42,17 +38,12 @@ public class NearOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return false;
-  }
-
-  @Override
   public NearOperator copy() {
     return this;
   }
 
   @Override
-  public boolean equals( final Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

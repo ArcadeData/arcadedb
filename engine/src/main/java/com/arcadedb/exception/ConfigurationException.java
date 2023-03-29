@@ -23,7 +23,7 @@ public class ConfigurationException extends ArcadeDBException {
     super(s);
   }
 
-  public ConfigurationException(String s, Exception e) {
+  public ConfigurationException(final String s, final Exception e) {
     super(s, e);
   }
 }

@@ -28,33 +28,31 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class CountStep extends AbstractExecutionStep {
 
-  private long cost = 0;
-
   boolean executed = false;
 
   /**
-   * @param ctx              the query context
+   * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public CountStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (executed) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    if (executed)
       return new InternalResultSet();
-    }
-    ResultInternal resultRecord = new ResultInternal();
+
+    final ResultInternal resultRecord = new ResultInternal();
     executed = true;
     long count = 0;
     while (true) {
-      ResultSet prevResult = getPrev().get().syncPull(ctx, nRecords);
+      final ResultSet prevResult = getPrev().syncPull(context, nRecords);
 
       if (!prevResult.hasNext()) {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          InternalResultSet result = new InternalResultSet();
+          final InternalResultSet result = new InternalResultSet();
           resultRecord.setProperty("count", count);
           result.add(resultRecord);
           return result;
@@ -72,9 +70,9 @@ public class CountStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COUNT");
     if (profilingEnabled) {
@@ -84,12 +82,7 @@ public class CountStep extends AbstractExecutionStep {
   }
 
   @Override
-  public long getCost() {
-    return cost;
-  }
-
-  @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    return new CountStep(ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext context) {
+    return new CountStep(context, profilingEnabled);
   }
 }

@@ -19,24 +19,21 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.HttpServer;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.MongoServer;
 import de.bwaldvogel.mongo.backend.AbstractMongoBackend;
 import de.bwaldvogel.mongo.exception.MongoServerException;
-import io.undertow.server.handlers.PathHandler;
 
 public class MongoDBProtocolPlugin implements ServerPlugin {
-  private MongoServer          mongoDBServer;
-  private ArcadeDBServer       server;
-  private ContextConfiguration configuration;
+  private MongoServer    mongoDBServer;
+  private ArcadeDBServer server;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
-    this.configuration = configuration;
   }
 
   @Override
@@ -46,20 +43,12 @@ public class MongoDBProtocolPlugin implements ServerPlugin {
       protected MongoDatabase openOrCreateDatabase(final String databaseName) throws MongoServerException {
         return new MongoDBDatabaseWrapper(server.getDatabase(databaseName), this);
       }
-
-      @Override
-      public void close() {
-      }
     });
-    mongoDBServer.bind("localhost", 27017);
+    mongoDBServer.bind(GlobalConfiguration.MONGO_HOST.getValueAsString(), GlobalConfiguration.MONGO_PORT.getValueAsInteger());
   }
 
   @Override
   public void stopService() {
     mongoDBServer.shutdown();
-  }
-
-  @Override
-  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 }

@@ -67,7 +67,7 @@ public class CommandForwardRequest extends HAAbstractCommand {
       stream.putInt(0);
     else {
       stream.putInt(namedParameters.size());
-      for (Map.Entry<String, Object> entry : namedParameters.entrySet()) {
+      for (final Map.Entry<String, Object> entry : namedParameters.entrySet()) {
         stream.putString(entry.getKey());
 
         final byte type = Type.getTypeByValue(entry.getValue()).getBinaryType();
@@ -80,7 +80,7 @@ public class CommandForwardRequest extends HAAbstractCommand {
       stream.putInt(0);
     else {
       stream.putInt(ordinalParameters.length);
-      for (Object entry : ordinalParameters) {
+      for (final Object entry : ordinalParameters) {
         final byte type = Type.getTypeByValue(entry).getBinaryType();
         stream.putByte(type);
         database.getSerializer().serializeValue(database, stream, type, entry);
@@ -89,7 +89,7 @@ public class CommandForwardRequest extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     databaseName = stream.getString();
     language = stream.getString();
     command = stream.getString();

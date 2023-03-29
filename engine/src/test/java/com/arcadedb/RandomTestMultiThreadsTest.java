@@ -42,7 +42,7 @@ import java.util.logging.*;
 public class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
   private static final int STARTING_ACCOUNT = 10000;
-  private static final int PARALLEL         = 4;
+  private static final int BUCKETS          = 4;
   private static final int WORKERS          = 4 * 8;
 
   private final AtomicLong                     total                   = new AtomicLong();
@@ -59,7 +59,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
     createSchema();
     populateDatabase();
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     try {
 
@@ -187,7 +187,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   Thread.sleep(ms);
                 }
 
-              } catch (Exception e) {
+              } catch (final Exception e) {
                 if (e instanceof ConcurrentModificationException) {
                   mvccErrors.incrementAndGet();
                   total.decrementAndGet();
@@ -204,7 +204,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
             try {
               database.commit();
-            } catch (Exception e) {
+            } catch (final Exception e) {
               mvccErrors.incrementAndGet();
             }
 
@@ -220,7 +220,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       for (int i = 0; i < WORKERS; ++i) {
         try {
           threads[i].join();
-        } catch (InterruptedException e) {
+        } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           e.printStackTrace();
         }
@@ -232,7 +232,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       //System.out.println(
       //     "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
 
-      for (Pair<Integer, Exception> entry : otherErrors) {
+      for (final Pair<Integer, Exception> entry : otherErrors) {
         //System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());
       }
     }
@@ -280,7 +280,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
           updated++;
 
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           // OK
         }
         LogManager.instance().log(this, Level.FINE, "Updated record %s (threadId=%d)",  next.getIdentity(), threadId);
@@ -310,7 +310,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
         try {
           database.deleteRecord(next);
           deleted++;
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           // OK
         }
         //LogManager.instance().log(this, Level.FINE, "Deleted record %s (threadId=%d)", next.getIdentity(), threadId);
@@ -330,7 +330,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
   private void populateDatabase() {
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     database.begin();
 
@@ -355,7 +355,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
     if (!database.getSchema().existsType("Account")) {
       database.begin();
 
-      final VertexType accountType = database.getSchema().createVertexType("Account", PARALLEL);
+      final VertexType accountType = database.getSchema().createVertexType("Account", BUCKETS);
       accountType.createProperty("id", Long.class);
       accountType.createProperty("name", String.class);
       accountType.createProperty("surname", String.class);
@@ -363,7 +363,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Account", new String[] { "id" }, 500000);
 
-      final VertexType txType = database.getSchema().createVertexType("Transaction", PARALLEL);
+      final VertexType txType = database.getSchema().createVertexType("Transaction", BUCKETS);
       txType.createProperty("uuid", Long.class);
       txType.createProperty("date", Date.class);
       txType.createProperty("amount", BigDecimal.class);
@@ -372,7 +372,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Transaction", new String[] { "uuid" }, 500000);
 
-      final EdgeType edgeType = database.getSchema().createEdgeType("PurchasedBy", PARALLEL);
+      final EdgeType edgeType = database.getSchema().createEdgeType("PurchasedBy", BUCKETS);
       edgeType.createProperty("date", Date.class);
 
       database.commit();

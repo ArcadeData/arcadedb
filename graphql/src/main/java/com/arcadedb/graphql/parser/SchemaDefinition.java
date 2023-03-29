@@ -27,19 +27,9 @@ public class SchemaDefinition extends SimpleNode {
   protected Directives directives;
   List<OperationTypeDefinition> operationTypeDefinitions = new ArrayList<>();
 
-  public SchemaDefinition(int id) {
+  public SchemaDefinition(final int id) {
     super(id);
   }
 
-  public SchemaDefinition(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=638a433ba28dc8ac47ea4183e6ab21d5 (do not edit this line) */

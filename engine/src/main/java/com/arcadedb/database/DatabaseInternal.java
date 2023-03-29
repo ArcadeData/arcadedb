@@ -44,8 +44,6 @@ public interface DatabaseInternal extends Database {
 
   MutableEmbeddedDocument newEmbeddedDocument(EmbeddedModifier modifier, String typeName);
 
-  Map<String, Object> getStats();
-
   DatabaseInternal getEmbedded();
 
   DatabaseContext.DatabaseContextTL getContext();

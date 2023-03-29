@@ -26,38 +26,43 @@ import com.arcadedb.query.sql.parser.Limit;
  */
 public class LimitExecutionStep extends AbstractExecutionStep {
   private final Limit limit;
+  private       int   loaded = 0;
 
-  int loaded = 0;
-
-  public LimitExecutionStep(Limit limit, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public LimitExecutionStep(final Limit limit, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
     this.limit = limit;
   }
 
-  @Override public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    int limitVal = limit.getValue(ctx);
-    if (limitVal == -1) {
-      return getPrev().get().syncPull(ctx, nRecords);
-    }
-    if (limitVal <= loaded) {
+  @Override
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final int limitVal = limit.getValue(context);
+    if (limitVal == -1)
+      return getPrev().syncPull(context, nRecords);
+
+    if (limitVal <= loaded)
       return new InternalResultSet();
-    }
-    int nextBlockSize = Math.min(nRecords, limitVal - loaded);
-    ResultSet result = prev.get().syncPull(ctx, nextBlockSize);
+
+    checkForPrevious();
+
+    final int nextBlockSize = Math.min(nRecords, limitVal - loaded);
+    final ResultSet result = prev.syncPull(context, nextBlockSize);
     loaded += nextBlockSize;
     return result;
   }
 
-  @Override public void sendTimeout() {
-
+  @Override
+  public void sendTimeout() {
+    // IGNORE THE TIMEOUT
   }
 
-  @Override public void close() {
-    prev.ifPresent(x -> x.close());
+  @Override
+  public void close() {
+    if (prev != null)
+      prev.close();
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ LIMIT (" + limit.toString() + ")";
   }
-
 }

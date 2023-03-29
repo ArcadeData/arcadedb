@@ -22,19 +22,19 @@ public class ServerException extends RuntimeException {
   public ServerException() {
   }
 
-  public ServerException(String message) {
+  public ServerException(final String message) {
     super(message);
   }
 
-  public ServerException(String message, Throwable cause) {
+  public ServerException(final String message, final Throwable cause) {
     super(message, cause);
   }
 
-  public ServerException(Throwable cause) {
+  public ServerException(final Throwable cause) {
     super(cause);
   }
 
-  public ServerException(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
+  public ServerException(final String message, final Throwable cause, final boolean enableSuppression, final boolean writableStackTrace) {
     super(message, cause, enableSuppression, writableStackTrace);
   }
 }

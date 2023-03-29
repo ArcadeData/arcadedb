@@ -30,24 +30,22 @@ import java.net.*;
 import java.security.*;
 
 public class SocketFactory {
-
-  private javax.net.SocketFactory socketFactory;
-  private boolean                 useSSL  = false;
-  private SSLContext              context = null;
-
-  private final String keyStorePath;
-  private final String keyStorePassword;
-  private final String keyStoreType   = KeyStore.getDefaultType();
-  private final String trustStorePath;
-  private final String trustStorePassword;
-  private final String trustStoreType = KeyStore.getDefaultType();
+  private       javax.net.SocketFactory socketFactory;
+  private       boolean                 useSSL         = false;
+  private       SSLContext              context        = null;
+  private final String                  keyStorePath;
+  private final String                  keyStorePassword;
+  private final String                  keyStoreType   = KeyStore.getDefaultType();
+  private final String                  trustStorePath;
+  private final String                  trustStorePassword;
+  private final String                  trustStoreType = KeyStore.getDefaultType();
 
   private SocketFactory(final ContextConfiguration iConfig) {
     useSSL = iConfig.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-    keyStorePath = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
-    keyStorePassword = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
-    trustStorePath = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
-    trustStorePassword = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
+    keyStorePath = iConfig.getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
+    keyStorePassword = iConfig.getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
+    trustStorePath = iConfig.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
+    trustStorePassword = iConfig.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
   }
 
   public static SocketFactory instance(final ContextConfiguration iConfig) {
@@ -104,35 +102,34 @@ public class SocketFactory {
       } else {
         return SSLContext.getDefault();
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ConfigurationException("Failed to create ssl context", e);
     }
 
   }
 
-  protected InputStream getAsStream(String path) throws IOException {
-
+  public static InputStream getAsStream(String path) throws IOException {
     InputStream input;
 
     try {
-      URL url = new URL(path);
+      final URL url = new URL(path);
       input = url.openStream();
-    } catch (MalformedURLException ignore) {
+    } catch (final MalformedURLException ignore) {
       input = null;
     }
 
     if (input == null)
-      input = getClass().getResourceAsStream(path);
+      input = SocketFactory.class.getResourceAsStream(path);
 
     if (input == null)
-      input = getClass().getClassLoader().getResourceAsStream(path);
+      input = SocketFactory.class.getClassLoader().getResourceAsStream(path);
 
     if (input == null) {
       try {
         // This resolves an issue on Windows with relative paths not working correctly.
-        path = new java.io.File(path).getAbsolutePath();
+        path = new File(path).getAbsolutePath();
         input = new FileInputStream(path);
-      } catch (FileNotFoundException ignore) {
+      } catch (final FileNotFoundException ignore) {
         input = null;
       }
     }
@@ -143,7 +140,7 @@ public class SocketFactory {
     return input;
   }
 
-  private Socket configureSocket(Socket socket) {
+  private Socket configureSocket(final Socket socket) {
     // Add possible timeouts?
     return socket;
   }
@@ -152,19 +149,19 @@ public class SocketFactory {
     return configureSocket(getBackingFactory().createSocket());
   }
 
-  public Socket createSocket(String host, int port) throws IOException {
+  public Socket createSocket(final String host, final int port) throws IOException {
     return configureSocket(getBackingFactory().createSocket(host, port));
   }
 
-  public Socket createSocket(InetAddress host, int port) throws IOException {
+  public Socket createSocket(final InetAddress host, final int port) throws IOException {
     return configureSocket(getBackingFactory().createSocket(host, port));
   }
 
-  public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
+  public Socket createSocket(final String host, final int port, final InetAddress localHost, final int localPort) throws IOException {
     return configureSocket(getBackingFactory().createSocket(host, port, localHost, localPort));
   }
 
-  public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
+  public Socket createSocket(final InetAddress address, final int port, final InetAddress localAddress, final int localPort) throws IOException {
     return configureSocket(getBackingFactory().createSocket(address, port, localAddress, localPort));
   }
 

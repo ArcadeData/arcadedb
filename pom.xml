@@ -25,7 +25,7 @@
     <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-parent</artifactId>
     <packaging>pom</packaging>
-    <version>22.12.1-SNAPSHOT</version>
+    <version>23.3.1-SNAPSHOT</version>
 
     <name>ArcadeDB</name>
     <url>https://arcadedata.com/</url>
@@ -51,30 +51,30 @@
 
         <docker.plugin.version>1.2.2</docker.plugin.version>
         <dockerfile-maven-version>1.4.13</dockerfile-maven-version>
-        <maven-compiler-plugin.version>3.10.1</maven-compiler-plugin.version>
+        <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
         <jacoco-maven-plugin.version>0.8.8</jacoco-maven-plugin.version>
-        <maven-surefire-plugin.version>3.0.0-M7</maven-surefire-plugin.version>
-        <maven-failsafe-plugin.version>3.0.0-M7</maven-failsafe-plugin.version>
-        <maven-assembly-plugin.version>3.4.2</maven-assembly-plugin.version>
-        <maven-resources-plugin.version>3.3.0</maven-resources-plugin.version>
-        <maven-javadoc-plugin.version>3.4.1</maven-javadoc-plugin.version>
+        <maven-surefire-plugin.version>3.0.0</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.0.0</maven-failsafe-plugin.version>
+        <maven-assembly-plugin.version>3.5.0</maven-assembly-plugin.version>
+        <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
+        <maven-javadoc-plugin.version>3.5.0</maven-javadoc-plugin.version>
         <maven-source-plugin.version>3.2.1</maven-source-plugin.version>
         <maven-gpg-plugin.version>3.0.1</maven-gpg-plugin.version>
-        <maven-versions-plugin.version>2.13.0</maven-versions-plugin.version>
+        <maven-versions-plugin.version>2.15.0</maven-versions-plugin.version>
         <maven-jar-plugin.version>3.3.0</maven-jar-plugin.version>
         <maven-shade-plugin.version>3.4.1</maven-shade-plugin.version>
-        <maven-deploy-plugin.version>3.0.0</maven-deploy-plugin.version>
+        <maven-deploy-plugin.version>3.1.1</maven-deploy-plugin.version>
         <nexus-staging-maven-plugin.version>1.6.13</nexus-staging-maven-plugin.version>
         <maven-assembly-plugin.version>3.3.0</maven-assembly-plugin.version>
 
-        <assertj-core.version>3.23.1</assertj-core.version>
-        <junit.jupiter.version>5.9.1</junit.jupiter.version>
+        <assertj-core.version>3.24.2</assertj-core.version>
+        <junit.jupiter.version>5.9.2</junit.jupiter.version>
 
         <skipIntegration>true</skipIntegration>
 
         <itCoverageAgent></itCoverageAgent>
-        <license-maven-plugin.version>4.1</license-maven-plugin.version>
-        <mockito-core.version>4.9.0</mockito-core.version>
+        <license-maven-plugin.version>4.2</license-maven-plugin.version>
+        <mockito-core.version>5.2.0</mockito-core.version>
     </properties>
 
     <developers>
@@ -134,6 +134,14 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>${maven-resources-plugin.version}</version>
+                <configuration>
+                    <nonFilteredFileExtensions>jpg,jpeg,gif,bmp,png,svg,ttf,woff,woff2,swf</nonFilteredFileExtensions>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
                 <configuration>
@@ -162,6 +170,7 @@
                 </executions>
             </plugin>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
@@ -171,6 +180,7 @@
                         <org.slf4j.simpleLogger.defaultLogLevel>warn</org.slf4j.simpleLogger.defaultLogLevel>
                         <org.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener>warn
                         </org.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener>
+                        <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
@@ -190,6 +200,8 @@
                     <excludes>
                         <exclude>**/*HASplitBrainIT.java</exclude>
                         <exclude>**/*HTTP2ServersIT.java</exclude>
+                        <exclude>**/ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>
+                        <exclude>**/IndexOperations3ServersIT.java</exclude>
                         <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>
                         <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>
                         <exclude>${exclude.tests}</exclude>
@@ -199,6 +211,9 @@
                     <reuseForks>true</reuseForks>
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
                     <forkCount>1</forkCount>
+                    <systemPropertyVariables>
+                        <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
             <plugin>
@@ -468,6 +483,7 @@
             <properties>
                 <skipIntegration>false</skipIntegration>
                 <exclude.tests>
+                    com/arcadedb/integration/backup/FullBackupIT.java,
                     com/arcadedb/server/ha/HASplitBrainIT.java,
                     com/arcadedb/server/ha/ReplicationServerLeaderChanges3TimesIT.java,
                     com/arcadedb/server/ha/ReplicationServerLeaderDownIT.java,

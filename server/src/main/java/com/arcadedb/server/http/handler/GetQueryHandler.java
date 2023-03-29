@@ -20,14 +20,13 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
-import org.json.JSONObject;
 
 import java.io.*;
-import java.util.*;
 
 public class GetQueryHandler extends AbstractQueryHandler {
   public GetQueryHandler(final HttpServer httpServer) {
@@ -35,38 +34,28 @@ public class GetQueryHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws UnsupportedEncodingException {
-    final Deque<String> textPar = exchange.getQueryParameters().get("command");
-    if (textPar == null || textPar.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Command text is null\"}");
-      return;
-    }
-    final String text = textPar.getFirst();
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database)
+      throws UnsupportedEncodingException {
+    final String text = getQueryParameter(exchange, "command");
+    if (text == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
-    final Deque<String> languagePar = exchange.getQueryParameters().get("language");
-    if (languagePar == null || languagePar.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Language is null\"}");
-      return;
-    }
-    final String language = languagePar.getFirst();
+    final String language = getQueryParameter(exchange, "language");
+    if (language == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Language is null\"}");
 
-    final String serializer;
-    Deque<String> serializerPar = exchange.getQueryParameters().get("serializer");
-    if (serializerPar == null || serializerPar.isEmpty())
+    String serializer = getQueryParameter(exchange, "serializer");
+    if (serializer == null)
       serializer = "record";
-    else
-      serializer = serializerPar.getFirst();
 
+    String limitPar = getQueryParameter(exchange, "limit");
     final int limit;
-    final Deque<String> limitPar = exchange.getQueryParameters().get("limit");
-    if (limitPar == null || limitPar.isEmpty())
+    if (limitPar == null)
       limit = DEFAULT_LIMIT;
     else
-      limit = Integer.parseInt(limitPar.getFirst());
+      limit = Integer.parseInt(limitPar);
 
-    final JSONObject response = createResult(user);
+    final JSONObject response = createResult(user, database);
 
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.query");
     try {
@@ -79,8 +68,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
       timer.stop();
     }
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send(response.toString());
+    return new ExecutionResponse(200, response.toString());
   }
 
   @Override

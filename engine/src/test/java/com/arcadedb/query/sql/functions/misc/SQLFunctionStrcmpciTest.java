@@ -39,7 +39,7 @@ public class SQLFunctionStrcmpciTest {
 
   @Test
   public void testEmpty() {
-    Object result = function.getResult();
+    final Object result = function.getResult();
     Assertions.assertNull(result);
   }
 

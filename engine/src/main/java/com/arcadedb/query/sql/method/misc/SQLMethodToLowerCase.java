@@ -34,11 +34,11 @@ public class SQLMethodToLowerCase extends AbstractSQLMethod {
     }
 
     @Override
-    public Object execute(Object iThis,
-                          Identifiable iCurrentRecord,
-                          CommandContext iContext,
+    public Object execute(final Object iThis,
+                          final Identifiable iCurrentRecord,
+                          final CommandContext iContext,
                           Object ioResult,
-                          Object[] iParams) {
+                          final Object[] iParams) {
         ioResult = ioResult != null ? ioResult.toString().toLowerCase() : null;
         return ioResult;
     }

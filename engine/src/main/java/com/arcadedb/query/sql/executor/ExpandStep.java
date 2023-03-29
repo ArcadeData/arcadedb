@@ -31,87 +31,71 @@ import java.util.*;
  * The pre-requisite is that the input element contains only one field (no matter the name)
  */
 public class ExpandStep extends AbstractExecutionStep {
-
-  private long cost = 0;
-
   ResultSet lastResult      = null;
   Iterator  nextSubsequence = null;
   Result    nextElement     = null;
 
-  public ExpandStep(CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public ExpandStep(final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (prev == null || prev.isEmpty()) {
+  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    if (prev == null)
       throw new CommandExecutionException("Cannot expand without a target");
-    }
+
     return new ResultSet() {
       long localCount = 0;
 
       @Override
       public boolean hasNext() {
-        if (localCount >= nRecords) {
+        if (localCount >= nRecords)
           return false;
-        }
-        if (nextElement == null) {
-          fetchNext(ctx, nRecords);
-        }
+
+        if (nextElement == null)
+          fetchNext(context, nRecords);
+
         return nextElement != null;
       }
 
       @Override
       public Result next() {
-        if (localCount >= nRecords) {
-          throw new IllegalStateException();
-        }
-        if (nextElement == null) {
-          fetchNext(ctx, nRecords);
-        }
-        if (nextElement == null) {
-          throw new IllegalStateException();
-        }
+        if (localCount >= nRecords)
+          throw new NoSuchElementException();
 
-        Result result = nextElement;
+        if (nextElement == null)
+          fetchNext(context, nRecords);
+
+        if (nextElement == null)
+          throw new NoSuchElementException();
+
+        final Result result = nextElement;
         localCount++;
         nextElement = null;
-        fetchNext(ctx, nRecords);
+        fetchNext(context, nRecords);
         return result;
       }
 
-      @Override
-      public void close() {
-
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
     };
   }
 
-  private void fetchNext(CommandContext ctx, int n) {
+  private void fetchNext(final CommandContext context, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          Object nextElementObj = nextSubsequence.next();
+          final Object nextElementObj = nextSubsequence.next();
           if (nextElementObj instanceof Result) {
             nextElement = (Result) nextElementObj;
           } else if (nextElementObj instanceof Identifiable) {
-            Record record = ((Identifiable) nextElementObj).getRecord();
+            final Record record = ((Identifiable) nextElementObj).getRecord();
             if (record == null) {
               continue;
             }
             nextElement = new ResultInternal();
             ((ResultInternal) nextElement).setElement((Document) record);
+          } else if (nextElementObj instanceof Map) {
+            nextElement = new ResultInternal((Map) nextElementObj);
           } else {
             nextElement = new ResultInternal();
             ((ResultInternal) nextElement).setProperty("value", nextElementObj);
@@ -126,15 +110,15 @@ public class ExpandStep extends AbstractExecutionStep {
 
       if (nextSubsequence == null || !nextSubsequence.hasNext()) {
         if (lastResult == null || !lastResult.hasNext()) {
-          lastResult = getPrev().get().syncPull(ctx, n);
-        }
-        if (!lastResult.hasNext()) {
-          return;
+          lastResult = getPrev().syncPull(context, n);
         }
       }
 
-      Result nextAggregateItem = lastResult.next();
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      if (!lastResult.hasNext())
+        return;
+
+      final Result nextAggregateItem = lastResult.next();
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         if (nextAggregateItem.getPropertyNames().size() == 0) {
           continue;
@@ -143,17 +127,17 @@ public class ExpandStep extends AbstractExecutionStep {
           throw new IllegalStateException("Invalid EXPAND on record " + nextAggregateItem);
         }
 
-        String propName = nextAggregateItem.getPropertyNames().iterator().next();
-        Object projValue = nextAggregateItem.getProperty(propName);
+        final String propName = nextAggregateItem.getPropertyNames().iterator().next();
+        final Object projValue = nextAggregateItem.getProperty(propName);
         if (projValue == null) {
           continue;
         }
         if (projValue instanceof Identifiable) {
-          Record rec = ((Identifiable) projValue).getRecord();
+          final Record rec = ((Identifiable) projValue).getRecord();
           if (rec == null) {
             continue;
           }
-          ResultInternal res = new ResultInternal();
+          final ResultInternal res = new ResultInternal();
           res.setElement((Document) rec);
 
           nextSubsequence = Collections.singleton(res).iterator();
@@ -165,26 +149,19 @@ public class ExpandStep extends AbstractExecutionStep {
           nextSubsequence = ((Iterable) projValue).iterator();
         }
       } finally {
-        if (profilingEnabled) {
+        if (profilingEnabled)
           cost += (System.nanoTime() - begin);
-        }
       }
     } while (true);
-
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ EXPAND";
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
-    }
-    return result;
-  }
 
-  @Override
-  public long getCost() {
-    return cost;
+    return result;
   }
 }

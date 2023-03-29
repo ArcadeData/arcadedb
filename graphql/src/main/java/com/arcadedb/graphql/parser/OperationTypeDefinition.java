@@ -21,23 +21,11 @@
 package com.arcadedb.graphql.parser;
 
 public class OperationTypeDefinition extends SimpleNode {
-
   protected OperationType operationType;
-  protected TypeName typeName;
+  protected TypeName      typeName;
 
-  public OperationTypeDefinition(int id) {
+  public OperationTypeDefinition(final int id) {
     super(id);
-  }
-
-  public OperationTypeDefinition(GraphQLParser p, int id) {
-    super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=fd8564df2af33b83b138cd0ee5078447 (do not edit this line) */

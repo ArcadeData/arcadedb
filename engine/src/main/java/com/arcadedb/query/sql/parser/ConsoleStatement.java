@@ -35,19 +35,15 @@ public class ConsoleStatement extends SimpleExecStatement {
   protected Identifier logLevel;
   protected Expression message;
 
-  public ConsoleStatement(int id) {
+  public ConsoleStatement(final int id) {
     super(id);
   }
 
-  public ConsoleStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
-    InternalResultSet result = new InternalResultSet();
-    ResultInternal item = new ResultInternal();
-    Object msg = "" + message.execute((Identifiable) null, ctx);
+  public ResultSet executeSimple(final CommandContext context) {
+    final InternalResultSet result = new InternalResultSet();
+    final ResultInternal item = new ResultInternal();
+    final Object msg = "" + message.execute((Identifiable) null, context);
 
     if (logLevel.getStringValue().equalsIgnoreCase("log")) {
       LogManager.instance().log(this, Level.INFO, "%s", msg);
@@ -69,11 +65,10 @@ public class ConsoleStatement extends SimpleExecStatement {
     item.setProperty("message", msg);
     result.add(item);
     return result;
-
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CONSOLE.");
     logLevel.toString(params, builder);
     builder.append(" ");
@@ -82,31 +77,15 @@ public class ConsoleStatement extends SimpleExecStatement {
 
   @Override
   public ConsoleStatement copy() {
-    ConsoleStatement result = new ConsoleStatement(-1);
+    final ConsoleStatement result = new ConsoleStatement(-1);
     result.logLevel = logLevel == null ? null : logLevel.copy();
     result.message = message == null ? null : message.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    ConsoleStatement that = (ConsoleStatement) o;
-
-    if (!Objects.equals(logLevel, that.logLevel))
-      return false;
-    return Objects.equals(message, that.message);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = logLevel != null ? logLevel.hashCode() : 0;
-    result = 31 * result + (message != null ? message.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { logLevel, message };
   }
 }
 /* JavaCC - OriginalChecksum=626c09cda52a1a8a63eeefcb37bd66a1 (do not edit this line) */

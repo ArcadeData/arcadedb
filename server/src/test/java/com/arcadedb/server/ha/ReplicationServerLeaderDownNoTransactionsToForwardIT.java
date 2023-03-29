@@ -63,24 +63,24 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
       for (int i = 0; i < getVerticesPerTx(); ++i) {
         for (int retry = 0; retry < maxRetry; ++retry) {
           try {
-            ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter, "distributed-test");
+            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter, "distributed-test");
 
             Assertions.assertTrue(resultSet.hasNext());
             final Result result = resultSet.next();
             Assertions.assertNotNull(result);
             final Set<String> props = result.getPropertyNames();
-            Assertions.assertEquals(4, props.size());
+            Assertions.assertEquals(2, props.size());
             Assertions.assertTrue(props.contains("id"));
             Assertions.assertEquals(counter, (int) result.getProperty("id"));
             Assertions.assertTrue(props.contains("name"));
             Assertions.assertEquals("distributed-test", result.getProperty("name"));
             break;
-          } catch (RemoteException e) {
+          } catch (final RemoteException e) {
             // IGNORE IT
             LogManager.instance().log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
             try {
               Thread.sleep(500);
-            } catch (InterruptedException e1) {
+            } catch (final InterruptedException e1) {
               Thread.currentThread().interrupt();
             }
           }
@@ -98,12 +98,12 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
 
     try {
       Thread.sleep(1000);
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (int s : getServerToCheck()) {
+    for (final int s : getServerToCheck()) {
       checkEntriesOnServer(s);
     }
 

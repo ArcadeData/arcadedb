@@ -35,16 +35,16 @@ public class SQLFunctionSum extends SQLFunctionMathAbstract {
   private Number sum;
 
   public SQLFunctionSum() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult,
-      final Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams.length == 1) {
       if (iParams[0] instanceof Number)
         sum((Number) iParams[0]);
       else if (MultiValue.isMultiValue(iParams[0]))
-        for (Object n : MultiValue.getMultiValueIterable(iParams[0]))
+        for (final Object n : MultiValue.getMultiValueIterable(iParams[0]))
           sum((Number) n);
     } else {
       sum = null;

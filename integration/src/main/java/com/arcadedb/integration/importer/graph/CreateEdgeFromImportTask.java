@@ -31,6 +31,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.CompressedRID2RIDsIndex;
+import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.log.LogManager;
@@ -48,9 +49,9 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
   private final String                                   edgeTypeName;
   private final long                                     sourceVertexKey;
   private final long                                     destinationVertexKey;
-  private final Object[]         params;
-  private final ImporterContext  context;
-  private final ImporterSettings settings;
+  private final Object[]                                 params;
+  private final ImporterContext                          context;
+  private final ImporterSettings                         settings;
 
   public CreateEdgeFromImportTask(final GraphImporter.GraphImporterThreadContext threadContext, final String edgeTypeName, final long sourceVertexKey,
       final long destinationVertexKey, final Object[] edgeProperties, final ImporterContext context, final ImporterSettings settings) {
@@ -105,8 +106,12 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
       createIncomingEdgesInBatch(database, threadContext.incomingConnectionsIndexThread, linked -> context.linkedEdges.addAndGet(linked));
 
       // CREATE A NEW CHUNK BEFORE CONTINUING
-      threadContext.incomingConnectionsIndexThread = new CompressedRID2RIDsIndex(database, threadContext.incomingConnectionsIndexThread.getKeys(),
-          (int) settings.expectedEdges);
+      try {
+        threadContext.incomingConnectionsIndexThread = new CompressedRID2RIDsIndex(database, threadContext.incomingConnectionsIndexThread.getKeys(),
+            (int) settings.expectedEdges);
+      } catch (ClassNotFoundException e) {
+        throw new ImportException("Error on creating internal component", e);
+      }
 
       LogManager.instance().log(this, Level.INFO, "Creation done, reset index buffer and continue");
     }
@@ -133,7 +138,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
 
       context.createdEdges.addAndGet(newEdges.size());
 
-      for (Edge e : newEdges)
+      for (final Edge e : newEdges)
         edgeIndex.put(e.getIn(), e.getIdentity(), threadContext.lastSourceVertex.getIdentity());
 
       connections.clear();
@@ -177,7 +182,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
         connections.add(new Pair<>(it.getEdgeRID(), it.getVertexRID()));
 
         ++totalEdges;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance()
             .log(CreateEdgeFromImportTask.class, Level.SEVERE, "Error on creating incoming edge from %s -[%s]-> %s", e, it.getVertexRID(), it.getEdgeRID(),
                 it.getKeyRID(), it.getVertexRID());

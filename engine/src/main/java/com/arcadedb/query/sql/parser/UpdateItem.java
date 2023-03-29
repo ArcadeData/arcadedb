@@ -45,15 +45,11 @@ public class UpdateItem extends SimpleNode {
   protected int        operator;
   protected Expression right;
 
-  public UpdateItem(int id) {
+  public UpdateItem(final int id) {
     super(id);
   }
 
-  public UpdateItem(SqlParser p, int id) {
-    super(p, id);
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     if (leftModifier != null) {
       leftModifier.toString(params, builder);
@@ -74,13 +70,14 @@ public class UpdateItem extends SimpleNode {
     case OPERATOR_SLASHASSIGN:
       builder.append(" /= ");
       break;
-
+    default:
+      throw new IllegalArgumentException("Operator '" + operator + "' not supported in update");
     }
     right.toString(params, builder);
   }
 
   public UpdateItem copy() {
-    UpdateItem result = new UpdateItem(-1);
+    final UpdateItem result = new UpdateItem(-1);
     result.left = left == null ? null : left.copy();
     result.leftModifier = leftModifier == null ? null : leftModifier.copy();
     result.operator = operator;
@@ -89,13 +86,13 @@ public class UpdateItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    UpdateItem that = (UpdateItem) o;
+    final UpdateItem that = (UpdateItem) o;
 
     if (operator != that.operator)
       return false;
@@ -115,17 +112,17 @@ public class UpdateItem extends SimpleNode {
     return result;
   }
 
-  public void applyUpdate(ResultInternal doc, CommandContext ctx) {
-    final Object rightValue = right.execute(doc, ctx);
+  public void applyUpdate(final ResultInternal doc, final CommandContext context) {
+    final Object rightValue = right.execute(doc, context);
     if (leftModifier == null) {
-      applyOperation(doc, left, rightValue, ctx);
+      applyOperation(doc, left, rightValue, context);
     } else {
-      Object val = doc.getProperty(left.getStringValue());
-      leftModifier.setValue(doc, val, rightValue, ctx);
+      final Object val = doc.getProperty(left.getStringValue());
+      leftModifier.setValue(doc, val, rightValue, context);
     }
   }
 
-  public void applyOperation(final ResultInternal doc,final  Identifier attrName, final Object rightValue,final  CommandContext ctx) {
+  public void applyOperation(final ResultInternal doc, final Identifier attrName, final Object rightValue, final CommandContext context) {
     switch (operator) {
     case OPERATOR_EQ:
       Object newValue = convertResultToDocument(rightValue);
@@ -133,16 +130,16 @@ public class UpdateItem extends SimpleNode {
       doc.setProperty(attrName.getStringValue(), newValue);
       break;
     case OPERATOR_MINUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, ctx, MathExpression.Operator.MINUS));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.MINUS));
       break;
     case OPERATOR_PLUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, ctx, MathExpression.Operator.PLUS));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.PLUS));
       break;
     case OPERATOR_SLASHASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, ctx, MathExpression.Operator.SLASH));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.SLASH));
       break;
     case OPERATOR_STARASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, ctx, MathExpression.Operator.STAR));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.STAR));
       break;
     }
   }
@@ -150,7 +147,7 @@ public class UpdateItem extends SimpleNode {
   private Object convertToPropertyType(final ResultInternal res, final Identifier attrName, Object newValue) {
     final Document doc = res.toElement();
     final Optional<DocumentType> optSchema = Optional.ofNullable(doc.getType());
-    if (!optSchema.isPresent()) {
+    if (optSchema.isEmpty()) {
       return newValue;
     }
 
@@ -196,23 +193,23 @@ public class UpdateItem extends SimpleNode {
     return value.stream().anyMatch(x -> x instanceof Result);
   }
 
-  private Object calculateNewValue(ResultInternal doc, CommandContext ctx, MathExpression.Operator explicitOperator) {
+  private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final MathExpression.Operator explicitOperator) {
     final Expression leftEx = new Expression(left.copy());
-    if (leftModifier != null) {
+    if (leftModifier != null)
       ((BaseExpression) leftEx.mathExpression).modifier = leftModifier.copy();
-    }
+
     final MathExpression mathExp = new MathExpression(-1);
     mathExp.getChildExpressions().add(leftEx.getMathExpression());
     mathExp.getChildExpressions().add(new ParenthesisExpression(right.copy()));
     mathExp.getOperators().add(explicitOperator);
-    return mathExp.execute(doc, ctx);
+    return mathExp.execute(doc, context);
   }
 
   public Identifier getLeft() {
     return left;
   }
 
-  public void setLeft(Identifier left) {
+  public void setLeft(final Identifier left) {
     this.left = left;
   }
 
@@ -220,7 +217,7 @@ public class UpdateItem extends SimpleNode {
     return leftModifier;
   }
 
-  public void setLeftModifier(Modifier leftModifier) {
+  public void setLeftModifier(final Modifier leftModifier) {
     this.leftModifier = leftModifier;
   }
 
@@ -228,7 +225,7 @@ public class UpdateItem extends SimpleNode {
     return operator;
   }
 
-  public void setOperator(int operator) {
+  public void setOperator(final int operator) {
     this.operator = operator;
   }
 
@@ -236,7 +233,7 @@ public class UpdateItem extends SimpleNode {
     return right;
   }
 
-  public void setRight(Expression right) {
+  public void setRight(final Expression right) {
     this.right = right;
   }
 }

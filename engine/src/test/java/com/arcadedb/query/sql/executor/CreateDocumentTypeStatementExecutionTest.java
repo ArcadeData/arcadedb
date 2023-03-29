@@ -31,10 +31,10 @@ public class CreateDocumentTypeStatementExecutionTest {
   @Test
   public void testPlain() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      String className = "testPlain";
-      ResultSet result = db.command("sql", "create document type " + className);
-      Schema schema = db.getSchema();
-      DocumentType clazz = schema.getType(className);
+      final String className = "testPlain";
+      final ResultSet result = db.command("sql", "create document type " + className);
+      final Schema schema = db.getSchema();
+      final DocumentType clazz = schema.getType(className);
       Assertions.assertNotNull(clazz);
       result.close();
     });
@@ -43,10 +43,10 @@ public class CreateDocumentTypeStatementExecutionTest {
   @Test
   public void testClusters() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      String className = "testClusters";
-      ResultSet result = db.command("sql", "create document type " + className + " buckets 32");
-      Schema schema = db.getSchema();
-      DocumentType clazz = schema.getType(className);
+      final String className = "testClusters";
+      final ResultSet result = db.command("sql", "create document type " + className + " buckets 32");
+      final Schema schema = db.getSchema();
+      final DocumentType clazz = schema.getType(className);
       Assertions.assertNotNull(clazz);
       Assertions.assertEquals(32, clazz.getBuckets(false).size());
       result.close();
@@ -56,9 +56,9 @@ public class CreateDocumentTypeStatementExecutionTest {
   @Test
   public void testIfNotExists() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
-      String className = "testIfNotExists";
+      final String className = "testIfNotExists";
       ResultSet result = db.command("sql", "create document type " + className + " if not exists");
-      Schema schema = db.getSchema();
+      final Schema schema = db.getSchema();
       DocumentType clazz = schema.getType(className);
       Assertions.assertNotNull(clazz);
       result.close();

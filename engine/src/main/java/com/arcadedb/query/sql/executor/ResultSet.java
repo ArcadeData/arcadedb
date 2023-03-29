@@ -30,6 +30,7 @@ import java.util.stream.*;
  * Result set returned from queries. This class implements can be used as an Iterator of Result.
  */
 public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCloseable {
+  EmptyResult EMPTY_RESULT = new EmptyResult();
 
   @Override
   boolean hasNext();
@@ -41,11 +42,27 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
     throw new UnsupportedOperationException();
   }
 
-  void close();
+  default void close() {
+    // NO ACTIONS
+  }
 
-  Optional<ExecutionPlan> getExecutionPlan();
+  /**
+   * Returns the first element of the resultset if any, otherwise an empty Result object. This allows to write code without null check. Example:<br>
+   * <code>
+   * int updated = result.first().getProperty("count", 0);
+   * </code>
+   */
+  default Result nextIfAvailable() {
+    return hasNext() ? next() : EMPTY_RESULT;
+  }
 
-  Map<String, Long> getQueryStats();
+  default Optional<ExecutionPlan> getExecutionPlan() {
+    return Optional.empty();
+  }
+
+  default Map<String, Long> getQueryStats() {
+    return null;
+  }
 
   default void reset() {
     throw new UnsupportedOperationException("Implement RESET on " + getClass().getSimpleName());
@@ -57,21 +74,6 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
       return true;
     }
     return false;
-  }
-
-  /**
-   * Returns the count of the remaining uniterated results in the {@link ResultSet}. Note, that the
-   * default implementation will consume the iterator.
-   */
-  default long countEntries() {
-    long tot = 0;
-
-    while (hasNext()) {
-      next();
-      tot++;
-    }
-
-    return tot;
   }
 
   default void forEachRemaining(final Consumer<? super Result> action) {
@@ -211,5 +213,12 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
         return ORDERED;
       }
     }, false);
+  }
+
+  /**
+   * Creates a copy of the resultset. If the resultset is not resettable, the iteration will be completely consumed.
+   */
+  default ResultSet copy(){
+    return new InternalResultSet(this);
   }
 }

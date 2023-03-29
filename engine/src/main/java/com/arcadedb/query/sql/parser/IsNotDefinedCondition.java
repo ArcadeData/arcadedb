@@ -27,45 +27,20 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class IsNotDefinedCondition extends BooleanExpression {
-
   protected Expression expression;
 
   public IsNotDefinedCondition(final int id) {
     super(id);
   }
 
-  public IsNotDefinedCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     return !expression.isDefinedFor(currentRecord.getRecord());
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     return !expression.isDefinedFor(currentRecord);
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return Collections.EMPTY_LIST;
-  }
-
-  @Override
-  public boolean needsAliases(Set<String> aliases) {
-    return expression.needsAliases(aliases);
   }
 
   @Override
@@ -76,30 +51,19 @@ public class IsNotDefinedCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     this.expression.extractSubQueries(collector);
   }
 
   @Override
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" is not defined");
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final IsNotDefinedCondition that = (IsNotDefinedCondition) o;
-
-    return Objects.equals(expression, that.expression);
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression };
   }
 
   @Override
@@ -108,8 +72,8 @@ public class IsNotDefinedCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return expression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression };
   }
 
   @Override

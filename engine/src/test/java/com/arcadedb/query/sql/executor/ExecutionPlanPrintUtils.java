@@ -23,11 +23,11 @@ package com.arcadedb.query.sql.executor;
  */
 public class ExecutionPlanPrintUtils {
 
-  public static void printExecutionPlan(ResultSet result) {
+  public static void printExecutionPlan(final ResultSet result) {
     printExecutionPlan(null, result);
   }
 
-  public static void printExecutionPlan(String query, ResultSet result) {
+  public static void printExecutionPlan(final String query, final ResultSet result) {
     if (query != null) {
       System.out.println(query);
     }

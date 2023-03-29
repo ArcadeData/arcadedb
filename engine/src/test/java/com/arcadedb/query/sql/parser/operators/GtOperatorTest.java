@@ -30,7 +30,7 @@ import java.math.*;
 public class GtOperatorTest {
   @Test
   public void test() {
-    GtOperator op = new GtOperator(-1);
+    final GtOperator op = new GtOperator(-1);
     Assertions.assertFalse(op.execute(null, 1, 1));
     Assertions.assertTrue(op.execute(null, 1, 0));
     Assertions.assertFalse(op.execute(null, 0, 1));

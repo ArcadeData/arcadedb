@@ -34,7 +34,7 @@ import java.util.*;
 
 public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private final Database database;
-  private final int      collectionId;
+//  private final int      collectionId;
   private final String   collectionName;
 
 //  private static class ProjectingIterable implements Iterable<Document> {
@@ -81,7 +81,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   protected MongoDBCollectionWrapper(final Database database, final String collectionName) {
     this.database = database;
     this.collectionName = collectionName;
-    this.collectionId = database.getSchema().getType(collectionName).getBuckets(false).get(0).getId();
+    //this.collectionId = database.getSchema().getType(collectionName).getBuckets(false).get(0).getId();
   }
 
 //  protected Document getDocument(final Long aLong) {
@@ -116,31 +116,33 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
-  public void addIndex(Index<Long> index) {
+  public void addIndex(final Index<Long> index) {
+    // TODO
+  }
+
+  @Override
+  public void dropIndex(final String s) {
+    // TODO
 
   }
 
   @Override
-  public void dropIndex(String s) {
-
+  public void renameTo(final MongoDatabase mongoDatabase, final String s) {
+    // TODO
   }
 
   @Override
-  public void renameTo(MongoDatabase mongoDatabase, String s) {
+  public void addDocument(final Document document) {
+    // TODO
   }
 
   @Override
-  public void addDocument(Document document) {
-
+  public void removeDocument(final Document document) {
+    // TODO
   }
 
   @Override
-  public void removeDocument(Document document) {
-
-  }
-
-  @Override
-  public QueryResult handleQuery(QueryParameters queryParameters) {
+  public QueryResult handleQuery(final QueryParameters queryParameters) {
     int numberToReturn = queryParameters.getLimit();
     if (numberToReturn < 0)
       numberToReturn = -numberToReturn;
@@ -149,8 +151,8 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
     final Document queryObject = queryParameters.getQuerySelector();
 
-    Document query;
-    Document orderBy;
+    final Document query;
+    final Document orderBy;
     if (queryObject.containsKey("query")) {
       query = (Document) queryObject.get("query");
     } else if (queryObject.containsKey("$query")) {
@@ -173,18 +175,18 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   public List<Document> insertDocuments(final List<Document> list) {
     database.begin();
 
-    for (Document d : list) {
+    for (final Document d : list) {
       final MutableDocument record = database.newDocument(collectionName);
 
-      for (Map.Entry<String, Object> p : d.entrySet()) {
+      for (final Map.Entry<String, Object> p : d.entrySet()) {
         final Object value = p.getValue();
         if (value instanceof ObjectId) {
           final byte[] var2 = ((ObjectId) value).toByteArray();
-          int var3 = var2.length;
+          final int var3 = var2.length;
 
           final StringBuilder s = new StringBuilder();
           for (int var4 = 0; var4 < var3; ++var4) {
-            byte b = var2[var4];
+            final byte b = var2[var4];
             s.append(String.format("%02x", b));
           }
 
@@ -202,7 +204,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
-  public List<Document> insertDocuments(List<Document> list, boolean b) {
+  public List<Document> insertDocuments(final List<Document> list, final boolean b) {
     return null;
   }
 
@@ -218,12 +220,12 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
-  public int deleteDocuments(Document document, int i, Oplog oplog) {
+  public int deleteDocuments(final Document document, final int i, final Oplog oplog) {
     return 0;
   }
 
   @Override
-  public Document handleDistinct(Document document) {
+  public Document handleDistinct(final Document document) {
     return null;
   }
 
@@ -238,12 +240,12 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
-  public Document findAndModify(Document document) {
+  public Document findAndModify(final Document document) {
     return null;
   }
 
   @Override
-  public int count(Document document, int i, int i1) {
+  public int count(final Document document, final int i, final int i1) {
     return (int) database.countType(collectionName, false);
   }
 
@@ -267,10 +269,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     database.getSchema().dropType(collectionName);
   }
 
-  private Iterable<Document> queryDocuments(Document query, final Document orderBy, final int numberToSkip, final int numberToReturn) {
+  private Iterable<Document> queryDocuments(final Document query, final Document orderBy, final int numberToSkip, final int numberToReturn) {
     final List<Document> result = new ArrayList<>();
 
-    Iterator it;
+    final Iterator it;
 
     if (query.isEmpty()) {
       // SCAN
@@ -284,7 +286,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       if (orderBy != null) {
         sql.append(" order by ");
         int i = 0;
-        for (String p : orderBy.keySet()) {
+        for (final String p : orderBy.keySet()) {
           if (i > 0)
             sql.append(", ");
           sql.append(p);

@@ -20,21 +20,14 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class PositionalParameter extends InputParameter {
 
   protected int paramNumber;
 
-  public PositionalParameter(int id) {
+  public PositionalParameter(final int id) {
     super(id);
-  }
-
-  public PositionalParameter(SqlParser p, int id) {
-    super(p, id);
   }
 
   @Override
@@ -42,8 +35,8 @@ public class PositionalParameter extends InputParameter {
     return "?";
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-    Object finalValue = bindFromInputParams(params);
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    final Object finalValue = bindFromInputParams(params);
     if (finalValue == this) {
       builder.append("?");
     } else if (finalValue instanceof String) {
@@ -57,7 +50,7 @@ public class PositionalParameter extends InputParameter {
     }
   }
 
-  public Object getValue(Map<String, Object> params) {
+  public Object getValue(final Map<String, Object> params) {
     Object result = null;
     if (params != null) {
       result = params.get(String.valueOf(paramNumber));
@@ -65,10 +58,10 @@ public class PositionalParameter extends InputParameter {
     return result;
   }
 
-  public Object bindFromInputParams(Map<String, Object> params) {
+  public Object bindFromInputParams(final Map<String, Object> params) {
     if (params != null) {
-      Object value = params.get(String.valueOf(paramNumber));
-      Object result = toParsedTree(value);
+      final Object value = params.get(String.valueOf(paramNumber));
+      final Object result = toParsedTree(value);
       return result;
     }
     return this;
@@ -76,19 +69,19 @@ public class PositionalParameter extends InputParameter {
 
   @Override
   public PositionalParameter copy() {
-    PositionalParameter result = new PositionalParameter(-1);
+    final PositionalParameter result = new PositionalParameter(-1);
     result.paramNumber = paramNumber;
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    PositionalParameter that = (PositionalParameter) o;
+    final PositionalParameter that = (PositionalParameter) o;
 
     return paramNumber == that.paramNumber;
   }
@@ -96,16 +89,6 @@ public class PositionalParameter extends InputParameter {
   @Override
   public int hashCode() {
     return paramNumber;
-  }
-
-  public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
-    result.setProperty("paramNumber", paramNumber);
-    return result;
-  }
-
-  public void deserialize(Result fromResult) {
-    paramNumber = fromResult.getProperty("paramNumber");
   }
 }
 /* JavaCC - OriginalChecksum=f73bea7d9b3994a9d4e79d2c330d8ba2 (do not edit this line) */

@@ -18,30 +18,39 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
 public class JsonSerializer {
-  private boolean useCollectionSize  = false;
-  private boolean includeVertexEdges = true;
-  private boolean useVertexEdgeSize  = true;
+  private boolean useCollectionSize         = false;
+  private boolean includeVertexEdges        = true;
+  private boolean useVertexEdgeSize         = true;
+  private boolean useCollectionSizeForEdges = true;
 
   public JSONObject serializeDocument(final Document document) {
-    final JSONObject object = new JSONObject();
+    final Database database = document.getDatabase();
+    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
 
-    object.put("@rid", document.getIdentity().toString());
+    if (document.getIdentity() != null)
+      object.put("@rid", document.getIdentity().toString());
     object.put("@type", document.getTypeName());
 
-    for (String p : document.getPropertyNames()) {
-      Object value = document.get(p);
+    final Map<String, Object> documentAsMap = document.toMap();
+    for (final Map.Entry<String, Object> documentEntry : documentAsMap.entrySet()) {
+      final String p = documentEntry.getKey();
+      Object value = documentEntry.getValue();
 
-      if (value instanceof Document)
+      if (value == null)
+        value = JSONObject.NULL;
+      else if (value instanceof Document)
         value = serializeDocument((Document) value);
       else if (value instanceof Collection) {
         if (useCollectionSize) {
@@ -59,18 +68,21 @@ public class JsonSerializer {
         if (useCollectionSize) {
           value = ((Map) value).size();
         } else {
-          final JSONObject map = new JSONObject();
-          for (Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
+          final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
+          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
             Object o = entry.getValue();
             if (entry.getValue() instanceof Document)
               o = serializeDocument((Document) o);
             else if (entry.getValue() instanceof Result)
-              o = serializeResult((Result) o);
+              o = serializeResult((Result) o, database);
             map.put(entry.getKey().toString(), o);
           }
           value = map;
         }
       }
+
+      value = convertNonNumbers(value);
+
       object.put(p, value);
     }
 
@@ -79,54 +91,73 @@ public class JsonSerializer {
     return object;
   }
 
-  public JSONObject serializeResult(final Result result) {
-    final JSONObject object = new JSONObject();
+  public JSONObject serializeResult(final Result result, final Database database) {
+    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
 
     if (result.isElement()) {
       final Document document = result.toElement();
-      object.put("@rid", document.getIdentity().toString());
+      if (document.getIdentity() != null)
+        object.put("@rid", document.getIdentity().toString());
       object.put("@type", document.getTypeName());
 
       setMetadata(document, object);
     }
 
-    for (String p : result.getPropertyNames()) {
+    for (final String p : result.getPropertyNames()) {
       Object value = result.getProperty(p);
 
-      if (value instanceof Document)
+      if (value == null)
+        value = JSONObject.NULL;
+      else if (value instanceof Document)
         value = serializeDocument((Document) value);
       else if (value instanceof Result)
-        value = serializeResult((Result) value);
+        value = serializeResult((Result) value, database);
       else if (value instanceof Collection) {
-        if (useCollectionSize) {
-          value = ((Collection) value).size();
-        } else {
-          final JSONArray list = new JSONArray();
-          for (Object o : (Collection) value) {
-            if (o instanceof Document)
-              o = serializeDocument((Document) o);
-            else if (o instanceof Result)
-              o = serializeResult((Result) o);
-            list.put(o);
+        if (!((Collection<?>) value).isEmpty()) {
+          if (useCollectionSizeForEdges && ((Collection<?>) value).iterator().next() instanceof Edge)
+            value = ((Collection) value).size();
+          else if (useCollectionSize) {
+            value = ((Collection) value).size();
+          } else {
+            final JSONArray list = new JSONArray();
+            for (Object o : (Collection) value) {
+              if (o instanceof Document)
+                o = serializeDocument((Document) o);
+              else if (o instanceof Result)
+                o = serializeResult((Result) o, database);
+              else if (o instanceof ResultSet) {
+                final ResultSet resultSet = (ResultSet) o;
+                final JSONArray array = new JSONArray();
+                while (resultSet.hasNext()) {
+                  final Result row = resultSet.next();
+                  array.put(serializeResult(row, database));
+                }
+                o = array;
+              }
+
+              list.put(o);
+            }
+            value = list;
           }
-          value = list;
         }
       } else if (value instanceof Map) {
         if (useCollectionSize) {
           value = ((Map) value).size();
         } else {
-          final JSONObject map = new JSONObject();
-          for (Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
+          final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
+          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
             Object o = entry.getValue();
             if (entry.getValue() instanceof Document)
               o = serializeDocument((Document) o);
             else if (entry.getValue() instanceof Result)
-              o = serializeResult((Result) o);
+              o = serializeResult((Result) o, database);
             map.put(entry.getKey().toString(), o);
           }
           value = map;
         }
       }
+
+      value = convertNonNumbers(value);
 
       object.put(p, value);
     }
@@ -161,24 +192,32 @@ public class JsonSerializer {
     return this;
   }
 
+  public boolean isUseCollectionSizeForEdges() {
+    return useCollectionSizeForEdges;
+  }
+
+  public JsonSerializer setUseCollectionSizeForEdges(final boolean useCollectionSizeForEdges) {
+    this.useCollectionSizeForEdges = useCollectionSizeForEdges;
+    return this;
+  }
+
   private void setMetadata(final Document document, final JSONObject object) {
     if (document instanceof Vertex) {
+      object.put("@cat", "v");
       if (includeVertexEdges) {
         final Vertex vertex = ((Vertex) document);
-
-        object.put("@cat", "v");
         if (useVertexEdgeSize) {
           object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
           object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
 
         } else {
           final JSONArray outEdges = new JSONArray();
-          for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
             outEdges.put(e.getIdentity().toString());
           object.put("@out", outEdges);
 
           final JSONArray inEdges = new JSONArray();
-          for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
             inEdges.put(e.getIdentity().toString());
           object.put("@in", inEdges);
         }
@@ -191,5 +230,19 @@ public class JsonSerializer {
     } else
       object.put("@cat", "d");
 
+  }
+
+  private static Object convertNonNumbers(Object value) {
+    if (value != null)
+      if (value.equals(Double.NaN) || value.equals(Float.NaN))
+        // JSON DOES NOT SUPPORT NaN
+        value = "NaN";
+      else if (value.equals(Double.POSITIVE_INFINITY) || value.equals(Float.POSITIVE_INFINITY))
+        // JSON DOES NOT SUPPORT INFINITY
+        value = "PosInfinity";
+      else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
+        // JSON DOES NOT SUPPORT INFINITY
+        value = "NegInfinity";
+    return value;
   }
 }

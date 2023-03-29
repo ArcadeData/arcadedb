@@ -20,10 +20,14 @@ package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseStats;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -33,27 +37,34 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.network.http.HttpUtils;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import java.io.*;
 import java.net.*;
 import java.nio.charset.*;
 import java.util.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
-public class RemoteDatabase extends RWLockContext {
+/**
+ * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class RemoteDatabase extends RWLockContext implements BasicDatabase {
+  public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
   public static final  int                         DEFAULT_PORT              = 2480;
   private final        String                      originalServer;
@@ -73,9 +84,26 @@ public class RemoteDatabase extends RWLockContext {
   private static final String                      protocol                  = "http";
   private static final String                      charset                   = "UTF-8";
   private              String                      sessionId;
+  protected final      DatabaseStats               stats                     = new DatabaseStats();
+
+  public List<String> getReplicaAddresses() {
+    return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
+  }
+
+  String getSessionId() {
+    return sessionId;
+  }
+
+  void setSessionId(String sessionId) {
+    this.sessionId = sessionId;
+  }
 
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN
+  }
+
+  public interface Callback {
+    Object call(HttpURLConnection iArgument, JSONObject response) throws Exception;
   }
 
   public RemoteDatabase(final String server, final int port, final String databaseName, final String userName, final String userPassword) {
@@ -100,36 +128,79 @@ public class RemoteDatabase extends RWLockContext {
     requestClusterConfiguration();
   }
 
+  @Override
   public String getName() {
     return databaseName;
   }
 
   public void create() {
-    databaseCommand("create", "SQL", null, null, true, null);
+    serverCommand("POST", "create database " + databaseName, true, true, null);
+  }
+
+  public List<String> databases() {
+    return (List<String>) serverCommand("POST", "list databases", true, true, (connection, response) -> response.getJSONArray("result").toList());
   }
 
   public boolean exists() {
-    return (boolean) databaseCommand("exists", "SQL", null, null, true, (connection, response) -> {
-
-      final boolean exists = response.getBoolean("result");
-
-      return exists;
-    });
+    return (boolean) httpCommand("GET", databaseName, "exists", "SQL", null, null, false, true, (connection, response) -> response.getBoolean("result"));
   }
 
+  @Override
   public void close() {
+    setSessionId(null);
   }
 
+  @Override
   public void drop() {
-    databaseCommand("drop", "SQL", null, null, true, null);
+    try {
+      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
+      setRequestPayload(connection, new JSONObject().put("command", "drop database " + databaseName));
+      connection.connect();
+      if (connection.getResponseCode() != 200) {
+        final Exception detail = manageException(connection, "drop database");
+        throw new RuntimeException("Error on deleting database: " + connection.getResponseMessage(), detail);
+      }
+
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error on deleting database", e);
+    }
     close();
   }
 
-  public void transaction(final Database.TransactionScope txBlock) {
-    transaction(txBlock, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+  @Override
+  public MutableDocument newDocument(final String typeName) {
+    if (typeName == null)
+      throw new IllegalArgumentException("Type is null");
+
+    return new RemoteMutableDocument(this, typeName);
   }
 
-  public void transaction(final Database.TransactionScope txBlock, int attempts) {
+  @Override
+  public MutableVertex newVertex(final String typeName) {
+    if (typeName == null)
+      throw new IllegalArgumentException("Type is null");
+
+    return new RemoteMutableVertex(this, typeName);
+  }
+
+  @Override
+  public void transaction(final BasicDatabase.TransactionScope txBlock) {
+    transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
+  }
+
+  @Override
+  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction) {
+    return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
+  }
+
+  @Override
+  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts) {
+    return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
+  }
+
+  @Override
+  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts, final OkCallback ok,
+      final ErrorCallback error) {
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
 
@@ -139,21 +210,37 @@ public class RemoteDatabase extends RWLockContext {
       attempts = 1;
 
     for (int retry = 0; retry < attempts; ++retry) {
+      boolean createdNewTx = true;
       try {
-        begin();
-        txBlock.execute();
-        commit();
+        if (joinCurrentTransaction && isTransactionActive())
+          createdNewTx = false;
+        else
+          begin();
 
-        return;
-      } catch (NeedRetryException | DuplicatedKeyException e) {
+        txBlock.execute();
+
+        if (createdNewTx)
+          commit();
+
+        if (ok != null)
+          ok.call();
+
+        return createdNewTx;
+
+      } catch (final NeedRetryException | DuplicatedKeyException e) {
         // RETRY
         lastException = e;
-      } catch (Exception e) {
-        try {
-          rollback();
-        } catch (Throwable t) {
-          // IGNORE IT
-        }
+        setSessionId(null);
+
+        if (error != null)
+          error.call(e);
+
+      } catch (final Exception e) {
+        setSessionId(null);
+
+        if (error != null)
+          error.call(e);
+
         throw e;
       }
     }
@@ -161,52 +248,113 @@ public class RemoteDatabase extends RWLockContext {
     throw lastException;
   }
 
+  public boolean isTransactionActive() {
+    return getSessionId() != null;
+  }
+
   public void begin() {
-    if (sessionId != null)
+    if (getSessionId() != null)
       throw new TransactionException("Transaction already begun");
 
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("begin", databaseName));
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new TransactionException("Error on transaction begin");
-      sessionId = connection.getHeaderField(HttpUtils.ARCADEDB_SESSION_ID);
-    } catch (Exception e) {
+      if (connection.getResponseCode() != 204) {
+        final Exception detail = manageException(connection, "begin transaction");
+        throw new TransactionException("Error on transaction begin", detail);
+      }
+      setSessionId(connection.getHeaderField(ARCADEDB_SESSION_ID));
+    } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     }
   }
 
   public void commit() {
-    if (sessionId == null)
+    stats.txCommits.incrementAndGet();
+
+    if (getSessionId() == null)
       throw new TransactionException("Transaction not begun");
+
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("commit", databaseName));
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new TransactionException("Error on transaction commit");
-      sessionId = null;
-    } catch (Exception e) {
+      if (connection.getResponseCode() != 204) {
+        final Exception detail = manageException(connection, "commit transaction");
+
+        if (detail instanceof DuplicatedKeyException || detail instanceof ConcurrentModificationException)
+          // SUPPORT RETRY
+          throw detail;
+
+        throw new TransactionException("Error on transaction commit", detail);
+      }
+    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+      throw e;
+    } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
+    } finally {
+      setSessionId(null);
     }
   }
 
   public void rollback() {
-    if (sessionId == null)
+    stats.txRollbacks.incrementAndGet();
+
+    if (getSessionId() == null)
       throw new TransactionException("Transaction not begun");
 
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("rollback", databaseName));
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new TransactionException("Error on transaction rollback");
-
-      sessionId = null;
-    } catch (Exception e) {
+      if (connection.getResponseCode() != 204) {
+        final Exception detail = manageException(connection, "rollback transaction");
+        throw new TransactionException("Error on transaction rollback", detail);
+      }
+    } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
+    } finally {
+      setSessionId(null);
     }
   }
 
+  @Override
+  public long countBucket(final String bucketName) {
+    stats.countBucket.incrementAndGet();
+    return ((Number) ((ResultSet) databaseCommand("query", "sql", "select count(*) as count from bucket:" + bucketName, null, false,
+        (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
+  }
+
+  @Override
+  public long countType(final String typeName, final boolean polymorphic) {
+    stats.countType.incrementAndGet();
+    final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
+    return ((Number) ((ResultSet) databaseCommand("query", "sql", "select count(*) as count from " + typeName + appendix, null, false,
+        (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
+  }
+
   public Record lookupByRID(final RID rid) {
+    stats.readRecord.incrementAndGet();
+    if (rid == null)
+      throw new IllegalArgumentException("Record is null");
+
+    return lookupByRID(rid, true);
+  }
+
+  @Override
+  public boolean existsRecord(RID rid) {
+    stats.existsRecord.incrementAndGet();
+    if (rid == null)
+      throw new IllegalArgumentException("Record is null");
+
+    try {
+      return lookupByRID(rid, false) != null;
+    } catch (RecordNotFoundException e) {
+      return false;
+    }
+  }
+
+  @Override
+  public Record lookupByRID(final RID rid, final boolean loadContent) {
+    stats.readRecord.incrementAndGet();
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
@@ -221,21 +369,49 @@ public class RemoteDatabase extends RWLockContext {
         return json2Record(response.getJSONObject("result"));
       return null;
 
-    } catch (RecordNotFoundException e) {
+    } catch (final RecordNotFoundException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new DatabaseOperationException("Error on loading record " + rid, e);
     }
   }
 
+  @Override
+  public void deleteRecord(final Record record) {
+    stats.deleteRecord.incrementAndGet();
+
+    if (record.getIdentity() == null)
+      throw new IllegalArgumentException("Cannot delete a non persistent record");
+
+    command("SQL", "delete from " + record.getIdentity());
+  }
+
+  @Override
   public ResultSet command(final String language, final String command, final Object... args) {
+    stats.commands.incrementAndGet();
+
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, true, (connection, response) -> createResultSet(response));
   }
 
+  @Override
   public ResultSet query(final String language, final String command, final Object... args) {
+    stats.queries.incrementAndGet();
+
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> createResultSet(response));
+  }
+
+  /**
+   * @deprecated use {@link #command(String, String, Object...)} instead
+   */
+  @Deprecated
+  @Override
+  public ResultSet execute(final String language, final String command, final Object... args) {
+    stats.commands.incrementAndGet();
+
+    final Map<String, Object> params = mapArgs(args);
+    return (ResultSet) databaseCommand("command", language, command, params, false, (connection, response) -> createResultSet(response));
   }
 
   public CONNECTION_STRATEGY getConnectionStrategy() {
@@ -254,6 +430,10 @@ public class RemoteDatabase extends RWLockContext {
     this.timeout = timeout;
   }
 
+  List<Pair<String, Integer>> getReplicaServerList() {
+    return replicaServerList;
+  }
+
   @Override
   public String toString() {
     return databaseName;
@@ -261,49 +441,54 @@ public class RemoteDatabase extends RWLockContext {
 
   public void createUser(final String userName, final String password, final List<String> databases) {
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("user"));
-      connection.setDoOutput(true);
+      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
 
-      final JSONObject jsonRequest = new JSONObject();
-      jsonRequest.put("name", userName);
-      jsonRequest.put("password", password);
+      final JSONObject jsonUser = new JSONObject();
+      jsonUser.put("name", userName);
+      jsonUser.put("password", password);
       if (databases != null && !databases.isEmpty()) {
         final JSONObject databasesJson = new JSONObject();
-        for (String dbName : databases)
+        for (final String dbName : databases)
           databasesJson.put(dbName, new String[] { "admin" });
-        jsonRequest.put("databases", databasesJson);
+        jsonUser.put("databases", databasesJson);
       }
 
-      final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
-      connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-      try (DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-        wr.write(postData);
-      }
+      setRequestPayload(connection, new JSONObject().put("command", "create user " + jsonUser));
 
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new RuntimeException("Error on creating user: " + connection.getResponseMessage());
+      if (connection.getResponseCode() != 200) {
+        final Exception detail = manageException(connection, "create user");
+        throw new SecurityException("Error on creating user: " + connection.getResponseMessage(), detail);
+      }
 
-    } catch (Exception e) {
-      throw new RuntimeException("Error on creating user", e);
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error on creating user", e);
     }
   }
 
   public void dropUser(final String userName) {
     try {
-      final HttpURLConnection connection = createConnection("DELETE", getUrl("user") + "/" + userName);
+      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
+      setRequestPayload(connection, new JSONObject().put("command", "drop user " + userName));
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new RuntimeException("Error on deleting user: " + connection.getResponseMessage());
+      if (connection.getResponseCode() != 200) {
+        final Exception detail = manageException(connection, "drop user");
+        throw new RuntimeException("Error on deleting user: " + connection.getResponseMessage(), detail);
+      }
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new RuntimeException("Error on deleting user", e);
     }
   }
 
-  private Object serverCommand(final String method, final String operation, final String language, final String payloadCommand,
-      final Map<String, Object> params, final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
-    return httpCommand(method, null, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect, callback);
+  @Override
+  public Map<String, Object> getStats() {
+    return stats.toMap();
+  }
+
+  private Object serverCommand(final String method, final String command, final boolean leaderIsPreferable, final boolean autoReconnect,
+      final Callback callback) {
+    return httpCommand(method, null, "server", null, command, null, leaderIsPreferable, autoReconnect, callback);
   }
 
   private Object databaseCommand(final String operation, final String language, final String payloadCommand, final Map<String, Object> params,
@@ -311,14 +496,14 @@ public class RemoteDatabase extends RWLockContext {
     return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true, callback);
   }
 
-  private Object httpCommand(final String method, final String extendedURL, final String operation, final String language, final String payloadCommand,
+  Object httpCommand(final String method, final String extendedURL, final String operation, final String language, final String payloadCommand,
       final Map<String, Object> params, final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
 
     Exception lastException = null;
 
-    final int maxRetry = leaderIsPreferable ? 3 : replicaServerList.size() + 1;
+    final int maxRetry = leaderIsPreferable ? 3 : getReplicaServerList().size() + 1;
 
-    Pair<String, Integer> connectToServer = leaderIsPreferable ? leaderServer : new Pair<>(currentServer, currentPort);
+    Pair<String, Integer> connectToServer = leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
     String server = null;
 
@@ -335,91 +520,29 @@ public class RemoteDatabase extends RWLockContext {
         try {
 
           if (payloadCommand != null) {
+            if ("GET".equalsIgnoreCase(method))
+              throw new IllegalArgumentException("Cannot execute a HTTP GET request with a payload");
+
             final JSONObject jsonRequest = new JSONObject();
-            jsonRequest.put("language", language);
-            jsonRequest.put("command", payloadCommand);
+            if (language != null)
+              jsonRequest.put("language", language);
+            if (payloadCommand != null)
+              jsonRequest.put("command", payloadCommand);
             jsonRequest.put("serializer", "record");
 
-            if (params != null) {
-              final JSONObject jsonParams = new JSONObject(params);
-              jsonRequest.put("params", jsonParams);
-            }
+            if (params != null)
+              jsonRequest.put("params", new JSONObject(params));
 
-            final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
-            connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-            try (DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-              wr.write(postData);
-            }
+            setRequestPayload(connection, jsonRequest);
           }
 
           connection.connect();
 
           if (connection.getResponseCode() != 200) {
-            String detail = null;
-            String reason = null;
-            String exception = null;
-            String exceptionArgs = null;
-            String responsePayload = null;
-
-            if (connection.getErrorStream() != null) {
-              try {
-                responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), charset);
-                final JSONObject response = new JSONObject(responsePayload);
-                reason = response.getString("error");
-                detail = response.has("detail") ? response.getString("detail") : null;
-                exception = response.has("exception") ? response.getString("exception") : null;
-                exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
-              } catch (Exception e) {
-                lastException = e;
-                // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
-                LogManager.instance()
-                    .log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload, e.toString());
-                continue;
-              }
-            }
-
-            String cmd = payloadCommand;
-            if (cmd == null)
-              cmd = operation;
-
-            if (exception != null) {
-              if (detail == null)
-                detail = "Unknown";
-
-              if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
-                final int sep = detail.lastIndexOf('.');
-                throw new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
-              } else if (exception.equals(QuorumNotReachedException.class.getName())) {
-                lastException = new QuorumNotReachedException(detail);
-                continue;
-              } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
-                final String[] exceptionArgsParts = exceptionArgs.split("\\|");
-                throw new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(null, exceptionArgsParts[2]));
-              } else if (exception.equals(ConcurrentModificationException.class.getName())) {
-                throw new ConcurrentModificationException(detail);
-              } else if (exception.equals(TransactionException.class.getName())) {
-                throw new TransactionException(detail);
-              } else if (exception.equals(TimeoutException.class.getName())) {
-                throw new TimeoutException(detail);
-              } else if (exception.equals(SchemaException.class.getName())) {
-                throw new SchemaException(detail);
-              } else
-                // ELSE
-                throw new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
-            }
-
-            final String httpErrorDescription = connection.getResponseMessage();
-
-            // TEMPORARY FIX FOR AN ISSUE WITH THE CLIENT/SERVER COMMUNICATION WHERE THE PAYLOAD ARRIVES AS EMPTY
-            if (connection.getResponseCode() == 400 && "Bad Request".equals(httpErrorDescription) && "Command text is null".equals(reason)) {
-              // RETRY
+            lastException = manageException(connection, payloadCommand != null ? payloadCommand : operation);
+            if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received"))
               LogManager.instance().log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
-              continue;
-            }
-
-            throw new RemoteException(
-                "Error on executing remote command '" + cmd + "' (httpErrorCode=" + connection.getResponseCode() + " httpErrorDescription="
-                    + httpErrorDescription + " reason=" + reason + " detail=" + detail + " exception=" + exception + ")");
+            continue;
           }
 
           final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
@@ -433,7 +556,7 @@ public class RemoteDatabase extends RWLockContext {
           connection.disconnect();
         }
 
-      } catch (IOException | ServerIsNotTheLeaderException e) {
+      } catch (final IOException | ServerIsNotTheLeaderException e) {
         lastException = e;
 
         if (!autoReconnect)
@@ -454,9 +577,9 @@ public class RemoteDatabase extends RWLockContext {
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d...", null, currentConnectToServer.getFirst(),
                   currentConnectToServer.getSecond(), connectToServer.getFirst(), connectToServer.getSecond());
 
-      } catch (RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException e) {
+      } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException | SecurityException e) {
         throw e;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new RemoteException("Error on executing remote operation " + operation + " (cause: " + e.getMessage() + ")", e);
       }
     }
@@ -475,11 +598,11 @@ public class RemoteDatabase extends RWLockContext {
     this.apiVersion = apiVersion;
   }
 
-  public interface Callback {
-    Object call(HttpURLConnection iArgument, JSONObject response) throws Exception;
+  public String getLeaderAddress() {
+    return leaderServer.getFirst() + ":" + leaderServer.getSecond();
   }
 
-  protected HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
+  HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
     final HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
     connection.setRequestProperty("charset", "utf-8");
     connection.setRequestMethod(httpMethod);
@@ -490,36 +613,48 @@ public class RemoteDatabase extends RWLockContext {
     connection.setConnectTimeout(timeout);
     connection.setReadTimeout(timeout);
 
-    if (sessionId != null)
-      connection.setRequestProperty(HttpUtils.ARCADEDB_SESSION_ID, sessionId);
+    if (getSessionId() != null)
+      connection.setRequestProperty(ARCADEDB_SESSION_ID, getSessionId());
 
     return connection;
   }
 
-  private void requestClusterConfiguration() {
-    serverCommand("GET", "server", "SQL", null, null, false, false, new Callback() {
-      @Override
-      public Object call(final HttpURLConnection connection, final JSONObject response) {
-        LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
+  void requestClusterConfiguration() {
+    try {
+      final HttpURLConnection connection = createConnection("GET", getUrl("server?mode=cluster"));
+      connection.connect();
+      if (connection.getResponseCode() != 200) {
+        final Exception detail = manageException(connection, "cluster configuration");
+        if (detail instanceof SecurityException)
+          throw detail;
+        throw new SecurityException("Error on requesting cluster configuration: " + connection.getResponseMessage(), detail);
+      }
 
-        if (!response.has("leaderServer")) {
-          leaderServer = new Pair<>(originalServer, originalPort);
-          replicaServerList.clear();
-          return null;
-        }
+      final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
 
-        final String cfgLeaderServer = (String) response.get("leaderServer");
-        final String[] leaderServerParts = cfgLeaderServer.split(":");
-        leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
+      LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
 
-        final String cfgReplicaServers = (String) response.get("replicaServers");
-
-        // PARSE SERVER LISTS
+      if (!response.has("ha")) {
+        leaderServer = new Pair<>(originalServer, originalPort);
         replicaServerList.clear();
+        return;
+      }
 
-        if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
-          final String[] serverEntries = cfgReplicaServers.split(",");
-          for (String serverEntry : serverEntries) {
+      final JSONObject ha = response.getJSONObject("ha");
+
+      final String cfgLeaderServer = (String) ha.get("leaderAddress");
+      final String[] leaderServerParts = cfgLeaderServer.split(":");
+      leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
+
+      final String cfgReplicaServers = (String) ha.get("replicaAddresses");
+
+      // PARSE SERVER LISTS
+      replicaServerList.clear();
+
+      if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
+        final String[] serverEntries = cfgReplicaServers.split(",");
+        for (final String serverEntry : serverEntries) {
+          try {
             final String[] serverParts = serverEntry.split(":");
             if (serverParts.length != 2)
               LogManager.instance().log(this, Level.WARNING, "No port specified on remote server URL '%s'", null, serverEntry);
@@ -528,14 +663,19 @@ public class RemoteDatabase extends RWLockContext {
             final int sPort = Integer.parseInt(serverParts[1]);
 
             replicaServerList.add(new Pair(sHost, sPort));
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", null, serverEntry);
           }
         }
-
-        LogManager.instance().log(this, Level.INFO, "Remote Database configured with leader=%s and replicas=%s", null, leaderServer, replicaServerList);
-
-        return null;
       }
-    });
+
+      LogManager.instance().log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s", null, leaderServer, replicaServerList);
+
+    } catch (final SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error on requesting cluster configuration", e);
+    }
   }
 
   private Pair<String, Integer> getNextReplicaAddress() {
@@ -549,19 +689,19 @@ public class RemoteDatabase extends RWLockContext {
     return replicaServerList.get(currentReplicaServerIndex);
   }
 
-  private boolean reloadClusterConfiguration() {
+  boolean reloadClusterConfiguration() {
     final Pair<String, Integer> oldLeader = leaderServer;
 
     // ASK REPLICA FIRST
     for (int replicaIdx = 0; replicaIdx < replicaServerList.size(); ++replicaIdx) {
-      Pair<String, Integer> connectToServer = replicaServerList.get(replicaIdx);
+      final Pair<String, Integer> connectToServer = replicaServerList.get(replicaIdx);
 
       currentServer = connectToServer.getFirst();
       currentPort = connectToServer.getSecond();
 
       try {
         requestClusterConfiguration();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         // IGNORE< TRY NEXT
         continue;
       }
@@ -583,14 +723,14 @@ public class RemoteDatabase extends RWLockContext {
     return leaderServer != null;
   }
 
-  private Map<String, Object> mapArgs(Object[] args) {
+  private Map<String, Object> mapArgs(final Object[] args) {
     Map<String, Object> params = null;
     if (args != null && args.length > 0) {
       if (args.length == 1 && args[0] instanceof Map)
         params = (Map<String, Object>) args[0];
       else {
         params = new HashMap<>();
-        for (Object o : args) {
+        for (final Object o : args) {
           params.put("" + params.size(), o);
         }
       }
@@ -642,5 +782,108 @@ public class RemoteDatabase extends RWLockContext {
       }
     }
     return null;
+  }
+
+  RID saveRecord(final MutableDocument record) {
+    stats.createRecord.incrementAndGet();
+
+    RID rid = record.getIdentity();
+    if (rid != null)
+      command("sql", "update " + rid + " content " + record.toJSON());
+    else {
+      final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + record.toJSON());
+      rid = result.next().getIdentity().get();
+    }
+    return rid;
+  }
+
+  RID saveRecord(final MutableDocument record, final String bucketName) {
+    stats.createRecord.incrementAndGet();
+
+    RID rid = record.getIdentity();
+    if (rid != null)
+      throw new IllegalStateException("Cannot update a record in a custom bucket");
+
+    final ResultSet result = command("sql", "insert into " + record.getTypeName() + " bucket " + bucketName + " content " + record.toJSON());
+    return result.next().getIdentity().get();
+  }
+
+  void setRequestPayload(final HttpURLConnection connection, final JSONObject jsonRequest) throws IOException {
+    connection.setDoOutput(true);
+    final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
+    connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
+    try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
+      wr.write(postData);
+    }
+  }
+
+  private Exception manageException(final HttpURLConnection connection, final String operation) throws IOException {
+    String detail = null;
+    String reason = null;
+    String exception = null;
+    String exceptionArgs = null;
+    String responsePayload = null;
+
+    if (connection.getErrorStream() != null) {
+      try {
+        responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), charset);
+        final JSONObject response = new JSONObject(responsePayload);
+        reason = response.getString("error");
+        detail = response.has("detail") ? response.getString("detail") : null;
+        exception = response.has("exception") ? response.getString("exception") : null;
+        exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
+      } catch (final Exception e) {
+        // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
+        LogManager.instance().log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload, e.toString());
+        return e;
+      }
+    }
+
+    if (exception != null) {
+      if (detail == null)
+        detail = "Unknown";
+
+      if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
+        final int sep = detail.lastIndexOf('.');
+        return new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
+      } else if (exception.equals(RecordNotFoundException.class.getName())) {
+        final int begin = detail.indexOf("#");
+        final int end = detail.indexOf(" ", begin);
+        return new RecordNotFoundException(detail, new RID(this, detail.substring(begin, end)));
+      } else if (exception.equals(QuorumNotReachedException.class.getName())) {
+        return new QuorumNotReachedException(detail);
+      } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
+        final String[] exceptionArgsParts = exceptionArgs.split("\\|");
+        return new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(this, exceptionArgsParts[2]));
+      } else if (exception.equals(ConcurrentModificationException.class.getName())) {
+        return new ConcurrentModificationException(detail);
+      } else if (exception.equals(TransactionException.class.getName())) {
+        return new TransactionException(detail);
+      } else if (exception.equals(TimeoutException.class.getName())) {
+        return new TimeoutException(detail);
+      } else if (exception.equals(SchemaException.class.getName())) {
+        return new SchemaException(detail);
+      } else if (exception.equals(NoSuchElementException.class.getName())) {
+        return new NoSuchElementException(detail);
+      } else if (exception.equals(SecurityException.class.getName())) {
+        return new SecurityException(detail);
+      } else if (exception.equals("com.arcadedb.server.security.ServerSecurityException")) {
+        return new SecurityException(detail);
+      } else
+        // ELSE
+        return new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
+    }
+
+    final String httpErrorDescription = connection.getResponseMessage();
+
+    // TEMPORARY FIX FOR AN ISSUE WITH THE CLIENT/SERVER COMMUNICATION WHERE THE PAYLOAD ARRIVES AS EMPTY
+    if (connection.getResponseCode() == 400 && "Bad Request".equals(httpErrorDescription) && "Command text is null".equals(reason)) {
+      // RETRY
+      return new RuntimeException("Empty payload received");
+    }
+
+    return new RemoteException(
+        "Error on executing remote command '" + operation + "' (httpErrorCode=" + connection.getResponseCode() + " httpErrorDescription=" + httpErrorDescription
+            + " reason=" + reason + " detail=" + detail + " exception=" + exception + ")");
   }
 }

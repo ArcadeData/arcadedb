@@ -24,18 +24,13 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 
 public interface IndexableSQLFunction {
-  boolean shouldExecuteAfterSearch(FromClause target, BinaryCompareOperator operator, Object right, CommandContext context,
-      Expression[] oExpressions);
+  boolean shouldExecuteAfterSearch(FromClause target, BinaryCompareOperator operator, Object right, CommandContext context, Expression[] oExpressions);
 
-  boolean allowsIndexedExecution(FromClause target, BinaryCompareOperator operator, Object right, CommandContext context,
-      Expression[] oExpressions);
+  boolean allowsIndexedExecution(FromClause target, BinaryCompareOperator operator, Object right, CommandContext context, Expression[] oExpressions);
 
-  boolean canExecuteInline(FromClause target, BinaryCompareOperator operator, Object right, CommandContext context,
-      Expression[] oExpressions);
+  boolean canExecuteInline(FromClause target, BinaryCompareOperator operator, Object right, CommandContext context, Expression[] oExpressions);
 
-  long estimate(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext ctx,
-      Expression[] oExpressions);
+  long estimate(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext context, Expression[] oExpressions);
 
-  Iterable<Record> searchFromTarget(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext ctx,
-      Expression[] oExpressions);
+  Iterable<Record> searchFromTarget(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext context, Expression[] oExpressions);
 }

@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -29,54 +30,53 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.lang.reflect.*;
 import java.util.*;
+import java.util.logging.*;
 
 public class BackupDatabaseStatement extends SimpleExecStatement {
   protected Url url;
 
-  public BackupDatabaseStatement( final int id) {
+  public BackupDatabaseStatement(final int id) {
     super(id);
   }
 
-  public BackupDatabaseStatement( final SqlParser p,  final int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeSimple( final CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext context) {
     final String targetUrl = this.url != null ? this.url.getUrlString() : null;
-    final  ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "backup database");
     if (targetUrl != null)
       result.setProperty("target", targetUrl);
 
-    if (ctx.getDatabase().isTransactionActive())
-      ctx.getDatabase().rollback();
+    if (context.getDatabase().isTransactionActive()) {
+      LogManager.instance().log(this, Level.SEVERE, "Found pending transaction. Rolling it back before the backup...");
+      context.getDatabase().rollback();
+    }
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
-      final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), targetUrl);
+      final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), targetUrl);
 
       // ASSURE THE DIRECTORY CANNOT BE CHANGED
-      clazz.getMethod("setDirectory", String.class).invoke(backup, "backups/" + ctx.getDatabase().getName());
+      clazz.getMethod("setDirectory", String.class).invoke(backup, "backups/" + context.getDatabase().getName());
       clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
       final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
 
       result.setProperty("result", "OK");
       result.setProperty("backupFile", backupFile);
 
-      InternalResultSet rs = new InternalResultSet();
+      final InternalResultSet rs = new InternalResultSet();
       rs.add(result);
       return rs;
 
-    } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on backing up database, backup libs not found in classpath", e);
-    } catch (InvocationTargetException e) {
+    } catch (final InvocationTargetException e) {
       throw new CommandExecutionException("Error on backing up database", e.getTargetException());
     }
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("BACKUP DATABASE");
     if (url != null) {
       builder.append(' ');
@@ -85,18 +85,8 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-    final BackupDatabaseStatement that = (BackupDatabaseStatement) o;
-    return Objects.equals(url, that.url);
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hash(url);
+  protected Object[] getIdentityElements() {
+    return new Object[] { url };
   }
 
   @Override

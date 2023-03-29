@@ -26,17 +26,17 @@ import java.util.*;
 /**
  * Iterator that allow to iterate against multiple collection of elements.
  */
-public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
+public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   private List<Object> sources;
   private Iterator<?>  sourcesIterator;
   private Iterator<T>  partialIterator;
 
-  private long    browsed   = 0L;
-  private long    skip      = -1L;
-  private long    limit     = -1L;
-  private long    timeout   = -1L;
-  private boolean embedded  = false;
-  private int     skipped   = 0;
+  private       long    browsed   = 0L;
+  private       long    skip      = -1L;
+  private       long    limit     = -1L;
+  private       long    timeout   = -1L;
+  private       boolean embedded  = false;
+  private       int     skipped   = 0;
   private final long    beginTime = System.currentTimeMillis();
 
   public MultiIterator() {
@@ -50,9 +50,6 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
 
   @Override
   public boolean hasNext() {
-    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
-      throw new TimeoutException("Timeout on iteration");
-
     while (skipped < skip) {
       if (!hasNextInternal()) {
         return false;
@@ -105,6 +102,7 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
     return this;
   }
 
+  @Override
   public void reset() {
     sourcesIterator = null;
     partialIterator = null;
@@ -121,9 +119,10 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
     return this;
   }
 
-  public int countEntries() {
+  @Override
+  public long countEntries() {
     // SUM ALL THE COLLECTION SIZES
-    int size = 0;
+    long size = 0;
     final int totSources = sources.size();
     for (int i = 0; i < totSources; ++i) {
       if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
@@ -138,6 +137,8 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
           size += ((Map<?, ?>) o).size();
         else if (o.getClass().isArray())
           size += Array.getLength(o);
+        else if (o instanceof ResettableIterator)
+          size += ((ResettableIterator<?>) o).countEntries();
         else
           size++;
     }
@@ -145,8 +146,13 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
   }
 
   @Override
+  public long getBrowsed() {
+    return browsed;
+  }
+
+  @Override
   public void remove() {
-    throw new UnsupportedOperationException("PMultiIterator.remove()");
+    throw new UnsupportedOperationException("MultiIterator.remove()");
   }
 
   public long getLimit() {
@@ -157,7 +163,7 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
     this.limit = limit;
   }
 
-  public void setTimeout(long readTimeout) {
+  public void setTimeout(final long readTimeout) {
     this.timeout = readTimeout;
   }
 
@@ -172,7 +178,7 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
   public boolean contains(final Object value) {
     final int totSources = sources.size();
     for (int i = 0; i < totSources; ++i) {
-      Object o = sources.get(i);
+      final Object o = sources.get(i);
 
       if (o != null) {
         if (o instanceof Collection<?>) {

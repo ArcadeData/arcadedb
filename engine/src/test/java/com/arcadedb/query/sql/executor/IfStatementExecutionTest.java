@@ -31,9 +31,9 @@ public class IfStatementExecutionTest extends TestHelper {
 
   @Test
   public void testPositive() {
-    ResultSet results = database.command("sql", "if(1=1){ select 1 as a; }");
+    final ResultSet results = database.command("sql", "if(1=1){ select 1 as a; }");
     Assertions.assertTrue(results.hasNext());
-    Result result = results.next();
+    final Result result = results.next();
     assertThat((Integer) result.getProperty("a")).isEqualTo(1);
     Assertions.assertFalse(results.hasNext());
     results.close();
@@ -41,14 +41,14 @@ public class IfStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNegative() {
-    ResultSet results = database.command("sql", "if(1=2){ select 1 as a; }");
+    final ResultSet results = database.command("sql", "if(1=2){ select 1 as a; }");
     Assertions.assertFalse(results.hasNext());
     results.close();
   }
 
   @Test
   public void testIfReturn() {
-    ResultSet results = database.command("sql", "if(1=1){ return 'yes'; }");
+    final ResultSet results = database.command("sql", "if(1=1){ return 'yes'; }");
     Assertions.assertTrue(results.hasNext());
     Assertions.assertEquals("yes", results.next().getProperty("value"));
     Assertions.assertFalse(results.hasNext());

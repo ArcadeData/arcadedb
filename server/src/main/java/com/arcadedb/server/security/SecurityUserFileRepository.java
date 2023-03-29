@@ -21,8 +21,8 @@ package com.arcadedb.server.security;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -45,8 +45,8 @@ public class SecurityUserFileRepository {
     if (!file.exists())
       file.getParentFile().mkdirs();
 
-    try (FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
-      for (JSONObject line : configuration)
+    try (final FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
+      for (final JSONObject line : configuration)
         writer.write(line.toString() + "\n");
     }
 
@@ -56,7 +56,7 @@ public class SecurityUserFileRepository {
   public List<JSONObject> getUsers() {
     try {
       return load();
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading file '%s', using default configuration", e, FILE_NAME);
       return createDefault();
     }

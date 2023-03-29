@@ -46,7 +46,7 @@ public class Pair<V1, V2> implements Comparable<Pair<V1, V2>> {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

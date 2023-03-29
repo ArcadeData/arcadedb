@@ -27,11 +27,9 @@ public class Alias extends SimpleNode {
     super(id);
   }
 
-  public Alias(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("ALIAS ");
+    builder.append(value);
   }
 }
 /* JavaCC - OriginalChecksum=c0c2ff315abe152a8ea5f2ecafd0f853 (do not edit this line) */

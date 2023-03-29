@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -33,20 +32,16 @@ public class NotBlock extends BooleanExpression {
 
   protected boolean negate = false;
 
-  public NotBlock(int id) {
+  public NotBlock(final int id) {
     super(id);
   }
 
-  public NotBlock(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (sub == null) {
       return true;
     }
-    boolean result = sub.evaluate(currentRecord, ctx);
+    final boolean result = sub.evaluate(currentRecord, context);
     if (negate) {
       return !result;
     }
@@ -54,11 +49,11 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (sub == null) {
       return true;
     }
-    boolean result = sub.evaluate(currentRecord, ctx);
+    final boolean result = sub.evaluate(currentRecord, context);
     if (negate) {
       return !result;
     }
@@ -69,7 +64,7 @@ public class NotBlock extends BooleanExpression {
     return sub;
   }
 
-  public void setSub(BooleanExpression sub) {
+  public void setSub(final BooleanExpression sub) {
     this.sub = sub;
   }
 
@@ -77,40 +72,25 @@ public class NotBlock extends BooleanExpression {
     return negate;
   }
 
-  public void setNegate(boolean negate) {
+  public void setNegate(final boolean negate) {
     this.negate = negate;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (negate) {
       builder.append("NOT ");
     }
     sub.toString(params, builder);
   }
 
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return sub.getNumberOfExternalCalculations();
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return sub.getExternalCalculationConditions();
-  }
-
-  public List<BinaryCondition> getIndexedFunctionConditions(DocumentType iSchemaClass, Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (sub == null) {
       return null;
     }
     if (negate) {
       return null;
     }
-    return sub.getIndexedFunctionConditions(iSchemaClass, database);
+    return sub.getIndexedFunctionConditions(iSchemaClass, context);
   }
 
   @Override
@@ -122,47 +102,20 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
-    return sub.needsAliases(aliases);
-  }
-
-  @Override
   public NotBlock copy() {
-    NotBlock result = new NotBlock(-1);
+    final NotBlock result = new NotBlock(-1);
     result.sub = sub.copy();
     result.negate = negate;
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     sub.extractSubQueries(collector);
   }
 
-  @Override
-  public boolean refersToParent() {
-    return sub.refersToParent();
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final NotBlock oNotBlock = (NotBlock) o;
-
-    if (negate != oNotBlock.negate)
-      return false;
-    return Objects.equals(sub, oNotBlock.sub);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = sub != null ? sub.hashCode() : 0;
-    result = 31 * result + (negate ? 1 : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { sub };
   }
 
   @Override
@@ -171,8 +124,16 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return sub.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { sub };
+  }
+
+  @Override
+  public boolean isAlwaysTrue() {
+    if (negate)
+      return false;
+
+    return sub.isAlwaysTrue();
   }
 }
 /* JavaCC - OriginalChecksum=1926313b3f854235aaa20811c22d583b (do not edit this line) */

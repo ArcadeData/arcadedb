@@ -30,10 +30,10 @@ public class PatternNode {
   public final Set<PatternEdge> out        = new LinkedHashSet<>();
   public final Set<PatternEdge> in         = new LinkedHashSet<>();
   public       int              centrality = 0;
-  public boolean          optional   = false;
+  public       boolean          optional   = false;
 
-  public int addEdge(MatchPathItem item, PatternNode to) {
-    PatternEdge edge = new PatternEdge();
+  public int addEdge(final MatchPathItem item, final PatternNode to) {
+    final PatternEdge edge = new PatternEdge();
     edge.item = item;
     edge.out = this;
     edge.in = to;

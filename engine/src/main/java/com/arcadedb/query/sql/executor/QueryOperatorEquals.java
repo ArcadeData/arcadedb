@@ -60,7 +60,7 @@ public class QueryOperatorEquals {
 
     // NUMBERS
     if (iLeft instanceof Number && iRight instanceof Number) {
-      Number[] couple = Type.castComparableNumber((Number) iLeft, (Number) iRight);
+      final Number[] couple = Type.castComparableNumber((Number) iLeft, (Number) iRight);
       return couple[0].equals(couple[1]);
     }
 
@@ -74,7 +74,7 @@ public class QueryOperatorEquals {
         return Arrays.equals((byte[]) iLeft, (byte[]) iRight);
       }
       return iLeft.equals(right);
-    } catch (Exception ignore) {
+    } catch (final Exception ignore) {
       return false;
     }
   }
@@ -87,10 +87,10 @@ public class QueryOperatorEquals {
       // DOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
       final Set<String> firstFieldName = ((Document) record).getPropertyNames();
       if (!firstFieldName.isEmpty()) {
-        Object fieldValue = ((Document) record).get(firstFieldName.iterator().next());
+        final Object fieldValue = ((Document) record).get(firstFieldName.iterator().next());
         if (fieldValue != null) {
           if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
-            for (Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
+            for (final Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
               if (o != null && o.equals(value))
                 return true;
             }
@@ -119,10 +119,10 @@ public class QueryOperatorEquals {
     // ODOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
     final Set<String> firstFieldName = iRecord.getPropertyNames();
     if (!firstFieldName.isEmpty()) {
-      Object fieldValue = iRecord.getProperty(firstFieldName.iterator().next());
+      final Object fieldValue = iRecord.getProperty(firstFieldName.iterator().next());
       if (fieldValue != null) {
         if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
-          for (Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
+          for (final Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
             if (o != null && o.equals(iValue))
               return true;
           }

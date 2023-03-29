@@ -19,7 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import org.json.JSONObject;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -70,6 +72,18 @@ public class AlterTypeExecutionTest extends TestHelper {
   }
 
   @Test
+  public void sqlAlterTypeBucketSelectionStrategy() {
+    database.command("sql", "CREATE VERTEX TYPE Account");
+    database.command("sql", "CREATE PROPERTY Account.id string");
+    database.command("sql", "CREATE INDEX ON Account(id) UNIQUE");
+    database.command("sql", "ALTER TYPE Account BucketSelectionStrategy `partitioned('id')`");
+
+    final BucketSelectionStrategy strategy = database.getSchema().getType("Account").getBucketSelectionStrategy();
+    Assertions.assertEquals("partitioned", strategy.getName());
+    Assertions.assertEquals("id", ((PartitionedBucketSelectionStrategy) strategy).getProperties().get(0));
+  }
+
+  @Test
   public void sqlAlterTypeCustom() {
     database.command("sql", "CREATE VERTEX TYPE Suv");
 
@@ -80,7 +94,7 @@ public class AlterTypeExecutionTest extends TestHelper {
     Assertions.assertEquals(3, database.getSchema().getType("Suv").getCustomValue("age"));
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
-    JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("custom");
+    final JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("custom");
     Assertions.assertEquals("test", customMap.getString("description"));
     Assertions.assertEquals(3, customMap.getInt("age"));
 

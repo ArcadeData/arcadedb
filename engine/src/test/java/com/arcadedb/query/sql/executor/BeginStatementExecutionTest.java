@@ -30,11 +30,11 @@ public class BeginStatementExecutionTest {
   public void testBegin() throws Exception {
     TestHelper.executeInNewDatabase("OCommitStatementExecutionTest", (db) -> {
       Assertions.assertTrue(db.getTransaction() == null || !db.getTransaction().isActive());
-      ResultSet result = db.command("sql", "begin");
+      final ResultSet result = db.command("sql", "begin");
       //printExecutionPlan(null, result);
       Assertions.assertNotNull(result);
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertEquals("begin", item.getProperty("operation"));
       Assertions.assertFalse(result.hasNext());
       Assertions.assertFalse(db.getTransaction() == null || !db.getTransaction().isActive());

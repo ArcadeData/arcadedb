@@ -37,27 +37,22 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class RebuildIndexStatement extends DDLStatement {
-
   protected            boolean    all      = false;
   protected            Identifier name;
   private static final int        pageSize = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
 
-  public RebuildIndexStatement(int id) {
+  public RebuildIndexStatement(final int id) {
     super(id);
   }
 
-  public RebuildIndexStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext context) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "rebuild index");
 
     final AtomicLong total = new AtomicLong();
 
-    final Database database = ctx.getDatabase();
+    final Database database = context.getDatabase();
     database.transaction(() -> {
       final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
         total.incrementAndGet();
@@ -73,7 +68,7 @@ public class RebuildIndexStatement extends DDLStatement {
       if (all) {
         final Index[] indexes = database.getSchema().getIndexes();
 
-        for (Index idx : indexes) {
+        for (final Index idx : indexes) {
           try {
             if (idx instanceof TypeIndex) {
               final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
@@ -88,7 +83,7 @@ public class RebuildIndexStatement extends DDLStatement {
                   .createTypeIndex(indexType, unique, typeName, propNames.toArray(new String[propNames.size()]), pageSize, nullStrategy, callback);
               indexList.add(idx.getName());
             }
-          } catch (Exception e) {
+          } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, idx.getName());
           }
         }
@@ -130,7 +125,7 @@ public class RebuildIndexStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("REBUILD INDEX ");
     if (all) {
       builder.append("*");
@@ -141,20 +136,20 @@ public class RebuildIndexStatement extends DDLStatement {
 
   @Override
   public RebuildIndexStatement copy() {
-    RebuildIndexStatement result = new RebuildIndexStatement(-1);
+    final RebuildIndexStatement result = new RebuildIndexStatement(-1);
     result.all = all;
     result.name = name == null ? null : name.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    RebuildIndexStatement that = (RebuildIndexStatement) o;
+    final RebuildIndexStatement that = (RebuildIndexStatement) o;
 
     if (all != that.all)
       return false;

@@ -19,7 +19,7 @@
 package com.arcadedb.server.gremlin;
 
 import com.arcadedb.server.BaseGraphServerTest;
-import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
+import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1;
@@ -44,7 +44,7 @@ public class ConnectRemoteGremlinServer {
     final GraphTraversalSource g = traversal();
 
     g.addV().property("myProp", "some value").next(); // creates the vertex
-    List<Map<Object, Object>> vertices = g.V().valueMap().with(WithOptions.tokens).toList(); // verifies that the vertex created with properties is returned
+    final List<Map<Object, Object>> vertices = g.V().valueMap().with(WithOptions.tokens).toList(); // verifies that the vertex created with properties is returned
 
     Assertions.assertFalse(vertices.isEmpty());
   }

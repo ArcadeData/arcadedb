@@ -51,26 +51,17 @@ public class EmptyIndexCursor implements IndexCursor {
   }
 
   @Override
-  public void close() {
-  }
-
-  @Override
-  public String dumpStats() {
-    return "no-stats";
-  }
-
-  @Override
   public BinaryComparator getComparator() {
     return null;
   }
 
   @Override
-  public byte[] getKeyTypes() {
+  public byte[] getBinaryKeyTypes() {
     return new byte[0];
   }
 
   @Override
-  public long size() {
+  public long estimateSize() {
     return 0l;
   }
 

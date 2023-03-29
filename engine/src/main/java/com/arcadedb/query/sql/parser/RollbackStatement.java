@@ -28,37 +28,33 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class RollbackStatement extends SimpleExecStatement {
-  public RollbackStatement(int id) {
+  public RollbackStatement(final int id) {
     super(id);
   }
 
-  public RollbackStatement(SqlParser p, int id) {
-    super(p, id);
-  }
-
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
-    ctx.getDatabase().rollback();
-    InternalResultSet result = new InternalResultSet();
-    ResultInternal item = new ResultInternal();
+  public ResultSet executeSimple(final CommandContext context) {
+    context.getDatabase().rollback();
+    final InternalResultSet result = new InternalResultSet();
+    final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "rollback");
     result.add(item);
     return result;
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ROLLBACK");
   }
 
   @Override
   public RollbackStatement copy() {
-    RollbackStatement result = new RollbackStatement(-1);
+    final RollbackStatement result = new RollbackStatement(-1);
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     return o != null && getClass() == o.getClass();

@@ -21,27 +21,16 @@
 package com.arcadedb.graphql.parser;
 
 public class ObjectFieldWithValue extends SimpleNode {
-
   protected Name              name;
   protected ValueWithVariable value;
 
-  public ObjectFieldWithValue(int id) {
+  public ObjectFieldWithValue(final int id) {
     super(id);
-  }
-
-  public ObjectFieldWithValue(GraphQLParser p, int id) {
-    super(p, id);
   }
 
   public String getName() {
     return name != null ? name.value : null;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=d85f205267573b6f9cb2631f3b734388 (do not edit this line) */

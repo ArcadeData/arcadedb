@@ -42,33 +42,29 @@ public class AnsiLogFormatter extends LogFormatter {
     final StringBuilder buffer = new StringBuilder(512);
     buffer.append(EOL);
 
-    if (AnsiCode.isSupportsColors())
+    if (AnsiCode.supportsColors())
       buffer.append("$ANSI{cyan ");
     synchronized (dateFormat) {
       buffer.append(dateFormat.format(new Date()));
     }
 
-    if (AnsiCode.isSupportsColors())
+    if (AnsiCode.supportsColors())
       buffer.append("}");
 
-    if (AnsiCode.isSupportsColors()) {
+    if (AnsiCode.supportsColors()) {
       if (level == SEVERE)
         buffer.append("$ANSI{red ");
       else if (level == Level.WARNING)
         buffer.append("$ANSI{yellow ");
       else if (level == Level.INFO)
         buffer.append("$ANSI{green ");
-      else if (level == Level.CONFIG)
-        buffer.append("$ANSI{green ");
-      else if (level == Level.CONFIG)
-        buffer.append("$ANSI{white ");
       else
         // DEFAULT
         buffer.append("$ANSI{white ");
     }
 
     buffer.append(String.format(" %-5.5s ", level.getName()));
-    if (AnsiCode.isSupportsColors())
+    if (AnsiCode.supportsColors())
       buffer.append("}");
 
     if (requester != null) {
@@ -83,7 +79,7 @@ public class AnsiLogFormatter extends LogFormatter {
         buffer.append(String.format(message, additionalArgs));
       else
         buffer.append(message);
-    } catch (IllegalFormatException ignore) {
+    } catch (final IllegalFormatException ignore) {
       buffer.append(message);
     }
 

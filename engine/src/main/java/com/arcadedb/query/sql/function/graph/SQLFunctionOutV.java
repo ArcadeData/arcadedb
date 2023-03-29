@@ -29,7 +29,7 @@ public class SQLFunctionOutV extends SQLFunctionMove {
   public static final String NAME = "outV";
 
   public SQLFunctionOutV() {
-    super(NAME, 0, -1);
+    super(NAME);
   }
 
   @Override

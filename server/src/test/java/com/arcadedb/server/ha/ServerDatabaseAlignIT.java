@@ -93,7 +93,7 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     try {
       checkDatabasesAreIdentical();
       Assertions.fail();
-    } catch (DatabaseComparator.DatabaseAreNotIdentical e) {
+    } catch (final DatabaseComparator.DatabaseAreNotIdentical e) {
       // EXPECTED
     }
 

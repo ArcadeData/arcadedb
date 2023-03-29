@@ -42,7 +42,8 @@ public enum AnsiCode {
 
   NULL("");
 
-  private final String code;
+  private final static boolean SUPPORTS_COLORS;
+  private final        String  code;
 
   AnsiCode(final String code) {
     this.code = code;
@@ -53,27 +54,25 @@ public enum AnsiCode {
     return code;
   }
 
-  private final static boolean supportsColors;
-
-  public static boolean isSupportsColors() {
-    return supportsColors;
+  public static boolean supportsColors() {
+    return SUPPORTS_COLORS;
   }
 
   static {
     final String ansiSupport = "auto";
     if ("true".equalsIgnoreCase(ansiSupport))
       // FORCE ANSI SUPPORT
-      supportsColors = true;
+      SUPPORTS_COLORS = true;
     else if ("auto".equalsIgnoreCase(ansiSupport)) {
       // AUTOMATIC CHECK
-      supportsColors = System.console() != null && !System.getProperty("os.name").toLowerCase().contains("win");
+      SUPPORTS_COLORS = System.console() != null && !System.getProperty("os.name").toLowerCase().contains("win");
     } else
       // DO NOT SUPPORT ANSI
-      supportsColors = false;
+      SUPPORTS_COLORS = false;
   }
 
   public static String format(final String message) {
-    return format(message, supportsColors);
+    return format(message, SUPPORTS_COLORS);
   }
 
   public static String format(final String message, final boolean supportsColors) {

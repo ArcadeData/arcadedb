@@ -18,47 +18,54 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
 
-public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
+/**
+ * Creates a new database on a server.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @Deprecated Use the generic @see PostServerCommandHandler
+ */
+@Deprecated
+public class PostCreateDatabaseHandler extends AbstractHandler {
   public PostCreateDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  protected boolean requiresDatabase() {
-    return false;
-  }
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+    checkRootUser(user);
 
-  @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
     final Deque<String> databaseNamePar = exchange.getQueryParameters().get("database");
     String databaseName = databaseNamePar.isEmpty() ? null : databaseNamePar.getFirst().trim();
     if (databaseName.isEmpty())
       databaseName = null;
 
-    if (databaseName == null) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Database parameter is null\"}");
-      return;
-    }
+    if (databaseName == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
-    httpServer.getServer().getServerMetrics().meter("http.create-database").mark();
+    final ArcadeDBServer server = httpServer.getServer();
+    if (!server.getHA().isLeader())
+      // NOT THE LEADER
+      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", server.getHA().getLeaderName());
 
-    httpServer.getServer().createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
+    server.getServerMetrics().meter("http.create-database").mark();
 
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
-  }
+    final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
 
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
+    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      ((ReplicatedDatabase) db).createInReplicas();
+
+    return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
   }
 }

@@ -31,12 +31,8 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
   public Identifier settingName;
   public Expression settingValue;
 
-  public CreatePropertyAttributeStatement(int id) {
+  public CreatePropertyAttributeStatement(final int id) {
     super(id);
-  }
-
-  public CreatePropertyAttributeStatement(SqlParser p, int id) {
-    super(p, id);
   }
 
   @Override
@@ -53,6 +49,35 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     result.settingName = settingName == null ? null : settingName.copy();
     result.settingValue = settingValue == null ? null : settingValue.copy();
     return result;
+  }
+
+  public Object setOnProperty(final Property internalProp, final CommandContext context) {
+    final String attrName = settingName.getStringValue();
+    final Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, context);
+    try {
+      if (attrName.equalsIgnoreCase("readonly")) {
+        internalProp.setReadonly((boolean) attrValue);
+      } else if (attrName.equalsIgnoreCase("mandatory")) {
+        internalProp.setMandatory((boolean) attrValue);
+      } else if (attrName.equalsIgnoreCase("notnull")) {
+        internalProp.setNotNull((boolean) attrValue);
+      } else if (attrName.equalsIgnoreCase("max")) {
+        internalProp.setMax("" + attrValue);
+      } else if (attrName.equalsIgnoreCase("min")) {
+        internalProp.setMin("" + attrValue);
+      } else if (attrName.equalsIgnoreCase("default")) {
+        if (this.settingValue == null)
+          throw new CommandExecutionException("Default value not set");
+        internalProp.setDefaultValue(attrValue);
+      } else if (attrName.equalsIgnoreCase("regexp")) {
+        internalProp.setRegexp("" + attrValue);
+      } else {
+        throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
+      }
+    } catch (final Exception e) {
+      throw new CommandExecutionException("Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue, e);
+    }
+    return attrValue;
   }
 
   @Override
@@ -74,36 +99,6 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     int result = settingName != null ? settingName.hashCode() : 0;
     result = 31 * result + (settingValue != null ? settingValue.hashCode() : 0);
     return result;
-  }
-
-  public Object setOnProperty(final Property internalProp, final CommandContext ctx) {
-    final String attrName = settingName.getStringValue();
-    Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, ctx);
-    try {
-      if (attrName.equalsIgnoreCase("readonly")) {
-        internalProp.setReadonly((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("mandatory")) {
-        internalProp.setMandatory((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("notnull")) {
-        internalProp.setNotNull((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("max")) {
-        internalProp.setMax("" + attrValue);
-      } else if (attrName.equalsIgnoreCase("min")) {
-        internalProp.setMin("" + attrValue);
-      } else if (attrName.equalsIgnoreCase("default")) {
-        if (this.settingValue == null)
-          throw new CommandExecutionException("Default value not set");
-
-        internalProp.setDefaultValue("" + attrValue);
-      } else if (attrName.equalsIgnoreCase("regexp")) {
-        internalProp.setRegexp("" + attrName);
-      } else {
-        throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
-      }
-    } catch (Exception e) {
-      throw new CommandExecutionException("Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue, e);
-    }
-    return attrValue;
   }
 }
 /* JavaCC - OriginalChecksum=6a7964c2b9dad541ca962eecea00651b (do not edit this line) */

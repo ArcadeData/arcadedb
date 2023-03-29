@@ -46,14 +46,14 @@ import java.util.*;
  */
 public class AggregateProjectionSplit {
 
-  protected static final String GENERATED_ALIAS_PREFIX = "_$$$OALIAS$$_";
+  protected static final String GENERATED_ALIAS_PREFIX = "_$$$OALIAS$$$_";
   protected              int    nextAliasId            = 0;
 
   protected List<ProjectionItem> preAggregate = new ArrayList<>();
   protected List<ProjectionItem> aggregate    = new ArrayList<>();
 
   public Identifier getNextAlias() {
-    Identifier result = new Identifier(GENERATED_ALIAS_PREFIX + (nextAliasId++));
+    final Identifier result = new Identifier(GENERATED_ALIAS_PREFIX + (nextAliasId++));
     result.internalAlias = true;
     return result;
   }
@@ -62,7 +62,7 @@ public class AggregateProjectionSplit {
     return preAggregate;
   }
 
-  public void setPreAggregate(List<ProjectionItem> preAggregate) {
+  public void setPreAggregate(final List<ProjectionItem> preAggregate) {
     this.preAggregate = preAggregate;
   }
 
@@ -70,7 +70,7 @@ public class AggregateProjectionSplit {
     return aggregate;
   }
 
-  public void setAggregate(List<ProjectionItem> aggregate) {
+  public void setAggregate(final List<ProjectionItem> aggregate) {
     this.aggregate = aggregate;
   }
 

@@ -33,7 +33,6 @@
 
   <script src="components/fontawesome/js/fontawesome.min.js"></script>
   <script src="components/fontawesome/js/solid.min.js"></script>
-
   <script src="components/fontawesome-iconpicker/js/fontawesome-iconpicker.min.js"></script>
   <script src="components/bootstrap-colorselector/js/bootstrap-colorselector.min.js"></script>
 
@@ -46,6 +45,8 @@
 
   <script src="js/studio-utils.js"></script>
   <script src="js/studio-database.js"></script>
+  <script src="js/studio-server.js"></script>
+  <script src="js/studio-cluster.js"></script>
   <script src="js/studio-table.js"></script>
   <script src="js/studio-graph.js"></script>
   <script src="js/studio-graph-widget.js"></script>
@@ -83,6 +84,16 @@
               <center><i class="fa fa-database"></i></center>
             </h3>
           </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-server" class="vertical-tab nav-link" id="tab-server-sel">
+            <h3>
+              <center><i class="fa fa-server"></i></center>
+            </h3>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-cluster" class="vertical-tab nav-link" id="tab-cluster-sel">
+            <h3>
+              <center><i class="fa fa-network-wired"></i></center>
+            </h3>
+          </a></li>
           <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel">
             <h3>
               <center><i class="fa fa-plug"></i></center>
@@ -92,8 +103,7 @@
             <h3>
               <center><i class="fa fa-info-circle"></i></center>
             </h3>
-          </a>
-          </li>
+          </a></li>
         </ul>
       </div>
 
@@ -101,6 +111,8 @@
         <div class="tab-content">
           ${include:query.html}
           ${include:database.html}
+          ${include:server.html}
+          ${include:cluster.html}
           ${include:api.html}
           ${include:resources.html}
         </div>
@@ -130,6 +142,8 @@ ${include:popup-login.html}
 </div>
 
 <script>
+var studioCurrentTab = "query";
+
 $(function () {
   $('#loginForm').keypress(function(e){
     if(e.which == 13) {
@@ -140,8 +154,25 @@ $(function () {
   $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
     var activeTab = this.id;
     if( activeTab == "tab-query-sel" ) {
+      studioCurrentTab = "query";
       editorFocus();
+    } else if( activeTab == "tab-server-sel" ) {
+      studioCurrentTab = "server";
+      updateServer();
+    } else if( activeTab == "tab-cluster-sel" ) {
+      studioCurrentTab = "cluster";
+      updateCluster();
+    } else if( activeTab == "tab-database-sel" ) {
+      studioCurrentTab = "database";
+    } else if( activeTab == "tab-api-sel" ) {
+      studioCurrentTab = "api";
+    } else if( activeTab == "tab-resources-sel" ) {
+      studioCurrentTab = "resources";
     }
+  });
+
+  $('#loginPopup').on('shown.bs.modal', function () {
+    $('#inputUserName').delay(1000).focus().select();
   });
 
   if( globalCredentials == null )

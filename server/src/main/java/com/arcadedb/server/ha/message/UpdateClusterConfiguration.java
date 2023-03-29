@@ -52,7 +52,7 @@ public class UpdateClusterConfiguration extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     servers = stream.getString();
     replicaServersHTTPAddresses = stream.getString();
   }

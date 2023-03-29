@@ -29,8 +29,8 @@ public abstract class SQLFunctionMultiValueAbstract<T> extends SQLFunctionConfig
 
   protected T context;
 
-  public SQLFunctionMultiValueAbstract(final String iName, final int iMinParams, final int iMaxParams) {
-    super(iName, iMinParams, iMaxParams);
+  protected SQLFunctionMultiValueAbstract(final String iName) {
+    super(iName);
   }
 
   @Override

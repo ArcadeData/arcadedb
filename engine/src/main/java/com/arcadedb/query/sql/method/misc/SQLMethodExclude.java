@@ -27,6 +27,9 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 
 import java.util.*;
 
@@ -83,7 +86,7 @@ public class SQLMethodExclude extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(Object current, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
+  public Object execute(Object current, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
     if (current != null) {
       if (current instanceof Identifiable)
         current = ((Identifiable) current).getRecord();
@@ -98,8 +101,9 @@ public class SQLMethodExclude extends AbstractSQLMethod {
         return copy((Map) current, iParams);
       } else if (MultiValue.isMultiValue(current)) {
         // ACT ON MULTIPLE DOCUMENTS
-        final List<Object> result = new ArrayList<Object>(MultiValue.getSize(current));
-        for (Object o : MultiValue.getMultiValueIterable(current, false)) {
+        final int size = MultiValue.getSizeIfAvailable(current);
+        final List<Object> result = size > 0 ? new ArrayList<>(size) : new ArrayList<>();
+        for (final Object o : MultiValue.getMultiValueIterable(current, false)) {
           if (o instanceof Identifiable) {
             result.add(copy((Document) ((Identifiable) o).getRecord(), iParams));
           }
@@ -113,21 +117,31 @@ public class SQLMethodExclude extends AbstractSQLMethod {
   }
 
   private Object copy(final Document document, final Object[] iFieldNames) {
-    final MutableDocument doc = document.getDatabase().newDocument(document.getTypeName());
-    doc.set(document.toMap());
+    final DocumentType type = document.getDatabase().getSchema().getType(document.getTypeName());
 
-    for (Object iFieldName : iFieldNames) {
+    final MutableDocument doc;
+    if (type instanceof VertexType)
+      doc = document.getDatabase().newVertex(document.getTypeName());
+    else if (type instanceof EdgeType)
+      throw new IllegalArgumentException("Cannot copy an edge");
+    else
+      doc = document.getDatabase().newDocument(document.getTypeName());
+
+    doc.set(document.toMap());
+    doc.setIdentity(document.getIdentity());
+
+    for (final Object iFieldName : iFieldNames) {
       if (iFieldName != null) {
         final String fieldName = iFieldName.toString();
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
           final List<String> toExclude = new ArrayList<>();
-          for (String f : doc.getPropertyNames()) {
+          for (final String f : doc.getPropertyNames()) {
             if (f.startsWith(fieldPart))
               toExclude.add(f);
           }
 
-          for (String f : toExclude)
+          for (final String f : toExclude)
             doc.remove(f);
 
         } else
@@ -139,19 +153,19 @@ public class SQLMethodExclude extends AbstractSQLMethod {
 
   private Object copy(final Map map, final Object[] iFieldNames) {
     final Map<String, Object> doc = new HashMap<>(map);
-    for (Object iFieldName : iFieldNames) {
+    for (final Object iFieldName : iFieldNames) {
       if (iFieldName != null) {
         final String fieldName = iFieldName.toString();
 
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
           final List<String> toExclude = new ArrayList<>();
-          for (String f : doc.keySet()) {
+          for (final String f : doc.keySet()) {
             if (f.startsWith(fieldPart))
               toExclude.add(f);
           }
 
-          for (String f : toExclude)
+          for (final String f : toExclude)
             doc.remove(f);
 
         } else
