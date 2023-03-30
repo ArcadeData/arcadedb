@@ -58,13 +58,8 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
           parametersMap != null ? database.query(language, command, parametersMap) : database.query(language, command, parameters) :
           parametersMap != null ? database.command(language, command, parametersMap) : database.command(language, command, parameters);
 
-      if (userCallback != null) {
-        userCallback.onStart(resultset);
-        while (resultset.hasNext())
-          if (!userCallback.onNext(resultset.next()))
-            return;
-        userCallback.onComplete();
-      }
+      if (userCallback != null)
+        userCallback.onComplete(resultset);
 
     } catch (final Exception e) {
       if (userCallback != null)

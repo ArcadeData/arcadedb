@@ -18,18 +18,11 @@
  */
 package com.arcadedb.database.async;
 
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 /**
  * Callback interface for asynchronous commands. If the command returns an exception, the {@link #onError(Exception)} method is invoked. Otherwise
- * {@link #onStart(ResultSet)} is called at first. The user can fetch the Resultset in this method. After the return from {@link #onStart(ResultSet)},
- * the result set is fetched and foreach result the method {@link #onNext(Result)} is invoked by passing the current Result object. When the fetching of the
- * result set is complete, the {@link #onComplete()} method is called.
- * <p>
- * It's suggested to extend the @{@link AbstractAsyncResultsetCallback} abstract class and implement {@link #onStart(ResultSet)} to fetch the result set all in
- * one call, otherwise implement {@link #onNext} method to be invoked foreach record in the result set. In case both {@link #onStart(ResultSet)} and
- * {@link #onNext(Result)} are implemented, whatever is remained left from fetching in the result set is invoked in multiple {@link #onNext(Result)} calls.
+ * {@link #onComplete(ResultSet)} is called.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -39,25 +32,7 @@ public interface AsyncResultsetCallback {
    *
    * @param resultset result set to fetch
    */
-  default void onStart(final ResultSet resultset) {
-    // NO ACTION BY DEFAULT
-  }
-
-  /**
-   * Invoked per single result in the result set.
-   *
-   * @return true to continue fetching otherwise false. If false is returned, the fetching stops and the {@link #onComplete()} method is never invoked.
-   */
-  default boolean onNext(final Result result) {
-    return true;
-  }
-
-  /**
-   * Invoked when the fetching of the entire result set has been completed.
-   */
-  default void onComplete() {
-    // NO ACTION BY DEFAULT
-  }
+  void onComplete(final ResultSet resultset);
 
   /**
    * Invoked in case of an error in the execution or fetching of the result set.

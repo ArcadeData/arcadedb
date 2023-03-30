@@ -22,7 +22,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.index.IndexCursor;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -140,25 +139,12 @@ public class AsyncTest extends TestHelper {
   public void testQueryFetch() {
     database.begin();
     try {
-      final AtomicLong startCallbackInvoked = new AtomicLong();
-      final AtomicLong nextCallbackInvoked = new AtomicLong();
       final AtomicLong completeCallbackInvoked = new AtomicLong();
       final AtomicLong errorCallbackInvoked = new AtomicLong();
 
       database.async().query("sql", "select from " + TYPE_NAME, new AsyncResultsetCallback() {
         @Override
-        public void onStart(final ResultSet resultset) {
-          startCallbackInvoked.incrementAndGet();
-        }
-
-        @Override
-        public boolean onNext(final Result result) {
-          nextCallbackInvoked.incrementAndGet();
-          return true;
-        }
-
-        @Override
-        public void onComplete() {
+        public void onComplete(final ResultSet resultset) {
           completeCallbackInvoked.incrementAndGet();
         }
 
@@ -170,8 +156,6 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(1, startCallbackInvoked.get());
-      Assertions.assertEquals(database.countType(TYPE_NAME, true), nextCallbackInvoked.get());
       Assertions.assertEquals(1, completeCallbackInvoked.get());
       Assertions.assertEquals(0, errorCallbackInvoked.get());
 
@@ -184,25 +168,12 @@ public class AsyncTest extends TestHelper {
   public void testCommandFetch() {
     database.begin();
     try {
-      final AtomicLong startCallbackInvoked = new AtomicLong();
-      final AtomicLong nextCallbackInvoked = new AtomicLong();
       final AtomicLong completeCallbackInvoked = new AtomicLong();
       final AtomicLong errorCallbackInvoked = new AtomicLong();
 
       database.async().command("sql", "select from " + TYPE_NAME, new AsyncResultsetCallback() {
         @Override
-        public void onStart(final ResultSet resultset) {
-          startCallbackInvoked.incrementAndGet();
-        }
-
-        @Override
-        public boolean onNext(final Result result) {
-          nextCallbackInvoked.incrementAndGet();
-          return true;
-        }
-
-        @Override
-        public void onComplete() {
+        public void onComplete(final ResultSet resultset) {
           completeCallbackInvoked.incrementAndGet();
         }
 
@@ -214,8 +185,6 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(1, startCallbackInvoked.get());
-      Assertions.assertEquals(database.countType(TYPE_NAME, true), nextCallbackInvoked.get());
       Assertions.assertEquals(1, completeCallbackInvoked.get());
       Assertions.assertEquals(0, errorCallbackInvoked.get());
 
@@ -247,25 +216,13 @@ public class AsyncTest extends TestHelper {
   public void testCommandFetchVarargParamsCallback() {
     database.begin();
     try {
-      final AtomicLong startCallbackInvoked = new AtomicLong();
-      final AtomicLong nextCallbackInvoked = new AtomicLong();
       final AtomicLong completeCallbackInvoked = new AtomicLong();
       final AtomicLong errorCallbackInvoked = new AtomicLong();
 
       database.async().command("sql", "select from " + TYPE_NAME + " where id = ?", new AsyncResultsetCallback() {
-        @Override
-        public void onStart(final ResultSet resultset) {
-          startCallbackInvoked.incrementAndGet();
-        }
 
         @Override
-        public boolean onNext(final Result result) {
-          nextCallbackInvoked.incrementAndGet();
-          return true;
-        }
-
-        @Override
-        public void onComplete() {
+        public void onComplete(final ResultSet resultset) {
           completeCallbackInvoked.incrementAndGet();
         }
 
@@ -277,8 +234,6 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(1, startCallbackInvoked.get());
-      Assertions.assertEquals(1, nextCallbackInvoked.get());
       Assertions.assertEquals(1, completeCallbackInvoked.get());
       Assertions.assertEquals(0, errorCallbackInvoked.get());
 
@@ -291,25 +246,12 @@ public class AsyncTest extends TestHelper {
   public void testCommandFetchParamsMap() {
     database.begin();
     try {
-      final AtomicLong startCallbackInvoked = new AtomicLong();
-      final AtomicLong nextCallbackInvoked = new AtomicLong();
       final AtomicLong completeCallbackInvoked = new AtomicLong();
       final AtomicLong errorCallbackInvoked = new AtomicLong();
 
       database.async().command("sql", "select from " + TYPE_NAME + " where id = :id", new AsyncResultsetCallback() {
         @Override
-        public void onStart(final ResultSet resultset) {
-          startCallbackInvoked.incrementAndGet();
-        }
-
-        @Override
-        public boolean onNext(final Result result) {
-          nextCallbackInvoked.incrementAndGet();
-          return true;
-        }
-
-        @Override
-        public void onComplete() {
+        public void onComplete(final ResultSet resultset) {
           completeCallbackInvoked.incrementAndGet();
         }
 
@@ -321,52 +263,7 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(1, startCallbackInvoked.get());
-      Assertions.assertEquals(1, nextCallbackInvoked.get());
       Assertions.assertEquals(1, completeCallbackInvoked.get());
-      Assertions.assertEquals(0, errorCallbackInvoked.get());
-
-    } finally {
-      database.commit();
-    }
-  }
-
-  @Test
-  public void testCommandFetchStop() {
-    database.begin();
-    try {
-      final AtomicLong startCallbackInvoked = new AtomicLong();
-      final AtomicLong nextCallbackInvoked = new AtomicLong();
-      final AtomicLong completeCallbackInvoked = new AtomicLong();
-      final AtomicLong errorCallbackInvoked = new AtomicLong();
-
-      database.async().command("sql", "select from " + TYPE_NAME, new AsyncResultsetCallback() {
-        @Override
-        public void onStart(final ResultSet resultset) {
-          startCallbackInvoked.incrementAndGet();
-        }
-
-        @Override
-        public boolean onNext(final Result result) {
-          return nextCallbackInvoked.incrementAndGet() < 3;
-        }
-
-        @Override
-        public void onComplete() {
-          completeCallbackInvoked.incrementAndGet();
-        }
-
-        @Override
-        public void onError(final Exception exception) {
-          errorCallbackInvoked.incrementAndGet();
-        }
-      });
-
-      database.async().waitCompletion(5_000);
-
-      Assertions.assertEquals(1, startCallbackInvoked.get());
-      Assertions.assertEquals(3, nextCallbackInvoked.get());
-      Assertions.assertEquals(0, completeCallbackInvoked.get());
       Assertions.assertEquals(0, errorCallbackInvoked.get());
 
     } finally {
@@ -378,24 +275,12 @@ public class AsyncTest extends TestHelper {
   public void testCommandFetchError() {
     database.begin();
     try {
-      final AtomicLong startCallbackInvoked = new AtomicLong();
-      final AtomicLong nextCallbackInvoked = new AtomicLong();
       final AtomicLong completeCallbackInvoked = new AtomicLong();
       final AtomicLong errorCallbackInvoked = new AtomicLong();
 
       database.async().command("sql", "select from DSdededde", new AsyncResultsetCallback() {
         @Override
-        public void onStart(final ResultSet resultset) {
-          startCallbackInvoked.incrementAndGet();
-        }
-
-        @Override
-        public boolean onNext(final Result result) {
-          return nextCallbackInvoked.incrementAndGet() < 3;
-        }
-
-        @Override
-        public void onComplete() {
+        public void onComplete(final ResultSet resultset) {
           completeCallbackInvoked.incrementAndGet();
         }
 
@@ -407,8 +292,6 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(0, startCallbackInvoked.get());
-      Assertions.assertEquals(0, nextCallbackInvoked.get());
       Assertions.assertEquals(0, completeCallbackInvoked.get());
       Assertions.assertEquals(1, errorCallbackInvoked.get());
 

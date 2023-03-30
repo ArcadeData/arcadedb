@@ -59,7 +59,7 @@ public class PerformanceParsing {
 
         database.async().query("SQL", "select from " + TYPE_NAME + " limit 1", new AsyncResultsetCallback() {
           @Override
-          public void onStart(final ResultSet rs) {
+          public void onComplete(final ResultSet rs) {
             ok.incrementAndGet();
 
             while (rs.hasNext()) {

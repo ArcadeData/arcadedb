@@ -578,6 +578,10 @@ public class Console {
     if (asyncMode && !isRemoteDatabase()) {
       ((DatabaseInternal) databaseProxy).async().command(language, line, new AsyncResultsetCallback() {
         @Override
+        public void onComplete(final ResultSet resultset) {
+        }
+
+        @Override
         public void onError(Exception exception) {
           outputError(exception);
         }
