@@ -124,7 +124,7 @@ public class OrderByStep extends AbstractExecutionStep {
         final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           cachedResult.add(item);
-          if (maxElementsAllowed >= 0 && maxElementsAllowed < cachedResult.size()) {
+          if (maxElementsAllowed >= 0 && cachedResult.size() > maxElementsAllowed) {
             this.cachedResult.clear();
             throw new CommandExecutionException(
                 "Limit of allowed elements for in-heap ORDER BY in a single query exceeded (" + maxElementsAllowed + ") . You can set "

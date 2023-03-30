@@ -27,6 +27,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.integration.misc.IntegrationUtils;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -35,6 +36,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
+import java.time.format.*;
 import java.util.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
@@ -142,5 +144,63 @@ public class RemoteQueriesIT {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
     }
+  }
+
+  @Test
+  public void testLocalDateTimeOrderBy() {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
+      if (databaseFactory.exists()) {
+        databaseFactory.open().drop();
+      }
+      try (Database db = databaseFactory.create()) {
+        db.transaction(() -> {
+          DocumentType dtProduct = db.getSchema().createDocumentType("Product");
+          dtProduct.createProperty("name", Type.STRING);
+          dtProduct.createProperty("type", Type.STRING);
+          dtProduct.createProperty("start", Type.DATETIME_MICROS);
+          dtProduct.createProperty("stop", Type.DATETIME_MICROS);
+          dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+          dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "type", "start", "stop");
+        });
+      }
+    }
+    ContextConfiguration configuration = new ContextConfiguration();
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+    Assertions.assertTrue(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == java.time.LocalDateTime.class);
+    ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
+    arcadeDBServer.start();
+    Database database = arcadeDBServer.getDatabase("test");
+    String name, type;
+    LocalDateTime start, stop;
+    DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
+    Result result;
+    String sqlString = "INSERT INTO Product SET name = ?, type = ?, start = ?, stop = ?";
+
+    name = "CS_OPER_AUX_ORBDOR_20220318T215523_20220320T002323_F001.EEF";
+    type = "AUX_ORBDOR";
+    start = LocalDateTime.parse("20220318T215523", FILENAME_TIME_FORMAT);
+    stop = LocalDateTime.parse("20220320T002323", FILENAME_TIME_FORMAT);
+    Object[] parameters1 = { name, type, start, stop };
+    try (ResultSet resultSet = database.command("sql", sqlString, parameters1)) {
+      Assertions.assertTrue(resultSet.hasNext());
+      result = resultSet.next();
+      Assertions.assertTrue(result.getProperty("start").equals(start), "start value retrieved does not match start value inserted");
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
+    sqlString = "SELECT name, start, stop FROM Product WHERE type = ? AND start <= ? AND stop >= ? ORDER BY start DESC";
+    type = "AUX_ORBDOR";
+    start = LocalDateTime.parse("2022-03-19T00:26:24.404379", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+    stop = LocalDateTime.parse("2022-03-19T00:28:26.525650", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+    Object[] parameters2 = { type, start, stop };
+    try (ResultSet resultSet = database.query("sql", sqlString, parameters2)) {
+      Assertions.assertTrue(resultSet.hasNext());
+      while (resultSet.hasNext()) {
+        result = resultSet.next();
+        //Assertions.assertTrue(result.getProperty("start").equals(start), "start value retrieved does not match start value inserted");
+      }
+    }
+    arcadeDBServer.stop();
   }
 }

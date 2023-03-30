@@ -333,7 +333,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded && index.getPropertyNames().size() == convertedFrom.length)
         cursor = index.get(convertedFrom);
       else if (index.supportsOrderedIterations()) {
-        cursor = index.range(isOrderAsc(), convertedFrom, fromKeyIncluded, convertedTo, toKeyIncluded);
+        if (orderAsc)
+          cursor = index.range(true, convertedFrom, fromKeyIncluded, convertedTo, toKeyIncluded);
+        else
+          cursor = index.range(false, convertedTo, toKeyIncluded, convertedFrom, fromKeyIncluded);
       } else if (additionalRangeCondition == null && allEqualities((AndBlock) condition)) {
         cursor = index.iterator(isOrderAsc(), convertedFrom, true);
       } else {

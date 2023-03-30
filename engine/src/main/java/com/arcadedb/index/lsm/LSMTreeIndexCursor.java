@@ -185,8 +185,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
           //final Object[] cursorKey = index.convertKeys(index.checkForNulls(pageCursor.getKeys()), keyTypes);
           final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, pageCursor.getKeys(), this.toKeys);
 
-          if ((ascendingOrder && ((endKeysInclusive && compare <= 0) || (!endKeysInclusive && compare < 0))) || (!ascendingOrder && (
-              (endKeysInclusive && compare >= 0) || (!endKeysInclusive && compare > 0))))
+          if ((ascendingOrder && ((endKeysInclusive && compare <= 0) || (!endKeysInclusive && compare < 0))) || //
+              (!ascendingOrder && ((endKeysInclusive && compare >= 0) || (!endKeysInclusive && compare > 0))))
             ;
           else
             // INVALID
