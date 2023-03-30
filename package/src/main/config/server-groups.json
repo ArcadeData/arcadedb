@@ -20,6 +20,18 @@
             }
           }
         },
+        "readonly": {
+          "access": [],
+          "resultSetLimit": -1,
+          "readTimeout": -1,
+          "types": {
+            "*": {
+              "access": [
+                "readRecord"
+              ]
+            }
+          }
+        },
         "*": {
           "access": [],
           "resultSetLimit": -1,
