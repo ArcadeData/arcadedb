@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 public class AsyncTest extends TestHelper {
@@ -158,6 +159,38 @@ public class AsyncTest extends TestHelper {
 
       Assertions.assertEquals(1, completeCallbackInvoked.get());
       Assertions.assertEquals(0, errorCallbackInvoked.get());
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
+  public void testParallelQueries() throws InterruptedException {
+    database.begin();
+    try {
+      CountDownLatch counter = new CountDownLatch(3);
+
+      final ResultSet[] resultSets = new ResultSet[3];
+      database.async().query("sql", "select from " + TYPE_NAME, resultset -> {
+        resultSets[0] = resultset;
+        counter.countDown();
+      });
+      database.async().query("sql", "select from " + TYPE_NAME, resultset -> {
+        resultSets[1] = resultset;
+        counter.countDown();
+      });
+      database.async().query("sql", "select from " + TYPE_NAME, resultset -> {
+        resultSets[2] = resultset;
+        counter.countDown();
+      });
+
+      // WAIT INDEFINITELY
+      counter.await();
+
+      Assertions.assertTrue(resultSets[0].hasNext());
+      Assertions.assertTrue(resultSets[1].hasNext());
+      Assertions.assertTrue(resultSets[2].hasNext());
 
     } finally {
       database.commit();
