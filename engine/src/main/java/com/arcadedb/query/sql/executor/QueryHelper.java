@@ -29,9 +29,6 @@ public class QueryHelper {
       // EMPTY/NULL PARAMETERS
       return false;
 
-    value = value.toLowerCase(Locale.ENGLISH);
-    currentValue = currentValue.toLowerCase(Locale.ENGLISH);
-
     value = convertForRegExp(value);
 
     return currentValue.matches(value);
