@@ -533,11 +533,10 @@ public class ArcadeDBServer {
           if (user.canAccessToDatabase(dbName)) {
             try {
               user = security.authenticate(userName, userPassword, dbName);
-              if (!user.getAuthorizedDatabases().contains(dbName)) {
-                // UPDATE DB LIST
-                user.addDatabase(dbName, new String[] { userGroup });
-                security.saveUsers();
-              }
+
+              // UPDATE DB LIST + GROUP
+              user.addDatabase(dbName, new String[] { userGroup });
+              security.saveUsers();
 
             } catch (final ServerSecurityException e) {
               LogManager.instance()
