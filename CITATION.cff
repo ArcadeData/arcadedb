@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+title: ArcadeDB
+message: If you use this software, please cite it using the metadata from this file.
+type: software
+authors:
+  - given-names: Luca
+    family-names: Garulli
+repository-code: 'https://github.com/ArcadeData/arcadedb'
+url: 'https://arcadedb.com'
+abstract: Play With Data!
+keywords:
+  - Multi-Model
+  - NoSQL
+  - SQL
+  - Database
+  - DBMS
+license: Apache-2.0
