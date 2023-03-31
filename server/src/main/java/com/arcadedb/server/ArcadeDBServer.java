@@ -553,6 +553,11 @@ public class ArcadeDBServer {
           security.createUser(new JSONObject().put("name", userName)//
               .put("password", security.encodePassword(userPassword))//
               .put("databases", new JSONObject().put(dbName, new JSONArray())));
+          
+          // UPDATE DB LIST + GROUP
+          ServerSecurityUser user = security.getUser(userName);
+          user.addDatabase(dbName, new String[] { userGroup });
+          security.saveUsers();
         }
       }
     }
