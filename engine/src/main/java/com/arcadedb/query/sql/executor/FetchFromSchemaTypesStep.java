@@ -122,6 +122,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             customs.put((String) customKey, type.getCustomValue((String) customKey));
           r.setProperty("custom", customs);
 
+          context.setVariable("current", r);
         }
       } finally {
         if (profilingEnabled) {

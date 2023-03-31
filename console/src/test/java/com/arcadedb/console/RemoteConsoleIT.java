@@ -256,18 +256,26 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
     Assertions.assertTrue(console.parse("INSERT INTO doc set name = 'doc'"));
 
-    final ResultSet resultSet = console.getDatabase().command("sql",
+    ResultSet resultSet = console.getDatabase().command("sql",
         "SELECT name, (name = 'doc') as name2, if( (name = 'doc'), true, false) as name3, if( (name IN ['doc','XXX']), true, false) as name4, ifnull( (name = 'doc'), null) as name5 FROM schema:types");
 
     Assertions.assertTrue(resultSet.hasNext());
 
-    final Result result = resultSet.next();
+    Result result = resultSet.next();
 
     Assertions.assertEquals("doc", result.getProperty("name"));
     Assertions.assertTrue((boolean) result.getProperty("name2"));
     Assertions.assertTrue((boolean) result.getProperty("name3"));
     Assertions.assertTrue((boolean) result.getProperty("name4"));
     Assertions.assertTrue((boolean) result.getProperty("name5"));
+
+    resultSet = console.getDatabase().command("sql", "SELECT name FROM schema:types WHERE 'a_b' = 'a b'.replace(' ','_')");
+
+    Assertions.assertTrue(resultSet.hasNext());
+
+    result = resultSet.next();
+
+    Assertions.assertEquals("doc", result.getProperty("name"));
   }
 
   @Override
