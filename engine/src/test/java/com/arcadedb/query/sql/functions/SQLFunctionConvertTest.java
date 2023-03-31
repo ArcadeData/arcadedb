@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.functions;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -34,6 +35,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * @author Luca Garulli (l.garulli--(at)--orientdb.com)
  */
 public class SQLFunctionConvertTest {
+  public SQLFunctionConvertTest() {
+    GlobalConfiguration.resetAll();
+  }
 
   @Test
   public void testSQLConversions() throws Exception {
