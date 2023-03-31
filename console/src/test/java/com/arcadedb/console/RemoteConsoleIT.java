@@ -19,6 +19,8 @@
 package com.arcadedb.console;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
@@ -244,6 +246,28 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
         console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
+  }
+
+  @Test
+  public void testIfWithSchemaResult() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + URL));
+    Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING;"));
+
+    Assertions.assertTrue(console.parse("INSERT INTO doc set name = 'doc'"));
+
+    final ResultSet resultSet = console.getDatabase().command("sql",
+        "SELECT name, (name = 'doc') as name2, if( (name = 'doc'), true, false) as name3, if( (name IN ['doc','XXX']), true, false) as name4, ifnull( (name = 'doc'), null) as name5 FROM schema:types");
+
+    Assertions.assertTrue(resultSet.hasNext());
+
+    final Result result = resultSet.next();
+
+    Assertions.assertEquals("doc", result.getProperty("name"));
+    Assertions.assertTrue((boolean) result.getProperty("name2"));
+    Assertions.assertTrue((boolean) result.getProperty("name3"));
+    Assertions.assertTrue((boolean) result.getProperty("name4"));
+    Assertions.assertTrue((boolean) result.getProperty("name5"));
   }
 
   @Override

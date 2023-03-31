@@ -310,7 +310,7 @@ public class JSONObject {
           }
         }
       } else if (primitive.isBoolean())
-        return primitive.getAsString();
+        return primitive.getAsBoolean();
     } else if (element.isJsonObject())
       return new JSONObject(element.getAsJsonObject());
     else if (element.isJsonArray())
