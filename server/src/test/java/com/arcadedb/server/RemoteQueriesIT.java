@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -202,5 +203,10 @@ public class RemoteQueriesIT {
       }
     }
     arcadeDBServer.stop();
+  }
+
+  @AfterAll
+  public static void afterAll() {
+    GlobalConfiguration.resetAll();
   }
 }

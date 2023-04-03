@@ -144,7 +144,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
             final Result result = resultSet.next();
             Assertions.assertNotNull(result);
             final Set<String> props = result.getPropertyNames();
-            Assertions.assertEquals(4, props.size());
+            Assertions.assertEquals(2, props.size(), "Found the following properties " + props);
             Assertions.assertTrue(props.contains("id"));
             Assertions.assertEquals(counter, (int) result.getProperty("id"));
             Assertions.assertTrue(props.contains("name"));

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -52,12 +51,6 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
   protected int getVerticesPerTx() {
     return 500;
-  }
-
-  @Override
-  public void setTestConfiguration() {
-    super.setTestConfiguration();
-    GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS.setValue("2424-2500");
   }
 
   @Test

@@ -20,17 +20,16 @@ package com.arcadedb.server.ws;
 
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.StaticBaseServerTest;
-import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.utility.CallableNoReturn;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
 import java.util.logging.*;
 
-public class WebSocketEventBusIT extends StaticBaseServerTest {
+public class WebSocketEventBusIT extends BaseGraphServerTest {
   private static final int DELAY_MS = 1000;
 
   @Test

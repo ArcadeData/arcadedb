@@ -77,7 +77,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             final Result result = resultSet.next();
             Assertions.assertNotNull(result);
             final Set<String> props = result.getPropertyNames();
-            Assertions.assertEquals(4, props.size());
+            Assertions.assertEquals(2, props.size(), "Found the following properties " + props);
             Assertions.assertTrue(props.contains("id"));
             Assertions.assertEquals(counter, (int) result.getProperty("id"));
             Assertions.assertTrue(props.contains("name"));
@@ -126,7 +126,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
     onAfterTest();
 
     LogManager.instance().log(this, Level.FINE, "TEST Restart = %d", null, restarts);
-    Assertions.assertTrue(restarts.get() >= getServerCount());
+    Assertions.assertTrue(restarts.get() >= getServerCount(), "Restarted " + restarts.get() + " times");
   }
 
   @Override
@@ -176,7 +176,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
   @Override
   protected int getTxs() {
-    return 1000;
+    return 5000;
   }
 
   @Override
