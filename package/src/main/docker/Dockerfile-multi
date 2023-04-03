@@ -21,7 +21,7 @@
 # $> docker buildx build --platform  linux/amd64,linux/arm64 --push -t arcadedata/arcadedb -f src/main/docker/Dockerfile-multi ./target/arcadedb-23.3.1-SNAPSHOT.dir/
 #--------------------------------------------------------------------------------------------------------------
 
-FROM eclipse-temurin:11
+FROM eclipse-temurin:20
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
