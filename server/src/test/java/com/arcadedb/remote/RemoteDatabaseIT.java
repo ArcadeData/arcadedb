@@ -400,7 +400,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   public void beginTest() {
     super.beginTest();
     final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    database.create();
+    if (!database.exists())
+      database.create();
   }
 
 }
