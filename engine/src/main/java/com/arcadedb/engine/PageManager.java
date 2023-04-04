@@ -349,7 +349,8 @@ public class PageManager extends LockContext {
   private CachedPage loadPage(final PageId pageId, final int size, final boolean createIfNotExists, final boolean cache) throws IOException {
     final PaginatedFile file = fileManager.getFile(pageId.getFileId());
 
-    if (!createIfNotExists && pageId.getPageNumber() >= file.getTotalPages())
+    final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
+    if (!createIfNotExists && isNewPage)
       // AVOID CREATING AN EMPTY PAGE JUST TO CHECK THE VERSION
       return null;
 
@@ -357,8 +358,9 @@ public class PageManager extends LockContext {
 
     final CachedPage page = new CachedPage(this, pageId, size);
 
-    // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
-    concurrentPageAccess(pageId, false, () -> file.read(page));
+    if (!isNewPage)
+      // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
+      concurrentPageAccess(pageId, false, () -> file.read(page));
 
     page.loadMetadata();
 
