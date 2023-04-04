@@ -642,6 +642,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
+    return proxied.setTransactionIsolationLevel(level);
+  }
+
+  @Override
   public int getEdgeListSize() {
     return proxied.getEdgeListSize();
   }

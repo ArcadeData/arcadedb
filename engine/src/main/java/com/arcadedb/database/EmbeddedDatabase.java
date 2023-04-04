@@ -125,6 +125,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              FileLock                                  lockFileLock;
   private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
   private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
+  private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -709,6 +710,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public Database setReadYourWrites(final boolean readYourWrites) {
     this.readYourWrites = readYourWrites;
+    return this;
+  }
+
+  @Override
+  public Database setTransactionIsolationLevel(TRANSACTION_ISOLATION_LEVEL level) {
+    transactionIsolationLevel = level;
+    getTransaction().setIsolationLevel(level);
     return this;
   }
 

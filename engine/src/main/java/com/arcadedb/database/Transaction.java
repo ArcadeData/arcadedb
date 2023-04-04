@@ -36,4 +36,6 @@ public interface Transaction {
   boolean isAsyncFlush();
 
   void setAsyncFlush(boolean value);
+
+  void setIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL level);
 }

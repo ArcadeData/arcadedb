@@ -242,6 +242,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
+    return wrapped.setTransactionIsolationLevel(level);
+  }
+
+  @Override
   public int getEdgeListSize() {
     return wrapped.getEdgeListSize();
   }
