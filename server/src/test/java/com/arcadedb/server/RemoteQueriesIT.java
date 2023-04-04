@@ -149,10 +149,13 @@ public class RemoteQueriesIT {
 
   @Test
   public void testLocalDateTimeOrderBy() {
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/testLocalDateTimeOrderBy")) {
-      if (databaseFactory.exists()) {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/testLocalDateTimeOrderBy")) {
+      if (databaseFactory.exists())
         databaseFactory.open().drop();
-      }
+
       try (Database db = databaseFactory.create()) {
         db.transaction(() -> {
           DocumentType dtProduct = db.getSchema().createDocumentType("Product");
