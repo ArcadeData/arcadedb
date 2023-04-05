@@ -26,6 +26,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
@@ -1684,14 +1685,28 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    final ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName);
-
+    ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName);
     for (int i = 0; i < count; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result next = result.next();
       Assertions.assertNotNull(next);
     }
     Assertions.assertFalse(result.hasNext());
+
+    try {
+      result = database.query("sql", "select expand(linked).asString() from " + parentClassName);
+      Assertions.fail();
+    } catch (CommandSQLParsingException e) {
+      // EXPECTED
+    }
+
+    try {
+      result = database.query("sql", "SELECT expand([{'name':2},2,3,4]).name from " + parentClassName);
+      Assertions.fail();
+    } catch (CommandSQLParsingException e) {
+      // EXPECTED
+    }
+
     result.close();
   }
 
