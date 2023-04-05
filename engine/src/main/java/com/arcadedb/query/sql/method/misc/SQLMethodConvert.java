@@ -62,9 +62,9 @@ public class SQLMethodConvert extends AbstractSQLMethod {
         LogManager.instance().log(this, Level.SEVERE, "Type for destination type was not found", e);
       }
     } else {
-      final Type orientType = Type.valueOf(destType.toUpperCase(Locale.ENGLISH));
-      if (orientType != null) {
-        return Type.convert(iContext.getDatabase(), iThis, orientType.getDefaultJavaType());
+      final Type arcadeType = Type.valueOf(destType.toUpperCase(Locale.ENGLISH));
+      if (arcadeType != null) {
+        return Type.convert(iContext.getDatabase(), iThis, arcadeType.getDefaultJavaType());
       }
     }
 
