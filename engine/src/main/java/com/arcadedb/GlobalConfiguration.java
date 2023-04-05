@@ -267,6 +267,9 @@ public enum GlobalConfiguration {
   SERVER_DATABASE_DIRECTORY("arcadedb.server.databaseDirectory", SCOPE.JVM, "Directory containing the database", String.class,
       "${arcadedb.server.rootPath}/databases"),
 
+  SERVER_BACKUP_DIRECTORY("arcadedb.server.backupDirectory", SCOPE.JVM, "Directory containing the backups", String.class,
+      "${arcadedb.server.rootPath}/backups"),
+
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER, "Open all the available databases at server startup", Boolean.class,
       true),
 
