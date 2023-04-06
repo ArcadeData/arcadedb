@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.MutableDocument;
@@ -66,25 +67,26 @@ import java.util.stream.*;
 public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
-  public static final  int                         DEFAULT_PORT              = 2480;
-  private final        String                      originalServer;
-  private final        int                         originalPort;
-  private              int                         apiVersion                = 1;
-  private final        ContextConfiguration        configuration;
-  private final        String                      databaseName;
-  private final        String                      userName;
-  private final        String                      userPassword;
-  private final        List<Pair<String, Integer>> replicaServerList         = new ArrayList<>();
-  private              String                      currentServer;
-  private              int                         currentPort;
-  private              CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
-  private              Pair<String, Integer>       leaderServer;
-  private              int                         currentReplicaServerIndex = -1;
-  private              int                         timeout;
-  private static final String                      protocol                  = "http";
-  private static final String                      charset                   = "UTF-8";
-  private              String                      sessionId;
-  protected final      DatabaseStats               stats                     = new DatabaseStats();
+  public static final  int                                  DEFAULT_PORT              = 2480;
+  private final        String                               originalServer;
+  private final        int                                  originalPort;
+  private              int                                  apiVersion                = 1;
+  private final        ContextConfiguration                 configuration;
+  private final        String                               databaseName;
+  private final        String                               userName;
+  private final        String                               userPassword;
+  private final        List<Pair<String, Integer>>          replicaServerList         = new ArrayList<>();
+  private              String                               currentServer;
+  private              int                                  currentPort;
+  private              CONNECTION_STRATEGY                  connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
+  private              Pair<String, Integer>                leaderServer;
+  private              int                                  currentReplicaServerIndex = -1;
+  private              int                                  timeout;
+  private static final String                               protocol                  = "http";
+  private static final String                               charset                   = "UTF-8";
+  private              String                               sessionId;
+  protected final      DatabaseStats                        stats                     = new DatabaseStats();
+  private              Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
 
   public List<String> getReplicaAddresses() {
     return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
@@ -252,12 +254,19 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return getSessionId() != null;
   }
 
+  @Override
   public void begin() {
+    begin(transactionIsolationLevel);
+  }
+
+  @Override
+  public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
     if (getSessionId() != null)
       throw new TransactionException("Transaction already begun");
 
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("begin", databaseName));
+      setRequestPayload(connection, new JSONObject().put("isolationLevel", isolationLevel));
       connection.connect();
       if (connection.getResponseCode() != 204) {
         final Exception detail = manageException(connection, "begin transaction");
@@ -412,6 +421,14 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, false, (connection, response) -> createResultSet(response));
+  }
+
+  public Database.TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+    return transactionIsolationLevel;
+  }
+
+  public void setTransactionIsolationLevel(final Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel) {
+    this.transactionIsolationLevel = transactionIsolationLevel;
   }
 
   public CONNECTION_STRATEGY getConnectionStrategy() {

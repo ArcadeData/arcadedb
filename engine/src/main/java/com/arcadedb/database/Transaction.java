@@ -21,7 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.engine.WALFile;
 
 public interface Transaction {
-  void begin();
+  void begin(Database.TRANSACTION_ISOLATION_LEVEL isolationLevel);
 
   Binary commit();
 
@@ -36,6 +36,4 @@ public interface Transaction {
   boolean isAsyncFlush();
 
   void setAsyncFlush(boolean value);
-
-  void setIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL level);
 }

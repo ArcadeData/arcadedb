@@ -57,7 +57,7 @@ public class TransactionContext implements Transaction {
   private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
   private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
   private final TransactionIndexContext              indexChanges;
-  private       Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(1024);
+  private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   private       boolean                              useWAL;
@@ -92,7 +92,9 @@ public class TransactionContext implements Transaction {
   }
 
   @Override
-  public void begin() {
+  public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+    this.isolationLevel = isolationLevel;
+
     if (status != STATUS.INACTIVE)
       throw new TransactionException("Transaction already begun");
 
@@ -271,15 +273,10 @@ public class TransactionContext implements Transaction {
           final PaginatedFile file = database.getFileManager().getFile(pageId.getFileId());
           final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
           if (!isNewPage)
-            // CACHE THE IMMUTABLE PAGE
+            // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
             immutablePages.put(pageId, (ImmutablePage) page);
           break;
-        case SERIALIZABLE:
-          // ALWAYS CACHE THE IMMUTABLE PAGE (EVEN NEW PAGES, THIS PREVENTS SEEING NEW RECORDS)
-          immutablePages.put(pageId, (ImmutablePage) page);
-          break;
         }
-
       }
     }
 
@@ -629,11 +626,6 @@ public class TransactionContext implements Transaction {
   @Override
   public void setAsyncFlush(final boolean value) {
     this.asyncFlush = value;
-  }
-
-  @Override
-  public void setIsolationLevel(final Database.TRANSACTION_ISOLATION_LEVEL level) {
-    this.isolationLevel = level;
   }
 
   public void reset() {

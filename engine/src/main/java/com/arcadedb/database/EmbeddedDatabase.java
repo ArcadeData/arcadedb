@@ -323,6 +323,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void begin() {
+    begin(transactionIsolationLevel);
+  }
+
+  @Override
+  public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
     executeInReadLock(() -> {
       checkDatabaseIsOpen();
 
@@ -335,7 +340,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         current.pushTransaction(tx);
       }
 
-      tx.begin();
+      tx.begin(isolationLevel);
 
       return null;
     });
@@ -714,9 +719,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public Database setTransactionIsolationLevel(TRANSACTION_ISOLATION_LEVEL level) {
+  public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+    return transactionIsolationLevel;
+  }
+
+  @Override
+  public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
     transactionIsolationLevel = level;
-    getTransaction().setIsolationLevel(level);
     return this;
   }
 

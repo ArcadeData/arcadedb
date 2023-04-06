@@ -110,8 +110,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).asyncMode = true;
       database.getTransaction().setUseWAL(transactionUseWAL);
       database.setWALFlush(transactionSync);
-      database.getTransaction().setIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL OF ISOLATION
-      database.getTransaction().begin();
+      database.getTransaction().begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL OF ISOLATION
 
       while (!forceShutdown) {
         try {

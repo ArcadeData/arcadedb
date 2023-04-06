@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
@@ -31,6 +32,7 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
 import java.io.*;
+import java.util.*;
 
 public class PostBeginHandler extends DatabaseAbstractHandler {
 
@@ -49,7 +51,15 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
 
     DatabaseContext.INSTANCE.init((DatabaseInternal) database);
 
-    database.begin();
+    final String payload = parseRequestPayload(exchange);
+    if (payload != null && !payload.isEmpty()) {
+      final JSONObject json = new JSONObject(payload);
+      final Map<String, Object> requestMap = json.toMap();
+      final String isolationLevel = (String) requestMap.get("isolationLevel");
+      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel));
+    } else
+      database.begin();
+
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
     final HttpSession session = httpServer.getSessionManager().createSession(user, tx);

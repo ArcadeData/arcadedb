@@ -124,6 +124,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+    wrapped.begin(isolationLevel);
+  }
+
+  @Override
   public void commit() {
     wrapped.commit();
   }
@@ -244,6 +249,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
     return wrapped.setTransactionIsolationLevel(level);
+  }
+
+  @Override
+  public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+    return wrapped.getTransactionIsolationLevel();
   }
 
   @Override
