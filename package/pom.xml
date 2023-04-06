@@ -142,9 +142,8 @@
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>org.eclipse.jkube</groupId>
-                        <artifactId>kubernetes-maven-plugin</artifactId>
-                        <version>${kubernetes-maven-plugin.version}</version>
+                        <groupId>io.fabric8</groupId>
+                        <artifactId>docker-maven-plugin</artifactId>
                         <executions>
                             <execution>
                                 <id>default</id>
@@ -162,22 +161,24 @@
                             </execution>
                         </executions>
                         <configuration>
-                            <verbose>true</verbose>
                             <images>
                                 <image>
                                     <name>arcadedata/arcadedb</name>
                                     <build>
-                                        <dockerFile>${project.basedir}/src/main/docker/Dockerfile</dockerFile>
-                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir</contextDir>
-                                        <args>
-                                            <docker.buildArg.ARCH>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.ARCH>
-                                        </args>
+                                        <contextDir>${project.basedir}</contextDir>
+                                        <dockerFile>src/main/docker/Dockerfile</dockerFile> 
+                                        <buildx>
+                                            <platforms>
+                                                <platform>linux/amd64</platform>
+                                                <platform>linux/arm64</platform>
+                                            </platforms>
+                                        </buildx>
                                         <tags>
                                             <tag>latest</tag>
                                             <tag>${project.version}</tag>
                                         </tags>
                                     </build>
-                                </image>
+                               </image>
                             </images>
                         </configuration>
                     </plugin>
