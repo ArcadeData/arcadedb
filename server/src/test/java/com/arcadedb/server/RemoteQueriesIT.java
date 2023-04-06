@@ -149,10 +149,13 @@ public class RemoteQueriesIT {
 
   @Test
   public void testLocalDateTimeOrderBy() {
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
-      if (databaseFactory.exists()) {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/testLocalDateTimeOrderBy")) {
+      if (databaseFactory.exists())
         databaseFactory.open().drop();
-      }
+
       try (Database db = databaseFactory.create()) {
         db.transaction(() -> {
           DocumentType dtProduct = db.getSchema().createDocumentType("Product");
@@ -171,7 +174,7 @@ public class RemoteQueriesIT {
     Assertions.assertTrue(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == java.time.LocalDateTime.class);
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    Database database = arcadeDBServer.getDatabase("test");
+    Database database = arcadeDBServer.getDatabase("testLocalDateTimeOrderBy");
     String name, type;
     LocalDateTime start, stop;
     DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");

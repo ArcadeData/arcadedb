@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -66,6 +67,12 @@ public class BaseExpression extends MathExpression {
     if (modifier != null) {
       this.modifier = modifier;
     }
+  }
+
+  public void setModifier(final Modifier modifier) {
+    this.modifier = modifier;
+    if (identifier != null && modifier != null && identifier.isExpand())
+      throw new CommandSQLParsingException("Invalid modifier after special function expand()");
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -288,7 +295,7 @@ public class BaseExpression extends MathExpression {
     result.identifier = identifier == null ? null : identifier.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.string = string;
-    result.modifier = modifier == null ? null : modifier.copy();
+    result.setModifier(modifier == null ? null : modifier.copy());
     result.cachedStringForm = cachedStringForm;
     return result;
   }
