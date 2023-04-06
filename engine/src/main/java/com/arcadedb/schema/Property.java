@@ -31,18 +31,19 @@ import java.io.*;
 import java.util.*;
 
 public class Property {
-  private final   DocumentType        owner;
-  private final   String              name;
-  private final   Type                type;
-  private final   int                 id;
-  protected final Map<String, Object> custom    = new HashMap<>();
-  private         Object              defaultValue;
-  private         boolean             readonly  = false;
-  private         boolean             mandatory = false;
-  private         boolean             notNull   = false;
-  private         String              max       = null;
-  private         String              min       = null;
-  private         String              regexp    = null;
+  private final        DocumentType        owner;
+  private final        String              name;
+  private final        Type                type;
+  private final        int                 id;
+  protected final      Map<String, Object> custom          = new HashMap<>();
+  private              Object              defaultValue    = DEFAULT_NOT_SET;
+  private              boolean             readonly        = false;
+  private              boolean             mandatory       = false;
+  private              boolean             notNull         = false;
+  private              String              max             = null;
+  private              String              min             = null;
+  private              String              regexp          = null;
+  private final static Object              DEFAULT_NOT_SET = "<DEFAULT_NOT_SET>";
 
   public Property(final DocumentType owner, final String name, final Type type) {
     this.owner = owner;
@@ -88,7 +89,7 @@ public class Property {
   }
 
   public Object getDefaultValue() {
-    if (defaultValue != null) {
+    if (defaultValue != null && defaultValue != DEFAULT_NOT_SET) {
       if (defaultValue instanceof String) {
         // TODO: OPTIMIZE THE CASE WHERE FUNCTIONS ARE DEFAULT
         final Database database = owner.getSchema().getEmbedded().getDatabase();
@@ -117,7 +118,7 @@ public class Property {
 
       // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
       final Set<String> propertiesWithDefaultDefined = new HashSet<>(owner.propertiesWithDefaultDefined);
-      if (convertedValue == null)
+      if (convertedValue == DEFAULT_NOT_SET)
         propertiesWithDefaultDefined.remove(name);
       else
         propertiesWithDefaultDefined.add(name);
@@ -256,7 +257,7 @@ public class Property {
     json.put("type", type.name);
 
     final Object defValue = defaultValue;
-    if (defValue != null)
+    if (defValue != DEFAULT_NOT_SET)
       json.put("default", defValue);
 
     if (readonly)

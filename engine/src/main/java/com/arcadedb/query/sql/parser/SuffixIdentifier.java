@@ -68,14 +68,13 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && context.getVariable(varName) != null) {
+      if (context != null && varName.startsWith("$") && context.getVariable(varName) != null)
         return context.getVariable(varName);
-      }
 
-      if (iCurrentRecord != null) {
+      if (iCurrentRecord != null)
         return ((Document) iCurrentRecord.getRecord()).get(varName);
-      }
-      return null;
+
+      return varName;
     }
     if (recordAttribute != null) {
       if ("@rid".equalsIgnoreCase(recordAttribute.name))

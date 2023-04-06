@@ -5,6 +5,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -184,7 +186,6 @@ public class DocumentValidationTest extends TestHelper {
     });
   }
 
-
   @Test
   public void testDefaultNotNullValueIsSetWithSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
@@ -197,6 +198,33 @@ public class DocumentValidationTest extends TestHelper {
       final MutableDocument d = database.newDocument("Validation");
       d.save();
       Assertions.assertEquals("1", d.get("string"));
+    });
+  }
+
+  @Test
+  public void testDefaultNotNullMandatoryValueIsSetWithSQL() {
+    final DocumentType clazz = database.getSchema().createDocumentType("Validation");
+
+    database.command("sql", "create property Validation.string STRING (mandatory true, notnull true, default \"Hi\")");
+    database.command("sql", "create property Validation.dat DATETIME (mandatory true, default null)");
+
+    Assertions.assertEquals("Hi", clazz.getProperty("string").getDefaultValue());
+    Assertions.assertNull(clazz.getProperty("dat").getDefaultValue());
+
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Validation");
+      d.save();
+      Assertions.assertEquals("Hi", d.get("string"));
+      Assertions.assertNull(d.get("dat"));
+
+      final ResultSet resultSet = database.command("sql", "insert into Validation set string = null");
+
+      Assertions.assertTrue(resultSet.hasNext());
+      final Result result = resultSet.next();
+
+      Assertions.assertEquals("Hi", result.getProperty("string"));
+      Assertions.assertTrue(result.hasProperty("dat"));
+      Assertions.assertNull(result.getProperty("dat"));
     });
   }
 
