@@ -18,19 +18,20 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class SQLMethodAsStringTest {
+class SQLMethodAsRIDTest {
 
   private SQLMethod method;
 
   @BeforeEach
   void setUp() {
-    method = new SQLMethodAsString();
+    method = new SQLMethodAsRID();
   }
 
   @Test
@@ -40,17 +41,26 @@ class SQLMethodAsStringTest {
   }
 
   @Test
-  void testStringIsReturnedAsString() {
-    final Object result = method.execute(null, null, null, "a string", null);
-    assertThat(result).isEqualTo("a string");
+  void testFromString() {
+    final Object result = method.execute(null, null, null, "#10:10", null);
+    assertThat(result).isEqualTo(new RID(null, "#10:10"));
   }
 
   @Test
-  void testNumberIsReturnedAsString() {
-    Object result = method.execute(null, null, null, 100, null);
-    assertThat(result).isEqualTo("100");
+  void testFromRID() {
+    final Object result = method.execute(null, null, null, new RID(null, "#10:10"), null);
+    assertThat(result).isEqualTo(new RID(null, "#10:10"));
+  }
 
-    result = method.execute(null, null, null, 100.0, null);
-    assertThat(result).isEqualTo("100.0");
+  @Test
+  void testFromInvalidString() {
+    final Object result = method.execute(null, null, null, "INVALID", null);
+    assertThat(result).isEqualTo(null);
+  }
+
+  @Test
+  void testNotStringAsNull() {
+    final Object result = method.execute(null, null, null, 10, null);
+    assertThat(result).isEqualTo(null);
   }
 }

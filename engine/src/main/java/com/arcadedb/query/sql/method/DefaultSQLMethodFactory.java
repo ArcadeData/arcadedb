@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.method.misc.SQLMethodAsInteger;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsList;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsLong;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsMap;
+import com.arcadedb.query.sql.method.misc.SQLMethodAsRID;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsSet;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsShort;
 import com.arcadedb.query.sql.method.misc.SQLMethodAsString;
@@ -84,6 +85,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodAsList.NAME, new SQLMethodAsList());
     register(SQLMethodAsLong.NAME, new SQLMethodAsLong());
     register(SQLMethodAsMap.NAME, new SQLMethodAsMap());
+    register(SQLMethodAsRID.NAME, new SQLMethodAsRID());
     register(SQLMethodAsSet.NAME, new SQLMethodAsSet());
     register(SQLMethodAsShort.NAME, new SQLMethodAsShort());
     register(SQLMethodAsString.NAME, new SQLMethodAsString());
