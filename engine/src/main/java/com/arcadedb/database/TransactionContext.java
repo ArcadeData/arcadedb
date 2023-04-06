@@ -52,23 +52,25 @@ import java.util.logging.*;
  * txId:long|pages:int|&lt;segmentSize:int|fileId:int|pageNumber:long|pageModifiedFrom:int|pageModifiedTo:int|&lt;prevContent&gt;&lt;newContent&gt;segmentSize:int&gt;MagicNumber:long
  */
 public class TransactionContext implements Transaction {
-  private final DatabaseInternal         database;
-  private final Map<Integer, Integer>    newPageCounters       = new HashMap<>();
-  private final Map<RID, Record>         immutableRecordsCache = new HashMap<>(1024);
-  private final Map<RID, Record>         modifiedRecordsCache  = new HashMap<>(1024);
-  private final TransactionIndexContext  indexChanges;
-  private       Map<PageId, MutablePage> modifiedPages;
-  private       Map<PageId, MutablePage> newPages;
-  private       boolean                  useWAL;
-  private       boolean                  asyncFlush            = true;
-  private       WALFile.FLUSH_TYPE       walFlush;
-  private       List<Integer>            lockedFiles;
-  private       long                     txId                  = -1;
-  private       STATUS                   status                = STATUS.INACTIVE;
+  private final DatabaseInternal                     database;
+  private final Map<Integer, Integer>                newPageCounters       = new HashMap<>();
+  private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
+  private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
+  private final TransactionIndexContext              indexChanges;
+  private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
+  private       Map<PageId, MutablePage>             modifiedPages;
+  private       Map<PageId, MutablePage>             newPages;
+  private       boolean                              useWAL;
+  private       boolean                              asyncFlush            = true;
+  private       WALFile.FLUSH_TYPE                   walFlush;
+  private       List<Integer>                        lockedFiles;
+  private       long                                 txId                  = -1;
+  private       STATUS                               status                = STATUS.INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private       Map<RID, Record>         updatedRecords        = null;
+  private       Map<RID, Record>                     updatedRecords        = null;
+  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -90,7 +92,9 @@ public class TransactionContext implements Transaction {
   }
 
   @Override
-  public void begin() {
+  public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+    this.isolationLevel = isolationLevel;
+
     if (status != STATUS.INACTIVE)
       throw new TransactionException("Transaction already begun");
 
@@ -255,8 +259,26 @@ public class TransactionContext implements Transaction {
       page = newPages.get(pageId);
 
     if (page == null)
+      page = immutablePages.get(pageId);
+
+    if (page == null) {
       // NOT FOUND, DELEGATES TO THE DATABASE
       page = database.getPageManager().getPage(pageId, size, false, true);
+
+      if (page != null) {
+        switch (isolationLevel) {
+        case READ_COMMITTED:
+          break;
+        case REPEATABLE_READS:
+          final PaginatedFile file = database.getFileManager().getFile(pageId.getFileId());
+          final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
+          if (!isNewPage)
+            // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
+            immutablePages.put(pageId, (ImmutablePage) page);
+          break;
+        }
+      }
+    }
 
     return page;
   }
@@ -274,8 +296,12 @@ public class TransactionContext implements Transaction {
         page = newPages.get(pageId);
 
       if (page == null) {
-        // NOT FOUND, DELEGATES TO THE DATABASE
-        final ImmutablePage loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
+        // IF AVAILABLE REMOVE THE PAGE FROM IMMUTABLE PAGES TO KEEP ONLY ONE PAGE IN RAM
+        ImmutablePage loadedPage = immutablePages.remove(pageId);
+        if (loadedPage == null)
+          // NOT FOUND, DELEGATES TO THE DATABASE
+          loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
+
         if (loadedPage != null) {
           final MutablePage mutablePage = loadedPage.modify();
           if (isNew)
@@ -300,9 +326,11 @@ public class TransactionContext implements Transaction {
 
     final PageId pageId = page.getPageId();
     if (newPages.containsKey(pageId))
-      newPages.put(mutablePage.getPageId(), mutablePage);
+      newPages.put(pageId, mutablePage);
     else
-      modifiedPages.put(mutablePage.getPageId(), mutablePage);
+      modifiedPages.put(pageId, mutablePage);
+
+    immutablePages.remove(pageId);
 
     return mutablePage;
   }
@@ -378,6 +406,7 @@ public class TransactionContext implements Transaction {
     newPages = null;
     updatedRecords = null;
     newPageCounters.clear();
+    immutablePages.clear();
   }
 
   /**
@@ -615,6 +644,7 @@ public class TransactionContext implements Transaction {
     newPageCounters.clear();
     modifiedRecordsCache.clear();
     immutableRecordsCache.clear();
+    immutablePages.clear();
     txId = -1;
   }
 
@@ -626,6 +656,8 @@ public class TransactionContext implements Transaction {
 
     if (modifiedPages != null)
       modifiedPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
+
+    immutablePages.values().removeIf(page -> fileId == page.getPageId().getFileId());
 
     // IMMUTABLE RECORD, AVOID IT'S POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
     // SAME PAGE, REMOVE IT

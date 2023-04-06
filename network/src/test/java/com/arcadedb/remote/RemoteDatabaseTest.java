@@ -103,17 +103,24 @@ class RemoteDatabaseTest {
 
   @Test
   void testBegin() throws Exception {
+    OutputStream outputStream = mock(OutputStream.class);
     HttpURLConnection connection = mock(HttpURLConnection.class);
     doNothing().when(connection).connect();
     when(connection.getResponseCode()).thenReturn(204);
     when(connection.getHeaderField(RemoteDatabase.ARCADEDB_SESSION_ID)).thenReturn("1234");
+    when(connection.getOutputStream()).thenReturn(outputStream);
 
     RemoteDatabase database = spy(new MockRemoteDatabase());
     doReturn(connection).when(database).createConnection(any(), any());
 
     database.begin();
     verify(database).createConnection("POST", "http://localhost:1234/api/v1/begin/testdb");
-    verify(database, never()).setRequestPayload(any(), any());
+
+    JSONObject payload = new JSONObject("{\"isolationLevel\":\"READ_COMMITTED\"}");
+    verify(database).setRequestPayload(connection, payload);
+    byte[] payloadAsByteArray = payload.toString().getBytes(StandardCharsets.UTF_8);
+    verify(outputStream).write(payloadAsByteArray, 0, payloadAsByteArray.length);
+
     verify(connection).getHeaderField(RemoteDatabase.ARCADEDB_SESSION_ID);
     assertTrue(database.isTransactionActive());
   }

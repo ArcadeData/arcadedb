@@ -60,10 +60,11 @@ public class AsyncTest extends TestHelper {
 
   @Test
   public void testSyncScanAndAsyncUpdate() {
+    final AtomicLong callbackInvoked = new AtomicLong();
+    final AtomicLong updatedRecords = new AtomicLong();
+
     database.begin();
     try {
-      final AtomicLong callbackInvoked = new AtomicLong();
-      final AtomicLong updatedRecords = new AtomicLong();
 
       database.scanType(TYPE_NAME, true, record -> {
         callbackInvoked.incrementAndGet();
@@ -73,17 +74,17 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion();
 
-      Assertions.assertEquals(TOT, callbackInvoked.get());
-      Assertions.assertEquals(TOT, updatedRecords.get());
-
-      final ResultSet resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
-
-      Assertions.assertTrue(resultSet.hasNext());
-      Assertions.assertEquals(TOT, ((Number) resultSet.next().getProperty("count")).intValue());
-
     } finally {
       database.commit();
     }
+
+    Assertions.assertEquals(TOT, callbackInvoked.get());
+    Assertions.assertEquals(TOT, updatedRecords.get());
+
+    final ResultSet resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
+
+    Assertions.assertTrue(resultSet.hasNext());
+    Assertions.assertEquals(TOT, ((Number) resultSet.next().getProperty("count")).intValue());
   }
 
   @Test

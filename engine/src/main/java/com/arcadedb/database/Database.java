@@ -35,6 +35,10 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public interface Database extends BasicDatabase {
+  enum TRANSACTION_ISOLATION_LEVEL {
+    READ_COMMITTED, REPEATABLE_READS
+  }
+
   ContextConfiguration getConfiguration();
 
   PaginatedFile.MODE getMode();
@@ -273,6 +277,33 @@ public interface Database extends BasicDatabase {
    * @return Current Database instance to execute setter methods in chain.
    */
   Database setReadYourWrites(boolean value);
+
+  /**
+   * Sets the transaction isolation level between the available ones:
+   * <ul>
+   *   <li><b>READ_COMMITTED</b></li>
+   *   <li><b>REPEATABLE_READS</b></li>
+   *   <li><b>SERIALIZABLE</b></li>
+   * </ul>
+   *
+   * @param level The isolation level
+   *
+   * @return Current Database instance to execute setter methods in chain.
+   */
+  Database setTransactionIsolationLevel(TRANSACTION_ISOLATION_LEVEL level);
+
+  /**
+   * returns the transaction isolation level between the available ones:
+   * <ul>
+   *   <li><b>READ_COMMITTED</b></li>
+   *   <li><b>REPEATABLE_READS</b></li>
+   *   <li><b>SERIALIZABLE</b></li>
+   * </ul>
+   *
+   * @return Current isolation level.
+   */
+
+  TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel();
 
   /**
    * Returns the current default edge list initial size to hold and store edges.

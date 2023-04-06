@@ -397,6 +397,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+    proxied.begin(isolationLevel);
+  }
+
+  @Override
   public void rollback() {
     proxied.rollback();
   }
@@ -639,6 +644,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
   public Database setReadYourWrites(final boolean value) {
     proxied.setReadYourWrites(value);
     return this;
+  }
+
+  @Override
+  public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
+    return proxied.setTransactionIsolationLevel(level);
+  }
+
+  @Override
+  public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+    return proxied.getTransactionIsolationLevel();
   }
 
   @Override
