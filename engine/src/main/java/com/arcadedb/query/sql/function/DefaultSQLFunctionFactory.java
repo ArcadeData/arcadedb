@@ -60,6 +60,8 @@ import com.arcadedb.query.sql.function.misc.SQLFunctionIf;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIfNull;
 import com.arcadedb.query.sql.function.misc.SQLFunctionStrcmpci;
 import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
+import com.arcadedb.query.sql.function.misc.SQLFunctionBoolAnd;
+import com.arcadedb.query.sql.function.misc.SQLFunctionBoolOr;
 import com.arcadedb.query.sql.function.stat.SQLFunctionMedian;
 import com.arcadedb.query.sql.function.stat.SQLFunctionMode;
 import com.arcadedb.query.sql.function.stat.SQLFunctionPercentile;
@@ -113,6 +115,8 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionConcat.NAME, SQLFunctionConcat.class);
     register(SQLFunctionAbsoluteValue.NAME, SQLFunctionAbsoluteValue.class);
     register(SQLFunctionStrcmpci.NAME, SQLFunctionStrcmpci.class);
+    register(SQLFunctionBoolAnd.NAME, SQLFunctionBoolAnd.class);
+    register(SQLFunctionBoolOr.NAME, SQLFunctionBoolOr.class);
     // GRAPH
     register(SQLFunctionOut.NAME, SQLFunctionOut.class);
     register(SQLFunctionIn.NAME, SQLFunctionIn.class);
