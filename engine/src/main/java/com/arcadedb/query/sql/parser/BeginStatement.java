@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -36,7 +37,12 @@ public class BeginStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
-    context.getDatabase().begin();
+    if (isolation != null)
+      context.getDatabase().begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolation.getStringValue().toUpperCase()));
+    else
+      // USE THE STANDARD ISOLATION LEVEL
+      context.getDatabase().begin();
+
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "begin");
