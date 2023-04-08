@@ -44,15 +44,15 @@ public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
     } else if (inputValue instanceof BigInteger) {
       result = ((BigInteger) inputValue).sqrt();
     } else if (inputValue instanceof Integer) {
-      result = (int) Math.sqrt((Integer) inputValue);
+      result = Double.valueOf(Math.sqrt((Integer) inputValue)).intValue();
     } else if (inputValue instanceof Long) {
-      result = (new Double ((int) Math.sqrt((Long) inputValue))).longValue();
+      result = Double.valueOf(Math.sqrt((Long) inputValue)).longValue();
     } else if (inputValue instanceof Short) {
-      result = (new Double (Math.sqrt((Short) inputValue))).shortValue();
+      result = Double.valueOf(Math.sqrt((Short) inputValue)).shortValue();
     } else if (inputValue instanceof Double) {
-      result = Math.sqrt((Double) inputValue);
+      result = Double.valueOf(Math.sqrt((Double) inputValue)).doubleValue();
     } else if (inputValue instanceof Float) {
-      result = (new Double(Math.sqrt((Float) inputValue))).floatValue();
+      result = Double.valueOf(Math.sqrt((Float) inputValue)).floatValue();
     } else if (inputValue instanceof Duration) {
       final int seconds = ((Duration) inputValue).toSecondsPart();
       final long nanos = ((Duration) inputValue).toNanosPart();
