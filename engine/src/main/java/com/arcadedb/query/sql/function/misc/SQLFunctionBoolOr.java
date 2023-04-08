@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.schema.Type;
 
 /**
- * TODO:
+ * Computes the aggregate "or" over a field.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
@@ -62,7 +62,7 @@ public class SQLFunctionBoolOr extends SQLFunctionConfigurableAbstract {
     if (value != null) {
       if (or == null)
         // FIRST TIME
-        or = false;
+        or = value;
       else
         or = or || value;
     }

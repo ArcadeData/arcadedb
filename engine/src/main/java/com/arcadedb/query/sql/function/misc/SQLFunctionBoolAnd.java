@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.schema.Type;
 
 /**
- * TODO: summary
+ * Computes the aggregate "and" over a field.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
