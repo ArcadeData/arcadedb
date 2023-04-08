@@ -166,7 +166,7 @@
                                     <name>arcadedata/arcadedb</name>
                                     <build>
                                         <contextDir>${project.basedir}</contextDir>
-                                        <dockerFile>src/main/docker/Dockerfile</dockerFile> 
+                                        <dockerFile>src/main/docker/Dockerfile</dockerFile>
                                         <buildx>
                                             <platforms>
                                                 <platform>linux/amd64</platform>
