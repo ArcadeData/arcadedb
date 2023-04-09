@@ -35,8 +35,9 @@ import java.util.*;
  */
 public class SQLFunctionEncode extends SQLFunctionAbstract {
 
-  public static final String NAME          = "encode";
-  public static final String FORMAT_BASE64 = "base64";
+  public static final String NAME             = "encode";
+  public static final String FORMAT_BASE64    = "base64";
+  public static final String FORMAT_BASE64URL = "base64url";
 
   /**
    * Get the date at construction to have the same date for all the iteration.
@@ -54,6 +55,8 @@ public class SQLFunctionEncode extends SQLFunctionAbstract {
     byte[] data = null;
     if (candidate instanceof byte[]) {
       data = (byte[]) candidate;
+    } else if (candidate instanceof String) {
+      data = ((String) candidate).getBytes();
     } else if (candidate instanceof RID) {
       final Record rec = ((RID) candidate).getRecord();
       if (rec instanceof Binary) {
@@ -67,6 +70,8 @@ public class SQLFunctionEncode extends SQLFunctionAbstract {
 
     if (FORMAT_BASE64.equalsIgnoreCase(format)) {
       return Base64.getEncoder().encodeToString(data);
+    } else if (FORMAT_BASE64URL.equalsIgnoreCase(format)) {
+      return Base64.getEncoder().withoutPadding().encodeToString(data).replace('+','-').replace('/','_');
     } else {
       throw new CommandSQLParsingException("Unknown format :" + format);
     }

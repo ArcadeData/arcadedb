@@ -35,7 +35,12 @@ public class SQLMethodAsString extends AbstractSQLMethod {
 
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    ioResult = ioResult != null ? ioResult.toString() : null;
-    return ioResult;
+    if (ioResult == null) {
+      return null;
+    } else if (ioResult instanceof byte[]) {
+      return new String((byte[]) ioResult);
+    } else {
+      return ioResult.toString();
+    }
   }
 }
