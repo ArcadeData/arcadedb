@@ -52,7 +52,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   }
 
   protected void onServerConfiguration(final ContextConfiguration config) {
-    final File backupFile = new File("backups/graph/backup-test.zip");
+    final File backupFile = new File("target/backups/graph/backup-test.zip");
     if (backupFile.exists())
       backupFile.delete();
 

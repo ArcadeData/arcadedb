@@ -33,7 +33,7 @@ public class ServerBackupDatabaseIT extends BaseGraphServerTest {
 
   @Test
   public void backupDatabase() {
-    final File backupFile = new File("backups/graph/backup-test.tgz");
+    final File backupFile = new File("target/backups/graph/backup-test.tgz");
     if (backupFile.exists())
       backupFile.delete();
 
