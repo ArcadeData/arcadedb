@@ -36,7 +36,7 @@ import java.util.concurrent.*;
 
 public interface Database extends BasicDatabase {
   enum TRANSACTION_ISOLATION_LEVEL {
-    READ_COMMITTED, REPEATABLE_READS
+    READ_COMMITTED, REPEATABLE_READ
   }
 
   ContextConfiguration getConfiguration();
@@ -282,7 +282,7 @@ public interface Database extends BasicDatabase {
    * Sets the transaction isolation level between the available ones:
    * <ul>
    *   <li><b>READ_COMMITTED</b></li>
-   *   <li><b>REPEATABLE_READS</b></li>
+   *   <li><b>REPEATABLE_READ</b></li>
    *   <li><b>SERIALIZABLE</b></li>
    * </ul>
    *
@@ -296,7 +296,7 @@ public interface Database extends BasicDatabase {
    * returns the transaction isolation level between the available ones:
    * <ul>
    *   <li><b>READ_COMMITTED</b></li>
-   *   <li><b>REPEATABLE_READS</b></li>
+   *   <li><b>REPEATABLE_READ</b></li>
    *   <li><b>SERIALIZABLE</b></li>
    * </ul>
    *

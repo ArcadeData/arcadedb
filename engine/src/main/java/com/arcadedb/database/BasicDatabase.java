@@ -119,7 +119,7 @@ public interface BasicDatabase extends AutoCloseable {
    * Begins a new transaction specifying the isolation level. If a transaction is already begun, the current transaction is parked and a new sub-transaction is
    * begun. The new sub-transaction does not access to the content of the previous transaction. Sub transactions are totally isolated.
    *
-   * @param isolationLevel Isolation level between the following: READ_COMMITTED, REPEATABLE_READS, SERIALIZABLE
+   * @param isolationLevel Isolation level between the following: READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE
    */
   public void begin(Database.TRANSACTION_ISOLATION_LEVEL isolationLevel);
 

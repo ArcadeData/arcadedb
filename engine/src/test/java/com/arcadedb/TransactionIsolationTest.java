@@ -184,7 +184,7 @@ public class TransactionIsolationTest extends TestHelper {
 
   @Test
   public void testRepeatableRead() throws InterruptedException {
-    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READS);
+    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     try {
 
       final CountDownLatch sem1 = new CountDownLatch(1);

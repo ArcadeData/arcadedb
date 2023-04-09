@@ -269,7 +269,7 @@ public class TransactionContext implements Transaction {
         switch (isolationLevel) {
         case READ_COMMITTED:
           break;
-        case REPEATABLE_READS:
+        case REPEATABLE_READ:
           final PaginatedFile file = database.getFileManager().getFile(pageId.getFileId());
           final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
           if (!isNewPage)
