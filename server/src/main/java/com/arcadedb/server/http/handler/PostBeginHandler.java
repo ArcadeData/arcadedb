@@ -75,4 +75,9 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
   protected boolean requiresTransaction() {
     return false;
   }
+
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
 }
