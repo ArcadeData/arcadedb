@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.method.misc.SQLMethodToUpperCase;
 import com.arcadedb.query.sql.method.misc.SQLMethodTrim;
 import com.arcadedb.query.sql.method.misc.SQLMethodType;
 import com.arcadedb.query.sql.method.misc.SQLMethodValues;
+import com.arcadedb.query.sql.method.misc.SQLMethodIfNull;
 
 import java.util.*;
 
@@ -118,6 +119,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodSubString.NAME, new SQLMethodSubString());
     register(SQLMethodToJSON.NAME, new SQLMethodToJSON());
     register(SQLMethodValues.NAME, new SQLMethodValues());
+    register(SQLMethodIfNull.NAME, new SQLMethodIfNull());
     // GEO
     register(SQLMethodIsWithin.NAME, new SQLMethodIsWithin());
     register(SQLMethodIntersectsWith.NAME, new SQLMethodIntersectsWith());
