@@ -63,7 +63,7 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
       final String backupFile = response.getProperty("backupFile");
       Assertions.assertNotNull(backupFile);
 
-      final File file = new File("backups/graph/" + backupFile);
+      final File file = new File("target/backups/graph/" + backupFile);
       Assertions.assertTrue(file.exists());
       file.delete();
     }
