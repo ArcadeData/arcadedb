@@ -344,6 +344,8 @@ function getEditorMode(){
   let mime = null;
   if( language == "sql" )
     mime = "text/x-sql";
+  else if( language == "sqlScript" )
+    mime = "text/x-sql";
   else if( language == "cypher" )
     mime = "application/x-cypher-query";
   else if( language == "gremlin" )
