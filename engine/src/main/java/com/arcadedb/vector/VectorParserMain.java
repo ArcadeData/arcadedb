@@ -1,0 +1,101 @@
+/*
+ * Copyright 2023 Arcade Data Ltd
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package com.arcadedb.vector;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.utility.Pair;
+import com.arcadedb.vector.algorithm.CosineDistance;
+import com.arcadedb.vector.parser.VectorParser;
+import com.arcadedb.vector.parser.VectorParserCallback;
+
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
+
+/**
+ * Main entrypoint to parse a vector file.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class VectorParserMain {
+  private static final int PRINT_STATUS_EVERY = 100_000;
+  private static final int MAX_WORDS          = 0;//200_000; // SET 0 FOR NO LIMITS
+
+  public static void main(final String[] args) throws IOException {
+    final List<WordVector> words = new VectorParser().loadFromBinaryFile(new File(args[0]), false, new VectorParserCallback() {
+      @Override
+      public boolean onWord(final int parsedWordCounter, final int totalWords, final String word, final float[] vector) {
+        if (parsedWordCounter % PRINT_STATUS_EVERY == 0)
+          LogManager.instance().log(this, Level.INFO, "%d/%d - Parsed word %s", parsedWordCounter, totalWords, word);
+
+        if (MAX_WORDS > 0 && parsedWordCounter > MAX_WORDS)
+          return false;
+        return true;
+      }
+    });
+
+    final VectorSimilarity similarity = new VectorSimilarity().setUniverse(words).setMax(20).setAlgorithm(new CosineDistance()).setMinDistance(0.5F);
+
+    try (DatabaseFactory factory = new DatabaseFactory("vector")) {
+      if (factory.exists())
+        factory.open().drop();
+
+      try (final Database database = factory.create()) {
+        database.getSchema().createVertexType("Word").createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+        database.getSchema().createEdgeType("SimilarTo").createProperty("distance", Type.FLOAT);
+
+        for (int sourceIndex = 0; sourceIndex < words.size(); ++sourceIndex) {
+          final WordVector sourceWord = words.get(sourceIndex);
+          final List<Pair<Comparable, Float>> similar = similarity.calculateTopSimilar(sourceWord);
+          LogManager.instance().log(null, Level.INFO, "%s-> %s", sourceWord.getSubject(), similar);
+
+          database.transaction(() -> {
+            final Vertex sourceWordVertex = getOrCreateWord(database, sourceWord.subject);
+
+            for (int i = 0; i < similar.size(); i++) {
+              final Pair<Comparable, Float> entry = similar.get(i);
+
+              final Vertex destWordVertex = getOrCreateWord(database, (String) entry.getFirst());
+              sourceWordVertex.newEdge("SimilarTo", destWordVertex, true, "distance", entry.getSecond()).save();
+            }
+          });
+        }
+      }
+    }
+  }
+
+  private static Vertex getOrCreateWord(final Database database, final String word) {
+    final Vertex wordVertex;
+    final IndexCursor cursor = database.lookupByKey("Word", "name", word);
+    if (cursor.hasNext())
+      wordVertex = cursor.next().asVertex();
+    else
+      wordVertex = database.newVertex("Word").set("name", word).save();
+    return wordVertex;
+  }
+}
