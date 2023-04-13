@@ -43,6 +43,7 @@ import com.arcadedb.query.sql.method.misc.SQLMethodConvert;
 import com.arcadedb.query.sql.method.misc.SQLMethodExclude;
 import com.arcadedb.query.sql.method.misc.SQLMethodField;
 import com.arcadedb.query.sql.method.misc.SQLMethodFormat;
+import com.arcadedb.query.sql.method.misc.SQLMethodIfNull;
 import com.arcadedb.query.sql.method.misc.SQLMethodInclude;
 import com.arcadedb.query.sql.method.misc.SQLMethodIndexOf;
 import com.arcadedb.query.sql.method.misc.SQLMethodJavaType;
@@ -61,7 +62,6 @@ import com.arcadedb.query.sql.method.misc.SQLMethodToUpperCase;
 import com.arcadedb.query.sql.method.misc.SQLMethodTrim;
 import com.arcadedb.query.sql.method.misc.SQLMethodType;
 import com.arcadedb.query.sql.method.misc.SQLMethodValues;
-import com.arcadedb.query.sql.method.misc.SQLMethodIfNull;
 
 import java.util.*;
 
@@ -118,6 +118,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodType.NAME, new SQLMethodType());
     register(SQLMethodSubString.NAME, new SQLMethodSubString());
     register(SQLMethodToJSON.NAME, new SQLMethodToJSON());
+    register(SQLMethodTransform.NAME, new SQLMethodTransform());
     register(SQLMethodValues.NAME, new SQLMethodValues());
     register(SQLMethodIfNull.NAME, new SQLMethodIfNull());
     // GEO
