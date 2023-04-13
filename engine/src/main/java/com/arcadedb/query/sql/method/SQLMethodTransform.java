@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.method;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLMethod;
@@ -55,6 +56,8 @@ public class SQLMethodTransform extends AbstractSQLMethod {
     final DefaultSQLMethodFactory methodFactory = ((SQLQueryEngine) iContext.getDatabase().getQueryEngine("SQL")).getMethodFactory();
     final List<SQLMethod> transformers = new ArrayList<>(iParams.length);
     for (Object o : iParams) {
+      if (o == null)
+        throw new CommandSQLParsingException("Null argument in arguments for transform() method");
       transformers.add(methodFactory.createMethod(o.toString()));
     }
 

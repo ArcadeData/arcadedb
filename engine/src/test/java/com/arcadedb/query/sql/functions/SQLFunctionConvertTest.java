@@ -44,7 +44,8 @@ public class SQLFunctionConvertTest {
     TestHelper.executeInNewDatabase("testSQLConvert", (db) -> db.transaction(() -> {
       db.command("sql", "create document type TestConversion");
 
-      db.command("sql", "insert into TestConversion set string = 'Jay', date = sysdate(), number = 33, dateAsString = '2011-12-03T10:15:30.388'");
+      db.command("sql",
+          "insert into TestConversion set string = 'Jay', date = sysdate(), number = 33, dateAsString = '2011-12-03T10:15:30.388', list = ['A', 'B']");
 
       final Document doc = db.query("sql", "select from TestConversion limit 1").next().toElement();
 
@@ -119,6 +120,12 @@ public class SQLFunctionConvertTest {
       assertNotNull(results);
       convert = results.next().getProperty("convert");
       assertEquals(convert, "Jay");
+
+      results = db.query("sql", "select list.transform('toLowerCase') as list from TestConversion");
+      assertNotNull(results);
+      convert = results.next().getProperty("list");
+      final List list = (List) convert;
+      assertTrue(list.containsAll(List.of("a", "b")));
     }));
   }
 }
