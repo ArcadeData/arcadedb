@@ -531,6 +531,7 @@ TOKEN :
   | < NOT: ("N"|"n")("O"|"o")("T"|"t")  >
   | < IN: ("I"|"i")("N"|"n") >
   | < LIKE: ("L"|"l")("I"|"i")("K"|"k")("E"|"e") >
+  | < ILIKE: ("I"|"i")("L"|"l")("I"|"i")("K"|"k")("E"|"e") >
   | < IS: "is"|"IS"|"Is"|"iS" >
   | < BETWEEN: ("B"|"b")("E"|"e")("T"|"t")("W"|"w")("E"|"e")("E"|"e")("N"|"n")>
   | < CONTAINS: ("C"|"c")("O"|"o")("N"|"n")("T"|"t")("A"|"a")("I"|"i")("N"|"n")("S"|"s") >
@@ -2497,6 +2498,7 @@ BinaryCompareOperator CompareOperator():
   | result = GeOperator()
   | result = LeOperator()
   | result = LikeOperator()
+  | result = ILikeOperator()
   | result = ContainsKeyOperator()
   | result = NearOperator()
   | result = WithinOperator()
@@ -2545,6 +2547,12 @@ LikeOperator LikeOperator():
 {}
 {
   <LIKE> {return jjtThis;}
+}
+
+ILikeOperator ILikeOperator():
+{}
+{
+  <ILIKE> {return jjtThis;}
 }
 
 NearOperator NearOperator():

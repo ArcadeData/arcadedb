@@ -86,6 +86,51 @@ public class GremlinTest {
     }
   }
 
+  @Test
+  public void testGremlinTargetingBuckets() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+
+      graph.getDatabase().getSchema().createVertexType("Movie", 2);
+      graph.getDatabase().getSchema().createEdgeType("LinkedTo", 2);
+
+      graph.getDatabase().transaction(() -> {
+        Vertex prev = null;
+        for (int i = 0; i < 10; i++) {
+          Vertex v = graph.addVertex("bucket:Movie_0");
+          v.property("name", UUID.randomUUID().toString());
+          if (prev != null)
+            v.addEdge("bucket:LinkedTo_0", prev);
+          prev = v;
+        }
+
+        prev = null;
+        for (int i = 0; i < 10; i++) {
+          Vertex v = graph.addVertex("bucket:Movie_1");
+          v.property("name", UUID.randomUUID().toString());
+          if (prev != null)
+            v.addEdge("bucket:LinkedTo_1", prev);
+          prev = v;
+        }
+      });
+
+      ResultSet result = graph.gremlin("g.V().hasLabel('bucket:Movie_0')").execute();
+      int total = 0;
+      for (; result.hasNext(); ++total)
+        result.next();
+      Assertions.assertEquals(10, total);
+
+      result = graph.gremlin("g.E().hasLabel('bucket:LinkedTo_1')").execute();
+      total = 0;
+      for (; result.hasNext(); ++total)
+        result.next();
+      Assertions.assertEquals(9, total);
+
+    } finally {
+      graph.drop();
+    }
+  }
+
   /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/500
    */

@@ -58,53 +58,66 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
 
   public ArcadeFilterByTypeStep(final Traversal.Admin traversal, final Class returnClass, final boolean isStart, final String typeName) {
     super(traversal);
-    this.typeName = typeName;
-
     this.returnClass = returnClass;
     this.isStart = isStart;
-
-    final ArcadeGraph graph = (ArcadeGraph) traversal.getGraph().get();
 
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
-    if (!graph.getDatabase().getSchema().existsType(typeName))
+    final ArcadeGraph graph = (ArcadeGraph) traversal.getGraph().get();
+
+    final String bucketName;
+    if (typeName.startsWith("bucket:")) {
+      bucketName = typeName.substring("bucket:".length());
+      final DocumentType type = graph.getDatabase().getSchema().getTypeByBucketName(bucketName);
+      if (type == null)
+        this.typeName = null;
+      else
+        this.typeName = type.getName();
+    } else {
+      bucketName = null;
+      this.typeName = typeName;
+    }
+
+    if (!graph.getDatabase().getSchema().existsType(this.typeName))
       return;
 
-    final DocumentType type = graph.getDatabase().getSchema().getType(typeName);
+    final DocumentType type = graph.getDatabase().getSchema().getType(this.typeName);
 
     if (Vertex.class.isAssignableFrom(this.returnClass)) {
       if (!(type instanceof VertexType))
-        throw new IllegalArgumentException("Type '" + typeName + "' is not a vertex type");
+        throw new IllegalArgumentException("Type '" + this.typeName + "' is not a vertex type");
 
-      final Iterator<Record> rawIterator = graph.getDatabase().iterateType(typeName, true);
+      final Iterator<Record> rawIterator =
+          bucketName == null ? graph.getDatabase().iterateType(this.typeName, true) : graph.getDatabase().iterateBucket(bucketName);
       iteratorSupplier = () -> new Iterator<>() {
-          @Override
-          public boolean hasNext() {
-              return rawIterator.hasNext();
-          }
+        @Override
+        public boolean hasNext() {
+          return rawIterator.hasNext();
+        }
 
-          @Override
-          public E next() {
-              return (E) new ArcadeVertex(graph, rawIterator.next().asVertex());
-          }
+        @Override
+        public E next() {
+          return (E) new ArcadeVertex(graph, rawIterator.next().asVertex());
+        }
       };
 
     } else if (Edge.class.isAssignableFrom(this.returnClass)) {
       if (!(type instanceof EdgeType))
-        throw new IllegalArgumentException("Type '" + typeName + "' is not an edge type");
+        throw new IllegalArgumentException("Type '" + this.typeName + "' is not an edge type");
 
-      final Iterator<Record> rawIterator = graph.getDatabase().iterateType(typeName, true);
+      final Iterator<Record> rawIterator =
+          bucketName == null ? graph.getDatabase().iterateType(this.typeName, true) : graph.getDatabase().iterateBucket(bucketName);
       iteratorSupplier = () -> new Iterator<>() {
-          @Override
-          public boolean hasNext() {
-              return rawIterator.hasNext();
-          }
+        @Override
+        public boolean hasNext() {
+          return rawIterator.hasNext();
+        }
 
-          @Override
-          public E next() {
-              return (E) new ArcadeEdge(graph, rawIterator.next().asEdge());
-          }
+        @Override
+        public E next() {
+          return (E) new ArcadeEdge(graph, rawIterator.next().asEdge());
+        }
       };
     } else
       throw new IllegalArgumentException("Unsupported returning class '" + returnClass + "'");

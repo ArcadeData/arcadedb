@@ -1598,7 +1598,8 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testOptional2() {
-    final ResultSet qResult = database.query("sql", "match {type:Person, as: person} --> {as:b, optional:true, where:(nonExisting = 12)} return person, b.name");
+    final ResultSet qResult = database.query("sql",
+        "match {type:Person, as: person} --> {as:b, optional:true, where:(nonExisting = 12)} return person, b.name");
 
     for (int i = 0; i < 6; i++) {
       Assertions.assertTrue(qResult.hasNext());
@@ -1968,6 +1969,8 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testBucketTarget() {
     final String clazz = "testBucketTarget";
     database.command("SQL", "CREATE vertex type " + clazz).close();
+    database.command("SQL", "CREATE property " + clazz + ".name STRING").close();
+    database.command("SQL", "CREATE index on " + clazz + " (name) unique").close();
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET +" + clazz + "_one").close();
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET +" + clazz + "_two").close();
@@ -2003,6 +2006,11 @@ public class MatchStatementExecutionTest extends TestHelper {
     Assertions.assertEquals("two", item.getProperty("bname"));
 
     Assertions.assertFalse(result.hasNext());
+
+    Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "one" }).hasNext());
+    Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "onex" }).hasNext());
+    Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "two" }).hasNext());
+    Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "three" }).hasNext());
 
     result.close();
   }

@@ -1,22 +1,57 @@
-[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
-[![REUSE status](https://api.reuse.software/badge/github.com/ArcadeData/arcadedb)](https://api.reuse.software/info/github.com/ArcadeData/arcadedb)
-[![Maven Central](https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent/badge.svg)](https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent)
-
-[![Java CI - deploy](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg)](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml)
-[![Codacy Badge](https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668)](https://www.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Coverage)
-[![Codacy Badge](https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b)](https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings)
-[![security status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
-[![stability status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
-
 ![ArcadeDB Logo](https://arcadedb.com/assets/images/arcadedb-logo.png)
+
+<h2 align="center">Multi Model DBMS built for extreme performance</h3>
+
+<p align="center">
+  <a href="https://github.com/ArcadeData/arcadedb/releases"><img src="https://img.shields.io/github/v/release/arcadedata/arcadedb?color=%23ff00a0&include_prereleases&label=version&sort=semver&style=flat-square"></a>
+  &nbsp;
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg"></a>
+  &nbsp;
+  <a href="https://api.reuse.software/info/github.com/ArcadeData/arcadedb"><img src="https://api.reuse.software/badge/github.com/ArcadeData/arcadedb"></a>
+  &nbsp;
+  <a href="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent"><img src="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent/badge.svg"></a>
+  &nbsp;
+  <a href="https://hub.docker.com/repository/docker/arcadedata/arcadedb/general"><img src="https://img.shields.io/docker/pulls/arcadedata/arcadedb?style=flat-square"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg"></a>
+  &nbsp;
+  <a href="https://www.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Coverage"><img src="https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668"></a>
+  &nbsp;
+  <a href="https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings"><img src="https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b"></a>
+  &nbsp;
+  <a href="https://www.meterian.io/report/gh/ArcadeData/arcadedb"><img src="https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main"></a>
+  &nbsp;
+  <a href="https://www.meterian.io/report/gh/ArcadeData/arcadedb"><img src="https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main"></a>
+</p>
 
 <p align="center">
   <a href="https://discord.gg/w2Npx2B7hZ"><img width="208" height="97" src="https://arcadedb.com/assets/images/discord_button.png" alt="Join Discord"></a>
 </p>
 
+<p align="center">
+	<a href="https://github.com/arcadedata/arcadedb"><img height="25" src="/server/src/main/resources/static/images/social/github.svg" alt="Github	"></a>
+	&nbsp;
+  <a href="https://www.linkedin.com/company/arcadedb/"><img height="25" src="/server/src/main/resources/static/images/social/linkedin.svg" alt="LinkedIn"></a>
+  &nbsp;
+  <a href="https://twitter.com/arcade_db"><img height="25" src="/server/src/main/resources/static/images/social/twitter.svg" alt="Twitter"></a>
+  &nbsp;
+  <a href="https://www.youtube.com/@ArcadeDB"><img height="25" src="/server/src/main/resources/static/images/social/youtube.svg" alt="Youtube"></a>
+  &nbsp;
+  <a href="https://discord.gg/w2Npx2B7hZ"><img height="25" src="/server/src/main/resources/static/images/social/discord.svg" alt="Discord"></a>
+  &nbsp;
+  <a href="https://stackoverflow.com/questions/tagged/arcadedb"><img height="25" src="/server/src/main/resources/static/images/social/stack-overflow.svg" alt="StackOverflow"></a>
+	&nbsp;
+	<a href="https://blog.arcadedb.com/"><img height="25" src="/server/src/main/resources/static/images/social/blog.svg" alt="Blog"></a>
+</p>
+
+
 ArcadeDB is a Multi-Model DBMS (created originally as a fork from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand-new engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
 minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java11+ but only using low level API to use advanced
-mechanical sympathy techniques and a reduced pressure of the Garbage Collector.
+mechanical sympathy techniques and a reduced pressure of the Garbage Collector. It's highly optimized for extreme performance. Runs from a Raspberry Pi to multiple servers on the cloud.
+
+ArcadeDB is fully transactional DBMS with support for ACID transactions, structured and unstructured data, native graph engine (no joins but links between records), full-text indexing, geospatial querying, and advanced security.
 
 ArcadeDB supports the following models:
 - [Graph Database](https://docs.arcadedb.com#Graph-Model) (compatible with Neo4j Cypher, Apache Tinkerpop Gremlin and OrientDB SQL)

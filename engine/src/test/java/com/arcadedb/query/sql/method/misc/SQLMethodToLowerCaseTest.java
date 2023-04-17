@@ -26,24 +26,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodToLowerCaseTest {
 
-    private SQLMethod method;
+  private SQLMethod method;
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodToLowerCase();
-    }
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodToLowerCase();
+  }
 
-    @Test
-    void testNulIReturnedAsNull() {
-        final Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isNull();
-    }
+  @Test
+  void testNulIReturnedAsNull() {
+    final Object result = method.execute(null, null, null, null, null);
+    assertThat(result).isNull();
+  }
 
+  @Test
+  void testToloweCase() {
+    final Object result = method.execute(null, null, null, "UPPER CASE", null);
+    assertThat(result).isEqualTo("upper case");
 
-    @Test
-    void testToloweCase() {
-        final Object result = method.execute(null, null, null, "UPPER CASE", null);
-        assertThat(result).isEqualTo("upper case");
-
-    }
+  }
 }

@@ -77,6 +77,7 @@ public class UpdateStatementTest {
     checkRightSyntax("update  Foo set a = 1, c=k");
     checkRightSyntax("update  Foo set a = 1+1, c=foo, d='bar'");
     checkRightSyntax("update  Foo set a = a.b.toLowerCase(), b=out('pippo')[0]");
+    checkRightSyntax("update  Foo set a = a.b.transform( toLowerCase ), b=out('pippo')[0]");
     printTree("update  Foo set a = a.b.toLowerCase(), b=out('pippo')[0]");
   }
 
