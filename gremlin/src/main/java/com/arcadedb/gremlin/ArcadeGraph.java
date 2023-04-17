@@ -165,16 +165,30 @@ public class ArcadeGraph implements Graph, Closeable {
       throw Vertex.Exceptions.userSuppliedIdsNotSupported();
     this.tx().readWrite();
 
-    final String label = ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
+    String typeName = ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
 
-    if (!this.database.getSchema().existsType(label))
-      this.database.getSchema().createVertexType(label);
-    else if (!(this.database.getSchema().getType(label) instanceof VertexType))
-      throw new IllegalArgumentException("Type '" + label + "' is not a vertex");
+    final String bucketName;
+    if (typeName.startsWith("bucket:")) {
+      bucketName = typeName.substring("bucket:".length());
+      final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
+      if (type == null)
+        typeName = null;
+      else
+        typeName = type.getName();
+    } else
+      bucketName = null;
 
-    final MutableVertex modifiableVertex = this.database.newVertex(label);
+    if (!this.database.getSchema().existsType(typeName))
+      this.database.getSchema().createVertexType(typeName);
+    else if (!(this.database.getSchema().getType(typeName) instanceof VertexType))
+      throw new IllegalArgumentException("Type '" + typeName + "' is not a vertex");
+
+    final MutableVertex modifiableVertex = this.database.newVertex(typeName);
     final ArcadeVertex vertex = new ArcadeVertex(this, modifiableVertex, keyValues);
-    modifiableVertex.save();
+    if (bucketName != null)
+      modifiableVertex.save(bucketName);
+    else
+      modifiableVertex.save();
     return vertex;
   }
 

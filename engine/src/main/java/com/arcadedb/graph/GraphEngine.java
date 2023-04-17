@@ -27,6 +27,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.MultiIterator;
@@ -103,7 +104,7 @@ public class GraphEngine {
     return edge;
   }
 
-  public MutableEdge newEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex, final boolean bidirectional,
+  public MutableEdge newEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex, final boolean bidirectional,
       final Object... edgeProperties) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
@@ -117,13 +118,27 @@ public class GraphEngine {
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
 
+    final String bucketName;
+    if (edgeTypeName.startsWith("bucket:")) {
+      bucketName = edgeTypeName.substring("bucket:".length());
+      final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
+      if (type == null)
+        edgeTypeName = null;
+      else
+        edgeTypeName = type.getName();
+    } else
+      bucketName = null;
+
     final EdgeType type = (EdgeType) database.getSchema().getType(edgeTypeName);
 
     final MutableEdge edge = new MutableEdge(database, type, fromVertexRID, toVertex.getIdentity());
     if (edgeProperties != null && edgeProperties.length > 0)
       setProperties(edge, edgeProperties);
 
-    edge.save();
+    if (bucketName != null)
+      edge.save(bucketName);
+    else
+      edge.save();
 
     connectEdge(fromVertex, toVertex, edge, bidirectional);
 

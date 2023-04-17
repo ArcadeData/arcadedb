@@ -22,6 +22,7 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import org.apache.tinkerpop.gremlin.structure.Direction;
 import org.apache.tinkerpop.gremlin.structure.Edge;
@@ -57,10 +58,24 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     //ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
 
-    if (!this.graph.getDatabase().getSchema().existsType(label))
-      this.graph.getDatabase().getSchema().createEdgeType(label);
-    else if (!(this.graph.getDatabase().getSchema().getType(label) instanceof EdgeType))
-      throw new IllegalArgumentException("Type '" + label + "' is not a edge");
+    final String typeName;
+    final String bucketName;
+    if (label.startsWith("bucket:")) {
+      bucketName = label.substring("bucket:".length());
+      final DocumentType type = graph.getDatabase().getSchema().getTypeByBucketName(bucketName);
+      if (type == null)
+        typeName = null;
+      else
+        typeName = type.getName();
+    } else {
+      bucketName = null;
+      typeName = label;
+    }
+
+    if (!this.graph.getDatabase().getSchema().existsType(typeName))
+      this.graph.getDatabase().getSchema().createEdgeType(typeName);
+    else if (!(this.graph.getDatabase().getSchema().getType(typeName) instanceof EdgeType))
+      throw new IllegalArgumentException("Type '" + typeName + "' is not a edge");
 
     final com.arcadedb.graph.Vertex baseElement = getBaseElement();
 
