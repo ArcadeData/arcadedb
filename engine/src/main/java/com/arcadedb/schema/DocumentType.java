@@ -859,6 +859,14 @@ public class DocumentType {
 
     bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getId());
     cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getId());
+
+    // AUTOMATICALLY DROP THE INDEX ON THE REMOVED BUCKET
+    final Collection<TypeIndex> existentIndexes = getAllIndexes(false);
+    for (TypeIndex idx : existentIndexes) {
+      for (IndexInternal subIndex : idx.getIndexesOnBuckets())
+        if (subIndex.getAssociatedBucketId() == bucket.getId())
+          schema.dropIndex(subIndex.getName());
+    }
   }
 
   public boolean hasBucket(final String bucketName) {
