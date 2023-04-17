@@ -839,6 +839,13 @@ public class DocumentType {
     cachedPolymorphicBucketIds = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBucketIds, bucket.getId());
 
     bucketSelectionStrategy.setType(this);
+
+    // AUTOMATICALLY CREATES THE INDEX ON THE NEW BUCKET
+    final Collection<TypeIndex> existentIndexes = getAllIndexes(false);
+    for (TypeIndex idx : existentIndexes) {
+      schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSize(), idx.getNullStrategy(), null,
+          idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx);
+    }
   }
 
   protected void removeBucketInternal(final Bucket bucket) {
