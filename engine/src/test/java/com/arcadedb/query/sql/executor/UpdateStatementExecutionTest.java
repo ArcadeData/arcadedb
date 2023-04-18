@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
@@ -797,10 +798,10 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     item = result.next();
     Assertions.assertNotNull(item);
-    final ResultInternal ls = item.getProperty("theProperty");
+    final EmbeddedDocument ls = item.getProperty("theProperty");
     Assertions.assertNotNull(ls);
     Assertions.assertFalse(ls.getPropertyNames().contains("sub"));
-    Assertions.assertEquals("bar", ls.getProperty("aaa"));
+    Assertions.assertEquals("bar", ls.getString("aaa"));
     Assertions.assertFalse(result.hasNext());
     result.close();
   }

@@ -20,6 +20,8 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
@@ -126,6 +128,20 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
       baseElement = mutableElement;
 
     return new ArcadeVertexProperty<>(this, key, value);
+  }
+
+  public VertexProperty<EmbeddedDocument> embed(final String key, final String typeName) {
+    this.graph.tx().readWrite();
+
+    final MutableVertex mutableElement = baseElement.modify();
+    final MutableEmbeddedDocument embedded = mutableElement.newEmbeddedDocument(typeName, key);
+    mutableElement.save();
+
+    if (mutableElement != baseElement)
+      // REPLACE WITH MUTABLE ELEMENT
+      baseElement = mutableElement;
+
+    return new ArcadeVertexProperty<>(this, key, embedded);
   }
 
   @Override

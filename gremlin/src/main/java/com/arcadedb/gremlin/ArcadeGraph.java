@@ -159,7 +159,12 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   @Override
-  public Vertex addVertex(final Object... keyValues) {
+  public ArcadeVertex addVertex(final String label) {
+    return (ArcadeVertex) Graph.super.addVertex(label);
+  }
+
+  @Override
+  public ArcadeVertex addVertex(final Object... keyValues) {
     ElementHelper.legalPropertyKeyValueArray(keyValues);
     if (ElementHelper.getIdValue(keyValues).isPresent())
       throw Vertex.Exceptions.userSuppliedIdsNotSupported();

@@ -855,9 +855,6 @@ public class EmbeddedSchema implements Schema {
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
 
-    if (buckets < 1 && bucketInstances.isEmpty())
-      throw new IllegalArgumentException("Invalid number of buckets (" + buckets + "). At least 1 bucket is necessary to create a type");
-
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
 
@@ -878,7 +875,7 @@ public class EmbeddedSchema implements Schema {
         for (int i = 0; i < buckets; ++i) {
           final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
           if (existsBucket(bucketName)) {
-            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
+            LogManager.instance().log(this, Level.WARNING, "Reusing previously created bucket '%s' for type '%s'", null, bucketName, typeName);
             c.addBucket(getBucketByName(bucketName));
           } else
             // CREATE A NEW ONE

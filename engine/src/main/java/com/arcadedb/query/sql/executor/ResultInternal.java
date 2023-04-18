@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -140,7 +141,7 @@ public class ResultInternal implements Result {
   }
 
   private Object wrap(final Object input) {
-    if (input instanceof Document && ((Document) input).getIdentity() == null) {
+    if (input instanceof Document && ((Document) input).getIdentity() == null && !(input instanceof EmbeddedDocument)) {
       final Document elem = ((Document) input);
       final ResultInternal result = new ResultInternal(elem.toMap(false));
       if (elem.getTypeName() != null)

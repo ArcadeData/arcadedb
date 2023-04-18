@@ -20,6 +20,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.MutableVertex;
 import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Property;
@@ -86,7 +87,11 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
 
   @Override
   public <V> Property<V> property(final String key, final V value) {
-    throw new UnsupportedOperationException();
+    if (this.value instanceof MutableEmbeddedDocument) {
+      ((MutableEmbeddedDocument) this.value).set(key, value);
+      return new ArcadeVertexProperty<V>(vertex, key, value);
+    } else
+      throw new UnsupportedOperationException();
   }
 
   /**
