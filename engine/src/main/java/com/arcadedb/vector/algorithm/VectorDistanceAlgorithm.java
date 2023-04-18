@@ -21,11 +21,13 @@
 
 package com.arcadedb.vector.algorithm;
 
+import com.arcadedb.vector.IndexableVector;
+
 /**
  * Basic interface to return the distance between two vectors.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public interface VectorDistanceAlgorithm {
-  float calculate(float[] a, float[] b);
+  float calculate(IndexableVector a, IndexableVector b);
 }

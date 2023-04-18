@@ -48,7 +48,7 @@ public class VectorSimilarity {
       if (element.getSubject().equals(currentElement.getSubject()))
         continue;
 
-      final float distance = algorithm.calculate(element.getVector(), currentElement.getVector());
+      final float distance = algorithm.calculate(element, currentElement);
       if (minDistance > Float.MIN_VALUE && distance < minDistance)
         // TOO DISTANT: SKIP IT
         continue;

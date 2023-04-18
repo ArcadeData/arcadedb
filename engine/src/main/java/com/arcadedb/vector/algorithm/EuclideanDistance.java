@@ -21,19 +21,23 @@
 
 package com.arcadedb.vector.algorithm;
 
+import com.arcadedb.vector.IndexableVector;
+
 /**
  * Uses the Euclidean algorithm to compute the distance between two vectors.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EuclideanDistance implements VectorDistanceAlgorithm {
-  public float calculate(final float[] a, final float[] b) {
-    if (a.length != b.length)
-      throw new IllegalArgumentException("vectors must have the same length (" + a.length + " <> " + b.length + ")");
+  public float calculate(final IndexableVector a, final IndexableVector b) {
+    final float[] aVector = a.getVector();
+    final float[] bVector = b.getVector();
+    if (aVector.length != bVector.length)
+      throw new IllegalArgumentException("vectors must have the same length (" + aVector.length + " <> " + bVector.length + ")");
 
     double diffSquareSum = 0.0F;
-    for (int i = 0; i < a.length; i++)
-      diffSquareSum += (a[i] - b[i]) * (a[i] - b[i]);
+    for (int i = 0; i < aVector.length; i++)
+      diffSquareSum += (aVector[i] - bVector[i]) * (aVector[i] - bVector[i]);
     return (float) Math.sqrt(diffSquareSum);
   }
 }

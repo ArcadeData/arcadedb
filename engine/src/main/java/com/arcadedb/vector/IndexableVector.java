@@ -29,10 +29,17 @@ package com.arcadedb.vector;
 public abstract class IndexableVector<T extends Comparable> implements Comparable<IndexableVector<T>> {
   protected     T       subject;
   private final float[] vector;
+  private final float   norm;
 
   public IndexableVector(final T subject, final float[] vector) {
     this.subject = subject;
     this.vector = vector;
+
+    // COMPUTE NORM
+    float total = 0.0F;
+    for (int i = 0; i < vector.length; i++)
+      total = Math.fma(vector[i], vector[i], total);
+    norm = (float) Math.sqrt(total);
   }
 
   public T getSubject() {
@@ -46,5 +53,9 @@ public abstract class IndexableVector<T extends Comparable> implements Comparabl
   @Override
   public int compareTo(final IndexableVector<T> o) {
     return subject.compareTo(o.subject);
+  }
+
+  public float getNorm() {
+    return norm;
   }
 }

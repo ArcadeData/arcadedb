@@ -87,7 +87,9 @@ public class VectorParser {
       for (int i = 0; i < totalWords; i++) {
         final String word = readString(bis, stringBuilder);
 
-        final float[] vector = new float[vectorSize];
+        int realSize = vectorSize + vectorSize % 8;
+
+        final float[] vector = new float[realSize];
         for (int j = 0; j < vectorSize; j++)
           vector[j] = readFloat(bis, floatBuffer);
 
