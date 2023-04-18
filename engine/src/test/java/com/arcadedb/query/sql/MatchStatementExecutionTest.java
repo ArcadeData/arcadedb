@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.MatchPrefetchStep;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+import java.util.stream.*;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -2011,6 +2013,45 @@ public class MatchStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "onex" }).hasNext());
     Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "two" }).hasNext());
     Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "three" }).hasNext());
+
+    //--------------------------------------------------------------------------------------------------------
+    // CHECK THE SUB-INDEX EXISTS
+    Assertions.assertTrue(
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_one").getId()));
+
+    database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_one").close();
+
+    // CHECK THE SUB-INDEX HAS BEN REMOVED
+    Assertions.assertFalse(
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_one").getId()));
+
+    //--------------------------------------------------------------------------------------------------------
+    // CHECK THE SUB-INDEX EXISTS
+    Assertions.assertTrue(
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_two").getId()));
+
+    database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_two").close();
+
+    // CHECK THE SUB-INDEX HAS BEN REMOVED
+    Assertions.assertFalse(
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_two").getId()));
+
+    //--------------------------------------------------------------------------------------------------------
+    // CHECK THE SUB-INDEX EXISTS
+    Assertions.assertTrue(
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_three").getId()));
+
+    database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_three").close();
+
+    // CHECK THE SUB-INDEX HAS BEN REMOVED
+    Assertions.assertFalse(
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_three").getId()));
 
     result.close();
   }

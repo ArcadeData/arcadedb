@@ -842,9 +842,14 @@ public class DocumentType {
 
     // AUTOMATICALLY CREATES THE INDEX ON THE NEW BUCKET
     final Collection<TypeIndex> existentIndexes = getAllIndexes(false);
-    for (TypeIndex idx : existentIndexes) {
-      schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSize(), idx.getNullStrategy(), null,
-          idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx);
+
+    if (!existentIndexes.isEmpty()) {
+      schema.getDatabase().transaction(() -> {
+        for (TypeIndex idx : existentIndexes) {
+          schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSize(), idx.getNullStrategy(), null,
+              idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx);
+        }
+      });
     }
   }
 
@@ -859,6 +864,19 @@ public class DocumentType {
 
     bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getId());
     cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getId());
+
+    // AUTOMATICALLY DROP THE INDEX ON THE REMOVED BUCKET
+    final Collection<TypeIndex> existentIndexes = getAllIndexes(false);
+
+    if (!existentIndexes.isEmpty()) {
+      schema.getDatabase().transaction(() -> {
+        for (TypeIndex idx : existentIndexes) {
+          for (IndexInternal subIndex : idx.getIndexesOnBuckets())
+            if (subIndex.getAssociatedBucketId() == bucket.getId())
+              schema.dropIndex(subIndex.getName());
+        }
+      });
+    }
   }
 
   public boolean hasBucket(final String bucketName) {

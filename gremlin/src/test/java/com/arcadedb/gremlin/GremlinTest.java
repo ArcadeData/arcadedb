@@ -22,6 +22,7 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -30,6 +31,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
+import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -125,6 +127,40 @@ public class GremlinTest {
       for (; result.hasNext(); ++total)
         result.next();
       Assertions.assertEquals(9, total);
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testGremlinEmbeddedDocument() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+
+      graph.getDatabase().getSchema().createVertexType("Customer", 1);
+      graph.getDatabase().getSchema().createDocumentType("Address", 0);
+
+      graph.getDatabase().transaction(() -> {
+        for (int i = 0; i < 10; i++) {
+          ArcadeVertex v = graph.addVertex("Customer");
+          v.property("name", UUID.randomUUID().toString());
+          VertexProperty<EmbeddedDocument> address = v.embed("residence", "Address");
+          address.property("street", "Via Roma, 10");
+          address.property("city", "Rome");
+          address.property("country", "Italy");
+        }
+      });
+
+      ResultSet result = graph.gremlin("g.V().hasLabel('Customer')").execute();
+      int total = 0;
+      for (; result.hasNext(); ++total) {
+        EmbeddedDocument address = result.next().getProperty("residence");
+        Assertions.assertEquals("Via Roma, 10", address.getString("street"));
+        Assertions.assertEquals("Rome", address.getString("city"));
+        Assertions.assertEquals("Italy", address.getString("country"));
+      }
+      Assertions.assertEquals(10, total);
 
     } finally {
       graph.drop();
