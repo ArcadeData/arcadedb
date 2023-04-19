@@ -395,8 +395,14 @@ public class ArcadeDBServer {
 
       if (createIfNotExists)
         db = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
-      else
-        db = (DatabaseInternal) factory.open(defaultDbMode);
+      else {
+        final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
+        if (!activeDatabases.isEmpty())
+          // REUSE THE OPEN DATABASE. THIS TYPICALLY HAPPENS WHEN A SERVER PLUGIN OPENS THE DATABASE AT STARTUP
+          db = (DatabaseInternal) activeDatabases.iterator().next();
+        else
+          db = (DatabaseInternal) factory.open(defaultDbMode);
+      }
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
         db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
