@@ -72,7 +72,7 @@ public class VectorParserMain {
         for (int sourceIndex = 0; sourceIndex < words.size(); ++sourceIndex) {
           final WordVector sourceWord = words.get(sourceIndex);
           final List<Pair<Comparable, Float>> similar = similarity.calculateTopSimilar(sourceWord);
-          LogManager.instance().log(null, Level.INFO, "%s-> %s", sourceWord.getSubject(), similar);
+          LogManager.instance().log(null, Level.INFO, "%d/%d: %s-> %s", sourceIndex, words.size(), sourceWord.getSubject(), similar);
 
           database.transaction(() -> {
             final Vertex sourceWordVertex = getOrCreateWord(database, sourceWord.subject);
