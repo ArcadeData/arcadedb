@@ -24,6 +24,8 @@ package com.arcadedb.vector;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.vector.algorithm.CosineDistance;
 import com.arcadedb.vector.algorithm.VectorDistanceAlgorithm;
+import com.arcadedb.vector.universe.SortedVectorUniverse;
+import com.arcadedb.vector.universe.VectorUniverse;
 
 import java.util.*;
 
@@ -40,11 +42,13 @@ public class VectorSimilarity {
   private              float                   minDistance = Float.MIN_VALUE;
 
   public List<Pair<Comparable, Float>> calculateTopSimilar(final IndexableVector element) {
+    return calculateTopSimilar(element, universe.getEntries());
+  }
+
+  public List<Pair<Comparable, Float>> calculateTopSimilar(final IndexableVector element, final Collection<? extends IndexableVector> candidates) {
     final LinkedList<Pair<Comparable, Float>> similar = new LinkedList<>();
 
-    final int totalElements = universe.size();
-    for (int destIndex = 0; destIndex < totalElements; ++destIndex) {
-      final IndexableVector currentElement = universe.get(destIndex);
+    for (IndexableVector currentElement : candidates) {
       if (element.getSubject().equals(currentElement.getSubject()))
         continue;
 
@@ -83,6 +87,71 @@ public class VectorSimilarity {
         similar.add(new Pair<>(currentElement.getSubject(), distance));
     }
     return similar;
+  }
+
+  public List<Pair<Comparable, Float>> calculateTopSimilarUsingIndex(final SortedVectorUniverse index, final IndexableVector element, final float maxDistance,
+      final int maxAdjacentElements) {
+    final Set<Integer> candidatePositions = new HashSet<>();
+
+    final float[] elementArray = element.getVector();
+    final int dimensions = universe.dimensions();
+    final int entries = universe.size();
+
+    for (int dimension = 0; dimension < dimensions; dimension++) {
+      final SortedVectorUniverse.SortedDimension sortedDimension = index.getSortedDimensions(dimension);
+      final float valueToFind = elementArray[dimension];
+      int pos = sortedDimension.searchFirstValue(valueToFind);
+      if (pos < 0)
+        // NOT FOUND, CONVERT INSERTION POINT IN THE CLOSEST POINT
+        pos = (pos + 1) * -1;
+
+      boolean searchRight = true;
+      boolean searchLeft = true;
+      int searchRightIndex = pos;
+      int searchLeftIndex = pos;
+      int candidateFound = 0;
+
+      while (candidateFound < maxAdjacentElements) {
+        if (collectInResult(maxDistance, candidatePositions, sortedDimension, valueToFind, pos))
+          ++candidateFound;
+
+        if (candidateFound < maxAdjacentElements) {
+          if (searchRight && searchRightIndex < entries) {
+            if (!collectInResult(maxDistance, candidatePositions, sortedDimension, valueToFind, ++searchRightIndex))
+              searchRight = false;
+            else
+              ++candidateFound;
+          }
+
+          if (searchLeft && searchLeftIndex > 0) {
+            if (!collectInResult(maxDistance, candidatePositions, sortedDimension, valueToFind, --searchLeftIndex))
+              searchLeft = false;
+            else
+              ++candidateFound;
+          }
+        }
+      }
+    }
+
+    final List<IndexableVector<?>> candidateElements = new ArrayList<>(candidatePositions.size());
+    for (Integer pos : candidatePositions)
+      candidateElements.add(universe.get(pos));
+
+    return calculateTopSimilar(element, candidateElements);
+  }
+
+  private boolean collectInResult(final float maxDistance, final Set<Integer> candidates, final SortedVectorUniverse.SortedDimension sortedDimension,
+      final float valueToFind, final int pos) {
+    if (pos >= sortedDimension.size())
+      return false;
+
+    final float value = sortedDimension.getValue(pos);
+    final float distance = Math.abs(value - valueToFind);
+    if (distance <= maxDistance) {
+      candidates.add(pos);
+      return true;
+    }
+    return false;
   }
 
   public int getMax() {

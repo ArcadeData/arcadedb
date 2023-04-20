@@ -19,7 +19,7 @@
  * under the License.
  */
 
-package com.arcadedb.vector;/*
+package com.arcadedb.vector.universe;/*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +36,7 @@ package com.arcadedb.vector;/*
  */
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.vector.WordVector;
 
 import java.io.*;
 import java.util.*;
@@ -58,6 +59,31 @@ public class SortedVectorUniverse<T extends Comparable> {
       this.sortedDimensionValues[entryIndex] = key;
       this.sortedDimensionPointers[entryIndex] = value;
     }
+
+    public float getValue(final int entryIndex) {
+      return sortedDimensionValues[entryIndex];
+    }
+
+    public int getPointer(final int entryIndex) {
+      return sortedDimensionPointers[entryIndex];
+    }
+
+    public int searchFirstValue(final float v) {
+      int pos = Arrays.binarySearch(sortedDimensionValues, v);
+      if (pos > 0 && v == sortedDimensionValues[pos - 1]) {
+        // SEARCH FOR THE FIRST ELEMENT WITH THIS VALUE IN THE ARRAY
+        while (pos > 0)
+          if (sortedDimensionValues[pos - 1] == v)
+            --pos;
+          else
+            break;
+      }
+      return pos;
+    }
+
+    public int size() {
+      return sortedDimensionValues.length;
+    }
   }
 
   private SortedDimension[] sortedDimensions;
@@ -67,51 +93,8 @@ public class SortedVectorUniverse<T extends Comparable> {
     this.universe = universe;
   }
 
-  public SortedVectorUniverse<T> compute() {
-    final int entries = universe.size();
-    final int dimensions = universe.dimensions();
-
-    sortedDimensions = new SortedDimension[dimensions];
-    for (int dimension = 0; dimension < dimensions; dimension++) {
-      sortedDimensions[dimension] = computeDimension(universe, entries, dimension);
-      LogManager.instance().log(this, Level.INFO, "Calculate sorted dimension %d/%d", dimension, dimensions);
-    }
-    return this;
-  }
-
-  public SortedVectorUniverse<T> computeAndWriteToFile(final File file) throws IOException {
-    final int entries = universe.size();
-    final int dimensions = universe.dimensions();
-
-    try (FileOutputStream fos = new FileOutputStream(file);
-        GZIPOutputStream gos = new GZIPOutputStream(fos);
-        BufferedOutputStream bos = new BufferedOutputStream(gos);
-        DataOutputStream dos = new DataOutputStream(bos)) {
-
-      dos.writeInt(FILE_FORMAT_VERSION);
-
-      dos.writeInt(dimensions);
-
-      // WRITE ALL THE ENTRIES
-      dos.writeInt(entries);
-      for (int i = 0; i < entries; i++) {
-        final IndexableVector<?> vector = universe.get(i);
-        dos.writeUTF(vector.subject.toString());
-      }
-
-      for (int dimension = 0; dimension < dimensions; dimension++) {
-        final SortedDimension sortedDimension = computeDimension(universe, entries, dimension);
-
-        for (int i = 0; i < entries; i++) {
-          dos.writeFloat(sortedDimension.sortedDimensionValues[i]);
-          dos.writeInt(sortedDimension.sortedDimensionPointers[i]);
-        }
-
-        LogManager.instance().log(this, Level.INFO, "Written sorted dimension %d/%d", dimension, dimensions);
-      }
-    }
-
-    return this;
+  public SortedDimension getSortedDimensions(final int dimension) {
+    return sortedDimensions[dimension];
   }
 
   public SortedVectorUniverse<T> readFromFile(final File file) throws IOException {
@@ -139,10 +122,10 @@ public class SortedVectorUniverse<T extends Comparable> {
 
       sortedDimensions = new SortedDimension[dimensions];
 
-      final SortedDimension sortedDimension = new SortedDimension(entries);
-
       // READ VALUES AND POINTERS
       for (int dimension = 0; dimension < dimensions; dimension++) {
+        final SortedDimension sortedDimension = new SortedDimension(entries);
+
         for (int i = 0; i < entries; i++) {
           final float value = dis.readFloat();
           final int pointer = dis.readInt();
@@ -162,29 +145,5 @@ public class SortedVectorUniverse<T extends Comparable> {
 
   public VectorUniverse<?> getUniverse() {
     return universe;
-  }
-
-  private SortedDimension computeDimension(final VectorUniverse<?> universe, final int entries, final int dimension) {
-    final TreeMap<Float, List<Integer>> treeMap = new TreeMap<>();
-
-    // ORDER THE ENTRIES USING A TREEMAP
-    for (int entryIndex = 0; entryIndex < entries; entryIndex++) {
-      final IndexableVector<?> vector = universe.get(entryIndex);
-
-      final float value = vector.getVector()[dimension];
-      final List<Integer> pointers = treeMap.computeIfAbsent(value, k -> new ArrayList<>());
-      pointers.add(entryIndex);
-    }
-
-    // CONVERT THE SORTED TREEMAP IN 2 ARRAYS (LESS RAM, FASTER BROWSING)
-    final SortedDimension sortedDimension = new SortedDimension(entries);
-    int i = 0;
-    for (Map.Entry<Float, List<Integer>> entry : treeMap.entrySet()) {
-      for (Integer entryIndex : entry.getValue()) {
-        sortedDimension.set(i, entry.getKey(), entryIndex);
-        ++i;
-      }
-    }
-    return sortedDimension;
   }
 }

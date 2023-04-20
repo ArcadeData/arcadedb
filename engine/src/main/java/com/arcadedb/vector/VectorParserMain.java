@@ -22,16 +22,14 @@
 package com.arcadedb.vector;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.vector.algorithm.CosineDistance;
 import com.arcadedb.vector.parser.VectorParser;
 import com.arcadedb.vector.parser.VectorParserCallback;
+import com.arcadedb.vector.universe.VectorUniverse;
 
 import java.io.*;
 import java.util.*;
@@ -49,7 +47,7 @@ public class VectorParserMain {
   public static void main(final String[] args) throws IOException {
     final VectorUniverse<String> universe = readWord2Vec(args[0]);
 
-    final SortedVectorUniverse<?> sortedUniverse = new SortedVectorUniverse<>(universe).readFromFile(new File("sortedDimensions.bin.gz"));
+    //final SortedVectorUniverse<?> sortedUniverse = new SortedVectorUniverse<>(universe).readFromFile(new File("sortedDimensions.bin.gz"));
 
     // QUANTIZE BASED ON THE RANGE FOUND
     final float[] boundaries = universe.calculateBoundariesOfValues();
@@ -62,32 +60,38 @@ public class VectorParserMain {
 
     final VectorSimilarity similarity = new VectorSimilarity().setUniverse(universe).setMax(20).setAlgorithm(new CosineDistance()).setMinDistance(0.5F);
 
-    try (DatabaseFactory factory = new DatabaseFactory("vector")) {
-      if (factory.exists())
-        factory.open().drop();
+//    try (DatabaseFactory factory = new DatabaseFactory("vector")) {
+//      if (factory.exists())
+//        factory.open().drop();
+//
+//      try (final Database database = factory.create()) {
+//        database.getSchema().createVertexType("Word").createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+//        database.getSchema().createEdgeType("SimilarTo").createProperty("distance", Type.FLOAT);
 
-      try (final Database database = factory.create()) {
-        database.getSchema().createVertexType("Word").createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
-        database.getSchema().createEdgeType("SimilarTo").createProperty("distance", Type.FLOAT);
+    for (int sourceIndex = 0; sourceIndex < universe.size(); ++sourceIndex) {
+      final IndexableVector<String> sourceWord = universe.get(sourceIndex);
+      //final List<Pair<Comparable, Float>> similar = similarity.calculateTopSimilarUsingIndex(sortedUniverse, sourceWord, 0.3F, 200);
+      final List<Pair<Comparable, Float>> similar = similarity.calculateTopSimilar(sourceWord, universe.getEntries());
 
-        for (int sourceIndex = 0; sourceIndex < universe.size(); ++sourceIndex) {
-          final IndexableVector<String> sourceWord = universe.get(sourceIndex);
-          final List<Pair<Comparable, Float>> similar = similarity.calculateTopSimilar(sourceWord);
-          LogManager.instance().log(null, Level.INFO, "%d/%d: %s-> %s", sourceIndex, universe.size(), sourceWord.getSubject(), similar);
+      LogManager.instance().log(null, Level.INFO, "%d/%d: %s-> %s", sourceIndex, universe.size(), sourceWord.getSubject(), similar);
 
-          database.transaction(() -> {
-            final Vertex sourceWordVertex = getOrCreateWord(database, sourceWord.subject);
-
-            for (int i = 0; i < similar.size(); i++) {
-              final Pair<Comparable, Float> entry = similar.get(i);
-
-              final Vertex destWordVertex = getOrCreateWord(database, (String) entry.getFirst());
-              sourceWordVertex.newEdge("SimilarTo", destWordVertex, true, "distance", entry.getSecond()).save();
-            }
-          });
-        }
-      }
+      //writeToGraph(database, sourceWord, similar);
     }
+//      }
+//    }
+  }
+
+  private static void writeToGraph(Database database, IndexableVector<String> sourceWord, List<Pair<Comparable, Float>> similar) {
+    database.transaction(() -> {
+      final Vertex sourceWordVertex = getOrCreateWord(database, sourceWord.subject);
+
+      for (int i = 0; i < similar.size(); i++) {
+        final Pair<Comparable, Float> entry = similar.get(i);
+
+        final Vertex destWordVertex = getOrCreateWord(database, (String) entry.getFirst());
+        sourceWordVertex.newEdge("SimilarTo", destWordVertex, true, "distance", entry.getSecond()).save();
+      }
+    });
   }
 
   private static VectorUniverse<String> readWord2Vec(final String fileName) throws IOException {

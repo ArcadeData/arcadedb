@@ -22,7 +22,7 @@
 package com.arcadedb.vector.parser;
 
 import com.arcadedb.log.LogManager;
-import com.arcadedb.vector.VectorUniverse;
+import com.arcadedb.vector.universe.VectorUniverse;
 import com.arcadedb.vector.WordVector;
 
 import java.io.*;

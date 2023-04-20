@@ -19,7 +19,7 @@
  * under the License.
  */
 
-package com.arcadedb.vector;/*
+package com.arcadedb.vector.universe;/*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,23 +36,28 @@ package com.arcadedb.vector;/*
  */
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.vector.IndexableVector;
 
 import java.util.*;
 import java.util.logging.*;
 
 public class VectorUniverse<T extends Comparable> {
-  private final List<? extends IndexableVector<T>> list;
+  private final List<? extends IndexableVector<T>> entries;
 
-  public VectorUniverse(final List<? extends IndexableVector<T>> list) {
-    this.list = list;
+  public VectorUniverse(final List<? extends IndexableVector<T>> entries) {
+    this.entries = entries;
   }
 
   public int size() {
-    return list.size();
+    return entries.size();
+  }
+
+  public List<? extends IndexableVector<T>> getEntries() {
+    return entries;
   }
 
   public IndexableVector<T> get(final int i) {
-    return list.get(i);
+    return entries.get(i);
   }
 
   public float[] calculateBoundariesOfValues() {
@@ -77,6 +82,6 @@ public class VectorUniverse<T extends Comparable> {
   }
 
   public int dimensions() {
-    return list.get(0).getVector().length;
+    return entries.get(0).getVector().length;
   }
 }
