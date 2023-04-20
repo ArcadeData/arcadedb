@@ -47,19 +47,26 @@
 </p>
 
 
-ArcadeDB is a Multi-Model DBMS (created originally as a fork from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand-new engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
+ArcadeDB is a Multi-Model DBMS (created originally as a fork
+from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand-new
+engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
 minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java11+ but only using low level API to use advanced
-mechanical sympathy techniques and a reduced pressure of the Garbage Collector. It's highly optimized for extreme performance. Runs from a Raspberry Pi to multiple servers on the cloud.
+mechanical sympathy techniques and a reduced pressure of the Garbage Collector. It's highly optimized for extreme performance. Runs
+from a Raspberry Pi to multiple servers on the cloud.
 
-ArcadeDB is fully transactional DBMS with support for ACID transactions, structured and unstructured data, native graph engine (no joins but links between records), full-text indexing, geospatial querying, and advanced security.
+ArcadeDB is fully transactional DBMS with support for ACID transactions, structured and unstructured data, native graph engine (no
+joins but links between records), full-text indexing, geospatial querying, and advanced security.
 
 ArcadeDB supports the following models:
+
 - [Graph Database](https://docs.arcadedb.com#Graph-Model) (compatible with Neo4j Cypher, Apache Tinkerpop Gremlin and OrientDB SQL)
-- [Document Database](https://docs.arcadedb.com#Document-Model) (compatible with the MongoDB driver + MongoDB queries and OrientDB SQL)
+- [Document Database](https://docs.arcadedb.com#Document-Model) (compatible with the MongoDB driver + MongoDB queries and OrientDB
+  SQL)
 - [Key/Value](https://docs.arcadedb.com#KeyValue-Model) (compatible with the Redis driver)
 - [Time Series](https://docs.arcadedb.com#TimeSeries-Model)
 
 ArcadeDB understands multiple languages:
+
 - [SQL](https://docs.arcadedb.com#SQL) (from OrientDB SQL)
 - Neo4j [Cypher (Open Cypher)](https://docs.arcadedb.com#Cypher)
 - [Apache Gremlin (Apache Tinkerpop v3.5.x)](https://docs.arcadedb.com#Gremlin-API)
@@ -67,6 +74,7 @@ ArcadeDB understands multiple languages:
 - [MongoDB Query Language](https://docs.arcadedb.com#MongoDB-API)
 
 ArcadeDB can be used as:
+
 - Embedded from any language on top of the Java Virtual Machine
 - Remotely by using [HTTP/JSON](https://docs.arcadedb.com#HTTP-API)
 - Remotely by using a [Postgres driver](https://docs.arcadedb.com#Postgres-Driver) (ArcadeDB implements Postgres Wire protocol)
@@ -79,12 +87,12 @@ Start ArcadeDB Server with Docker:
 
 ```
 docker run --rm -p 2480:2480 -p 2424:2424 \
-           -e arcadedb.server.rootPassword=playwithdata \
-           -e "arcadedb.server.defaultDatabases=OpenBeer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}" \
+           -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}" \
            arcadedata/arcadedb:latest
 ```
 
-Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](https://docs.arcadedb.com/#_studio) and the imported `OpenBeer` database to find your favorite beer.
+Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](https://docs.arcadedb.com/#_studio) and the
+imported `OpenBeer` database to find your favorite beer.
 
 ![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
 
@@ -104,11 +112,14 @@ For security issues kindly email us at support@arcadedb.com instead of posting a
 
 # License
 
-ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). If you need commercial support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
+ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). If you need commercial
+support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both
+Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
 
 ## Contributing
 
-We would love for you to get involved with ArcadeDB project. If you wish to help, you can learn more about how you can contribute to this project in the [contribution guide](CONTRIBUTING.md).
+We would love for you to get involved with ArcadeDB project. If you wish to help, you can learn more about how you can contribute to
+this project in the [contribution guide](CONTRIBUTING.md).
 
 Have fun with data!
 
