@@ -115,6 +115,7 @@
         <module>integration</module>
         <module>console</module>
         <module>gremlin</module>
+        <module>sparql</module>
         <module>graphql</module>
         <module>mongodbw</module>
         <module>redisw</module>
