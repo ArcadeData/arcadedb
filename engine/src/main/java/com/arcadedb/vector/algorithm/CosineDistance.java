@@ -22,6 +22,7 @@
 package com.arcadedb.vector.algorithm;
 
 import com.arcadedb.vector.IndexableVector;
+import com.arcadedb.vector.QuantizedVector;
 
 /**
  * Uses the Cosine algorithm to compute the distance between two vectors.
@@ -60,6 +61,41 @@ public class CosineDistance implements VectorDistanceAlgorithm {
     }
 
     final float dotProduct = dot0 + dot1 + dot2 + dot3 + dot4 + dot5 + dot6 + dot7;
+
+    return dotProduct / (normA * normB);
+  }
+
+  public float calculate(final QuantizedVector a, final QuantizedVector b) {
+    final int[] aVector = a.getVector();
+    final int[] bVector = b.getVector();
+
+    if (aVector.length != bVector.length)
+      throw new IllegalArgumentException("vectors must have the same length (" + aVector.length + " <> " + bVector.length + ")");
+
+    int normA = a.getNorm();
+    int normB = b.getNorm();
+
+    int dot0 = 0;
+    int dot1 = 0;
+    int dot2 = 0;
+    int dot3 = 0;
+    int dot4 = 0;
+    int dot5 = 0;
+    int dot6 = 0;
+    int dot7 = 0;
+
+    for (int i = 0; i < aVector.length; i += 8) {
+      dot0 += aVector[i] * bVector[i];
+      dot1 += aVector[i + 1] * bVector[i + 1];
+      dot2 += aVector[i + 2] * bVector[i + 2];
+      dot3 += aVector[i + 3] * bVector[i + 3];
+      dot4 += aVector[i + 4] * bVector[i + 4];
+      dot5 += aVector[i + 5] * bVector[i + 5];
+      dot6 += aVector[i + 6] * bVector[i + 6];
+      dot7 += aVector[i + 7] * bVector[i + 7];
+    }
+
+    final int dotProduct = dot0 + dot1 + dot2 + dot3 + dot4 + dot5 + dot6 + dot7;
 
     return dotProduct / (normA * normB);
   }

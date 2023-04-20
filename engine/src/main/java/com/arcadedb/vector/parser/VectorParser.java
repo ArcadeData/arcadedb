@@ -22,6 +22,7 @@
 package com.arcadedb.vector.parser;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.vector.VectorUniverse;
 import com.arcadedb.vector.WordVector;
 
 import java.io.*;
@@ -68,7 +69,7 @@ public class VectorParser {
     return words;
   }
 
-  public List<WordVector> loadFromBinaryFile(final File file, final boolean lineBreak, final VectorParserCallback callback) throws IOException {
+  public VectorUniverse<String> loadFromBinaryFile(final File file, final boolean lineBreak, final VectorParserCallback callback) throws IOException {
     InputStream fis = new FileInputStream(file);
     if (file.getName().endsWith(".gz"))
       fis = new GZIPInputStream(fis);
@@ -103,7 +104,7 @@ public class VectorParser {
           bis.read();
       }
 
-      return words;
+      return new VectorUniverse<>(words);
 
     } finally {
       fis.close();
@@ -113,7 +114,7 @@ public class VectorParser {
   private static float readFloat(final InputStream is, final byte[] floatBuffer) throws IOException {
     is.read(floatBuffer);
     int accum = 0;
-    accum = accum | (floatBuffer[0] & 0xff) << 0;
+    accum = accum | (floatBuffer[0] & 0xff);
     accum = accum | (floatBuffer[1] & 0xff) << 8;
     accum = accum | (floatBuffer[2] & 0xff) << 16;
     accum = accum | (floatBuffer[3] & 0xff) << 24;

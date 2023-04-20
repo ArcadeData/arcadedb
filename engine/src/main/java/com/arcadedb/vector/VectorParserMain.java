@@ -47,19 +47,20 @@ public class VectorParserMain {
   private static final int MAX_WORDS          = 0;//200_000; // SET 0 FOR NO LIMITS
 
   public static void main(final String[] args) throws IOException {
-    final List<WordVector> words = new VectorParser().loadFromBinaryFile(new File(args[0]), false, new VectorParserCallback() {
-      @Override
-      public boolean onWord(final int parsedWordCounter, final int totalWords, final String word, final float[] vector) {
-        if (parsedWordCounter % PRINT_STATUS_EVERY == 0)
-          LogManager.instance().log(this, Level.INFO, "%d/%d - Parsed word %s", parsedWordCounter, totalWords, word);
+    final VectorUniverse<String> universe = readWord2Vec(args[0]);
 
-        if (MAX_WORDS > 0 && parsedWordCounter > MAX_WORDS)
-          return false;
-        return true;
-      }
-    });
+    final SortedVectorUniverse<?> sortedUniverse = new SortedVectorUniverse<>(universe).readFromFile(new File("sortedDimensions.bin.gz"));
 
-    final VectorSimilarity similarity = new VectorSimilarity().setUniverse(words).setMax(20).setAlgorithm(new CosineDistance()).setMinDistance(0.5F);
+    // QUANTIZE BASED ON THE RANGE FOUND
+    final float[] boundaries = universe.calculateBoundariesOfValues();
+    for (int i = 0; i < universe.size(); i++) {
+      final IndexableVector<String> w = universe.get(i);
+      w.quantize(boundaries[0], boundaries[1]);
+    }
+
+//    final SortedVectorUniverse<?> sortedUniverse = new SortedVectorUniverse<>(universe).computeAndWriteToFile(new File("sortedDimensions.bin.gz"));
+
+    final VectorSimilarity similarity = new VectorSimilarity().setUniverse(universe).setMax(20).setAlgorithm(new CosineDistance()).setMinDistance(0.5F);
 
     try (DatabaseFactory factory = new DatabaseFactory("vector")) {
       if (factory.exists())
@@ -69,10 +70,10 @@ public class VectorParserMain {
         database.getSchema().createVertexType("Word").createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
         database.getSchema().createEdgeType("SimilarTo").createProperty("distance", Type.FLOAT);
 
-        for (int sourceIndex = 0; sourceIndex < words.size(); ++sourceIndex) {
-          final WordVector sourceWord = words.get(sourceIndex);
+        for (int sourceIndex = 0; sourceIndex < universe.size(); ++sourceIndex) {
+          final IndexableVector<String> sourceWord = universe.get(sourceIndex);
           final List<Pair<Comparable, Float>> similar = similarity.calculateTopSimilar(sourceWord);
-          LogManager.instance().log(null, Level.INFO, "%d/%d: %s-> %s", sourceIndex, words.size(), sourceWord.getSubject(), similar);
+          LogManager.instance().log(null, Level.INFO, "%d/%d: %s-> %s", sourceIndex, universe.size(), sourceWord.getSubject(), similar);
 
           database.transaction(() -> {
             final Vertex sourceWordVertex = getOrCreateWord(database, sourceWord.subject);
@@ -87,6 +88,20 @@ public class VectorParserMain {
         }
       }
     }
+  }
+
+  private static VectorUniverse<String> readWord2Vec(final String fileName) throws IOException {
+    return new VectorParser().loadFromBinaryFile(new File(fileName), false, new VectorParserCallback() {
+      @Override
+      public boolean onWord(final int parsedWordCounter, final int totalWords, final String word, final float[] vector) {
+        if (parsedWordCounter % PRINT_STATUS_EVERY == 0)
+          LogManager.instance().log(this, Level.INFO, "%d/%d - Parsed word %s", parsedWordCounter, totalWords, word);
+
+        if (MAX_WORDS > 0 && parsedWordCounter > MAX_WORDS)
+          return false;
+        return true;
+      }
+    });
   }
 
   private static Vertex getOrCreateWord(final Database database, final String word) {

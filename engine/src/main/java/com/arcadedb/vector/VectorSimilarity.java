@@ -33,11 +33,11 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class VectorSimilarity {
-  private static final int                             MAX_SIMILAR = 20;
-  private              List<? extends IndexableVector> universe;
-  private              VectorDistanceAlgorithm         algorithm   = new CosineDistance();
-  private              int                             max         = MAX_SIMILAR;
-  private              float                           minDistance = Float.MIN_VALUE;
+  private static final int                     MAX_SIMILAR = 20;
+  private              VectorUniverse<?>       universe;
+  private              VectorDistanceAlgorithm algorithm   = new CosineDistance();
+  private              int                     max         = MAX_SIMILAR;
+  private              float                   minDistance = Float.MIN_VALUE;
 
   public List<Pair<Comparable, Float>> calculateTopSimilar(final IndexableVector element) {
     final LinkedList<Pair<Comparable, Float>> similar = new LinkedList<>();
@@ -103,11 +103,11 @@ public class VectorSimilarity {
     return this;
   }
 
-  public List<? extends IndexableVector> getUniverse() {
+  public VectorUniverse<?> getUniverse() {
     return universe;
   }
 
-  public VectorSimilarity setUniverse(final List<? extends IndexableVector> universe) {
+  public VectorSimilarity setUniverse(final VectorUniverse<?> universe) {
     this.universe = universe;
     return this;
   }

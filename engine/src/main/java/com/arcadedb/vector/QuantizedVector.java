@@ -26,12 +26,12 @@ package com.arcadedb.vector;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public abstract class IndexableVector<T extends Comparable> implements Comparable<IndexableVector<T>> {
-  protected     T       subject;
-  private final float[] vector;
-  private final float   norm;
+public class QuantizedVector<T extends Comparable> implements Comparable<QuantizedVector<T>> {
+  protected     T     subject;
+  private final int[] vector;
+  private final int   norm;
 
-  public IndexableVector(final T subject, final float[] vector) {
+  public QuantizedVector(final T subject, final int[] vector) {
     this.subject = subject;
     this.vector = vector;
 
@@ -39,32 +39,23 @@ public abstract class IndexableVector<T extends Comparable> implements Comparabl
     float total = 0.0F;
     for (int i = 0; i < vector.length; i++)
       total = Math.fma(vector[i], vector[i], total);
-    norm = (float) Math.sqrt(total);
+    norm = (int) Math.sqrt(total);
   }
 
   public T getSubject() {
     return subject;
   }
 
-  public float[] getVector() {
+  public int[] getVector() {
     return vector;
   }
 
   @Override
-  public int compareTo(final IndexableVector<T> o) {
+  public int compareTo(final QuantizedVector<T> o) {
     return subject.compareTo(o.subject);
   }
 
-  public float getNorm() {
+  public int getNorm() {
     return norm;
-  }
-
-  public QuantizedVector quantize(final float min, final float max) {
-    final int[] result = new int[vector.length];
-    final float range = max - min;
-    for (int i = 0; i < vector.length; i++)
-      result[i] = (int) (vector[i] / range);
-
-    return new QuantizedVector(subject, result);
   }
 }
