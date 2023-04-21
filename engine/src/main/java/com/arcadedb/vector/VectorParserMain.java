@@ -49,12 +49,18 @@ public class VectorParserMain {
 
     //final SortedVectorUniverse<?> sortedUniverse = new SortedVectorUniverse<>(universe).readFromFile(new File("sortedDimensions.bin.gz"));
 
+    final Map<Float, Integer> valueDistribution = universe.getValueDistribution();
+    LogManager.instance().log(null, Level.INFO, "Value Distribution (%d):", valueDistribution.size());
+    int i = 0;
+    for (Map.Entry<Float, Integer> entry : valueDistribution.entrySet())
+      LogManager.instance().log(null, Level.INFO, "- %d -> %f: %d", i++, entry.getKey(), entry.getValue());
+
     // QUANTIZE BASED ON THE RANGE FOUND
-    final float[] boundaries = universe.calculateBoundariesOfValues();
-    for (int i = 0; i < universe.size(); i++) {
-      final IndexableVector<String> w = universe.get(i);
-      w.quantize(boundaries[0], boundaries[1]);
-    }
+//    final float[] boundaries = universe.calculateBoundariesOfValues();
+//    for (int i = 0; i < universe.size(); i++) {
+//      final IndexableVector<String> w = universe.get(i);
+//      w.quantize(boundaries[0], boundaries[1]);
+//    }
 
 //    final SortedVectorUniverse<?> sortedUniverse = new SortedVectorUniverse<>(universe).computeAndWriteToFile(new File("sortedDimensions.bin.gz"));
 

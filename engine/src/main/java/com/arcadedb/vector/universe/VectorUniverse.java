@@ -39,6 +39,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.vector.IndexableVector;
 
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class VectorUniverse<T extends Comparable> {
@@ -79,6 +80,33 @@ public class VectorUniverse<T extends Comparable> {
     }
     LogManager.instance().log(null, Level.INFO, "min=%f max=%f", min, max);
     return new float[] { min, max };
+  }
+
+  public Map<Float, Integer> getValueDistribution() {
+    final Map<Float, AtomicInteger> map = new HashMap<>();
+    final int tot = size();
+    for (int i = 0; i < tot; i++) {
+      final IndexableVector<?> w = get(i);
+      float[] floats = w.getVector();
+      for (int j = 0; j < floats.length; j++) {
+        AtomicInteger value = map.get(floats[j]);
+        if (value == null) {
+          value = new AtomicInteger(0);
+          map.put(floats[j], value);
+        }
+        value.incrementAndGet();
+      }
+    }
+
+    final TreeMap<Integer, Float> ordered = new TreeMap<>();
+    for (Map.Entry<Float, AtomicInteger> entry : map.entrySet())
+      ordered.put(entry.getValue().get(), entry.getKey());
+
+    final LinkedHashMap<Float, Integer> orderedMapByOccurrences = new LinkedHashMap<>();
+    for (Map.Entry<Integer, Float> entry : ordered.descendingMap().entrySet())
+      orderedMapByOccurrences.put(entry.getValue(), entry.getKey());
+
+    return orderedMapByOccurrences;
   }
 
   public int dimensions() {
