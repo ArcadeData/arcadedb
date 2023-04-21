@@ -34,7 +34,7 @@ WORKDIR /home/arcadedb
 
 USER arcadedb
 
-COPY --chown=arcadedb:arcadedb ./maven/arcadedb-* ./
+COPY --chown=arcadedb:arcadedb ./target/arcadedb-*.dir/* ./
 
 RUN chmod +x ./bin/*.sh
 

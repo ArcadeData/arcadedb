@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -188,6 +189,30 @@ public class GremlinTest {
       Assertions.assertTrue(result.hasNext());
       row = result.next();
       Assertions.assertEquals(1L, (Long) row.getProperty("result"));
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testGremlinLoadByRID() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+
+      ArcadeVertex v1 = graph.addVertex("vl1");
+      ArcadeVertex v2 = graph.addVertex("vl2");
+
+      ResultSet result = graph.gremlin("g.V('" + v1.id() + "').addE('FriendOf').to( V('" + v2.id() + "') )").execute();
+      Assertions.assertTrue(result.hasNext());
+      Result row = result.next();
+
+      Assertions.assertTrue(row.isEdge());
+
+      final Edge edge = row.getEdge().get();
+
+      Assertions.assertEquals(v1.id(), edge.getOut().getIdentity().toString());
+      Assertions.assertEquals(v2.id(), edge.getIn().getIdentity().toString());
 
     } finally {
       graph.drop();

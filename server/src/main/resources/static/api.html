@@ -60,18 +60,6 @@
           GET
         </div>
         <div class="col-4">
-          <pre>/api/v1/databases</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#HTTP-ListDatabases">List of databases</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          GET
-        </div>
-        <div class="col-4">
           <pre>/api/v1/exists/{database}</pre>
         </div>
         <div class="col-7">
@@ -87,7 +75,19 @@
           <pre>/api/v1/query/{database}/{language}/{query}</pre>
         </div>
         <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#HTTP-ExecuteQuery">Execute a query</a>
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-ExecuteQuery">Execute a query (GET)</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/query/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-ExecuteQuery">Execute a query (POST)</a>
         </div>
       </div>
 
