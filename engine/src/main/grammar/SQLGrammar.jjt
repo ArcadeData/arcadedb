@@ -2482,6 +2482,8 @@ BooleanExpression ConditionBlock():
   <TRUE> { result = BooleanExpression.TRUE;}
   |
   <FALSE> { result = BooleanExpression.FALSE;}
+  |
+  <NULL> { result =null;}
 ){ return result; }
 }
 

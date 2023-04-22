@@ -50,13 +50,13 @@ public class NotBlock extends BooleanExpression {
 
   @Override
   public boolean evaluate(final Result currentRecord, final CommandContext context) {
-    if (sub == null) {
-      return true;
-    }
+    if (sub == null)
+      return false;
+
     final boolean result = sub.evaluate(currentRecord, context);
-    if (negate) {
+    if (negate)
       return !result;
-    }
+
     return result;
   }
 
@@ -80,7 +80,10 @@ public class NotBlock extends BooleanExpression {
     if (negate) {
       builder.append("NOT ");
     }
-    sub.toString(params, builder);
+    if (sub != null)
+      sub.toString(params, builder);
+    else
+      builder.append("NULL");
   }
 
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
@@ -104,7 +107,7 @@ public class NotBlock extends BooleanExpression {
   @Override
   public NotBlock copy() {
     final NotBlock result = new NotBlock(-1);
-    result.sub = sub.copy();
+    result.sub = sub != null ? sub.copy() : null;
     result.negate = negate;
     return result;
   }
