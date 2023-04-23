@@ -34,6 +34,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   public ServerRestoreDatabaseIT() {
     FileUtils.deleteRecursively(new File("./target/config"));
     FileUtils.deleteRecursively(new File("./target/databases"));
+    FileUtils.deleteRecursively(new File("./target/backups"));
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
   }
