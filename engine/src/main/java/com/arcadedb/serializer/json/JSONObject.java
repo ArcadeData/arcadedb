@@ -46,9 +46,10 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class JSONObject {
-  public static final JsonNull         NULL       = JsonNull.INSTANCE;
-  private final       JsonObject       object;
-  private             SimpleDateFormat dateFormat = null;
+  public static final JsonNull          NULL               = JsonNull.INSTANCE;
+  private final       JsonObject        object;
+  private             String            dateFormatAsString = null;
+  private             DateTimeFormatter dateFormat         = null;
 
   public JSONObject() {
     this.object = new JsonObject();
@@ -117,19 +118,19 @@ public class JSONObject {
     } else if (value instanceof Enum) {
       object.addProperty(name, ((Enum<?>) value).name());
     } else if (value instanceof Date) {
-      if (dateFormat == null)
+      if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name, ((Date) value).getTime());
       else
         // SAVE AS STRING
-        object.addProperty(name, dateFormat.format((Date) value));
+        object.addProperty(name, new SimpleDateFormat(dateFormatAsString).format((Date) value));
     } else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant) {
       if (dateFormat == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name, DateUtils.dateTimeToTimestamp(value, ChronoUnit.NANOS)); // ALWAYS USE NANOS TO AVOID PRECISION LOSS
       else
         // SAVE AS STRING
-        object.addProperty(name, DateTimeFormatter.ofPattern(dateFormat.toPattern()).format((TemporalAccessor) value));
+        object.addProperty(name, dateFormat.format((TemporalAccessor) value));
     } else if (value instanceof Duration) {
       object.addProperty(name, Double.valueOf(String.format("%d.%d", ((Duration) value).toSeconds(), ((Duration) value).toNanosPart())));
     } else if (value instanceof RID) {
@@ -272,7 +273,8 @@ public class JSONObject {
    * @return
    */
   public JSONObject setDateFormat(final String dateFormat) {
-    this.dateFormat = new SimpleDateFormat(dateFormat);
+    this.dateFormatAsString = dateFormat;
+    this.dateFormat = DateTimeFormatter.ofPattern(dateFormat);
     return this;
   }
 
