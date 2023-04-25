@@ -35,12 +35,12 @@ public class IsNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     return expression.execute(currentRecord, context) == null;
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     return expression.execute(currentRecord, context) == null;
   }
 

@@ -49,7 +49,7 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     final Object leftVal = evaluateLeft(currentRecord, context);
     final Object rightVal = evaluateRight(currentRecord, context);
     if (rightVal == null)
@@ -75,7 +75,7 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     final Object leftVal = evaluateLeft(currentRecord, context);
     final Object rightVal = evaluateRight(currentRecord, context);
     if (rightVal == null)

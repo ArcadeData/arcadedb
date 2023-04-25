@@ -37,7 +37,7 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (sub == null) {
       return true;
     }
@@ -49,9 +49,9 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (sub == null)
-      return false;
+      return null;
 
     final boolean result = sub.evaluate(currentRecord, context);
     if (negate)

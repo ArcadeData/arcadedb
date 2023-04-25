@@ -20,9 +20,7 @@ package com.arcadedb.query.sql.functions.misc;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.function.misc.SQLFunctionBoolAnd;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -36,7 +34,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc0;");
       database.command("sql", "create property doc0.bool boolean;");
       database.command("sql", "insert into doc0 set bool = null;");
-      ResultSet result = database.query("sql","select bool_and(bool) as bool_and from doc0;");
+      ResultSet result = database.query("sql", "select bool_and(bool) as bool_and from doc0;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertTrue((Boolean) result.next().getProperty("bool_and"));
     });
@@ -48,7 +46,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc1;");
       database.command("sql", "create property doc1.bool boolean;");
       database.command("sql", "insert into doc1 set bool = true;");
-      ResultSet result = database.query("sql","select bool_and(bool) as bool_and from doc1;");
+      ResultSet result = database.query("sql", "select bool_and(bool) as bool_and from doc1;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertTrue((Boolean) result.next().getProperty("bool_and"));
     });
@@ -60,7 +58,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc2;");
       database.command("sql", "create property doc2.bool boolean;");
       database.command("sql", "insert into doc2 set bool = false;");
-      ResultSet result = database.query("sql","select bool_and(bool) as bool_and from doc2;");
+      ResultSet result = database.query("sql", "select bool_and(bool) as bool_and from doc2;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertFalse((Boolean) result.next().getProperty("bool_and"));
     });
@@ -72,7 +70,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc3;");
       database.command("sql", "create property doc3.bool boolean;");
       database.command("sql", "insert into doc3 (bool) values (null), (null), (null);");
-      ResultSet result = database.query("sql","select bool_and(bool) as bool_and from doc3;");
+      ResultSet result = database.query("sql", "select bool_and(bool) as bool_and from doc3;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertTrue((Boolean) result.next().getProperty("bool_and"));
     });
@@ -84,7 +82,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc4;");
       database.command("sql", "create property doc4.bool boolean;");
       database.command("sql", "insert into doc4 (bool) values (true), (true), (true);");
-      ResultSet result = database.query("sql","select bool_and(bool) as bool_and from doc4;");
+      ResultSet result = database.query("sql", "select bool_and(bool) as bool_and from doc4;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertTrue((Boolean) result.next().getProperty("bool_and"));
     });
@@ -96,7 +94,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc5;");
       database.command("sql", "create property doc5.bool boolean;");
       database.command("sql", "insert into doc5 (bool) values (true), (true), (false);");
-      ResultSet result = database.query("sql","select bool_and(bool) as bool_and from doc5;");
+      ResultSet result = database.query("sql", "select bool_and(bool) as bool_and from doc5;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertFalse((Boolean) result.next().getProperty("bool_and"));
     });
@@ -108,7 +106,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc6;");
       database.command("sql", "create property doc6.bool boolean;");
       database.command("sql", "insert into doc6 (bool) values (true), (null), (true);");
-      ResultSet result = database.query("sql","select bool_and(bool) as bool_and from doc6;");
+      ResultSet result = database.query("sql", "select bool_and(bool) as bool_and from doc6;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertTrue((Boolean) result.next().getProperty("bool_and"));
     });
@@ -120,7 +118,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc7;");
       database.command("sql", "create property doc7.bool boolean;");
       database.command("sql", "insert into doc7 (bool) values (true), (null), (false);");
-      ResultSet result = database.query("sql","select bool_and(bool) as bool_and from doc7;");
+      ResultSet result = database.query("sql", "select bool_and(bool) as bool_and from doc7;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertFalse((Boolean) result.next().getProperty("bool_and"));
     });
@@ -132,7 +130,7 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc8;");
       database.command("sql", "create property doc8.bool boolean;");
       database.command("sql", "insert into doc8 (bool) values (null), (null), (null);");
-      ResultSet result = database.query("sql","select bool_and((bool is null)) as bool_and from doc8;");
+      ResultSet result = database.query("sql", "select bool_and((bool is null)) as bool_and from doc8;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertTrue((Boolean) result.next().getProperty("bool_and"));
     });
@@ -144,9 +142,38 @@ public class SQLFunctionBoolAndTest extends TestHelper {
       database.command("sql", "create document type doc9;");
       database.command("sql", "create property doc9.bool boolean;");
       database.command("sql", "insert into doc9 (bool) values (true), (null), (false);");
-      ResultSet result = database.query("sql","select bool_and((bool is not null)) as bool_and from doc9;");
+      ResultSet result = database.query("sql", "select bool_and((bool is not null)) as bool_and from doc9;");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertFalse((Boolean) result.next().getProperty("bool_and"));
+    });
+  }
+
+  @Test
+  public void testBoolAndNull() {
+    database.transaction(() -> {
+      ResultSet result = database.query("sql", "SELECT (true AND null) as result");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertNull(result.next().getProperty("result"));
+
+      result = database.query("sql", "SELECT (false AND null) as result");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertFalse((Boolean)result.next().getProperty("result"));
+
+      result = database.query("sql", "SELECT (null AND null) as result");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertNull(result.next().getProperty("result"));
+
+      result = database.query("sql", "SELECT (true OR null) as result");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertTrue((Boolean)result.next().getProperty("result"));
+
+      result = database.query("sql", "SELECT (false OR null) as result");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertNull(result.next().getProperty("result"));
+
+      result = database.query("sql", "SELECT (null OR null) as result");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertNull(result.next().getProperty("result"));
     });
   }
 }

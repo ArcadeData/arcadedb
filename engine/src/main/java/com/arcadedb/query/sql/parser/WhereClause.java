@@ -42,14 +42,14 @@ public class WhereClause extends SimpleNode {
     super(id);
   }
 
-  public boolean matchesFilters(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean matchesFilters(final Identifiable currentRecord, final CommandContext context) {
     if (baseExpression == null)
       return true;
 
     return baseExpression.evaluate(currentRecord, context);
   }
 
-  public boolean matchesFilters(final Result currentRecord, final CommandContext context) {
+  public Boolean matchesFilters(final Result currentRecord, final CommandContext context) {
     if (baseExpression == null)
       return true;
 

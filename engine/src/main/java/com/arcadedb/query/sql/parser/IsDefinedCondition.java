@@ -34,12 +34,12 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     return expression.isDefinedFor(currentRecord.getRecord());
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     return expression.isDefinedFor(currentRecord);
   }
 

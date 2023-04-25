@@ -44,7 +44,7 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     final Object leftVal = left.execute(currentRecord, context);
     Object rightVal = null;
     if (rightStatement != null) {
@@ -61,7 +61,7 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     final Object leftVal = left.execute(currentRecord, context);
     Object rightVal = null;
     if (rightStatement != null) {

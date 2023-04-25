@@ -86,7 +86,7 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
       final Object rightValue = right.execute(currentRecord, context);
@@ -115,7 +115,7 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
       final Object rightValue = right.execute(currentRecord, context);

@@ -36,7 +36,7 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (getSubBlocks() == null) {
       return true;
     }
@@ -50,19 +50,21 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
-    if (getSubBlocks() == null)
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
+     if (getSubBlocks() == null)
       return true;
 
     for (final BooleanExpression block : subBlocks) {
-      if (block.evaluate(currentRecord, context)) {
+      final Boolean result = block.evaluate(currentRecord, context);
+      if (result == null)
+        return null;
+      else if (result)
         return true;
-      }
     }
     return false;
   }
 
-  public boolean evaluate(final Object currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Object currentRecord, final CommandContext context) {
     if (currentRecord instanceof Result) {
       return evaluate((Result) currentRecord, context);
     } else if (currentRecord instanceof Identifiable) {

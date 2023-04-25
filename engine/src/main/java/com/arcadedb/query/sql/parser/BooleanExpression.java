@@ -33,12 +33,12 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public static final BooleanExpression TRUE = new BooleanExpression(0) {
     @Override
-    public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
       return true;
     }
 
     @Override
-    public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    public Boolean evaluate(final Result currentRecord, final CommandContext context) {
       return true;
     }
 
@@ -84,12 +84,12 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public static final BooleanExpression FALSE = new BooleanExpression(0) {
     @Override
-    public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+    public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
       return false;
     }
 
     @Override
-    public boolean evaluate(final Result currentRecord, final CommandContext context) {
+    public Boolean evaluate(final Result currentRecord, final CommandContext context) {
       return false;
     }
 
@@ -137,9 +137,9 @@ public abstract class BooleanExpression extends SimpleNode {
     super(id);
   }
 
-  public abstract boolean evaluate(final Identifiable currentRecord, final CommandContext context);
+  public abstract Boolean evaluate(final Identifiable currentRecord, final CommandContext context);
 
-  public abstract boolean evaluate(final Result currentRecord, final CommandContext context);
+  public abstract Boolean evaluate(final Result currentRecord, final CommandContext context);
 
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     return null;
