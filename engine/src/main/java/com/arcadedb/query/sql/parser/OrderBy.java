@@ -75,12 +75,7 @@ public class OrderBy extends SimpleNode {
 
   @Override
   protected Object[] getIdentityElements() {
-    return getCacheableElements();
-  }
-
-  @Override
-  protected SimpleNode[] getCacheableElements() {
-    return items.toArray(new SimpleNode[items.size()]);
+    return items.toArray(new OrderByItem[items.size()]);
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
