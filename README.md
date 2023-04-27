@@ -129,3 +129,7 @@ this project in the [contribution guide](CONTRIBUTING.md).
 Have fun with data!
 
 The ArcadeDB Team
+
+#### TL;DR
+
+[ArcadeDB](https://arcadedb.com) is an open-source multi-model NoSQL database systems.
