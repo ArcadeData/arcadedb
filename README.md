@@ -1,6 +1,6 @@
-![ArcadeDB Logo](https://arcadedb.com/assets/images/arcadedb-logo.png)
+# ![ArcadeDB](https://arcadedb.com/assets/images/arcadedb-logo.png)
 
-<h2 align="center">Multi Model DBMS built for extreme performance</h3>
+## Multi Model DBMS built for extreme performance
 
 <p align="center">
   <a href="https://github.com/ArcadeData/arcadedb/releases"><img src="https://img.shields.io/github/v/release/arcadedata/arcadedb?color=%23ff00a0&include_prereleases&label=version&sort=semver&style=flat-square"></a>
@@ -83,7 +83,7 @@ ArcadeDB can be used as:
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
 
-## Getting started in 5 minutes
+### Getting started in 5 minutes
 
 Start ArcadeDB Server with Docker:
 
@@ -98,7 +98,7 @@ imported `OpenBeer` database to find your favorite beer.
 
 ![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
 
-# Community
+### Community
 
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
 
@@ -109,17 +109,17 @@ Join our growing community around the world, for ideas, discussions and help reg
 - Questions tagged `#arcadedb` on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
 - View our official [Blog](https://blog.arcadedb.com/)
 
-## Security
+### Security
 
 For security issues kindly email us at support@arcadedb.com instead of posting a public issue on GitHub.
 
-# License
+### License
 
 ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). If you need commercial
 support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both
 Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
 
-## Contributing
+### Contributing
 
 We would love for you to get involved with ArcadeDB project. If you wish to help, you can learn more about how you can contribute to
 this project in the [contribution guide](CONTRIBUTING.md).
