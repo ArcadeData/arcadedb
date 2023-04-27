@@ -63,7 +63,9 @@ ArcadeDB supports the following models:
 - [Document Database](https://docs.arcadedb.com#Document-Model) (compatible with the MongoDB driver + MongoDB queries and OrientDB
   SQL)
 - [Key/Value](https://docs.arcadedb.com#KeyValue-Model) (compatible with the Redis driver)
+- [Search Engine](https://docs.arcadedb.com/#SearchEngine-Model)
 - [Time Series](https://docs.arcadedb.com#TimeSeries-Model)
+- [Vector Embedding](https://docs.arcadedb.com/#VectorEmbedding-Model)
 
 ArcadeDB understands multiple languages:
 
