@@ -132,6 +132,4 @@ The ArcadeDB Team
 
 ---
 
-#### TL;DR
-
-[ArcadeDB](https://arcadedb.com) is an open-source multi-model NoSQL database systems.
+#### TL;DR: [ArcadeDB](https://arcadedb.com) is an open-source multi-model NoSQL database systems.
