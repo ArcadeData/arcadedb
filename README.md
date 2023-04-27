@@ -105,7 +105,8 @@ Join our growing community around the world, for ideas, discussions and help reg
 - Chat live with us on [Discord](https://discord.gg/w2Npx2B7hZ)
 - Follow us on [Twitter](https://twitter.com/arcade_db)
 - Connect with us on [LinkedIn](https://www.linkedin.com/products/arcadedb)
-- Questions tagged #arcadedb on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
+- or on [Facebook](https://www.facebook.com/arcadedb)
+- Questions tagged `#arcadedb` on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
 - View our official [Blog](https://blog.arcadedb.com/)
 
 ## Security
