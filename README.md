@@ -98,6 +98,8 @@ imported `OpenBeer` database to find your favorite beer.
 
 ![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
 
+ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#Docker) and [Kubernetes](https://docs.arcadedb.com/#Kubernetes) support.
+
 ### Community
 
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
