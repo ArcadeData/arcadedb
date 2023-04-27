@@ -1,6 +1,6 @@
 # ![ArcadeDB](https://arcadedb.com/assets/images/arcadedb-logo.png)
 
-<h2 style="text-align: center;">Multi Model DBMS built for extreme performance</h2>
+<h2 align="center">Multi Model DBMS Built for Extreme Performance</h2>
 
 <p align="center">
   <a href="https://github.com/ArcadeData/arcadedb/releases"><img src="https://img.shields.io/github/v/release/arcadedata/arcadedb?color=%23ff00a0&include_prereleases&label=version&sort=semver&style=flat-square"></a>
