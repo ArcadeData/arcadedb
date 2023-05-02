@@ -26,7 +26,7 @@ generally not be accepted.
 
 #### **Do you intend to add a new feature or change an existing one?**
 
-* Suggest your change in the [ArcadeDB Community]() and start writing code.
+* Suggest your change in the [ArcadeDB Community](https://github.com/ArcadeData/arcadedb/discussions) and start writing code.
 
 * Do not open an issue on GitHub until you have collected positive feedback about the change. GitHub issues are primarily intended
   for bug reports and fixes.
@@ -72,4 +72,4 @@ The build should take less than a minute.
 
 You will find a fresh built distribution under the directory `package/target/arcadedb-<version>.dir/arcadedb-<version>/`.
 
-For example, if the latest release is the `23.2.1-SNAPSHOT`, then the release will be available under the directory `package/target/arcadedb-23.2.1-SNAPSHOT.dir/arcadedb-23.2.1-SNAPSHOT/`
+For example, if the latest release is the `23.3.1-SNAPSHOT`, then the release will be available under the directory `package/target/arcadedb-23.3.1-SNAPSHOT.dir/arcadedb-23.3.1-SNAPSHOT/`

@@ -1,6 +1,6 @@
-![ArcadeDB Logo](https://arcadedb.com/assets/images/arcadedb-logo.png)
+# ![ArcadeDB](https://arcadedb.com/assets/images/arcadedb-logo.png)
 
-<h2 align="center">Multi Model DBMS built for extreme performance</h3>
+<h2 align="center">Multi Model DBMS Built for Extreme Performance</h2>
 
 <p align="center">
   <a href="https://github.com/ArcadeData/arcadedb/releases"><img src="https://img.shields.io/github/v/release/arcadedata/arcadedb?color=%23ff00a0&include_prereleases&label=version&sort=semver&style=flat-square"></a>
@@ -63,7 +63,9 @@ ArcadeDB supports the following models:
 - [Document Database](https://docs.arcadedb.com#Document-Model) (compatible with the MongoDB driver + MongoDB queries and OrientDB
   SQL)
 - [Key/Value](https://docs.arcadedb.com#KeyValue-Model) (compatible with the Redis driver)
+- [Search Engine](https://docs.arcadedb.com/#SearchEngine-Model)
 - [Time Series](https://docs.arcadedb.com#TimeSeries-Model)
+- [Vector Embedding](https://docs.arcadedb.com/#VectorEmbedding-Model)
 
 ArcadeDB understands multiple languages:
 
@@ -81,7 +83,7 @@ ArcadeDB can be used as:
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
 
-## Getting started in 5 minutes
+### Getting started in 5 minutes
 
 Start ArcadeDB Server with Docker:
 
@@ -96,27 +98,30 @@ imported `OpenBeer` database to find your favorite beer.
 
 ![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
 
-# Community
+ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#Docker) and [Kubernetes](https://docs.arcadedb.com/#Kubernetes) support.
+
+### Community
 
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
 
 - Chat live with us on [Discord](https://discord.gg/w2Npx2B7hZ)
 - Follow us on [Twitter](https://twitter.com/arcade_db)
 - Connect with us on [LinkedIn](https://www.linkedin.com/products/arcadedb)
-- Questions tagged #arcadedb on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
+- or on [Facebook](https://www.facebook.com/arcadedb)
+- Questions tagged `#arcadedb` on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
 - View our official [Blog](https://blog.arcadedb.com/)
 
-## Security
+### Security
 
 For security issues kindly email us at support@arcadedb.com instead of posting a public issue on GitHub.
 
-# License
+### License
 
 ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). If you need commercial
 support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both
 Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
 
-## Contributing
+### Contributing
 
 We would love for you to get involved with ArcadeDB project. If you wish to help, you can learn more about how you can contribute to
 this project in the [contribution guide](CONTRIBUTING.md).
@@ -124,3 +129,7 @@ this project in the [contribution guide](CONTRIBUTING.md).
 Have fun with data!
 
 The ArcadeDB Team
+
+---
+
+#### TL;DR: [ArcadeDB](https://arcadedb.com) is an open-source multi-model NoSQL database systems.
