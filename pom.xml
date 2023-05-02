@@ -52,7 +52,7 @@
         <docker.plugin.version>1.2.2</docker.plugin.version>
         <dockerfile-maven-version>1.4.13</dockerfile-maven-version>
         <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
-        <jacoco-maven-plugin.version>0.8.9</jacoco-maven-plugin.version>
+        <jacoco-maven-plugin.version>0.8.10</jacoco-maven-plugin.version>
         <maven-surefire-plugin.version>3.0.0</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.0.0</maven-failsafe-plugin.version>
         <maven-assembly-plugin.version>3.5.0</maven-assembly-plugin.version>
