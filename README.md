@@ -73,7 +73,7 @@ ArcadeDB understands multiple languages:
 
 - [SQL](https://docs.arcadedb.com#SQL) (from OrientDB SQL)
 - Neo4j [Cypher (Open Cypher)](https://docs.arcadedb.com#Cypher)
-- [Apache Gremlin (Apache Tinkerpop v3.5.x)](https://docs.arcadedb.com#Gremlin-API)
+- [Apache Gremlin (Apache Tinkerpop v3.6.x)](https://docs.arcadedb.com#Gremlin-API)
 - [GraphQL Language](https://docs.arcadedb.com#GraphQL)
 - [MongoDB Query Language](https://docs.arcadedb.com#MongoDB-API)
 
