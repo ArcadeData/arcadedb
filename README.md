@@ -7,6 +7,8 @@
   &nbsp;
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg"></a>
   &nbsp;
+  <a href="https://docs.oracle.org/en/java/11/"><img src="https://img.shields.io/badge/Java-%3D11-green.svg"></a>
+  &nbsp;
   <a href="https://api.reuse.software/info/github.com/ArcadeData/arcadedb"><img src="https://api.reuse.software/badge/github.com/ArcadeData/arcadedb"></a>
   &nbsp;
   <a href="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent"><img src="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent/badge.svg"></a>
