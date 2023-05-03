@@ -3,7 +3,7 @@
 <h2 align="center">Multi Model DBMS Built for Extreme Performance</h2>
 
 <p align="center">
-  <a href="https://github.com/ArcadeData/arcadedb/releases"><img src="https://img.shields.io/github/v/release/arcadedata/arcadedb?color=%23ff00a0&include_prereleases&label=version&sort=semver&style=flat-square"></a>
+  <a href="https://github.com/ArcadeData/arcadedb/releases"><img src="https://img.shields.io/github/v/release/arcadedata/arcadedb?color=%23ff00a0&include_prereleases&label=version&sort=semver"></a>
   &nbsp;
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg"></a>
   &nbsp;
@@ -13,7 +13,7 @@
   &nbsp;
   <a href="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent"><img src="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent/badge.svg"></a>
   &nbsp;
-  <a href="https://hub.docker.com/repository/docker/arcadedata/arcadedb/general"><img src="https://img.shields.io/docker/pulls/arcadedata/arcadedb?style=flat-square"></a>
+  <a href="https://hub.docker.com/repository/docker/arcadedata/arcadedb/general"><img src="https://img.shields.io/docker/pulls/arcadedata/arcadedb"></a>
 </p>
 
 <p align="center">
