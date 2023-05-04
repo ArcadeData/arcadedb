@@ -22,138 +22,74 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
 public class RemoteImmutableVertex extends RemoteImmutableDocument implements Vertex {
+  private final RemoteVertex internal;
+
   protected RemoteImmutableVertex(final RemoteDatabase database, final Map<String, Object> properties) {
     super(database, properties);
+    this.internal = new RemoteVertex(this, database);
+  }
+
+  @Override
+  public synchronized RemoteMutableVertex modify() {
+    return new RemoteMutableVertex(this);
+  }
+
+  public RemoteDatabase getRemoteDatabase() {
+    return internal.remoteDatabase;
+  }
+
+  @Override
+  public void delete() {
+    internal.delete();
   }
 
   @Override
   public long countEdges(final DIRECTION direction, final String edgeType) {
-    String query = "select " + direction.toString().toLowerCase() + "(";
-    if (edgeType != null)
-      query += "'" + edgeType + "'";
-
-    query += ").size() as count from " + rid;
-    final ResultSet resultSet = remoteDatabase.query("sql", query);
-    return ((Number) resultSet.next().getProperty("count")).longValue();
+    return internal.countEdges(direction, edgeType);
   }
 
   @Override
   public Iterable<Edge> getEdges() {
-    return getEdges(DIRECTION.BOTH);
+    return internal.getEdges(DIRECTION.BOTH);
   }
 
   @Override
   public Iterable<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
-    final ResultSet resultSet = fetch("E", direction, edgeTypes);
-    return () -> new Iterator<>() {
-      @Override
-      public boolean hasNext() {
-        return resultSet.hasNext();
-      }
-
-      @Override
-      public Edge next() {
-        return resultSet.next().getEdge().get();
-      }
-    };
+    return internal.getEdges(DIRECTION.BOTH, edgeTypes);
   }
 
   @Override
   public Iterable<Vertex> getVertices() {
-    return getVertices(DIRECTION.BOTH);
+    return internal.getVertices(DIRECTION.BOTH);
   }
 
   @Override
   public Iterable<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
-    final ResultSet resultSet = fetch("", direction, edgeTypes);
-    return () -> new Iterator<>() {
-      @Override
-      public boolean hasNext() {
-        return resultSet.hasNext();
-      }
-
-      @Override
-      public Vertex next() {
-        return resultSet.next().getVertex().get();
-      }
-    };
+    return internal.getVertices(direction, edgeTypes);
   }
 
   @Override
   public boolean isConnectedTo(final Identifiable toVertex) {
-    final String query = "select from ( select both() as vertices from " + rid + " ) where vertices contains " + toVertex;
-    final ResultSet resultSet = remoteDatabase.query("sql", query);
-    return resultSet.hasNext();
+    return internal.isConnectedTo(toVertex);
   }
 
   @Override
   public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
-    final String query = "select from ( select " + direction.toString().toLowerCase() + "() as vertices from " + rid + " ) where vertices contains " + toVertex;
-    final ResultSet resultSet = remoteDatabase.query("sql", query);
-    return resultSet.hasNext();
+    return internal.isConnectedTo(toVertex, direction);
   }
 
   @Override
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional, final Object... properties) {
-    if (!bidirectional)
-      throw new UnsupportedOperationException("Creating unidirectional edges is not supported from remote database");
-
-    String query = "create edge " + edgeType + " from " + rid + " to " + toVertex.getIdentity();
-    if (properties.length > 0) {
-      query += " set ";
-      for (int i = 0; i < properties.length; i += 2) {
-        final String propName = (String) properties[i];
-        final Object propValue = properties[i + 1];
-
-        if (i > 0)
-          query += ", ";
-
-        query += propName + " = ";
-
-        if (propValue instanceof String)
-          query += "'";
-        query += propValue;
-        if (propValue instanceof String)
-          query += "'";
-      }
-    }
-    final ResultSet resultSet = remoteDatabase.command("sql", query);
-
-    return new RemoteMutableEdge((RemoteImmutableEdge) resultSet.next().getEdge().get());
+    return internal.newEdge(edgeType, toVertex, bidirectional, properties);
   }
 
-  /**
-   * TODO
-   */
   @Override
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
-    throw new UnsupportedOperationException("Creating light edges is not supported from remote database");
-  }
-
-  @Override
-  public synchronized MutableVertex modify() {
-    return new RemoteMutableVertex(this);
-  }
-  @Override
-  public void delete() {
-    remoteDatabase.command("sql", "delete from " + rid);
-  }
-
-  private ResultSet fetch(final String suffix, final DIRECTION direction, final String[] types) {
-    String query = "select expand( " + direction.toString().toLowerCase() + suffix + "(";
-    for (int i = 0; i < types.length; ++i) {
-      if (i > 0)
-        query += ",";
-      query += "'" + types[i] + "'";
-    }
-    query += ") ) from " + rid;
-    return remoteDatabase.query("sql", query);
+    return internal.newLightEdge(edgeType, toVertex, bidirectional);
   }
 }

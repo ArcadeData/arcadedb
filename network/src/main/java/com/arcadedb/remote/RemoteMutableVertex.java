@@ -21,25 +21,33 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.ImmutableLightEdge;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
 public class RemoteMutableVertex extends MutableVertex {
+  private final   RemoteVertex   internal;
   protected final RemoteDatabase remoteDatabase;
   protected final String         typeName;
 
   protected RemoteMutableVertex(final RemoteDatabase database, final String typeName) {
     super(null, null, null);
+    this.internal = new RemoteVertex(this, database);
     this.remoteDatabase = database;
     this.typeName = typeName;
   }
 
   protected RemoteMutableVertex(final RemoteImmutableVertex source) {
     super(null, null, source.getIdentity());
+    this.internal = new RemoteVertex(this, source.getRemoteDatabase());
     this.remoteDatabase = source.remoteDatabase;
     this.typeName = source.typeName;
     this.map.putAll(source.map);
@@ -62,11 +70,6 @@ public class RemoteMutableVertex extends MutableVertex {
     rid = remoteDatabase.saveRecord(this, bucketName);
     dirty = false;
     return this;
-  }
-
-  @Override
-  public void delete() {
-    remoteDatabase.deleteRecord(this);
   }
 
   @Override
@@ -120,5 +123,59 @@ public class RemoteMutableVertex extends MutableVertex {
   @Override
   protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
     return value;
+  }
+
+  public RemoteDatabase getRemoteDatabase() {
+    return internal.remoteDatabase;
+  }
+
+  @Override
+  public void delete() {
+    internal.delete();
+  }
+
+  @Override
+  public long countEdges(final DIRECTION direction, final String edgeType) {
+    return internal.countEdges(direction, edgeType);
+  }
+
+  @Override
+  public Iterable<Edge> getEdges() {
+    return internal.getEdges(DIRECTION.BOTH);
+  }
+
+  @Override
+  public Iterable<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
+    return internal.getEdges(DIRECTION.BOTH, edgeTypes);
+  }
+
+  @Override
+  public Iterable<Vertex> getVertices() {
+    return internal.getVertices(DIRECTION.BOTH);
+  }
+
+  @Override
+  public Iterable<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
+    return internal.getVertices(direction, edgeTypes);
+  }
+
+  @Override
+  public boolean isConnectedTo(final Identifiable toVertex) {
+    return internal.isConnectedTo(toVertex);
+  }
+
+  @Override
+  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
+    return internal.isConnectedTo(toVertex, direction);
+  }
+
+  @Override
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional, final Object... properties) {
+    return internal.newEdge(edgeType, toVertex, bidirectional, properties);
+  }
+
+  @Override
+  public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
+    return internal.newLightEdge(edgeType, toVertex, bidirectional);
   }
 }

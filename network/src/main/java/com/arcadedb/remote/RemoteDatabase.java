@@ -178,7 +178,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   @Override
-  public MutableVertex newVertex(final String typeName) {
+  public RemoteMutableVertex newVertex(final String typeName) {
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
