@@ -31,6 +31,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
+import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 import org.junit.jupiter.api.AfterEach;
@@ -397,9 +398,9 @@ public class GremlinTest {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
       graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
 
-      final Vertex alice = graph.addVertex("label", "Person", "name", "Alice");
-      final Vertex bob = graph.addVertex("label", "Person", "name", "Bob");
-      final Vertex steve = graph.addVertex("label", "Person", "name", "Steve");
+      final Vertex alice = graph.addVertex(T.label, "Person", "name", "Alice");
+      final Vertex bob = graph.addVertex(T.label, "Person", "name", "Bob");
+      final Vertex steve = graph.addVertex(T.label, "Person", "name", "Steve");
 
       alice.addEdge("FriendOf", bob);
       alice.addEdge("FriendOf", steve);
@@ -440,6 +441,31 @@ public class GremlinTest {
     try {
       Result value = graph.gremlin("g.inject(1).size()").execute().nextIfAvailable();
       Assertions.assertEquals(1, (int) value.getProperty("result"));
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testGroupBy() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testGroupBy");
+    try {
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person");
+      graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
+
+      final Vertex alice = graph.addVertex(T.label, "Person", "name", "Alice");
+      final Vertex bob = graph.addVertex(T.label, "Person", "name", "Bob");
+      final Vertex steve = graph.addVertex(T.label, "Person", "name", "Steve");
+
+      alice.addEdge("FriendOf", bob);
+      alice.addEdge("FriendOf", steve);
+      steve.addEdge("FriendOf", bob);
+
+      ResultSet resultSet = graph.gremlin("g.V().hasLabel('Person').group().by('name')").execute();
+      Result result = resultSet.nextIfAvailable();
+      Assertions.assertNotNull(result.getProperty("Alice"));
+      Assertions.assertNotNull(result.getProperty("Bob"));
+      Assertions.assertNotNull(result.getProperty("Steve"));
     } finally {
       graph.drop();
     }
