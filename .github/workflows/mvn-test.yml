@@ -13,9 +13,9 @@ jobs:
       matrix:
         os: [ ubuntu-latest ]
         continue-on-error: [ false ]
-        include:
-          - os: windows-latest
-            continue-on-error: true
+#        include:
+#          - os: windows-latest
+#            continue-on-error: true
 
     runs-on: ${{ matrix.os }}
 
