@@ -21,7 +21,7 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.utility.DateUtils;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -133,8 +133,8 @@ public class JSONObject {
         object.addProperty(name, dateFormat.format((TemporalAccessor) value));
     } else if (value instanceof Duration) {
       object.addProperty(name, Double.valueOf(String.format("%d.%d", ((Duration) value).toSeconds(), ((Duration) value).toNanosPart())));
-    } else if (value instanceof RID) {
-      object.addProperty(name, value.toString());
+    } else if (value instanceof Identifiable) {
+      object.addProperty(name, ((Identifiable) value).getIdentity().toString());
     } else if (value instanceof Map) {
       final JSONObject embedded = new JSONObject((Map<String, Object>) value);
       object.add(name, embedded.getInternal());
@@ -340,10 +340,10 @@ public class JSONObject {
       return new JSONArray((Collection) object).getInternal();
     else if (object instanceof Map)
       return new JSONObject((Map) object).getInternal();
-    else if (object instanceof RID)
-      return new JsonPrimitive(object.toString());
     else if (object instanceof Document)
       return ((Document) object).toJSON().getInternal();
+    else if (object instanceof Identifiable)
+      return new JsonPrimitive(((Identifiable) object).getIdentity().toString());
 
     throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
   }
