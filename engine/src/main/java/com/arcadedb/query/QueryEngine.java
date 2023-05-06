@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -40,13 +41,13 @@ public interface QueryEngine {
 
   AnalyzedQuery analyze(String query);
 
-  ResultSet query(String query, Map<String, Object> parameters);
+  ResultSet query(String query, ContextConfiguration configuration, Map<String, Object> parameters);
 
-  ResultSet query(String query, Object... parameters);
+  ResultSet query(String query, ContextConfiguration configuration, Object... parameters);
 
-  ResultSet command(String query, Map<String, Object> parameters);
+  ResultSet command(String query, ContextConfiguration configuration, Map<String, Object> parameters);
 
-  ResultSet command(String query, Object... parameters);
+  ResultSet command(String query, ContextConfiguration configuration, Object... parameters);
 
   default QueryEngine registerFunctions(final String function) {
     return this;

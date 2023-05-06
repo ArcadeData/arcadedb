@@ -346,6 +346,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public ResultSet command(String language, String query, ContextConfiguration configuration, Map<String, Object> args) {
+        return null;
+      }
+
+      @Override
       public ResultSet query(String language, String query, Map<String, Object> args) {
         return null;
       }

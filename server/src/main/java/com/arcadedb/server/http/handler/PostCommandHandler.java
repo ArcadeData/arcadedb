@@ -124,6 +124,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if (params instanceof Object[])
       return database.command(language, command, (Object[]) params);
 
-    return database.command(language, command, (Map<String, Object>) params);
+    return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }
 }

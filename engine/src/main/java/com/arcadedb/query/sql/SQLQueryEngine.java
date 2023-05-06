@@ -18,11 +18,13 @@
  */
 package com.arcadedb.query.sql;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
@@ -71,7 +73,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Map<String, Object> parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
       throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
@@ -81,7 +83,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Object... parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
     final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
       throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
@@ -91,14 +93,16 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, final Map<String, Object> parameters) {
+  public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
-    return statement.execute(database, parameters);
+    final CommandContext context = new BasicCommandContext();
+    context.setConfiguration(configuration);
+    return statement.execute(database, parameters, context);
   }
 
   @Override
-  public ResultSet command(final String query, final Object... parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     final Statement statement = parse(query, database);
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
     return statement.execute(database, parameters);

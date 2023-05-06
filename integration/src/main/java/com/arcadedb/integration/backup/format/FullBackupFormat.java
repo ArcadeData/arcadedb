@@ -57,7 +57,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     if (backupFile.getParentFile() != null && !backupFile.getParentFile().exists()) {
       if (!backupFile.getParentFile().mkdirs())
-        throw new BackupException(String.format("The backup file '%s' cannot be created", settings.file));
+        throw new BackupException(String.format("The backup file '%s' cannot be created", backupFile));
     }
 
     if (database.isTransactionActive())

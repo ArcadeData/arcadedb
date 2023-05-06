@@ -1271,14 +1271,19 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
     stats.commands.incrementAndGet();
-    return getQueryEngine(language).command(query, parameters);
+    return getQueryEngine(language).command(query, null, parameters);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> parameters) {
+    return command(language, query, null, parameters);
+  }
+
+  @Override
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
     stats.commands.incrementAndGet();
-    return getQueryEngine(language).command(query, parameters);
+    return getQueryEngine(language).command(query, configuration, parameters);
   }
 
   @Deprecated
@@ -1301,14 +1306,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public ResultSet query(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
-    return getQueryEngine(language).query(query, parameters);
+    return getQueryEngine(language).query(query, null, parameters);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
-    return getQueryEngine(language).query(query, parameters);
+    return getQueryEngine(language).query(query, null, parameters);
   }
 
   /**

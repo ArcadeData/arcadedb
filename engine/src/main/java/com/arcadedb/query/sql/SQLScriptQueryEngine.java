@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -66,7 +67,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Map<String, Object> parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final List<Statement> statements = parseScript(query, database);
     statements.stream().map((statement) -> {
       if (statement.isIdempotent())
@@ -81,7 +82,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Object... parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
     final List<Statement> statements = parseScript(query, database);
     statements.stream().map((statement) -> {
       if (statement.isIdempotent())
@@ -96,7 +97,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, final Map<String, Object> parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();
@@ -107,7 +108,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, final Object... parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();

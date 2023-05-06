@@ -20,9 +20,8 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -30,14 +29,13 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.lang.reflect.*;
 import java.io.*;
+import java.lang.reflect.*;
 import java.util.*;
 import java.util.logging.*;
 
 public class BackupDatabaseStatement extends SimpleExecStatement {
-  private final ContextConfiguration configuration = new ContextConfiguration();
-  protected     Url                  url;
+  protected Url url;
 
   public BackupDatabaseStatement(final int id) {
     super(id);
@@ -61,7 +59,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), targetUrl);
 
       // ASSURE THE DIRECTORY CANNOT BE CHANGED
-      String backupDirectory = configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
+      String backupDirectory = context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
       if (!backupDirectory.endsWith(File.separator))
         backupDirectory += File.separator;
       clazz.getMethod("setDirectory", String.class).invoke(backup, backupDirectory + context.getDatabase().getName());

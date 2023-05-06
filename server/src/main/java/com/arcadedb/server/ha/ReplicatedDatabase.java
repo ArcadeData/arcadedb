@@ -591,6 +591,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> args) {
+    return command(language, query, null, args);
+  }
+
+  @Override
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Map<String, Object> args) {
     if (!isLeader()) {
       final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
       if (analyzed.isDDL()) {
@@ -600,7 +605,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       }
     }
 
-    return proxied.command(language, query, args);
+    return proxied.command(language, query, configuration, args);
   }
 
   @Override

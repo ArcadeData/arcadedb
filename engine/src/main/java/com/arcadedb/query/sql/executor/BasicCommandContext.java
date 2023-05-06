@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 
@@ -31,14 +32,15 @@ import java.util.concurrent.atomic.*;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class BasicCommandContext implements CommandContext {
-  protected       DatabaseInternal    database;
-  protected       boolean             recordMetrics           = false;
-  protected       CommandContext      parent;
-  protected       CommandContext      child;
-  protected       Map<String, Object> variables;
-  protected       Map<String, Object> inputParameters;
-  protected final Set<String>         declaredScriptVariables = new HashSet<>();
-  protected final AtomicLong          resultsProcessed        = new AtomicLong(0);
+  protected       DatabaseInternal     database;
+  protected       boolean              recordMetrics           = false;
+  protected       CommandContext       parent;
+  protected       CommandContext       child;
+  protected       Map<String, Object>  variables;
+  protected       Map<String, Object>  inputParameters;
+  protected       ContextConfiguration configuration           = new ContextConfiguration();
+  protected final Set<String>          declaredScriptVariables = new HashSet<>();
+  protected final AtomicLong           resultsProcessed        = new AtomicLong(0);
 
   public Object getVariable(final String name) {
     return getVariable(name, null);
@@ -285,5 +287,15 @@ public class BasicCommandContext implements CommandContext {
     }
     return declaredScriptVariables.contains(varName) || declaredScriptVariables.contains(dollarVar) || (parent != null && parent.isScriptVariableDeclared(
         varName));
+  }
+
+  @Override
+  public ContextConfiguration getConfiguration() {
+    return configuration;
+  }
+
+  @Override
+  public void setConfiguration(final ContextConfiguration configuration) {
+    this.configuration = configuration;
   }
 }
