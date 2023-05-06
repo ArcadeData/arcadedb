@@ -172,12 +172,11 @@
                                         <dockerFile>${project.basedir}/src/main/docker/Dockerfile</dockerFile>
                                         <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
                                         </contextDir>
-    <!--                                        <buildx>-->
-    <!--                                            <platforms>-->
-    <!--                                                <platform>linux/arm64,linux/amd64</platform>-->
-    <!--                                            </platforms>-->
-    <!--                                        </buildx>-->
-
+                                        <buildx>
+                                            <platforms>
+                                                <platform>linux/arm64,linux/amd64</platform>
+                                            </platforms>
+                                        </buildx>
                                         <tags>
                                             <tag>latest</tag>
                                             <tag>${project.version}</tag>
