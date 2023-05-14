@@ -76,7 +76,7 @@ public class PolyglotQueryEngine implements QueryEngine {
     }
 
     public static Iterable<String> getSupportedLanguages() {
-      return GraalPolyglotEngine.newBuilder(null, Engine.create()).build().getSupportedLanguages();
+      return GraalPolyglotEngine.getSupportedLanguages();
     }
   }
 

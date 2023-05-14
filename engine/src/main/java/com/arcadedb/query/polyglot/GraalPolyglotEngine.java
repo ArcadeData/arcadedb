@@ -21,11 +21,16 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraalPolyglotEngine implements AutoCloseable {
-  public final Database     database;
-  public final String       language;
-  public final List<String> allowedPackages;
-  public final List<String> restrictedPackages;
-  public final Context      context;
+  public final   Database     database;
+  public final   String       language;
+  public final   List<String> allowedPackages;
+  public final   List<String> restrictedPackages;
+  public final   Context      context;
+  private static Set<String>  supportedLanguages;
+
+  static {
+    supportedLanguages = Engine.create().getLanguages().keySet();
+  }
 
   private GraalPolyglotEngine(final Database database, final Engine engine, final String language, final OutputStream output,
       final List<String> allowedPackages, final List<String> restrictedPackages, final long maxExecutionTimeMs) {
@@ -80,12 +85,12 @@ public class GraalPolyglotEngine implements AutoCloseable {
     try {
       context.close(true);
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on closing scrpit context", e);
+      LogManager.instance().log(this, Level.WARNING, "Error on closing script context", e);
     }
   }
 
-  public Set<String> getSupportedLanguages() {
-    return context.getEngine().getLanguages().keySet();
+  public static Set<String> getSupportedLanguages() {
+    return supportedLanguages;
   }
 
   public static final class Builder {
