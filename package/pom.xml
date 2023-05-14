@@ -144,6 +144,31 @@
             <build>
                 <plugins>
                     <plugin>
+                        <artifactId>maven-resources-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>copy-resources</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}.dir</outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>src/main/docker</directory>
+                                            <includes>
+                                                <include>Dockerfile</include>
+                                            </includes>
+                                            <filtering>false</filtering>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
                         <groupId>io.fabric8</groupId>
                         <artifactId>docker-maven-plugin</artifactId>
                         <version>${docker-maven-plugin.version}</version>
@@ -170,7 +195,6 @@
                                     <name>arcadedata/arcadedb</name>
                                     <build>
                                         <contextDir>${project.build.directory}/arcadedb-${project.version}.dir</contextDir>
-                                        <dockerFile>${project.basedir}/src/main/docker/Dockerfile</dockerFile>
                                         <buildx>
                                             <platforms>
                                                 <platform>linux/amd64</platform>
