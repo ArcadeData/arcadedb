@@ -274,7 +274,11 @@ public class JSONObject {
    */
   public JSONObject setDateFormat(final String dateFormat) {
     this.dateFormatAsString = dateFormat;
-    this.dateFormat = DateTimeFormatter.ofPattern(dateFormat);
+    try {
+      this.dateFormat = DateTimeFormatter.ofPattern(dateFormat);
+    } catch (IllegalArgumentException e) {
+      throw new JSONException("Invalid date format: " + dateFormat, e);
+    }
     return this;
   }
 
