@@ -13,9 +13,9 @@ jobs:
       matrix:
         os: [ ubuntu-latest ]
         continue-on-error: [ false ]
-#        include:
-#          - os: windows-latest
-#            continue-on-error: true
+        include:
+          - os: windows-latest
+            continue-on-error: true
 
     runs-on: ${{ matrix.os }}
 
@@ -44,17 +44,17 @@ jobs:
           components: 'native-image,js'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: TEst docker image multiplatform
+      - name: Install jars
         continue-on-error: ${{ matrix.continue-on-error }}
-        run: mvn --show-version clean install -DskipTests -Pdocker
+        run: mvn --show-version clean install -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-#      - name: Test
-#        continue-on-error: ${{ matrix.continue-on-error }}
-#        run: mvn verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-at-end --show-version  -pl !e2e
-#        env:
-#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Test
+        continue-on-error: ${{ matrix.continue-on-error }}
+        run: mvn verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-at-end --show-version  -pl !e2e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: E2E Test
         if: success()
