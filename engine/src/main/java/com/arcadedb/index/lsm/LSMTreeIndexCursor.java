@@ -310,8 +310,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
           minorKey = txKeys;
       }
 
-      if (minorKey == null)
-        throw new NoSuchElementException();
+      if (minorKey == null) {
+        validIterators = 0;
+        return null;//throw new NoSuchElementException();
+      }
 
       currentKeys = minorKey;
 
