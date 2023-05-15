@@ -83,7 +83,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(backupFile.exists());
         database2.drop();
 
-        config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "graph[elon:musk:admin]{restore:file://backups/graph/backup-test.zip}");
+        config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "graph[elon:musk:admin]{restore:file://" + backupFile.getPath() + "}");
       }
     }
   }
