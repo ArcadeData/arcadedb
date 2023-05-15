@@ -63,7 +63,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
     if (database.isTransactionActive())
       throw new BackupException("Transaction in progress found");
 
-    logger.logLine(0, "Executing full backup of database to '%s'...", settings.file);
+    logger.logLine(0, "Executing full backup of database to '%s'...", backupFile);
 
     try (final ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
       zipFile.setLevel(9);
