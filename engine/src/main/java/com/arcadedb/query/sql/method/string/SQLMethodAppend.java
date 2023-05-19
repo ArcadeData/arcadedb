@@ -16,38 +16,46 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.utility.FileUtils;
 
 /**
- * Returns argument if result is null else return result.
+ * Appends strings. Acts as a concatenation.
  *
+ * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIfNull extends AbstractSQLMethod {
+public class SQLMethodAppend extends AbstractSQLMethod {
 
-  public static final String NAME = "ifnull";
+  public static final String NAME = "append";
 
-  public SQLMethodIfNull() {
-    super(NAME);
+  public SQLMethodAppend() {
+    super(NAME, 1, -1);
   }
 
   @Override
   public String getSyntax() {
-    return "Syntax error: ifnull(<return_value_if_null>)";
+    return "append([<value|expression|field>]*)";
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    /*
-     * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
-     */
-    if (ioResult == null)
-      return iParams[0];
-    else
-      return ioResult;
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object ioResult, final Object[] iParams) {
+    if (iThis == null || iParams[0] == null)
+      return iThis;
+
+    final StringBuilder buffer = new StringBuilder(iThis.toString());
+    for (int i = 0; i < iParams.length; ++i) {
+      if (iParams[i] != null) {
+        buffer.append(FileUtils.getStringContent(iParams[i]));
+      }
+    }
+
+    return buffer.toString();
   }
+
 }

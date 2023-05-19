@@ -16,29 +16,37 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
-
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
+package com.arcadedb.query.sql.function.math;
 
 /**
- * Returns the value's Java type.
+ * Compute the standard deviation for a given field.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Fabrizio Fortino
  */
-public class SQLMethodJavaType extends AbstractSQLMethod {
-  public static final String NAME = "javatype";
+public class SQLFunctionStandardDeviation extends SQLFunctionVariance {
 
-  public SQLMethodJavaType() {
+  public static final String NAME = "stddev";
+
+  public SQLFunctionStandardDeviation() {
     super(NAME);
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult == null)
-      return null;
+  public Object getResult() {
+    return this.evaluate(super.getResult());
+  }
 
-    return ioResult.getClass().getName();
+  @Override
+  public String getSyntax() {
+    return NAME + "(<field>)";
+  }
+
+  private Double evaluate(final Object variance) {
+    Double result = null;
+    if (variance != null) {
+      result = Math.sqrt((Double) variance);
+    }
+
+    return result;
   }
 }

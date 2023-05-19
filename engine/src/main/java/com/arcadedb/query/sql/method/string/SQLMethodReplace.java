@@ -18,44 +18,37 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package com.arcadedb.query.sql.method.geo;
+package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import org.locationtech.spatial4j.shape.Shape;
-import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
- * Returns true if a shape is inside another shape
+ * Replaces all the occurrences.
  *
+ * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIsWithin extends AbstractSQLMethod {
+public class SQLMethodReplace extends AbstractSQLMethod {
 
-  public static final String NAME = "iswithin";
+  public static final String NAME = "replace";
 
-  public SQLMethodIsWithin() {
-    super(NAME, 0, 1);
+  public SQLMethodReplace() {
+    super(NAME, 2, 2);
   }
 
   @Override
   public String getSyntax() {
-    return "isWithin( <shape> )";
+    return "replace(<to-find>, <to-replace>)";
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext context, final Object ioResult, final Object[] iParams) {
-    if (iThis == null)
-      return null;
-    else if (!(iThis instanceof Shape))
-      return null;
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord,
+      final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+    if (iThis == null || iParams[0] == null || iParams[1] == null)
+      return iParams[0];
 
-    if (iParams.length != 1 || iParams[0] == null)
-      throw new IllegalArgumentException("isWithin() requires a shape as parameter");
-
-    final Shape shape = (Shape) iParams[0];
-
-    return ((Shape) iThis).relate(shape) == SpatialRelation.WITHIN;
+    return iThis.toString().replace(iParams[0].toString(), iParams[1].toString());
   }
 }

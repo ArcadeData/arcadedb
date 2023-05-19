@@ -16,29 +16,26 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
-
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
+package com.arcadedb.query.sql.function.math;
 
 /**
- * Returns the value's Java type.
+ * Computes the median for a field. Nulls are ignored in the calculation.
+ * <p>
+ * Extends and forces the {@link SQLFunctionPercentile} with the 50th percentile.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Fabrizio Fortino
  */
-public class SQLMethodJavaType extends AbstractSQLMethod {
-  public static final String NAME = "javatype";
+public class SQLFunctionMedian extends SQLFunctionPercentile {
 
-  public SQLMethodJavaType() {
+  public static final String NAME = "median";
+
+  public SQLFunctionMedian() {
     super(NAME);
+    this.quantiles.add(.5);
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult == null)
-      return null;
-
-    return ioResult.getClass().getName();
+  public String getSyntax() {
+    return NAME + "(<field>)";
   }
 }

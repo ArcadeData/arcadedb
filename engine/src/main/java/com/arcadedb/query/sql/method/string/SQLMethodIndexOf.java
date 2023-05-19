@@ -16,38 +16,30 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
- * Returns argument if result is null else return result.
- *
+ * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIfNull extends AbstractSQLMethod {
+public class SQLMethodIndexOf extends AbstractSQLMethod {
 
-  public static final String NAME = "ifnull";
+  public static final String NAME = "indexof";
 
-  public SQLMethodIfNull() {
-    super(NAME);
+  public SQLMethodIndexOf() {
+    super(NAME, 1, 2);
   }
 
   @Override
-  public String getSyntax() {
-    return "Syntax error: ifnull(<return_value_if_null>)";
-  }
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+    final String toFind = FileUtils.getStringContent(iParams[0].toString());
+    final int startIndex = iParams.length > 1 ? Integer.parseInt(iParams[1].toString()) : 0;
 
-  @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    /*
-     * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
-     */
-    if (ioResult == null)
-      return iParams[0];
-    else
-      return ioResult;
+    return iThis != null ? iThis.toString().indexOf(toFind, startIndex) : null;
   }
 }

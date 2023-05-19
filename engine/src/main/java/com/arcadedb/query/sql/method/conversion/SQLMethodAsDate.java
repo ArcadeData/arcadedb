@@ -18,44 +18,45 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package com.arcadedb.query.sql.method.geo;
+package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import org.locationtech.spatial4j.shape.Shape;
-import org.locationtech.spatial4j.shape.SpatialRelation;
+
+import java.util.*;
 
 /**
- * Returns true if a shape is inside another shape
+ * Transforms a value to date. If the conversion is not possible, null is returned.
  *
+ * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIsWithin extends AbstractSQLMethod {
+public class SQLMethodAsDate extends AbstractSQLMethod {
 
-  public static final String NAME = "iswithin";
+  public static final String NAME = "asdate";
 
-  public SQLMethodIsWithin() {
+  public SQLMethodAsDate() {
     super(NAME, 0, 1);
   }
 
   @Override
   public String getSyntax() {
-    return "isWithin( <shape> )";
+    return "asDate([<format>])";
   }
 
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext context, final Object ioResult, final Object[] iParams) {
     if (iThis == null)
       return null;
-    else if (!(iThis instanceof Shape))
-      return null;
 
-    if (iParams.length != 1 || iParams[0] == null)
-      throw new IllegalArgumentException("isWithin() requires a shape as parameter");
+    if (iThis instanceof Date)
+      return iThis;
+    else if (iThis instanceof Number)
+      return new Date(((Number) iThis).longValue());
 
-    final Shape shape = (Shape) iParams[0];
-
-    return ((Shape) iThis).relate(shape) == SpatialRelation.WITHIN;
+    final String format = iParams.length > 0 ? iParams[0].toString() : context.getDatabase().getSchema().getDateFormat();
+    return DateUtils.getDate(DateUtils.parse(iThis.toString(), format), context.getDatabase().getSerializer().getDateImplementation());
   }
 }

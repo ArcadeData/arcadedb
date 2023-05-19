@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.function;
 
+// Collections
 import com.arcadedb.query.sql.function.coll.SQLFunctionDifference;
 import com.arcadedb.query.sql.function.coll.SQLFunctionFirst;
 import com.arcadedb.query.sql.function.coll.SQLFunctionIntersect;
@@ -27,12 +28,16 @@ import com.arcadedb.query.sql.function.coll.SQLFunctionMap;
 import com.arcadedb.query.sql.function.coll.SQLFunctionSet;
 import com.arcadedb.query.sql.function.coll.SQLFunctionSymmetricDifference;
 import com.arcadedb.query.sql.function.coll.SQLFunctionUnionAll;
+
+// Geo
 import com.arcadedb.query.sql.function.geo.SQLFunctionCircle;
 import com.arcadedb.query.sql.function.geo.SQLFunctionDistance;
 import com.arcadedb.query.sql.function.geo.SQLFunctionLineString;
 import com.arcadedb.query.sql.function.geo.SQLFunctionPoint;
 import com.arcadedb.query.sql.function.geo.SQLFunctionPolygon;
 import com.arcadedb.query.sql.function.geo.SQLFunctionRectangle;
+
+// Graph
 import com.arcadedb.query.sql.function.graph.SQLFunctionAstar;
 import com.arcadedb.query.sql.function.graph.SQLFunctionBoth;
 import com.arcadedb.query.sql.function.graph.SQLFunctionBothE;
@@ -45,33 +50,43 @@ import com.arcadedb.query.sql.function.graph.SQLFunctionOut;
 import com.arcadedb.query.sql.function.graph.SQLFunctionOutE;
 import com.arcadedb.query.sql.function.graph.SQLFunctionOutV;
 import com.arcadedb.query.sql.function.graph.SQLFunctionShortestPath;
+
+// Math
 import com.arcadedb.query.sql.function.math.SQLFunctionAbsoluteValue;
 import com.arcadedb.query.sql.function.math.SQLFunctionAverage;
+import com.arcadedb.query.sql.function.math.SQLFunctionCount;
 import com.arcadedb.query.sql.function.math.SQLFunctionEval;
 import com.arcadedb.query.sql.function.math.SQLFunctionMax;
+import com.arcadedb.query.sql.function.math.SQLFunctionMedian;
 import com.arcadedb.query.sql.function.math.SQLFunctionMin;
+import com.arcadedb.query.sql.function.math.SQLFunctionMode;
+import com.arcadedb.query.sql.function.math.SQLFunctionPercentile;
 import com.arcadedb.query.sql.function.math.SQLFunctionSquareRoot;
+import com.arcadedb.query.sql.function.math.SQLFunctionStandardDeviation;
 import com.arcadedb.query.sql.function.math.SQLFunctionSum;
+import com.arcadedb.query.sql.function.math.SQLFunctionVariance;
+
+// Time
+import com.arcadedb.query.sql.function.time.SQLFunctionDate;
+import com.arcadedb.query.sql.function.time.SQLFunctionDuration;
+import com.arcadedb.query.sql.function.time.SQLFunctionSysdate;
+
+// Text
+import com.arcadedb.query.sql.function.text.SQLFunctionConcat;
+import com.arcadedb.query.sql.function.text.SQLFunctionFormat;
+import com.arcadedb.query.sql.function.text.SQLFunctionStrcmpci;
+
+// Misc
+import com.arcadedb.query.sql.function.misc.SQLFunctionBoolAnd;
+import com.arcadedb.query.sql.function.misc.SQLFunctionBoolOr;
 import com.arcadedb.query.sql.function.misc.SQLFunctionCoalesce;
-import com.arcadedb.query.sql.function.misc.SQLFunctionCount;
 import com.arcadedb.query.sql.function.misc.SQLFunctionDecode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionEncode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIf;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIfNull;
-import com.arcadedb.query.sql.function.misc.SQLFunctionStrcmpci;
 import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
-import com.arcadedb.query.sql.function.misc.SQLFunctionBoolAnd;
-import com.arcadedb.query.sql.function.misc.SQLFunctionBoolOr;
-import com.arcadedb.query.sql.function.stat.SQLFunctionMedian;
-import com.arcadedb.query.sql.function.stat.SQLFunctionMode;
-import com.arcadedb.query.sql.function.stat.SQLFunctionPercentile;
-import com.arcadedb.query.sql.function.stat.SQLFunctionStandardDeviation;
-import com.arcadedb.query.sql.function.stat.SQLFunctionVariance;
-import com.arcadedb.query.sql.function.text.SQLFunctionConcat;
-import com.arcadedb.query.sql.function.text.SQLFunctionFormat;
-import com.arcadedb.query.sql.function.time.SQLFunctionDate;
-import com.arcadedb.query.sql.function.time.SQLFunctionDuration;
-import com.arcadedb.query.sql.function.time.SQLFunctionSysdate;
+
+
 
 /**
  * Default set of SQL function.
@@ -80,63 +95,73 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
   private final SQLFunctionReflectionFactory reflectionFactory;
 
   public DefaultSQLFunctionFactory() {
-    // MISC FUNCTIONS
-    register(SQLFunctionAverage.NAME, SQLFunctionAverage.class);
-    register(SQLFunctionCoalesce.NAME, new SQLFunctionCoalesce());
-    register(SQLFunctionCount.NAME, SQLFunctionCount.class);
-    register(SQLFunctionDate.NAME, new SQLFunctionDate());
-    register(SQLFunctionDecode.NAME, new SQLFunctionDecode());
+    // Collection
     register(SQLFunctionDifference.NAME, SQLFunctionDifference.class);
-    register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
-    register(SQLFunctionDuration.NAME, new SQLFunctionDuration());
-    register(SQLFunctionEncode.NAME, new SQLFunctionEncode());
-    register(SQLFunctionEval.NAME, SQLFunctionEval.class);
     register(SQLFunctionFirst.NAME, new SQLFunctionFirst());
-    register(SQLFunctionFormat.NAME, new SQLFunctionFormat());
-    register(SQLFunctionIf.NAME, new SQLFunctionIf());
-    register(SQLFunctionIfNull.NAME, new SQLFunctionIfNull());
     register(SQLFunctionIntersect.NAME, SQLFunctionIntersect.class);
     register(SQLFunctionLast.NAME, new SQLFunctionLast());
     register(SQLFunctionList.NAME, SQLFunctionList.class);
     register(SQLFunctionMap.NAME, SQLFunctionMap.class);
-    register(SQLFunctionMax.NAME, SQLFunctionMax.class);
-    register(SQLFunctionMin.NAME, SQLFunctionMin.class);
     register(SQLFunctionSet.NAME, SQLFunctionSet.class);
-    register(SQLFunctionSquareRoot.NAME, SQLFunctionSquareRoot.class);
-    register(SQLFunctionSum.NAME, SQLFunctionSum.class);
-    register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
+    register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
     register(SQLFunctionUnionAll.NAME, SQLFunctionUnionAll.class);
-    register(SQLFunctionMode.NAME, SQLFunctionMode.class);
-    register(SQLFunctionPercentile.NAME, SQLFunctionPercentile.class);
-    register(SQLFunctionMedian.NAME, SQLFunctionMedian.class);
-    register(SQLFunctionVariance.NAME, SQLFunctionVariance.class);
-    register(SQLFunctionStandardDeviation.NAME, SQLFunctionStandardDeviation.class);
-    register(SQLFunctionUUID.NAME, SQLFunctionUUID.class);
-    register(SQLFunctionConcat.NAME, SQLFunctionConcat.class);
-    register(SQLFunctionAbsoluteValue.NAME, SQLFunctionAbsoluteValue.class);
-    register(SQLFunctionStrcmpci.NAME, SQLFunctionStrcmpci.class);
-    register(SQLFunctionBoolAnd.NAME, SQLFunctionBoolAnd.class);
-    register(SQLFunctionBoolOr.NAME, SQLFunctionBoolOr.class);
-    // GRAPH
-    register(SQLFunctionOut.NAME, SQLFunctionOut.class);
-    register(SQLFunctionIn.NAME, SQLFunctionIn.class);
-    register(SQLFunctionBoth.NAME, SQLFunctionBoth.class);
-    register(SQLFunctionOutE.NAME, SQLFunctionOutE.class);
-    register(SQLFunctionOutV.NAME, SQLFunctionOutV.class);
-    register(SQLFunctionInE.NAME, SQLFunctionInE.class);
-    register(SQLFunctionInV.NAME, SQLFunctionInV.class);
-    register(SQLFunctionBothE.NAME, SQLFunctionBothE.class);
-    register(SQLFunctionBothV.NAME, SQLFunctionBothV.class);
-    register(SQLFunctionShortestPath.NAME, SQLFunctionShortestPath.class);
-    register(SQLFunctionDijkstra.NAME, SQLFunctionDijkstra.class);
-    register(SQLFunctionAstar.NAME, SQLFunctionAstar.class);
-    // GEO
+
+    // Geo
     register(SQLFunctionCircle.NAME, new SQLFunctionCircle());
     register(SQLFunctionDistance.NAME, new SQLFunctionDistance());
+    register(SQLFunctionLineString.NAME, new SQLFunctionLineString());
     register(SQLFunctionPoint.NAME, new SQLFunctionPoint());
     register(SQLFunctionPolygon.NAME, new SQLFunctionPolygon());
     register(SQLFunctionRectangle.NAME, new SQLFunctionRectangle());
-    register(SQLFunctionLineString.NAME, new SQLFunctionLineString());
+
+    // Graph
+    register(SQLFunctionAstar.NAME, SQLFunctionAstar.class);
+    register(SQLFunctionBoth.NAME, SQLFunctionBoth.class);
+    register(SQLFunctionBothE.NAME, SQLFunctionBothE.class);
+    register(SQLFunctionBothV.NAME, SQLFunctionBothV.class);
+    register(SQLFunctionDijkstra.NAME, SQLFunctionDijkstra.class);
+    register(SQLFunctionIn.NAME, SQLFunctionIn.class);
+    register(SQLFunctionInE.NAME, SQLFunctionInE.class);
+    register(SQLFunctionInV.NAME, SQLFunctionInV.class);
+    register(SQLFunctionOut.NAME, SQLFunctionOut.class);
+    register(SQLFunctionOutE.NAME, SQLFunctionOutE.class);
+    register(SQLFunctionOutV.NAME, SQLFunctionOutV.class);
+    register(SQLFunctionShortestPath.NAME, SQLFunctionShortestPath.class);
+
+    // Math
+    register(SQLFunctionAbsoluteValue.NAME, SQLFunctionAbsoluteValue.class);
+    register(SQLFunctionAverage.NAME, SQLFunctionAverage.class);
+    register(SQLFunctionCount.NAME, SQLFunctionCount.class);
+    register(SQLFunctionEval.NAME, SQLFunctionEval.class);
+    register(SQLFunctionMax.NAME, SQLFunctionMax.class);
+    register(SQLFunctionMedian.NAME, SQLFunctionMedian.class);
+    register(SQLFunctionMin.NAME, SQLFunctionMin.class);
+    register(SQLFunctionMode.NAME, SQLFunctionMode.class);
+    register(SQLFunctionPercentile.NAME, SQLFunctionPercentile.class);
+    register(SQLFunctionSquareRoot.NAME, SQLFunctionSquareRoot.class);
+    register(SQLFunctionStandardDeviation.NAME, SQLFunctionStandardDeviation.class);
+    register(SQLFunctionSum.NAME, SQLFunctionSum.class);
+    register(SQLFunctionVariance.NAME, SQLFunctionVariance.class);
+
+    // Misc
+    register(SQLFunctionBoolAnd.NAME, SQLFunctionBoolAnd.class);
+    register(SQLFunctionBoolOr.NAME, SQLFunctionBoolOr.class);
+    register(SQLFunctionCoalesce.NAME, new SQLFunctionCoalesce());
+    register(SQLFunctionDecode.NAME, new SQLFunctionDecode());
+    register(SQLFunctionEncode.NAME, new SQLFunctionEncode());
+    register(SQLFunctionIf.NAME, new SQLFunctionIf());
+    register(SQLFunctionIfNull.NAME, new SQLFunctionIfNull());
+    register(SQLFunctionUUID.NAME, SQLFunctionUUID.class);
+
+    // Text
+    register(SQLFunctionFormat.NAME, new SQLFunctionFormat());
+    register(SQLFunctionConcat.NAME, SQLFunctionConcat.class);
+    register(SQLFunctionStrcmpci.NAME, SQLFunctionStrcmpci.class);
+
+    // Time
+    register(SQLFunctionDate.NAME, new SQLFunctionDate());
+    register(SQLFunctionDuration.NAME, new SQLFunctionDuration());
+    register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
 
     reflectionFactory = new SQLFunctionReflectionFactory(this);
   }

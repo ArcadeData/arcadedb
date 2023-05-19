@@ -16,38 +16,29 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
- * Returns argument if result is null else return result.
- *
+ * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIfNull extends AbstractSQLMethod {
+public class SQLMethodPrefix extends AbstractSQLMethod {
 
-  public static final String NAME = "ifnull";
+  public static final String NAME = "prefix";
 
-  public SQLMethodIfNull() {
-    super(NAME);
+  public SQLMethodPrefix() {
+    super(NAME, 1);
   }
 
   @Override
-  public String getSyntax() {
-    return "Syntax error: ifnull(<return_value_if_null>)";
-  }
+  public Object execute( final Object iThis, final Identifiable iRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+    if (iThis == null || null == iParams || null == iParams[0])
+      return iThis;
 
-  @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    /*
-     * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
-     */
-    if (ioResult == null)
-      return iParams[0];
-    else
-      return ioResult;
+    return iParams[0] + iThis.toString();
   }
 }

@@ -16,38 +16,58 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.conversion;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.*;
+
 /**
- * Returns argument if result is null else return result.
+ * Transforms current value into a Map.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIfNull extends AbstractSQLMethod {
+public class SQLMethodAsMap extends AbstractSQLMethod {
 
-  public static final String NAME = "ifnull";
+  public static final String NAME = "asmap";
 
-  public SQLMethodIfNull() {
+  public SQLMethodAsMap() {
     super(NAME);
   }
 
-  @Override
-  public String getSyntax() {
-    return "Syntax error: ifnull(<return_value_if_null>)";
-  }
-
+  @SuppressWarnings("unchecked")
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    /*
-     * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
-     */
-    if (ioResult == null)
-      return iParams[0];
-    else
+    if (ioResult instanceof Map)
+      // ALREADY A MAP
       return ioResult;
+    else if (ioResult == null)
+      // NULL VALUE, RETURN AN EMPTY MAP
+      return Collections.emptyMap();
+    else if (ioResult instanceof Document)
+      // CONVERT DOCUMENT TO MAP
+      return ((Document) ioResult).toMap(false);
+
+    final Iterator<Object> iter;
+    if (ioResult instanceof Iterator<?>)
+      iter = (Iterator<Object>) ioResult;
+    else if (ioResult instanceof Iterable<?>)
+      iter = ((Iterable<Object>) ioResult).iterator();
+    else
+      return null;
+
+    final HashMap<String, Object> map = new HashMap<>();
+    while (iter.hasNext()) {
+      final Object key = iter.next();
+      if (iter.hasNext()) {
+        final Object value = iter.next();
+        map.put((String) key, value);
+      }
+    }
+
+    return map;
   }
 }

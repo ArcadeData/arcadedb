@@ -16,38 +16,47 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.collection;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.*;
+
 /**
- * Returns argument if result is null else return result.
- *
+ * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIfNull extends AbstractSQLMethod {
+public class SQLMethodKeys extends AbstractSQLMethod {
+  public static final String NAME = "keys";
 
-  public static final String NAME = "ifnull";
-
-  public SQLMethodIfNull() {
+  public SQLMethodKeys() {
     super(NAME);
   }
 
   @Override
-  public String getSyntax() {
-    return "Syntax error: ifnull(<return_value_if_null>)";
-  }
-
-  @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    /*
-     * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
-     */
-    if (ioResult == null)
-      return iParams[0];
-    else
-      return ioResult;
+    if (ioResult instanceof Map)
+      return ((Map<?, ?>) ioResult).keySet();
+
+    if (ioResult instanceof Document)
+      return Collections.singletonList(((Document) ioResult).getPropertyNames());
+
+    if (ioResult instanceof Result) {
+      final Result res = (Result) ioResult;
+      return res.getPropertyNames();
+    }
+
+    if (ioResult instanceof Collection) {
+      final List<Object> result = new ArrayList<>();
+      for (final Object o : (Collection<Object>) ioResult) {
+        result.addAll((Collection<Object>) execute(iThis, iCurrentRecord, iContext, o, iParams));
+      }
+      return result;
+    }
+    return null;
   }
 }
