@@ -29,12 +29,11 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-gremlin</artifactId>
     <packaging>jar</packaging>
 
     <properties>
-        <gremlin.version>3.6.3</gremlin.version>
+        <gremlin.version>3.6.4</gremlin.version>
         <translation.version>1.0.4</translation.version>
     </properties>
 
