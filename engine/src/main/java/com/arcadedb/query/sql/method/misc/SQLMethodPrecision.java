@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.time.*;
 import java.time.temporal.*;

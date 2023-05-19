@@ -16,29 +16,33 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.string;
 
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.query.sql.executor.SQLMethod;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-/**
- * Returns the value's Java type.
- *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
- */
-public class SQLMethodJavaType extends AbstractSQLMethod {
-  public static final String NAME = "javatype";
+import static org.assertj.core.api.Assertions.assertThat;
 
-  public SQLMethodJavaType() {
-    super(NAME);
-  }
+class SQLMethodCharAtTest {
+    private SQLMethod method;
 
-  @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult == null)
-      return null;
+    @BeforeEach
+    void setUp() {
+        method = new SQLMethodCharAt();
 
-    return ioResult.getClass().getName();
-  }
+    }
+
+    @Test
+    void testNulIsReturnedAsNull() {
+        final Object result = method.execute(null, null, null, null, new Object[]{null});
+        assertThat(result).isNull();
+    }
+
+    @Test
+    void testChartAt() {
+        final Object result = method.execute("chars", null, null, null, new Object[]{3});
+        assertThat(result).isEqualTo("r");
+    }
+
 }

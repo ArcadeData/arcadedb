@@ -18,44 +18,39 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package com.arcadedb.query.sql.method.geo;
+package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import org.locationtech.spatial4j.shape.Shape;
-import org.locationtech.spatial4j.shape.SpatialRelation;
+
+import java.math.*;
+import java.util.*;
 
 /**
- * Returns true if a shape is inside another shape
+ * Transforms a value to decimal. If the conversion is not possible, null is returned.
  *
+ * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIsWithin extends AbstractSQLMethod {
+public class SQLMethodAsDecimal extends AbstractSQLMethod {
 
-  public static final String NAME = "iswithin";
+  public static final String NAME = "asdecimal";
 
-  public SQLMethodIsWithin() {
-    super(NAME, 0, 1);
+  public SQLMethodAsDecimal() {
+    super(NAME, 0, 0);
   }
 
   @Override
   public String getSyntax() {
-    return "isWithin( <shape> )";
+    return "asDecimal()";
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext context, final Object ioResult, final Object[] iParams) {
-    if (iThis == null)
-      return null;
-    else if (!(iThis instanceof Shape))
-      return null;
-
-    if (iParams.length != 1 || iParams[0] == null)
-      throw new IllegalArgumentException("isWithin() requires a shape as parameter");
-
-    final Shape shape = (Shape) iParams[0];
-
-    return ((Shape) iThis).relate(shape) == SpatialRelation.WITHIN;
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+    if (iThis instanceof Date) {
+      return new BigDecimal(((Date) iThis).getTime());
+    }
+    return iThis != null ? new BigDecimal(iThis.toString().trim()) : null;
   }
 }

@@ -16,29 +16,19 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.conversion;
 
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import java.util.*;
 
-/**
- * Returns the value's Java type.
- *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
- */
-public class SQLMethodJavaType extends AbstractSQLMethod {
-  public static final String NAME = "javatype";
+class TestIterable<T> implements Iterable<T> {
+    private final List<T> values;
 
-  public SQLMethodJavaType() {
-    super(NAME);
-  }
+    TestIterable(final List<T> values) {
+        this.values = values;
+    }
 
-  @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult == null)
-      return null;
-
-    return ioResult.getClass().getName();
-  }
+    @Override
+    public Iterator<T> iterator() {
+        return values.iterator();
+    }
 }

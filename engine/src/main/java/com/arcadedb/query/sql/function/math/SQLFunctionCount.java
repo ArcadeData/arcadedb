@@ -16,38 +16,45 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.query.sql.function.math.SQLFunctionMathAbstract;
 
 /**
- * Returns argument if result is null else return result.
+ * Count the record that contains a field. Use * to indicate the record instead of the field. Uses the context to save the counter
+ * number. When different Number class are used, take the class with most precision.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIfNull extends AbstractSQLMethod {
+public class SQLFunctionCount extends SQLFunctionMathAbstract {
+  public static final String NAME = "count";
 
-  public static final String NAME = "ifnull";
+  private long total = 0;
 
-  public SQLMethodIfNull() {
+  public SQLFunctionCount() {
     super(NAME);
   }
 
-  @Override
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
+    if (iParams.length == 0 || iParams[0] != null)
+      total++;
+
+    return total;
+  }
+
+  public boolean aggregateResults() {
+    return true;
+  }
+
   public String getSyntax() {
-    return "Syntax error: ifnull(<return_value_if_null>)";
+    return "count(<field>|*)";
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    /*
-     * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
-     */
-    if (ioResult == null)
-      return iParams[0];
-    else
-      return ioResult;
+  public Object getResult() {
+    return total;
   }
 }

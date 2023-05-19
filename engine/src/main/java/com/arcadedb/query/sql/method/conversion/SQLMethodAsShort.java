@@ -16,38 +16,32 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
- * Returns argument if result is null else return result.
+ * Returns a number as a short (signed 16 bit representation).
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIfNull extends AbstractSQLMethod {
+public class SQLMethodAsShort extends AbstractSQLMethod {
 
-  public static final String NAME = "ifnull";
+  public static final String NAME = "asshort";
 
-  public SQLMethodIfNull() {
+  public SQLMethodAsShort() {
     super(NAME);
   }
 
   @Override
-  public String getSyntax() {
-    return "Syntax error: ifnull(<return_value_if_null>)";
-  }
-
-  @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    /*
-     * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
-     */
-    if (ioResult == null)
-      return iParams[0];
-    else
-      return ioResult;
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
+    if (ioResult instanceof Number) {
+      ioResult = ((Number) ioResult).shortValue();
+    } else {
+      ioResult = ioResult != null ? Short.valueOf(ioResult.toString().trim()) : null;
+    }
+    return ioResult;
   }
 }
