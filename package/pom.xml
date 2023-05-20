@@ -143,7 +143,9 @@
         <profile>
             <id>multiplatform</id>
             <activation>
-                <os>Linux</os>
+                <os>
+                    <family>unix</family>
+                </os>
             </activation>
             <properties>
                 <docker-maven-plugin.platform>linux/amd64,linux/arm64</docker-maven-plugin.platform>
