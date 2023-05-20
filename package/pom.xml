@@ -36,6 +36,7 @@
         <kubernetes-maven-plugin.version>1.12.0</kubernetes-maven-plugin.version>
         <docker.buildArg.platform>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.platform>
         <docker-maven-plugin.version>0.42.1</docker-maven-plugin.version>
+        <docker-maven-plugin.platform>linux/amd64</docker-maven-plugin.platform>
     </properties>
 
     <build>
@@ -140,12 +141,21 @@
 
     <profiles>
         <profile>
+            <id>multiplatform</id>
+            <activation>
+                <os>Linux</os>
+            </activation>
+            <properties>
+                <docker-maven-plugin.platform>linux/amd64,linux/arm64</docker-maven-plugin.platform>
+            </properties>
+        </profile>
+        <profile>
             <id>docker</id>
             <build>
                 <plugins>
                     <plugin>
                         <artifactId>maven-resources-plugin</artifactId>
-                        <version>3.3.1</version>
+                        <version>${maven-resources-plugin.version}</version>
                         <executions>
                             <execution>
                                 <id>copy-resources</id>
@@ -154,7 +164,8 @@
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}.dir</outputDirectory>
+                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}.dir
+                                    </outputDirectory>
                                     <resources>
                                         <resource>
                                             <directory>src/main/docker</directory>
@@ -194,11 +205,11 @@
                                 <image>
                                     <name>arcadedata/arcadedb</name>
                                     <build>
-                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir</contextDir>
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
+                                        </contextDir>
                                         <buildx>
                                             <platforms>
-                                                <platform>linux/amd64</platform>
-                                                <platform>linux/arm64</platform>
+                                                <platform>${docker-maven-plugin.platform}</platform>
                                             </platforms>
                                         </buildx>
                                         <tags>
