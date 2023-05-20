@@ -39,7 +39,6 @@ jobs:
 
       - name: Set up GraalVM 11
         uses: graalvm/setup-graalvm@v1
-
         with:
           version: '22.3.2'
           gds-token: ${{ secrets.GDS_TOKEN }}
