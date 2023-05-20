@@ -54,7 +54,7 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
     else if (iParams[0] instanceof String)
       amount = Long.parseLong(iParams[0].toString());
     else
-      throw new IllegalArgumentException("amount '" + iParams[0] + "' not a number ot a string");
+      throw new IllegalArgumentException("amount '" + iParams[0] + "' not a number or a string");
 
     return Duration.of(amount, DateUtils.parsePrecision(iParams[1].toString()));
   }
