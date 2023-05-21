@@ -33,6 +33,7 @@
         <testcontainers.version>1.18.1</testcontainers.version>
         <postgresql.version>42.6.0</postgresql.version>
         <logback-classic.version>1.4.7</logback-classic.version>
+        <allowIncompleteProjects>true</allowIncompleteProjects>
     </properties>
 
     <artifactId>arcadedb-e2e</artifactId>
@@ -47,6 +48,18 @@
                     <skip>true</skip>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
         </plugins>
     </build>
 

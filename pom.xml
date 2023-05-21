@@ -75,6 +75,7 @@
         <itCoverageAgent></itCoverageAgent>
         <license-maven-plugin.version>4.2</license-maven-plugin.version>
         <mockito-core.version>5.3.1</mockito-core.version>
+        <maven-install-plugin.version>3.1.1</maven-install-plugin.version>
     </properties>
 
     <developers>
@@ -218,6 +219,14 @@
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <version>${maven-install-plugin.version}</version>
+                <configuration>
+                    <allowIncompleteProjects>true</allowIncompleteProjects>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-deploy-plugin</artifactId>
                 <version>${maven-deploy-plugin.version}</version>
                 <configuration>
@@ -278,12 +287,6 @@
                             </configuration>
                         </execution>
                     </executions>
-                </plugin>
-
-                <plugin>
-                    <groupId>com.spotify</groupId>
-                    <artifactId>docker-maven-plugin</artifactId>
-                    <version>${docker.plugin.version}</version>
                 </plugin>
 
                 <plugin>
