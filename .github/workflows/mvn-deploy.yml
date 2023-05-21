@@ -43,7 +43,7 @@ jobs:
           server-password: MAVEN_PASSWORD
 
       - name: Publish to OSS and Docker hub
-        run: mvn deploy -Pintegration -Pcoverage -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests
+        run: mvn deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
@@ -51,19 +51,8 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Test Reporter
-        uses: dorny/test-reporter@v1
-        if: success() || failure()
-        with:
-          name: Test Report - ${{ matrix.os }}
-          path: '**/surefire-reports/TEST*.xml'
-          list-suites: 'failed'
-          list-tests: 'failed'
-          reporter: java-junit
-
-      - name: Codacy coverage reporter
-        if: ${{ matrix.os != 'windows-latest' }}
-        uses: codacy/codacy-coverage-reporter-action@v1
-        with:
-          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports:  coverage/target/site/jacoco-aggregate/jacoco.xml
+      - name: E2E Test
+        if: success()
+        run: mvn verify -pl e2e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

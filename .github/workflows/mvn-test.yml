@@ -5,6 +5,10 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
+
 
 jobs:
   build:
@@ -46,39 +50,40 @@ jobs:
           cache: 'maven'
           components: 'native-image,js'
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install jars
         continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn --show-version clean install -DskipTests
-
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Test
         continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-at-end --show-version  -pl !e2e
-
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: E2E Test
         if: success()
         run: mvn verify -pl e2e
-
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Test Reporter
         uses: dorny/test-reporter@v1
         if: success() || failure()
-
         with:
           name: Test Report - ${{ matrix.os }}
           path: '**/surefire-reports/TEST*.xml'
           list-suites: 'failed'
           list-tests: 'failed'
           reporter: java-junit
+
       - name: Get coverage files
+        id: coverage-files-generator
         run: |
           echo ::set-output name=COVERAGE_FILES::$(find **/jacoco*.xml -printf '%p,')
 
-        id: coverage-files-generator
       - name: Codacy coverage reporter
         if: ${{ matrix.os != 'windows-latest' }}
         uses: codacy/codacy-coverage-reporter-action@v1
