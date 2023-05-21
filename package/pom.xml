@@ -34,6 +34,9 @@
 
     <properties>
         <kubernetes-maven-plugin.version>1.12.0</kubernetes-maven-plugin.version>
+        <docker.buildArg.platform>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.platform>
+        <docker-maven-plugin.version>0.42.1</docker-maven-plugin.version>
+        <docker-maven-plugin.platform>linux/amd64</docker-maven-plugin.platform>
     </properties>
 
     <build>
@@ -138,13 +141,50 @@
 
     <profiles>
         <profile>
+            <id>multiplatform</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                </os>
+            </activation>
+            <properties>
+                <docker-maven-plugin.platform>linux/amd64,linux/arm64</docker-maven-plugin.platform>
+            </properties>
+        </profile>
+        <profile>
             <id>docker</id>
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>org.eclipse.jkube</groupId>
-                        <artifactId>kubernetes-maven-plugin</artifactId>
-                        <version>${kubernetes-maven-plugin.version}</version>
+                        <artifactId>maven-resources-plugin</artifactId>
+                        <version>${maven-resources-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>copy-resources</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}.dir
+                                    </outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>src/main/docker</directory>
+                                            <includes>
+                                                <include>Dockerfile</include>
+                                            </includes>
+                                            <filtering>false</filtering>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>io.fabric8</groupId>
+                        <artifactId>docker-maven-plugin</artifactId>
+                        <version>${docker-maven-plugin.version}</version>
                         <executions>
                             <execution>
                                 <id>default</id>
@@ -167,11 +207,13 @@
                                 <image>
                                     <name>arcadedata/arcadedb</name>
                                     <build>
-                                        <dockerFile>${project.basedir}/src/main/docker/Dockerfile</dockerFile>
-                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir</contextDir>
-                                        <args>
-                                            <docker.buildArg.ARCH>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.ARCH>
-                                        </args>
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
+                                        </contextDir>
+                                        <buildx>
+                                            <platforms>
+                                                <platform>${docker-maven-plugin.platform}</platform>
+                                            </platforms>
+                                        </buildx>
                                         <tags>
                                             <tag>latest</tag>
                                             <tag>${project.version}</tag>
