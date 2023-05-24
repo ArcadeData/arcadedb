@@ -19,49 +19,67 @@
 package com.arcadedb.query.sql.method;
 
 import com.arcadedb.exception.CommandExecutionException;
+
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.query.sql.function.text.SQLMethodAppend;
+
+// Collections
+import com.arcadedb.query.sql.method.collection.SQLMethodField;
+import com.arcadedb.query.sql.method.collection.SQLMethodKeys;
+import com.arcadedb.query.sql.method.collection.SQLMethodRemove;
+import com.arcadedb.query.sql.method.collection.SQLMethodRemoveAll;
+import com.arcadedb.query.sql.method.collection.SQLMethodSize;
+import com.arcadedb.query.sql.method.collection.SQLMethodTransform;
+import com.arcadedb.query.sql.method.collection.SQLMethodValues;
+
+// Conversions
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsBoolean;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsByte;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsDate;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsDateTime;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsDecimal;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsDouble;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsFloat;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsInteger;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsList;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsLong;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsMap;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsRID;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsSet;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsShort;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsString;
+import com.arcadedb.query.sql.method.conversion.SQLMethodConvert;
+
+// Geometrics
 import com.arcadedb.query.sql.method.geo.SQLMethodIntersectsWith;
 import com.arcadedb.query.sql.method.geo.SQLMethodIsWithin;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsBoolean;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsByte;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsDate;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsDateTime;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsDecimal;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsDouble;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsFloat;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsInteger;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsList;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsLong;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsMap;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsRID;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsSet;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsShort;
-import com.arcadedb.query.sql.method.misc.SQLMethodAsString;
-import com.arcadedb.query.sql.method.misc.SQLMethodCharAt;
-import com.arcadedb.query.sql.method.misc.SQLMethodConvert;
+
+// Misc
 import com.arcadedb.query.sql.method.misc.SQLMethodExclude;
-import com.arcadedb.query.sql.method.misc.SQLMethodField;
-import com.arcadedb.query.sql.method.misc.SQLMethodFormat;
+import com.arcadedb.query.sql.method.misc.SQLMethodHash;
 import com.arcadedb.query.sql.method.misc.SQLMethodIfNull;
 import com.arcadedb.query.sql.method.misc.SQLMethodInclude;
-import com.arcadedb.query.sql.method.misc.SQLMethodIndexOf;
 import com.arcadedb.query.sql.method.misc.SQLMethodJavaType;
-import com.arcadedb.query.sql.method.misc.SQLMethodKeys;
-import com.arcadedb.query.sql.method.misc.SQLMethodLastIndexOf;
-import com.arcadedb.query.sql.method.misc.SQLMethodLeft;
-import com.arcadedb.query.sql.method.misc.SQLMethodNormalize;
 import com.arcadedb.query.sql.method.misc.SQLMethodPrecision;
-import com.arcadedb.query.sql.method.misc.SQLMethodPrefix;
-import com.arcadedb.query.sql.method.misc.SQLMethodRemove;
-import com.arcadedb.query.sql.method.misc.SQLMethodRemoveAll;
-import com.arcadedb.query.sql.method.misc.SQLMethodSize;
-import com.arcadedb.query.sql.method.misc.SQLMethodSplit;
-import com.arcadedb.query.sql.method.misc.SQLMethodToLowerCase;
-import com.arcadedb.query.sql.method.misc.SQLMethodToUpperCase;
-import com.arcadedb.query.sql.method.misc.SQLMethodTrim;
+import com.arcadedb.query.sql.method.misc.SQLMethodToJSON;
 import com.arcadedb.query.sql.method.misc.SQLMethodType;
-import com.arcadedb.query.sql.method.misc.SQLMethodValues;
+
+// String
+import com.arcadedb.query.sql.method.string.SQLMethodAppend;
+import com.arcadedb.query.sql.method.string.SQLMethodCharAt;
+import com.arcadedb.query.sql.method.string.SQLMethodFormat;
+import com.arcadedb.query.sql.method.string.SQLMethodIndexOf;
+import com.arcadedb.query.sql.method.string.SQLMethodLastIndexOf;
+import com.arcadedb.query.sql.method.string.SQLMethodLeft;
+import com.arcadedb.query.sql.method.string.SQLMethodLength;
+import com.arcadedb.query.sql.method.string.SQLMethodNormalize;
+import com.arcadedb.query.sql.method.string.SQLMethodPrefix;
+import com.arcadedb.query.sql.method.string.SQLMethodReplace;
+import com.arcadedb.query.sql.method.string.SQLMethodRight;
+import com.arcadedb.query.sql.method.string.SQLMethodSplit;
+import com.arcadedb.query.sql.method.string.SQLMethodSubString;
+import com.arcadedb.query.sql.method.string.SQLMethodToLowerCase;
+import com.arcadedb.query.sql.method.string.SQLMethodToUpperCase;
+import com.arcadedb.query.sql.method.string.SQLMethodTrim;
 
 import java.util.*;
 
@@ -74,7 +92,16 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
   private final Map<String, Object> methods = new HashMap<>();
 
   public DefaultSQLMethodFactory() {
-    register(SQLMethodAppend.NAME, new SQLMethodAppend());
+    // Collections
+    register(SQLMethodField.NAME, new SQLMethodField());
+    register(SQLMethodKeys.NAME, new SQLMethodKeys());
+    register(SQLMethodRemove.NAME, new SQLMethodRemove());
+    register(SQLMethodRemoveAll.NAME, new SQLMethodRemoveAll());
+    register(SQLMethodSize.NAME, new SQLMethodSize());
+    register(SQLMethodTransform.NAME, new SQLMethodTransform());
+    register(SQLMethodValues.NAME, new SQLMethodValues());
+
+    // Conversions
     register(SQLMethodAsBoolean.NAME, new SQLMethodAsBoolean());
     register(SQLMethodAsByte.NAME, new SQLMethodAsByte());
     register(SQLMethodAsDate.NAME, new SQLMethodAsDate());
@@ -90,40 +117,39 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodAsSet.NAME, new SQLMethodAsSet());
     register(SQLMethodAsShort.NAME, new SQLMethodAsShort());
     register(SQLMethodAsString.NAME, new SQLMethodAsString());
-    register(SQLMethodCharAt.NAME, new SQLMethodCharAt());
     register(SQLMethodConvert.NAME, new SQLMethodConvert());
+
+    // Geo
+    register(SQLMethodIsWithin.NAME, new SQLMethodIsWithin());
+    register(SQLMethodIntersectsWith.NAME, new SQLMethodIntersectsWith());
+
+    // Misc
     register(SQLMethodExclude.NAME, new SQLMethodExclude());
-    register(SQLMethodField.NAME, new SQLMethodField());
-    register(SQLMethodFormat.NAME, new SQLMethodFormat());
     register(SQLMethodHash.NAME, new SQLMethodHash());
-    register(SQLMethodIndexOf.NAME, new SQLMethodIndexOf());
+    register(SQLMethodIfNull.NAME, new SQLMethodIfNull());
     register(SQLMethodInclude.NAME, new SQLMethodInclude());
     register(SQLMethodJavaType.NAME, new SQLMethodJavaType());
-    register(SQLMethodKeys.NAME, new SQLMethodKeys());
+    register(SQLMethodPrecision.NAME, new SQLMethodPrecision());
+    register(SQLMethodToJSON.NAME, new SQLMethodToJSON());
+    register(SQLMethodType.NAME, new SQLMethodType());
+
+    // String
+    register(SQLMethodAppend.NAME, new SQLMethodAppend());
+    register(SQLMethodCharAt.NAME, new SQLMethodCharAt());
+    register(SQLMethodFormat.NAME, new SQLMethodFormat());
+    register(SQLMethodIndexOf.NAME, new SQLMethodIndexOf());
     register(SQLMethodLastIndexOf.NAME, new SQLMethodLastIndexOf());
     register(SQLMethodLeft.NAME, new SQLMethodLeft());
     register(SQLMethodLength.NAME, new SQLMethodLength());
     register(SQLMethodNormalize.NAME, new SQLMethodNormalize());
-    register(SQLMethodPrecision.NAME, new SQLMethodPrecision());
     register(SQLMethodPrefix.NAME, new SQLMethodPrefix());
-    register(SQLMethodRemove.NAME, new SQLMethodRemove());
-    register(SQLMethodRemoveAll.NAME, new SQLMethodRemoveAll());
     register(SQLMethodReplace.NAME, new SQLMethodReplace());
     register(SQLMethodRight.NAME, new SQLMethodRight());
-    register(SQLMethodSize.NAME, new SQLMethodSize());
     register(SQLMethodSplit.NAME, new SQLMethodSplit());
+    register(SQLMethodSubString.NAME, new SQLMethodSubString());
     register(SQLMethodToLowerCase.NAME, new SQLMethodToLowerCase());
     register(SQLMethodToUpperCase.NAME, new SQLMethodToUpperCase());
     register(SQLMethodTrim.NAME, new SQLMethodTrim());
-    register(SQLMethodType.NAME, new SQLMethodType());
-    register(SQLMethodSubString.NAME, new SQLMethodSubString());
-    register(SQLMethodToJSON.NAME, new SQLMethodToJSON());
-    register(SQLMethodTransform.NAME, new SQLMethodTransform());
-    register(SQLMethodValues.NAME, new SQLMethodValues());
-    register(SQLMethodIfNull.NAME, new SQLMethodIfNull());
-    // GEO
-    register(SQLMethodIsWithin.NAME, new SQLMethodIsWithin());
-    register(SQLMethodIntersectsWith.NAME, new SQLMethodIntersectsWith());
   }
 
   public void register(final String iName, final Object iImplementation) {

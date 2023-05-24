@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.util.*;
@@ -58,4 +59,8 @@ public interface CommandContext {
   void declareScriptVariable(String varName);
 
   boolean isScriptVariableDeclared(String varName);
+
+  ContextConfiguration getConfiguration();
+
+  void setConfiguration(ContextConfiguration configuration);
 }

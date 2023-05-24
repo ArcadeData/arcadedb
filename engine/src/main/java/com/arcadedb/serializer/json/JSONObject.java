@@ -21,7 +21,7 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.utility.DateUtils;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -46,9 +46,10 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class JSONObject {
-  public static final JsonNull         NULL       = JsonNull.INSTANCE;
-  private final       JsonObject       object;
-  private             SimpleDateFormat dateFormat = null;
+  public static final JsonNull          NULL               = JsonNull.INSTANCE;
+  private final       JsonObject        object;
+  private             String            dateFormatAsString = null;
+  private             DateTimeFormatter dateFormat         = null;
 
   public JSONObject() {
     this.object = new JsonObject();
@@ -117,23 +118,23 @@ public class JSONObject {
     } else if (value instanceof Enum) {
       object.addProperty(name, ((Enum<?>) value).name());
     } else if (value instanceof Date) {
-      if (dateFormat == null)
+      if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name, ((Date) value).getTime());
       else
         // SAVE AS STRING
-        object.addProperty(name, dateFormat.format((Date) value));
+        object.addProperty(name, new SimpleDateFormat(dateFormatAsString).format((Date) value));
     } else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant) {
       if (dateFormat == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name, DateUtils.dateTimeToTimestamp(value, ChronoUnit.NANOS)); // ALWAYS USE NANOS TO AVOID PRECISION LOSS
       else
         // SAVE AS STRING
-        object.addProperty(name, DateTimeFormatter.ofPattern(dateFormat.toPattern()).format((TemporalAccessor) value));
+        object.addProperty(name, dateFormat.format((TemporalAccessor) value));
     } else if (value instanceof Duration) {
       object.addProperty(name, Double.valueOf(String.format("%d.%d", ((Duration) value).toSeconds(), ((Duration) value).toNanosPart())));
-    } else if (value instanceof RID) {
-      object.addProperty(name, value.toString());
+    } else if (value instanceof Identifiable) {
+      object.addProperty(name, ((Identifiable) value).getIdentity().toString());
     } else if (value instanceof Map) {
       final JSONObject embedded = new JSONObject((Map<String, Object>) value);
       object.add(name, embedded.getInternal());
@@ -272,7 +273,12 @@ public class JSONObject {
    * @return
    */
   public JSONObject setDateFormat(final String dateFormat) {
-    this.dateFormat = new SimpleDateFormat(dateFormat);
+    this.dateFormatAsString = dateFormat;
+    try {
+      this.dateFormat = DateTimeFormatter.ofPattern(dateFormat);
+    } catch (IllegalArgumentException e) {
+      throw new JSONException("Invalid date format: " + dateFormat, e);
+    }
     return this;
   }
 
@@ -338,10 +344,10 @@ public class JSONObject {
       return new JSONArray((Collection) object).getInternal();
     else if (object instanceof Map)
       return new JSONObject((Map) object).getInternal();
-    else if (object instanceof RID)
-      return new JsonPrimitive(object.toString());
     else if (object instanceof Document)
       return ((Document) object).toJSON().getInternal();
+    else if (object instanceof Identifiable)
+      return new JsonPrimitive(((Identifiable) object).getIdentity().toString());
 
     throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
   }

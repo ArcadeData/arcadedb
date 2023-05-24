@@ -25,7 +25,7 @@
     <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-parent</artifactId>
     <packaging>pom</packaging>
-    <version>23.4.1-SNAPSHOT</version>
+    <version>23.5.1-SNAPSHOT</version>
 
     <name>ArcadeDB</name>
     <url>https://arcadedata.com/</url>
@@ -52,7 +52,7 @@
         <docker.plugin.version>1.2.2</docker.plugin.version>
         <dockerfile-maven-version>1.4.13</dockerfile-maven-version>
         <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
-        <jacoco-maven-plugin.version>0.8.9</jacoco-maven-plugin.version>
+        <jacoco-maven-plugin.version>0.8.10</jacoco-maven-plugin.version>
         <maven-surefire-plugin.version>3.0.0</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.0.0</maven-failsafe-plugin.version>
         <maven-assembly-plugin.version>3.5.0</maven-assembly-plugin.version>
@@ -68,13 +68,14 @@
         <maven-assembly-plugin.version>3.3.0</maven-assembly-plugin.version>
 
         <assertj-core.version>3.24.2</assertj-core.version>
-        <junit.jupiter.version>5.9.2</junit.jupiter.version>
+        <junit.jupiter.version>5.9.3</junit.jupiter.version>
 
         <skipIntegration>true</skipIntegration>
 
         <itCoverageAgent></itCoverageAgent>
         <license-maven-plugin.version>4.2</license-maven-plugin.version>
-        <mockito-core.version>5.2.0</mockito-core.version>
+        <mockito-core.version>5.3.1</mockito-core.version>
+        <maven-install-plugin.version>3.1.1</maven-install-plugin.version>
     </properties>
 
     <developers>
@@ -218,6 +219,14 @@
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <version>${maven-install-plugin.version}</version>
+                <configuration>
+                    <allowIncompleteProjects>true</allowIncompleteProjects>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-deploy-plugin</artifactId>
                 <version>${maven-deploy-plugin.version}</version>
                 <configuration>
@@ -278,12 +287,6 @@
                             </configuration>
                         </execution>
                     </executions>
-                </plugin>
-
-                <plugin>
-                    <groupId>com.spotify</groupId>
-                    <artifactId>docker-maven-plugin</artifactId>
-                    <version>${docker.plugin.version}</version>
                 </plugin>
 
                 <plugin>

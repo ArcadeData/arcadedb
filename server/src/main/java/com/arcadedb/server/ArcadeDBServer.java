@@ -172,11 +172,9 @@ public class ArcadeDBServer {
     final String osVersion = System.getProperty("os.version");
     final String vmName = System.getProperty("java.vm.name");
     final String vmVendorVersion = System.getProperty("java.vendor.version");
-    if (vmName != null)
-      LogManager.instance().log(this, Level.INFO,
-          "Running on " + osName + " " + osVersion + " - " + vmName + " " + (vmVendorVersion != null ? vmVendorVersion : System.getProperty("java.version")));
-    else
-      LogManager.instance().log(this, Level.INFO, "Running on " + osName + " " + osVersion + " - Java " + System.getProperty(" java.version"));
+    final String vmVersion = System.getProperty("java.version");
+    LogManager.instance().log(this, Level.INFO,
+      "Running on " + osName + " " + osVersion + " - " + (vmName != null ? vmName : "Java") + " " + vmVersion + " " + (vmVendorVersion != null ? "(" + vmVendorVersion + ")" : ""));
   }
 
   private Set<String> getPluginNames() {

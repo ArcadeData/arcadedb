@@ -49,7 +49,7 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     if (getSubBlocks() == null)
       return true;
 
@@ -62,14 +62,16 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (getSubBlocks() == null)
       return true;
 
     for (final BooleanExpression block : subBlocks) {
-      if (!block.evaluate(currentRecord, context)) {
+      final Boolean result = block.evaluate(currentRecord, context);
+      if (result == null)
+        return null;
+      else if (!result)
         return false;
-      }
     }
     return true;
   }

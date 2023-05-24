@@ -268,6 +268,14 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       newEdge.set("updated", true);
       newEdge.save();
 
+      // SAME BUT FROM A MUTABLE INSTANCE
+      final MutableEdge newEdge2 = elon.modify().newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
+      Assertions.assertEquals(newEdge2.getOut(), elon.getIdentity());
+      Assertions.assertEquals(newEdge2.getOutVertex(), elon);
+      Assertions.assertEquals(newEdge2.getIn(), kimbal.getIdentity());
+      Assertions.assertEquals(newEdge2.getInVertex(), kimbal);
+      newEdge2.delete();
+
       final Edge edge = elon.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().next();
       Assertions.assertEquals(edge.getOut(), elon.getIdentity());
       Assertions.assertEquals(edge.getOutVertex(), elon);

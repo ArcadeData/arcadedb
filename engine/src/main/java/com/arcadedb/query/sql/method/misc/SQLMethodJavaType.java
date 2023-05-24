@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
  * Returns the value's Java type.

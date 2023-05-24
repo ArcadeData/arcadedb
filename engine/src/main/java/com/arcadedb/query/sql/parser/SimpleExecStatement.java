@@ -59,6 +59,7 @@ public abstract class SimpleExecStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(params);
+    context.setConfiguration(parentContext.getConfiguration());
     final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context, false);
     return executionPlan.executeInternal();
   }
@@ -66,5 +67,4 @@ public abstract class SimpleExecStatement extends Statement {
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     return new SingleOpExecutionPlan(context, this);
   }
-
 }

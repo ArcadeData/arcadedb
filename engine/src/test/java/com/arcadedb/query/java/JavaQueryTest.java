@@ -114,7 +114,7 @@ public class JavaQueryTest extends TestHelper {
     try {
       final HashMap map = new HashMap();
       map.put("name", 1);
-      database.getQueryEngine("java").command("com.arcadedb.query.java.JavaMethods::hello", map);
+      database.getQueryEngine("java").command("com.arcadedb.query.java.JavaMethods::hello", null, map);
       Assertions.fail();
     } catch (final UnsupportedOperationException e) {
       // EXPECTED
@@ -122,7 +122,7 @@ public class JavaQueryTest extends TestHelper {
 
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
     try {
-      database.getQueryEngine("java").query("com.arcadedb.query.java.JavaMethods::sum", new HashMap<>());
+      database.getQueryEngine("java").query("com.arcadedb.query.java.JavaMethods::sum", null, new HashMap<>());
       Assertions.fail();
     } catch (final UnsupportedOperationException e) {
       // EXPECTED

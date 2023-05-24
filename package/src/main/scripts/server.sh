@@ -22,7 +22,7 @@ echo "███████║██████╔╝██║     ████
 echo "██╔══██║██╔══██╗██║     ██╔══██║██║  ██║██╔══╝  ██║  ██║██╔══██╗"
 echo "██║  ██║██║  ██║╚██████╗██║  ██║██████╔╝███████╗██████╔╝██████╔╝"
 echo "╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═════╝ ╚═════╝"
-echo "PLAY WITH DATA                                    arcadedb.com"
+echo "PLAY WITH DATA                                    arcadedb.com\n"
 
 # resolve links - $0 may be a softlink
 PRG="$0"

@@ -37,7 +37,7 @@ public class ContextConfiguration implements Serializable {
       Object result = config.get(variable);
       if (result == null)
         result = super.resolve(variable);
-      return result.toString();
+      return result != null ? result.toString() : null;
     }
   };
 

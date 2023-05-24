@@ -21,8 +21,10 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Graph;
@@ -36,7 +38,7 @@ import java.util.*;
 /**
  * Created by Enrico Risa on 30/07/2018.
  */
-public abstract class ArcadeElement<T extends Document> implements Element {
+public abstract class ArcadeElement<T extends Document> implements Element, Identifiable {
 
   protected       T           baseElement;
   protected final ArcadeGraph graph;
@@ -154,4 +156,48 @@ public abstract class ArcadeElement<T extends Document> implements Element {
       baseElement = (T) mutableElement;
   }
 
+  @Override
+  public RID getIdentity() {
+    return baseElement != null ? baseElement.getIdentity() : null;
+  }
+
+  @Override
+  public Record getRecord() {
+    return baseElement;
+  }
+
+  @Override
+  public Record getRecord(final boolean loadContent) {
+    return baseElement;
+  }
+
+  @Override
+  public Document asDocument() {
+    return baseElement.asDocument();
+  }
+
+  @Override
+  public Document asDocument(final boolean loadContent) {
+    return baseElement.asDocument(loadContent);
+  }
+
+  @Override
+  public com.arcadedb.graph.Vertex asVertex() {
+    return baseElement.asVertex();
+  }
+
+  @Override
+  public com.arcadedb.graph.Vertex asVertex(final boolean loadContent) {
+    return baseElement.asVertex(loadContent);
+  }
+
+  @Override
+  public com.arcadedb.graph.Edge asEdge() {
+    return baseElement.asEdge();
+  }
+
+  @Override
+  public com.arcadedb.graph.Edge asEdge(final boolean loadContent) {
+    return baseElement.asEdge(loadContent);
+  }
 }

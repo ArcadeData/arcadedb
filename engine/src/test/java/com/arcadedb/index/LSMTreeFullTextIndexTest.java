@@ -21,6 +21,7 @@ package com.arcadedb.index;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
@@ -166,6 +167,27 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
         final String content = res.getProperty("text").toString().toLowerCase();
         Assertions.assertTrue(content.contains(toFind), "Cannot find the word '" + toFind + "' in indexed text '" + content + "'");
       }
+    });
+  }
+
+  @Test
+  public void testNullValuesViaSQL() {
+    try {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE doc");
+        database.command("sql", "CREATE PROPERTY doc.str STRING");
+        database.command("sql", "CREATE INDEX ON doc (str) FULL_TEXT null_strategy error");
+        database.command("sql", "INSERT INTO doc (str) VALUES ('a'), ('b'), (null)");
+      });
+      Assertions.fail();
+    } catch (TransactionException e) {
+    }
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc2");
+      database.command("sql", "CREATE PROPERTY doc2.str STRING");
+      database.command("sql", "CREATE INDEX ON doc2 (str) FULL_TEXT null_strategy skip");
+      database.command("sql", "INSERT INTO doc2 (str) VALUES ('a'), ('b'), (null)");
     });
   }
 

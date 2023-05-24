@@ -74,7 +74,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final BuildIndexCallback callback) {
       if (unique)
         throw new IllegalArgumentException("Full text index cannot be unique");
-      return new LSMTreeFullTextIndex(database, name, filePath, mode, pageSize, callback);
+      return new LSMTreeFullTextIndex(database, name, filePath, mode, pageSize, nullStrategy);
     }
   }
 
@@ -91,9 +91,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Creation time.
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize,
-      final BuildIndexCallback callback) {
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     analyzer = new StandardAnalyzer();
-    underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR);
+    underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
   }
 
   /**
@@ -324,27 +324,31 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final List<String> tokens = new ArrayList<>();
 
     for (final Object t : text) {
-      final TokenStream tokenizer = analyzer.tokenStream("contents", t.toString());
-      try {
-        tokenizer.reset();
-        final CharTermAttribute termAttribute = tokenizer.getAttribute(CharTermAttribute.class);
-
+      if (t == null)
+        tokens.add(null);
+      else {
+        final TokenStream tokenizer = analyzer.tokenStream("contents", t.toString());
         try {
-          while (tokenizer.incrementToken()) {
-            final String token = termAttribute.toString();
-            tokens.add(token);
+          tokenizer.reset();
+          final CharTermAttribute termAttribute = tokenizer.getAttribute(CharTermAttribute.class);
+
+          try {
+            while (tokenizer.incrementToken()) {
+              final String token = termAttribute.toString();
+              tokens.add(token);
+            }
+
+          } catch (final IOException e) {
+            throw new IndexException("Error on analyzing text", e);
           }
-
         } catch (final IOException e) {
-          throw new IndexException("Error on analyzing text", e);
-        }
-      } catch (final IOException e) {
-        throw new IndexException("Error on tokenizer", e);
-      } finally {
-        try {
-          tokenizer.close();
-        } catch (final IOException e) {
-          // IGNORE IT
+          throw new IndexException("Error on tokenizer", e);
+        } finally {
+          try {
+            tokenizer.close();
+          } catch (final IOException e) {
+            // IGNORE IT
+          }
         }
       }
     }

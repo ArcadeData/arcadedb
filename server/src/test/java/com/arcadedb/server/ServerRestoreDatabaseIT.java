@@ -34,6 +34,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   public ServerRestoreDatabaseIT() {
     FileUtils.deleteRecursively(new File("./target/config"));
     FileUtils.deleteRecursively(new File("./target/databases"));
+    FileUtils.deleteRecursively(new File("./target/backups"));
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
   }
@@ -56,32 +57,35 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
     if (backupFile.exists())
       backupFile.delete();
 
-    final Database database = new DatabaseFactory("./target/databases/" + getDatabaseName()).create();
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + getDatabaseName());) {
+      try (final Database database = factory.create()) {
 
-    database.getSchema().createDocumentType("testDoc");
-    database.transaction(() -> {
-      database.newDocument("testDoc").set("prop", "value").save();
+        database.getSchema().createDocumentType("testDoc");
+        database.transaction(() -> {
+          database.newDocument("testDoc").set("prop", "value").save();
 
-      // COUNT INSIDE TX
-      Assertions.assertEquals(1, database.countType("testDoc", true));
-    });
+          // COUNT INSIDE TX
+          Assertions.assertEquals(1, database.countType("testDoc", true));
+        });
 
-    // COUNT OUTSIDE TX
-    Assertions.assertEquals(1, database.countType("testDoc", true));
+        // COUNT OUTSIDE TX
+        Assertions.assertEquals(1, database.countType("testDoc", true));
 
-    Assertions.assertFalse(database.isTransactionActive());
+        Assertions.assertFalse(database.isTransactionActive());
 
-    database.close();
-    final Database database2 = new DatabaseFactory("./target/databases/" + getDatabaseName()).open();
+      }
 
-    final ResultSet result = database2.command("sql", "backup database file://" + backupFile.getName());
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("OK", result.next().getProperty("result"));
+      try (final Database database2 = factory.open()) {
+        final ResultSet result = database2.command("sql", "backup database file://" + backupFile.getName());
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertEquals("OK", result.next().getProperty("result"));
 
-    Assertions.assertTrue(backupFile.exists());
-    database2.drop();
+        Assertions.assertTrue(backupFile.exists());
+        database2.drop();
 
-    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "graph[elon:musk:admin]{restore:file://backups/graph/backup-test.zip}");
+        config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "graph[elon:musk:admin]{restore:file://" + backupFile.getPath() + "}");
+      }
+    }
   }
 
   @Test

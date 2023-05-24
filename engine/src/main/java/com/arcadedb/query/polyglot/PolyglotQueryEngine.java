@@ -15,6 +15,7 @@
  */
 package com.arcadedb.query.polyglot;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -75,7 +76,7 @@ public class PolyglotQueryEngine implements QueryEngine {
     }
 
     public static Iterable<String> getSupportedLanguages() {
-      return GraalPolyglotEngine.newBuilder(null, Engine.create()).build().getSupportedLanguages();
+      return GraalPolyglotEngine.getSupportedLanguages();
     }
   }
 
@@ -95,14 +96,14 @@ public class PolyglotQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, final Object... parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     if (parameters == null || parameters.length == 0)
-      return command(query, (Map) null);
+      return command(query, configuration, (Map) null);
     throw new UnsupportedOperationException("Execution of a command with positional parameter is not supported for polyglot engine");
   }
 
   @Override
-  public ResultSet command(final String query, final Map<String, Object> parameters) {
+  public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
       return executeUserCode(() -> {
 
@@ -210,12 +211,12 @@ public class PolyglotQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Map<String, Object> parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   @Override
-  public ResultSet query(final String query, final Object... parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
     throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 

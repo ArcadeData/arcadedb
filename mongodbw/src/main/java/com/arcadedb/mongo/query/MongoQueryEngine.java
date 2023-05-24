@@ -18,6 +18,7 @@
  */
 package com.arcadedb.mongo.query;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
@@ -56,7 +57,7 @@ public class MongoQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Map<String, Object> parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
       return mongoDBWrapper.query(query);
     } catch (final Exception e) {
@@ -66,17 +67,17 @@ public class MongoQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Object... parameters) {
-    return query(query, (Map) null);
+  public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
+    return query(query, null, (Map) null);
   }
 
   @Override
-  public ResultSet command(final String query, final Map<String, Object> parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     return null;
   }
 
   @Override
-  public ResultSet command(final String query, final Object... parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     return null;
   }
 }

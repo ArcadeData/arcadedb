@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graphql.query;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.QueryEngine;
@@ -55,17 +56,17 @@ public class GraphQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Map<String, Object> parameters) {
-    return command(query, parameters);
+  public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
+    return command(query, null, parameters);
   }
 
   @Override
-  public ResultSet query(final String query, final Object... parameters) {
-    return command(query, parameters);
+  public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
+    return command(query, null, parameters);
   }
 
   @Override
-  public ResultSet command(final String query, final Map<String, Object> parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
       final ResultSet resultSet = graphQLSchema.execute(query);
       return resultSet;
@@ -77,13 +78,13 @@ public class GraphQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, final Object... parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     if (parameters.length % 2 != 0)
       throw new IllegalArgumentException("Command parameters must be as pairs `<key>, <value>`");
 
     final Map<String, Object> map = new HashMap<>(parameters.length / 2);
     for (int i = 0; i < parameters.length; i += 2)
       map.put((String) parameters[i], parameters[i + 1]);
-    return command(query, map);
+    return command(query, null, map);
   }
 }

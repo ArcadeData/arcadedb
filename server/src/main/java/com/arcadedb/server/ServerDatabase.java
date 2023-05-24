@@ -436,6 +436,11 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.command(language, query, parameters);
   }
 
+  @Override
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Map<String, Object> args) {
+    return wrapped.command(language, query, configuration, args);
+  }
+
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> params) {

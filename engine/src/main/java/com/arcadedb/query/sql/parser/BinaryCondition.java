@@ -38,12 +38,12 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     return operator.execute(context.getDatabase(), left.execute(currentRecord, context), right.execute(currentRecord, context));
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord, final CommandContext context) {
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     final Object leftVal = left.execute(currentRecord, context);
     final Object rightVal = right.execute(currentRecord, context);
     return operator.execute(context.getDatabase(), leftVal, rightVal);

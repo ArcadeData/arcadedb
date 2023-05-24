@@ -91,20 +91,20 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (localCount >= nRecords) {
+        if (localCount >= nRecords)
           return false;
-        }
-        if (nextEntry == null) {
+
+        if (nextEntry == null)
           fetchNextEntry();
-        }
+
         return nextEntry != null;
       }
 
       @Override
       public Result next() {
-        if (!hasNext()) {
+        if (!hasNext())
           throw new NoSuchElementException();
-        }
+
         final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           final Object key = nextEntry.getFirst();
@@ -119,13 +119,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           context.setVariable("current", result);
           return result;
         } finally {
-          if (profilingEnabled) {
+          if (profilingEnabled)
             cost += (System.nanoTime() - begin);
-          }
-
         }
       }
-
     };
   }
 

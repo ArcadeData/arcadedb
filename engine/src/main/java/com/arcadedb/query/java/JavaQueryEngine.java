@@ -15,6 +15,7 @@
  */
 package com.arcadedb.query.java;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -102,7 +103,7 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, final Object... parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     try {
       return executeUserCode(() -> {
 
@@ -228,9 +229,9 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, final Map<String, Object> parameters) {
+  public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     if (parameters == null || parameters.size() == 0)
-      return command(query);
+      return command(query, null);
     throw new UnsupportedOperationException("Execution of a command with parameters referenced by name is not supported for Java engine");
   }
 
@@ -258,12 +259,12 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(final String query, final Map<String, Object> parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   @Override
-  public ResultSet query(final String query, final Object... parameters) {
+  public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
     throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 

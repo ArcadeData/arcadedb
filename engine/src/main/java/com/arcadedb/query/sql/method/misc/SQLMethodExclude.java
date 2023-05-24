@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.util.*;
 

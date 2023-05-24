@@ -139,8 +139,11 @@ public class MultiIndexCursor implements IndexCursor {
     ++browsed;
 
     final Identifiable nextValue = cursorsNextValues.set(nextCursorIndex, null);
-    if (cursors.get(nextCursorIndex).hasNext())
-      cursorsNextValues.set(nextCursorIndex, cursors.get(nextCursorIndex).next());
+    if (cursors.get(nextCursorIndex).hasNext()) {
+      final Identifiable next = cursors.get(nextCursorIndex).next();
+      if (next != null)
+        cursorsNextValues.set(nextCursorIndex, next);
+    }
 
     return nextValue;
   }
