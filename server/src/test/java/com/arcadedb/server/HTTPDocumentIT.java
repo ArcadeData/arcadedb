@@ -316,7 +316,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
     database.transaction(() -> {
       final Schema schema = database.getSchema();
       Assertions.assertFalse(schema.existsType("Person"));
-      final DocumentType v = schema.createDocumentType("Person", 3);
+      final DocumentType v = schema.buildDocumentType().withName("Person").withTotalBuckets(3).create();
       v.createProperty("id", Long.class);
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
 

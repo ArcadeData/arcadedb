@@ -275,7 +275,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document createCollection(final Document document) {
-    database.getSchema().createDocumentType((String) document.get("create"), 1);
+    database.getSchema().buildDocumentType().withName((String) document.get("create")).withTotalBuckets(1).create();
     return responseOk();
   }
 

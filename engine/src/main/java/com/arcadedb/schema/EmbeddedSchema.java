@@ -326,11 +326,11 @@ public class EmbeddedSchema implements Schema {
     try {
       // CREATE THE NEW TYPE
       if (newTypeClass == VertexType.class)
-        newType = createVertexType(newTypeName, buckets, pageSize);
+        newType = buildVertexType().withName(newTypeName).withTotalBuckets(buckets).withPageSize(pageSize).create();
       else if (newTypeClass == EdgeType.class)
         throw new IllegalArgumentException("Type '" + newTypeClass + "' not supported");
       else if (newTypeClass == DocumentType.class)
-        newType = createDocumentType(newTypeName, buckets, pageSize);
+        newType = buildDocumentType().withName(newTypeName).withTotalBuckets(buckets).withPageSize(pageSize).create();
       else
         throw new IllegalArgumentException("Type '" + newTypeClass + "' not supported");
 
@@ -825,276 +825,136 @@ public class EmbeddedSchema implements Schema {
   }
 
   public DocumentType createDocumentType(final String typeName) {
-    return createDocumentType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS), Collections.emptyList(),
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return buildDocumentType().withName(typeName).create();
   }
 
   public DocumentType createDocumentType(final String typeName, final int buckets) {
-    return createDocumentType(typeName, buckets, Collections.emptyList(),
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return buildDocumentType().withName(typeName).withTotalBuckets(buckets).create();
   }
 
   @Override
   public DocumentType createDocumentType(final String typeName, final int buckets, final int pageSize) {
-    return createDocumentType(typeName, buckets, Collections.emptyList(), pageSize);
+    return buildDocumentType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).create();
   }
 
   @Override
   public DocumentType createDocumentType(final String typeName, final List<Bucket> buckets) {
-    return createDocumentType(typeName, 0, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return buildDocumentType().withName(typeName).withBuckets(buckets).create();
   }
 
   @Override
   public DocumentType createDocumentType(final String typeName, final List<Bucket> buckets, final int pageSize) {
-    return createDocumentType(typeName, 0, buckets, pageSize);
-  }
-
-  private DocumentType createDocumentType(final String typeName, final int buckets, final List<Bucket> bucketInstances, final int pageSize) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-
-    if (typeName == null || typeName.isEmpty())
-      throw new IllegalArgumentException("Missing type");
-
-    if (buckets > 32)
-      throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
-
-    if (typeName.contains(","))
-      throw new IllegalArgumentException("Type name '" + typeName + "' contains non valid characters");
-
-    if (types.containsKey(typeName))
-      throw new SchemaException("Type '" + typeName + "' already exists");
-
-    return recordFileChanges(() -> {
-      // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
-      dictionary.getIdByName(typeName, true);
-
-      final DocumentType c = new DocumentType(EmbeddedSchema.this, typeName);
-      types.put(typeName, c);
-
-      if (bucketInstances.isEmpty()) {
-        for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
-          if (existsBucket(bucketName)) {
-            LogManager.instance().log(this, Level.WARNING, "Reusing previously created bucket '%s' for type '%s'", null, bucketName, typeName);
-            c.addBucket(getBucketByName(bucketName));
-          } else
-            // CREATE A NEW ONE
-            c.addBucket(createBucket(bucketName, pageSize));
-        }
-      } else {
-        for (final Bucket bucket : bucketInstances)
-          c.addBucket(bucket);
-      }
-
-      saveConfiguration();
-      updateSecurity();
-
-      return c;
-    });
+    return buildDocumentType().withName(typeName).withBuckets(buckets).withPageSize(pageSize).create();
   }
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName) {
-    return getOrCreateDocumentType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
+    return buildDocumentType().withName(typeName).withIgnoreIfExists(true).create();
   }
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName, final int buckets) {
-    return getOrCreateDocumentType(typeName, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return buildDocumentType().withName(typeName).withTotalBuckets(buckets).withIgnoreIfExists(true).create();
   }
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName, final int buckets, final int pageSize) {
-    final DocumentType t = types.get(typeName);
-    if (t != null) {
-      if (t.getClass().equals(DocumentType.class))
-        return t;
-      throw new SchemaException("Type '" + typeName + "' is document not document");
-    }
-    return createDocumentType(typeName, buckets, pageSize);
+    return buildDocumentType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).withIgnoreIfExists(true).create();
+  }
+
+  @Override
+  public TypeBuilder<DocumentType> buildDocumentType() {
+    return new TypeBuilder<>(database, DocumentType.class);
   }
 
   @Override
   public VertexType createVertexType(final String typeName) {
-    return createVertexType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS), Collections.emptyList(),
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return (VertexType) buildVertexType().withName(typeName).create();
   }
 
   @Override
   public VertexType createVertexType(final String typeName, final int buckets) {
-    return createVertexType(typeName, buckets, Collections.emptyList(),
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return buildVertexType().withName(typeName).withTotalBuckets(buckets).create();
   }
 
   @Override
   public VertexType createVertexType(final String typeName, final List<Bucket> bucketInstances) {
-    return createVertexType(typeName, 0, bucketInstances, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return buildVertexType().withName(typeName).withBuckets(bucketInstances).create();
   }
 
   @Override
   public VertexType createVertexType(final String typeName, final int buckets, final int pageSize) {
-    return createVertexType(typeName, buckets, Collections.emptyList(), pageSize);
+    return buildVertexType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).create();
   }
 
   @Override
   public VertexType createVertexType(final String typeName, final List<Bucket> bucketInstances, final int pageSize) {
-    return createVertexType(typeName, 0, bucketInstances, pageSize);
-  }
-
-  private VertexType createVertexType(final String typeName, final int buckets, final List<Bucket> bucketInstances, final int pageSize) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-
-    if (typeName == null || typeName.isEmpty())
-      throw new IllegalArgumentException("Missing type");
-
-    if (buckets < 1 && bucketInstances.isEmpty())
-      throw new IllegalArgumentException("Invalid number of buckets (" + buckets + "). At least 1 bucket is necessary to create a type");
-
-    if (buckets > 32)
-      throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
-
-    if (typeName.contains(","))
-      throw new IllegalArgumentException("Vertex type name '" + typeName + "' contains non valid characters");
-
-    if (types.containsKey(typeName))
-      throw new SchemaException("Vertex type '" + typeName + "' already exists");
-
-    return recordFileChanges(() -> {
-      final VertexType c = new VertexType(EmbeddedSchema.this, typeName);
-      types.put(typeName, c);
-
-      if (bucketInstances.isEmpty()) {
-        for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
-          if (existsBucket(bucketName)) {
-            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
-            c.addBucket(getBucketByName(bucketName));
-          } else
-            // CREATE A NEW ONE
-            c.addBucket(createBucket(bucketName, pageSize));
-        }
-      } else {
-        for (final Bucket bucket : bucketInstances)
-          c.addBucket(bucket);
-      }
-
-      database.getGraphEngine().createVertexType(c);
-
-      saveConfiguration();
-      updateSecurity();
-
-      return c;
-    });
+    return buildVertexType().withName(typeName).withBuckets(bucketInstances).withPageSize(pageSize).create();
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
-    return getOrCreateVertexType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
+    return (VertexType) buildVertexType().withName(typeName).withIgnoreIfExists(true).create();
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName, final int buckets) {
-    return getOrCreateVertexType(typeName, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return buildVertexType().withName(typeName).withTotalBuckets(buckets).withIgnoreIfExists(true).create();
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName, final int buckets, final int pageSize) {
-    final DocumentType t = types.get(typeName);
-    if (t != null) {
-      if (t.getClass().equals(VertexType.class))
-        return (VertexType) t;
-      throw new SchemaException("Type '" + typeName + "' is not a vertex type");
-    }
-    return createVertexType(typeName, buckets, pageSize);
+    return buildVertexType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).withIgnoreIfExists(true).create();
+  }
+
+  @Override
+  public TypeBuilder<VertexType> buildVertexType() {
+    return new TypeBuilder<>(database, VertexType.class);
   }
 
   @Override
   public EdgeType createEdgeType(final String typeName) {
-    return createEdgeType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
+    return (EdgeType) buildEdgeType().withName(typeName).create();
   }
 
   @Override
   public EdgeType createEdgeType(final String typeName, final int buckets) {
-    return createEdgeType(typeName, buckets, Collections.emptyList(), EDGE_DEF_PAGE_SIZE);
+    return buildEdgeType().withName(typeName).withTotalBuckets(buckets).create();
   }
 
   @Override
   public EdgeType createEdgeType(final String typeName, final int buckets, final int pageSize) {
-    return createEdgeType(typeName, buckets, Collections.emptyList(), pageSize);
+    return buildEdgeType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).create();
   }
 
   @Override
   public EdgeType createEdgeType(final String typeName, final List<Bucket> buckets) {
-    return createEdgeType(typeName, 0, buckets, EDGE_DEF_PAGE_SIZE);
+    return buildEdgeType().withName(typeName).withBuckets(buckets).create();
   }
 
   @Override
   public EdgeType createEdgeType(final String typeName, final List<Bucket> buckets, final int pageSize) {
-    return createEdgeType(typeName, 0, buckets, pageSize);
-  }
-
-  private EdgeType createEdgeType(final String typeName, final int buckets, final List<Bucket> bucketInstances, final int pageSize) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-
-    if (typeName == null || typeName.isEmpty())
-      throw new IllegalArgumentException("Missing type");
-
-    if (buckets < 1 && bucketInstances.isEmpty())
-      throw new IllegalArgumentException("Invalid number of buckets (" + buckets + "). At least 1 bucket is necessary to create a type");
-
-    if (buckets > 32)
-      throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
-
-    if (typeName.contains(","))
-      throw new IllegalArgumentException("Edge type name '" + typeName + "' contains non valid characters");
-
-    if (types.containsKey(typeName))
-      throw new SchemaException("Edge type '" + typeName + "' already exists");
-
-    return recordFileChanges(() -> {
-      final DocumentType c = new EdgeType(EmbeddedSchema.this, typeName);
-      types.put(typeName, c);
-
-      if (bucketInstances.isEmpty()) {
-        for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
-          if (existsBucket(bucketName)) {
-            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
-            c.addBucket(getBucketByName(bucketName));
-          } else
-            // CREATE A NEW ONE
-            c.addBucket(createBucket(bucketName, pageSize));
-        }
-      } else {
-        for (final Bucket bucket : bucketInstances)
-          c.addBucket(bucket);
-      }
-      saveConfiguration();
-      updateSecurity();
-
-      return c;
-    });
+    return buildEdgeType().withName(typeName).withBuckets(buckets).withPageSize(pageSize).create();
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName) {
-    return getOrCreateEdgeType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
+    return (EdgeType) buildEdgeType().withName(typeName).withIgnoreIfExists(true).create();
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, final int buckets) {
-    return getOrCreateEdgeType(typeName, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return buildEdgeType().withName(typeName).withTotalBuckets(buckets).withIgnoreIfExists(true).create();
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, final int buckets, final int pageSize) {
-    final DocumentType t = types.get(typeName);
-    if (t != null) {
-      if (t.getClass().equals(EdgeType.class))
-        return (EdgeType) t;
-      throw new SchemaException("Type '" + typeName + "' is not a type of edge");
-    }
-    return createEdgeType(typeName, buckets, pageSize);
+    return buildEdgeType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).withIgnoreIfExists(true).create();
+  }
+
+  @Override
+  public TypeBuilder<EdgeType> buildEdgeType() {
+    return new TypeBuilder<>(database, EdgeType.class);
   }
 
   protected synchronized void readConfiguration() {
@@ -1457,11 +1317,6 @@ public class EmbeddedSchema implements Schema {
     database.getExecutionPlanCache().invalidate();
   }
 
-  private void updateSecurity() {
-    if (security != null)
-      security.updateSchema(database);
-  }
-
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {
     if (readingFromFile || !loadInRamCompleted) {
       try {
@@ -1493,6 +1348,74 @@ public class EmbeddedSchema implements Schema {
     }
   }
 
+  protected DocumentType createType(final TypeBuilder<?> typeBuilder) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    if (typeBuilder.typeName == null || typeBuilder.typeName.isEmpty())
+      throw new IllegalArgumentException("Missing type");
+
+    final DocumentType t = types.get(typeBuilder.typeName);
+    if (t != null) {
+      if (t.getClass().equals(typeBuilder.type))
+        return t;
+
+      throw new SchemaException("Type '" + typeBuilder.typeName + "' is not a vertex type");
+    }
+
+    if (!typeBuilder.type.equals(DocumentType.class) &&//
+        typeBuilder.buckets < 1 && typeBuilder.bucketInstances.isEmpty())
+      throw new IllegalArgumentException("Invalid number of buckets (" + typeBuilder.buckets + "). At least 1 bucket is necessary to create a type");
+
+    if (typeBuilder.buckets > 32)
+      throw new IllegalArgumentException("Cannot create " + typeBuilder.buckets + " buckets: maximum is 32");
+
+    if (typeBuilder.typeName.contains(","))
+      throw new IllegalArgumentException("Type name '" + typeBuilder.typeName + "' contains non valid characters");
+
+    if (types.containsKey(typeBuilder.typeName))
+      throw new SchemaException("Type '" + typeBuilder.typeName + "' already exists");
+
+    return recordFileChanges(() -> {
+      final DocumentType c;
+      if (typeBuilder.type.equals(VertexType.class))
+        c = new VertexType(EmbeddedSchema.this, typeBuilder.typeName);
+      else if (typeBuilder.type.equals(EdgeType.class))
+        c = new EdgeType(EmbeddedSchema.this, typeBuilder.typeName);
+      else {
+        c = new DocumentType(EmbeddedSchema.this, typeBuilder.typeName);
+
+        // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
+        dictionary.getIdByName(typeBuilder.typeName, true);
+      }
+
+      types.put(typeBuilder.typeName, c);
+
+      if (typeBuilder.bucketInstances.isEmpty()) {
+        for (int i = 0; i < typeBuilder.buckets; ++i) {
+          final String bucketName = FileUtils.encode(typeBuilder.typeName, encoding) + "_" + i;
+          if (existsBucket(bucketName)) {
+            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeBuilder.typeName);
+            c.addBucket(getBucketByName(bucketName));
+          } else
+            // CREATE A NEW ONE
+            c.addBucket(createBucket(bucketName, typeBuilder.pageSize));
+        }
+      } else {
+        for (final Bucket bucket : typeBuilder.bucketInstances)
+          c.addBucket(bucket);
+      }
+
+      saveConfiguration();
+      updateSecurity();
+
+      return c;
+    });
+  }
+
+//  protected Index createIndex(final IndexBuilder indexBuilder) {
+//    return null;
+//  }
+
   /**
    * Replaces the map to allow concurrent usage while rebuilding the map.
    */
@@ -1505,5 +1428,10 @@ public class EmbeddedSchema implements Schema {
     }
 
     bucketId2TypeMap = newBucketId2TypeMap;
+  }
+
+  private void updateSecurity() {
+    if (security != null)
+      security.updateSchema(database);
   }
 }

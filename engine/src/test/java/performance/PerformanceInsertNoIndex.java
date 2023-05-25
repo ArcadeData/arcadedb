@@ -55,7 +55,7 @@ public class PerformanceInsertNoIndex extends TestHelper {
     if (!database.getSchema().existsType(TYPE_NAME)) {
       database.begin();
 
-      final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
+      final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(PARALLEL).create();
 
       type.createProperty("id", Long.class);
       type.createProperty("name", String.class);

@@ -38,7 +38,7 @@ public class NullValuesIndexTest extends TestHelper {
   public void testNullStrategyError() {
     Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-    final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
     final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
@@ -77,7 +77,7 @@ public class NullValuesIndexTest extends TestHelper {
   public void testNullStrategySkip() {
     Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-    final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
     final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
@@ -133,7 +133,7 @@ public class NullValuesIndexTest extends TestHelper {
   public void testNullStrategySkipUnique() {
     Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-    final VertexType type = database.getSchema().createVertexType(TYPE_NAME, 3);
+    final VertexType type = database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("absent", String.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);

@@ -348,7 +348,7 @@ public class AsyncTest extends TestHelper {
 
     database.async().onError(exception -> Assertions.fail("Error on creating async record", exception));
 
-    final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
     type.createProperty("surname", String.class);

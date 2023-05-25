@@ -290,7 +290,7 @@ public class ACIDTransactionTest extends TestHelper {
       type.createProperty("history", Type.LIST);
       type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "symbol", "date");
 
-      final DocumentType type2 = database.getSchema().createDocumentType("Aggregate", 1);
+      final DocumentType type2 = database.getSchema().buildDocumentType().withName("Aggregate").withTotalBuckets(1).create();
       type2.createProperty("volume", Type.LONG);
     });
 
