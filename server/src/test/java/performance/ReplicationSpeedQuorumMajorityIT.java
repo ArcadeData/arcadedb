@@ -160,7 +160,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
   protected void populateDatabase(final int parallel, final Database database) {
     Assertions.assertFalse(database.getSchema().existsType("Device"));
 
-    final VertexType v = database.getSchema().createVertexType("Device", parallel);
+    final VertexType v = database.getSchema().buildVertexType().withName("Device").withTotalBuckets(parallel).create();
 
     v.createProperty("id", String.class);
     v.createProperty("lastModifiedUserId", String.class);

@@ -38,12 +38,12 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
   protected DocumentType createType(final Schema schema) {
     final VertexType type;
     if (totalBucketNo != null)
-      type = schema.createVertexType(name.getStringValue(), totalBucketNo.getValue().intValue());
+      type = schema.buildVertexType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue()).create();
     else {
       if (buckets == null || buckets.isEmpty())
-        type = schema.createVertexType(name.getStringValue());
+        type = schema.buildVertexType().withName(name.getStringValue()).create();
       else {
-        type = schema.createVertexType(name.getStringValue(), getBuckets(schema));
+        type = schema.buildVertexType().withName(name.getStringValue()).withBuckets(getBuckets(schema)).create();
       }
     }
     return type;

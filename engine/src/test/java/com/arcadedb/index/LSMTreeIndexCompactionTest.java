@@ -133,7 +133,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   private void insertData() {
     database.transaction(() -> {
       if (!database.getSchema().existsType(TYPE_NAME)) {
-        final DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
+        final DocumentType v = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(PARALLEL).create();
 
         v.createProperty("id", String.class);
         v.createProperty("number", Integer.class);

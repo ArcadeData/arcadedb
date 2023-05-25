@@ -38,13 +38,13 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   protected DocumentType createType(final Schema schema) {
     final EdgeType type;
     if (totalBucketNo != null)
-      type = schema.createEdgeType(name.getStringValue(), totalBucketNo.getValue().intValue());
+      type = schema.buildEdgeType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue()).create();
     else {
       if (buckets == null || buckets.isEmpty())
         type = schema.createEdgeType(name.getStringValue());
       else {
         // CHECK THE BUCKETS FIRST
-        type = schema.createEdgeType(name.getStringValue(), getBuckets(schema));
+        type = schema.buildEdgeType().withName(name.getStringValue()).withBuckets(getBuckets(schema)).create();
       }
     }
     return type;

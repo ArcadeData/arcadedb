@@ -44,13 +44,13 @@ public abstract class BaseGraphTest extends TestHelper {
 
     database.transaction(() -> {
       Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
-      database.getSchema().createVertexType(VERTEX1_TYPE_NAME, 3);
+      database.getSchema().buildVertexType().withName(VERTEX1_TYPE_NAME).withTotalBuckets(3).create();
 
       Assertions.assertFalse(database.getSchema().existsType(VERTEX2_TYPE_NAME));
-      database.getSchema().createVertexType(VERTEX2_TYPE_NAME, 3);
+      database.getSchema().buildVertexType().withName(VERTEX2_TYPE_NAME).withTotalBuckets(3).create();
 
-      database.getSchema().createEdgeType(EDGE1_TYPE_NAME);
-      database.getSchema().createEdgeType(EDGE2_TYPE_NAME);
+      database.getSchema().buildEdgeType().withName(EDGE1_TYPE_NAME).create();
+      database.getSchema().buildEdgeType().withName(EDGE2_TYPE_NAME).create();
     });
 
     final Database db = database;

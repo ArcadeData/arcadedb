@@ -45,7 +45,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
       public void execute() {
         Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-        final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 1);
+        final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
         type.createProperty("text", String.class);
         final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
 

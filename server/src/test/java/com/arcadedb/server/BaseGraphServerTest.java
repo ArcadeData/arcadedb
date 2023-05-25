@@ -105,13 +105,13 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       final Schema schema = database.getSchema();
       Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
 
-      final VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
+      final VertexType v = schema.buildVertexType().withName(VERTEX1_TYPE_NAME).withTotalBuckets(3).create();
       v.createProperty("id", Long.class);
 
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
 
       Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
-      schema.createVertexType(VERTEX2_TYPE_NAME, 3);
+      schema.buildVertexType().withName(VERTEX2_TYPE_NAME).withTotalBuckets(3).create();
 
       schema.createEdgeType(EDGE1_TYPE_NAME);
       schema.createEdgeType(EDGE2_TYPE_NAME);

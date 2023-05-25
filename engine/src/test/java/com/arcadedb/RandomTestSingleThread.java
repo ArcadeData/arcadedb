@@ -166,7 +166,7 @@ public class RandomTestSingleThread extends TestHelper {
     if (!database.getSchema().existsType("Account")) {
       database.begin();
 
-      final VertexType accountType = database.getSchema().createVertexType("Account", PARALLEL);
+      final VertexType accountType = database.getSchema().buildVertexType().withName("Account").withTotalBuckets(PARALLEL).create();
       accountType.createProperty("id", Long.class);
       accountType.createProperty("name", String.class);
       accountType.createProperty("surname", String.class);
@@ -174,14 +174,14 @@ public class RandomTestSingleThread extends TestHelper {
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Account", "id");
 
-      final VertexType txType = database.getSchema().createVertexType("Transaction", PARALLEL);
+      final VertexType txType = database.getSchema().buildVertexType().withName("Transaction").withTotalBuckets(PARALLEL).create();
       txType.createProperty("uuid", String.class);
       txType.createProperty("date", Date.class);
       txType.createProperty("amount", BigDecimal.class);
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Transaction", "uuid");
 
-      final EdgeType edgeType = database.getSchema().createEdgeType("PurchasedBy", PARALLEL);
+      final EdgeType edgeType = database.getSchema().buildEdgeType().withName("PurchasedBy").withTotalBuckets(PARALLEL).create();
       edgeType.createProperty("date", Date.class);
 
       database.commit();

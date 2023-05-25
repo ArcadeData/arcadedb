@@ -108,7 +108,7 @@ public class FullBackupIT {
     final Database importedDatabase = importDatabase();
     try {
 
-      final VertexType type = importedDatabase.getSchema().createVertexType("BackupTest", CONCURRENT_THREADS);
+      final VertexType type = importedDatabase.getSchema().buildVertexType().withName("BackupTest").withTotalBuckets(CONCURRENT_THREADS).create();
 
       importedDatabase.transaction(() -> {
         type.createProperty("thread", Type.INTEGER);

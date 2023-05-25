@@ -42,8 +42,8 @@ public class DropIndexTest extends TestHelper {
   public void testDropAndRecreate() {
     Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-    final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
-    final DocumentType type2 = database.getSchema().createDocumentType(TYPE_NAME2, 3);
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    final DocumentType type2 = database.getSchema().buildDocumentType().withName(TYPE_NAME2).withTotalBuckets(3).create();
     type2.addSuperType(type);
 
     type.createProperty("id", Integer.class);
@@ -121,11 +121,11 @@ public class DropIndexTest extends TestHelper {
   public void testDropAndRecreateTypeWithIndex() {
     Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-    final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
-    final DocumentType type2 = database.getSchema().createDocumentType(TYPE_NAME2, 3);
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    final DocumentType type2 = database.getSchema().buildDocumentType().withName(TYPE_NAME2).withTotalBuckets(3).create();
     type2.addSuperType(type);
 
-    final DocumentType type3 = database.getSchema().createDocumentType(TYPE_NAME3, 3);
+    final DocumentType type3 = database.getSchema().buildDocumentType().withName(TYPE_NAME3).withTotalBuckets(3).create();
     type3.addSuperType(type2);
 
     type.createProperty("id", Integer.class);

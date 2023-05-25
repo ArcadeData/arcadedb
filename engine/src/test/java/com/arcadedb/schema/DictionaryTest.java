@@ -36,7 +36,7 @@ public class DictionaryTest extends TestHelper {
     database.transaction(() -> {
       Assertions.assertFalse(database.getSchema().existsType("V"));
 
-      final DocumentType type = database.getSchema().createDocumentType("V", 3);
+      final DocumentType type = database.getSchema().buildDocumentType().withName("V").withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
       type.createProperty("name", String.class);
 
