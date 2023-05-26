@@ -99,7 +99,7 @@ public class LSMTreeIndexCompactor {
     // FIND LAST IMMUTABLE PAGE TO COMPACT
     int lastImmutablePage = totalPages - 1;
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
-      final ImmutablePage page = database.getPageManager().getPage(new PageId(mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, true);
+      final ImmutablePage page = database.getPageManager().getImmutablePage(new PageId(mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, true);
       if (!mutableIndex.isMutable(page)) {
         lastImmutablePage = pageIndex;
         break;

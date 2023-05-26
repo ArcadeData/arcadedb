@@ -291,7 +291,7 @@ public class TransactionManager {
 
       final PageId pageId = new PageId(txPage.fileId, txPage.pageNumber);
       try {
-        final ImmutablePage page = database.getPageManager().getPage(pageId, file.getPageSize(), false, true);
+        final ImmutablePage page = database.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true);
 
         LogManager.instance()
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion, page.getVersion());

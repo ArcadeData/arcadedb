@@ -390,7 +390,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   protected MutablePage setCompactedTotalPages() throws IOException {
-    final MutablePage mainPage = database.getPageManager().getPage(new PageId(file.getFileId(), 0), pageSize, false, true).modify();
+    final MutablePage mainPage = database.getPageManager().getMutablePage(new PageId(file.getFileId(), 0), pageSize, false, true);
     mainPage.writeInt(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE, getTotalPages());
     return mainPage;
   }

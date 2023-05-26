@@ -87,13 +87,13 @@ public class DatabaseComparator {
         final ImmutablePage page2;
 
         try {
-          page1 = db1.getPageManager().getPage(pageId, pageSize, false, true);
+          page1 = db1.getPageManager().getImmutablePage(pageId, pageSize, false, true);
         } catch (final IOException e) {
           throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB1 (cause=%s)", pageId, bucket1.getName(), e.toString());
         }
 
         try {
-          page2 = db2.getPageManager().getPage(pageId, pageSize, false, true);
+          page2 = db2.getPageManager().getImmutablePage(pageId, pageSize, false, true);
         } catch (final IOException e) {
           throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB2 (cause=%s)", pageId, bucket2.getName(), e.toString());
         }

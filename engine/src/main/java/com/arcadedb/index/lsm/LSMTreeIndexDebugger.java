@@ -44,7 +44,7 @@ public class LSMTreeIndexDebugger {
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
       final BasePage page;
       try {
-        page = index.getDatabase().getPageManager().getPage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        page = index.getDatabase().getPageManager().getImmutablePage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
         if (!index.isMutable(page)) {
           lastImmutablePage = pageIndex;
           break;
@@ -58,7 +58,7 @@ public class LSMTreeIndexDebugger {
     for (int pageIndex = 0; pageIndex < totalPages; ++pageIndex) {
       final BasePage page;
       try {
-        page = index.getDatabase().getPageManager().getPage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        page = index.getDatabase().getPageManager().getImmutablePage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
         LSMTreeIndexDebugger.out(1, LSMTreeIndexDebugger.printMutableIndexPage(index, page));
       } catch (IOException e) {
         throw new RuntimeException(e);
@@ -78,7 +78,7 @@ public class LSMTreeIndexDebugger {
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
       final ImmutablePage page;
       try {
-        page = index.getDatabase().getPageManager().getPage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        page = index.getDatabase().getPageManager().getImmutablePage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
         if (!index.isMutable(page)) {
           lastImmutablePage = pageIndex;
           break;
@@ -92,7 +92,7 @@ public class LSMTreeIndexDebugger {
     for (int pageIndex = 0; pageIndex < totalPages; ++pageIndex) {
       final ImmutablePage page;
       try {
-        page = index.getDatabase().getPageManager().getPage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        page = index.getDatabase().getPageManager().getImmutablePage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
         LSMTreeIndexDebugger.out(1, LSMTreeIndexDebugger.printMutableIndexPage(index, page));
       } catch (IOException e) {
         throw new RuntimeException(e);

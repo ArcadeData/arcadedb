@@ -170,30 +170,20 @@ public class PageManager extends LockContext {
     return 0;
   }
 
-  public ImmutablePage getPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
-    checkForPageDisposal();
+  public ImmutablePage getImmutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
+    final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
+    if (page != null)
+      // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
+      return page.useAsImmutable();
+    return null;
+  }
 
-    CachedPage page = readCache.get(pageId);
-    if (page == null) {
-      page = loadPage(pageId, pageSize, createIfNotExists, true);
-      if (page == null) {
-        if (isNew)
-          return null;
-      } else
-        return page.use();
-
-      cacheMiss.incrementAndGet();
-
-    } else {
-      cacheHits.incrementAndGet();
-      page.updateLastAccesses();
-    }
-
-    if (page == null)
-      throw new IllegalArgumentException("Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().getId() + ")");
-
-    // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
-    return page.use();
+  public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
+    final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
+    if (page != null)
+      // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
+      return page.useAsMutable();
+    return null;
   }
 
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
@@ -474,5 +464,30 @@ public class PageManager extends LockContext {
       totalReadCacheRAM.addAndGet(page.getPhysicalSize());
 
     checkForPageDisposal();
+  }
+
+  private CachedPage getCachedPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
+    checkForPageDisposal();
+
+    CachedPage page = readCache.get(pageId);
+    if (page == null) {
+      page = loadPage(pageId, pageSize, createIfNotExists, true);
+      if (page == null) {
+        if (isNew)
+          return null;
+      } else
+        return page;
+
+      cacheMiss.incrementAndGet();
+
+    } else {
+      cacheHits.incrementAndGet();
+      page.updateLastAccesses();
+    }
+
+    if (page == null)
+      throw new IllegalArgumentException("Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().getId() + ")");
+
+    return page;
   }
 }

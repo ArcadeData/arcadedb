@@ -812,7 +812,7 @@ public class Bucket extends PaginatedComponent {
             final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
             final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
-            chunkPage = database.getTransaction().getPage(new PageId(file.getFileId(), chunkPageId), pageSize).modify();
+            chunkPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), chunkPageId), pageSize, false);
             chunkRecordPositionInPage = (int) chunkPage.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + chunkPositionInPage * INT_SERIALIZED_SIZE);
             recordSize = chunkPage.readNumberAndSize(chunkRecordPositionInPage);
 
