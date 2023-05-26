@@ -1297,7 +1297,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
-    if (!language.equalsIgnoreCase("sql"))
+    if (!language.equalsIgnoreCase("sqlscript") && !language.equalsIgnoreCase("sql"))
       throw new CommandExecutionException("Language '" + language + "' does not support script");
     return command("sqlscript", script, args);
   }

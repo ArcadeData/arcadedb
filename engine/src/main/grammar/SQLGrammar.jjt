@@ -4020,12 +4020,30 @@ BeginStatement BeginStatement():
 }
 
 CommitStatement CommitStatement():
-{ }
+{ Statement last;}
 {
   <COMMIT>
   [
-    <RETRY>
-    jjtThis.retry = PInteger()
+    <RETRY> jjtThis.retry = PInteger()
+    [
+      <ELSE>
+      (
+        (
+          { jjtThis.elseStatements = new ArrayList(); }
+          <LBRACE>
+          (
+            last = StatementInternal() { jjtThis.addElse(last); }
+            <SEMICOLON>
+          )+
+          <RBRACE>
+          [
+            <AND> ( ( <CONTINUE> { jjtThis.elseFail = false; } ) | ( <FAIL> { jjtThis.elseFail = true; } ) )
+          ]
+        )
+        |
+        ( ( <CONTINUE> { jjtThis.elseFail = false; } ) | ( <FAIL> { jjtThis.elseFail = true; } ) )
+      )
+    ]
   ]
   {return jjtThis;}
 }

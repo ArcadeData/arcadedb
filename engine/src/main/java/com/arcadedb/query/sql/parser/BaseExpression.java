@@ -127,14 +127,14 @@ public class BaseExpression extends MathExpression {
         // THIS IS DIFFERENT FROM ORIENTDB CODE BASE
         // @author Luca Garulli
         // @see Postgres Driver
-        if (params != null && //
+        if (params != null && !params.isEmpty() && //
             identifier.getSuffix() != null && identifier.getSuffix().identifier != null) {
           final String v = identifier.getSuffix().identifier.getValue();
           if (v.startsWith("$") && v.length() > 1) {
             final String toParse = v.substring(1);
 
             final Integer pos = NumberUtils.parsePositiveInteger(toParse);
-            if (pos != null)
+            if (pos != null && params.containsKey(String.valueOf(pos - 1)))
               // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
               result = params.get(String.valueOf(pos - 1));
             else

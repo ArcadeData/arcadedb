@@ -29,15 +29,24 @@ import java.util.*;
 
 public class CommitStatement extends SimpleExecStatement {
 
-  protected PInteger retry;
+  protected PInteger        retry;
+  protected List<Statement> elseStatements;
+  protected Boolean         elseFail;
 
   public CommitStatement(final int id) {
     super(id);
   }
 
+  public void addElse(final Statement statement) {
+    if (elseStatements == null)
+      elseStatements = new ArrayList<>();
+
+    this.elseStatements.add(statement);
+  }
+
   @Override
   public ResultSet executeSimple(final CommandContext context) {
-    context.getDatabase().commit();
+    context.getDatabase().commit(); // no RETRY and ELSE here, that case is allowed only for batch scripts;
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "commit");
@@ -51,19 +60,61 @@ public class CommitStatement extends SimpleExecStatement {
     if (retry != null) {
       builder.append(" RETRY ");
       retry.toString(params, builder);
+      if (elseFail != null || elseStatements != null) {
+        builder.append(" ELSE ");
+      }
+      if (elseStatements != null) {
+        builder.append("{\n");
+        for (Statement stm : elseStatements) {
+          stm.toString(params, builder);
+          builder.append(";\n");
+        }
+        builder.append("}");
+      }
+      if (elseFail != null) {
+        if (elseStatements != null) {
+          builder.append(" AND");
+        }
+        if (elseFail) {
+          builder.append(" FAIL");
+        } else {
+          builder.append(" CONTINUE");
+        }
+      }
     }
   }
 
   @Override
   public CommitStatement copy() {
-    final CommitStatement result = new CommitStatement(-1);
+    CommitStatement result = new CommitStatement(-1);
     result.retry = retry == null ? null : retry.copy();
+    if (this.elseStatements != null) {
+      result.elseStatements = new ArrayList<>();
+      for (Statement stm : elseStatements) {
+        result.elseStatements.add(stm.copy());
+      }
+    }
+    if (elseFail != null) {
+      result.elseFail = elseFail;
+    }
     return result;
+  }
+
+  public PInteger getRetry() {
+    return retry;
+  }
+
+  public List<Statement> getElseStatements() {
+    return elseStatements;
+  }
+
+  public Boolean getElseFail() {
+    return elseFail;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { retry };
+    return new Object[] { retry, elseStatements, elseFail };
   }
 
 }
