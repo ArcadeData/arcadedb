@@ -50,7 +50,6 @@ public class WhileStep extends AbstractExecutionStep {
     if (finalResult != null)
       return finalResult.syncPull(context, nRecords);
 
-
     while (condition.evaluate(new ResultInternal(), context)) {
       final ScriptExecutionPlan plan = initPlan(context);
       final ExecutionStepInternal result = plan.executeFull();
@@ -64,14 +63,20 @@ public class WhileStep extends AbstractExecutionStep {
   }
 
   public ScriptExecutionPlan initPlan(final CommandContext context) {
-    final BasicCommandContext subcontext1 = new BasicCommandContext();
-    subcontext1.setParent(context);
-    final ScriptExecutionPlan plan = new ScriptExecutionPlan(subcontext1);
+    final BasicCommandContext subCtx1 = new BasicCommandContext();
+    subCtx1.setParent(context);
+    final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
     for (final Statement stm : statements) {
-      if (stm.originalStatement == null) {
+      if (stm.originalStatement == null)
         stm.originalStatement = stm;
-      }
-      final InternalExecutionPlan subPlan = stm.createExecutionPlan(subcontext1, profilingEnabled);
+
+      InternalExecutionPlan subPlan;
+      if (stm.getOriginalStatement().contains("?"))
+        // cannot cache execution plans with positional parameters inside scripts
+        subPlan = stm.createExecutionPlanNoCache(subCtx1, profilingEnabled);
+      else
+        subPlan = stm.createExecutionPlan(subCtx1, profilingEnabled);
+
       plan.chain(subPlan, profilingEnabled);
     }
     return plan;
