@@ -116,18 +116,6 @@ public abstract class SimpleNode implements Node {
    * Override this method if you want to customize how the node dumps out its children.
    */
 
-  public void dump(final String prefix) {
-    System.out.println(toString(prefix));
-    if (children != null) {
-      for (int i = 0; i < children.length; ++i) {
-        final SimpleNode n = (SimpleNode) children[i];
-        if (n != null) {
-          n.dump(prefix + " ");
-        }
-      }
-    }
-  }
-
   @Override
   public boolean equals(final Object other) {
     if (this == other)

@@ -64,7 +64,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
 
-        System.out.println(record.toJSON());
+        record.toJSON();
 
         rid = record.getIdentity().get();
         Assertions.assertNotNull(rid);
