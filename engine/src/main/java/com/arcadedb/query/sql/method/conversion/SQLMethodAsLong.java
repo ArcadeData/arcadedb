@@ -21,7 +21,9 @@ package com.arcadedb.query.sql.method.conversion;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.utility.DateUtils;
 
+import java.time.temporal.*;
 import java.util.*;
 
 /**
@@ -44,6 +46,8 @@ public class SQLMethodAsLong extends AbstractSQLMethod {
       ioResult = ((Number) ioResult).longValue();
     } else if (ioResult instanceof Date) {
       ioResult = ((Date) ioResult).getTime();
+    } else if (DateUtils.isDate(ioResult)) {
+      ioResult = DateUtils.dateTimeToTimestamp(ioResult, ChronoUnit.MILLIS);
     } else {
       ioResult = ioResult != null ? Long.valueOf(ioResult.toString().trim()) : null;
     }
