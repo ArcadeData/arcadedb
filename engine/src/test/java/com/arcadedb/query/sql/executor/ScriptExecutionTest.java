@@ -257,7 +257,7 @@ public class ScriptExecutionTest extends TestHelper {
       database.newDocument(className).set("id", 0).save();
     });
 
-    final int TOTAL = 1000;
+    final int TOTAL = 10_000;
     for (int i = 0; i < TOTAL; i++) {
       String script = "";
       script += "LET $retries = 0;";
@@ -273,7 +273,7 @@ public class ScriptExecutionTest extends TestHelper {
     ResultSet result = database.query("sql", "select from " + className + " where id = 0");
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
-    //Assertions.assertTrue((Integer) item.getProperty("attempt") < TOTAL);
+    Assertions.assertTrue((Integer) item.getProperty("attempt") < TOTAL);
     Assertions.assertFalse(result.hasNext());
     result.close();
 
