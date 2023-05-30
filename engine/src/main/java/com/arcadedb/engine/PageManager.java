@@ -214,10 +214,10 @@ public class PageManager extends LockContext {
 
       if (newPages != null)
         for (final MutablePage p : newPages.values())
-          pagesToWrite.add(updatePage(p, true));
+          pagesToWrite.add(updatePageVersion(p, true));
 
       for (final MutablePage p : modifiedPages.values())
-        pagesToWrite.add(updatePage(p, false));
+        pagesToWrite.add(updatePageVersion(p, false));
 
       writePages(pagesToWrite, asyncFlush);
 
@@ -226,7 +226,7 @@ public class PageManager extends LockContext {
     }
   }
 
-  public MutablePage updatePage(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
+  public MutablePage updatePageVersion(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
     final PageId pageId = page.getPageId();
 
     final int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
@@ -281,35 +281,21 @@ public class PageManager extends LockContext {
       totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
   }
 
-//  public void preloadFile(final int fileId) {
-//    LogManager.instance().log(this, Level.FINE, "Pre-loading file %d (threadId=%d)...", null, fileId, Thread.currentThread().getId());
-//
-//    try {
-//      final PaginatedFile file = fileManager.getFile(fileId);
-//      final int pageSize = file.getPageSize();
-//      final int pages = (int) (file.getSize() / pageSize);
-//
-//      for (int pageNumber = 0; pageNumber < pages; ++pageNumber)
-//        loadPage(new PageId(fileId, pageNumber), pageSize, false, true);
-//
-//    } catch (IOException e) {
-//      throw new DatabaseMetadataException("Cannot load file in RAM", e);
-//    }
-//  }
-
   public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
-    for (final MutablePage page : updatedPages) {
-      // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
-      putPageInReadCache(new CachedPage(page));
-    }
-
     if (asyncFlush) {
+      for (final MutablePage page : updatedPages)
+        // SAVE A COPY OF THE PAGE IN CACHE BECAUSE IT WILL BE FLUSHED ASYNCHRONOUSLY
+        putPageInReadCache(new CachedPage(page, true));
+
       // ASYNCHRONOUS FLUSH: ONLY IF NOT ALREADY IN THE QUEUE, ENQUEUE THE PAGE TO BE FLUSHED BY A SEPARATE THREAD
       flushThread.scheduleFlushOfPages(updatedPages);
     } else {
       // SYNCHRONOUS FLUSH
-      for (final MutablePage page : updatedPages)
+      for (final MutablePage page : updatedPages) {
         flushPage(page);
+        // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
+        putPageInReadCache(new CachedPage(page, false));
+      }
     }
   }
 

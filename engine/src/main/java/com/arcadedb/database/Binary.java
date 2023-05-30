@@ -93,9 +93,20 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     this.reusable = false;
   }
 
-  public Binary copy() {
+  public Binary copyOfContent() {
     final Binary copy = new Binary(Arrays.copyOfRange(content, buffer.arrayOffset(), buffer.arrayOffset() + size), size);
     copy.setAutoResizable(autoResizable);
+    return copy;
+  }
+
+  /**
+   * Copy the Binary object without copying the underlying buffer. Use this when the buffer is not modified after the copy.
+   */
+  public Binary copy() {
+    final Binary copy = new Binary(content, size);
+    copy.autoResizable = autoResizable;
+    copy.buffer.position(buffer.position());
+    copy.buffer.limit(buffer.limit());
     return copy;
   }
 
@@ -110,7 +121,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * is returned saving from an unnecessary and expensive copy.
    */
   public Binary getNotReusable() {
-    return reusable || size != content.length || buffer.arrayOffset() > 0 ? copy() : this;
+    return reusable || size != content.length || buffer.arrayOffset() > 0 ? copyOfContent() : this;
   }
 
   /**
@@ -615,7 +626,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
       final byte[] newContent = new byte[newSize];
       if (size > 0)
-        System.arraycopy(content, buffer.arrayOffset(), newContent, 0, content.length);
+        System.arraycopy(content, buffer.arrayOffset(), newContent, 0, size);
       this.content = newContent;
 
       final int oldPosition = this.buffer.position();

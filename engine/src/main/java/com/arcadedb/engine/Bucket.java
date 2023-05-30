@@ -629,6 +629,9 @@ public class Bucket extends PaginatedComponent {
         // DELETED
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
+//      LogManager.instance()
+//          .log(this, Level.SEVERE, "UPDATE %s pageV=%d content %s (threadId=%d)", rid, page.getVersion(), record.toJSON(), Thread.currentThread().getId());
+
       boolean isPlaceHolder = false;
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
 

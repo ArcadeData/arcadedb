@@ -68,7 +68,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
     checkForLazyLoading();
     buffer.rewind();
-    return new MutableVertex(database, (VertexType) type, rid, buffer.copy());
+    return new MutableVertex(database, (VertexType) type, rid, buffer.copyOfContent());
   }
 
   @Override

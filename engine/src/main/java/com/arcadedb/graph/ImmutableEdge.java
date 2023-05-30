@@ -65,7 +65,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     checkForLazyLoading();
     if (buffer != null) {
       buffer.rewind();
-      return new MutableEdge(database, (EdgeType) type, rid, buffer.copy());
+      return new MutableEdge(database, (EdgeType) type, rid, buffer.copyOfContent());
     }
     return new MutableEdge(database, (EdgeType) type, rid, getOut(), getIn());
   }

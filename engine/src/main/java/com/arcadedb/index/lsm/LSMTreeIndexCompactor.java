@@ -292,9 +292,9 @@ public class LSMTreeIndexCompactor {
       final List<MutablePage> modifiedPages = new ArrayList<>(1);
 
       if (lastPage != null)
-        modifiedPages.add(database.getPageManager().updatePage(lastPage, true));
+        modifiedPages.add(database.getPageManager().updatePageVersion(lastPage, true));
       if (rootPage != null)
-        modifiedPages.add(database.getPageManager().updatePage(rootPage, true));
+        modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
 
       database.getPageManager().writePages(modifiedPages, false);
 

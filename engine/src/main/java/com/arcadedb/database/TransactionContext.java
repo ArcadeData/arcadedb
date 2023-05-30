@@ -158,8 +158,7 @@ public class TransactionContext implements Transaction {
 
     final long pageNum = pos / bucket.getMaxRecordsInPage();
 
-    // IMMUTABLE RECORD, AVOID IT'S POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
-    // SAME PAGE, REMOVE IT
+    // FOR IMMUTABLE RECORDS AVOID THAT THEY ARE POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
     immutableRecordsCache.values()
         .removeIf(r -> r.getIdentity().getBucketId() == bucketId && r.getIdentity().getPosition() / bucket.getMaxRecordsInPage() == pageNum);
   }
@@ -571,8 +570,6 @@ public class TransactionContext implements Transaction {
 
       status = STATUS.COMMIT_2ND_PHASE;
 
-      final PageManager pageManager = database.getPageManager();
-
       if (changes.result != null)
         // WRITE TO THE WAL FIRST
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
@@ -582,7 +579,7 @@ public class TransactionContext implements Transaction {
       LogManager.instance()
           .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages, Thread.currentThread().getId());
 
-      pageManager.updatePages(newPages, modifiedPages, asyncFlush);
+      database.getPageManager().updatePages(newPages, modifiedPages, asyncFlush);
 
       if (newPages != null) {
         for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
