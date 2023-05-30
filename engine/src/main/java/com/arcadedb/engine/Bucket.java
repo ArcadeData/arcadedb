@@ -629,6 +629,9 @@ public class Bucket extends PaginatedComponent {
         // DELETED
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
+//      LogManager.instance()
+//          .log(this, Level.SEVERE, "UPDATE %s pageV=%d content %s (threadId=%d)", rid, page.getVersion(), record.toJSON(), Thread.currentThread().getId());
+
       boolean isPlaceHolder = false;
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
 
@@ -812,7 +815,7 @@ public class Bucket extends PaginatedComponent {
             final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
             final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
-            chunkPage = database.getTransaction().getPage(new PageId(file.getFileId(), chunkPageId), pageSize).modify();
+            chunkPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), chunkPageId), pageSize, false);
             chunkRecordPositionInPage = (int) chunkPage.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + chunkPositionInPage * INT_SERIALIZED_SIZE);
             recordSize = chunkPage.readNumberAndSize(chunkRecordPositionInPage);
 

@@ -1,13 +1,19 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.ImmutablePage;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.io.*;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
@@ -182,6 +188,123 @@ public class ScriptExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertEquals(4, (int) item.getProperty("attempt"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+  }
+
+  @Test
+  public void testCommitRetryMultiThreadsSQLIncrement() throws IOException {
+    String className = "testCommitRetryMTSQLIncrement";
+    database.getSchema().createDocumentType(className);
+
+    // AVOID RETRY, EXPECTING TO MISS SOME UPDATES
+    database.transaction(() -> {
+      database.newDocument(className).set("id", 0).save();
+    });
+
+    final int TOTAL = 1000;
+    for (int i = 0; i < TOTAL; i++) {
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "UPDATE " + className + " set attempt = attempt + 1 WHERE id = 0;";
+      script += "LET $retries = $retries + 1;";
+      script += "COMMIT;";
+      database.async().command("sqlscript", script, null);
+    }
+
+    database.async().waitCompletion();
+
+    ResultSet result = database.query("sql", "select from " + className + " where id = 0");
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    //Assertions.assertTrue((Integer) item.getProperty("attempt") < TOTAL);
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    // USE RETRY, EXPECTING NO MISS OF UPDATES
+    database.transaction(() -> {
+      database.newDocument(className).set("id", 1).save();
+    });
+
+    //database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+
+    for (int i = 0; i < TOTAL; i++) {
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "UPDATE " + className + " set attempt += 1 WHERE id = 1;";
+      script += "LET $retries = $retries + 1;";
+      script += "COMMIT RETRY 100;";
+      database.async().command("sqlscript", script, null);
+    }
+
+    database.async().waitCompletion();
+
+    ImmutablePage page = ((EmbeddedDatabase) database).getPageManager()
+        .getImmutablePage(new PageId(2, 0), ((EmbeddedDatabase) database).getFileManager().getFile(2).getPageSize(), false, false);
+
+    Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
+  }
+
+  @Test
+  public void testCommitRetryMultiThreadsSQLIncrementRepeatableRead() throws IOException {
+    String className = "testCommitRetryMTSQLIncrement";
+    database.getSchema().createDocumentType(className);
+
+    // AVOID RETRY, EXPECTING TO MISS SOME UPDATES
+    database.transaction(() -> {
+      database.newDocument(className).set("id", 0).save();
+    });
+
+    final int TOTAL = 10_000;
+    for (int i = 0; i < TOTAL; i++) {
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "UPDATE " + className + " set attempt = attempt + 1 WHERE id = 0;";
+      script += "LET $retries = $retries + 1;";
+      script += "COMMIT;";
+      database.async().command("sqlscript", script, null);
+    }
+
+    database.async().waitCompletion();
+
+    ResultSet result = database.query("sql", "select from " + className + " where id = 0");
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertTrue((Integer) item.getProperty("attempt") < TOTAL);
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    // USE RETRY, EXPECTING NO MISS OF UPDATES
+    database.transaction(() -> {
+      database.newDocument(className).set("id", 1).save();
+    });
+
+    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+
+    for (int i = 0; i < TOTAL; i++) {
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "UPDATE " + className + " set attempt += 1 WHERE id = 1;";
+      script += "LET $retries = $retries + 1;";
+      script += "COMMIT RETRY 100;";
+      database.async().command("sqlscript", script, null);
+    }
+
+    database.async().waitCompletion();
+
+    ImmutablePage page = ((EmbeddedDatabase) database).getPageManager()
+        .getImmutablePage(new PageId(2, 0), ((EmbeddedDatabase) database).getFileManager().getFile(2).getPageSize(), false, false);
+
+    Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
+
+    result = database.query("sql", "select from " + className + " where id = 1");
+    Assertions.assertTrue(result.hasNext());
+    item = result.next();
+    Assertions.assertEquals(TOTAL, (Integer) item.getProperty("attempt"));
     Assertions.assertFalse(result.hasNext());
     result.close();
   }

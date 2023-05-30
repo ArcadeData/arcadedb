@@ -29,7 +29,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
-import java.util.concurrent.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -54,8 +53,6 @@ public class SQLTest {
       int lastAge = 0;
       for (; result.hasNext(); ++i) {
         final Result row = result.next();
-        //System.out.println(row);
-
         Assertions.assertEquals("Jay", row.getProperty("p.name"));
         Assertions.assertTrue(row.getProperty("p.age") instanceof Number);
         Assertions.assertTrue((int) row.getProperty("p.age") > lastAge);

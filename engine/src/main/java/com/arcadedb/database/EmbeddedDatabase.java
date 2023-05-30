@@ -649,7 +649,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       if (loadContent || type == null) {
         final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
-        record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copy(), null);
+        record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
         return record;
       }
 
@@ -886,9 +886,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (originalBuffer == null)
       throw new IllegalStateException("Cannot read original buffer");
     originalBuffer.rewind();
-    final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer,
-        null);
-    return originalRecord;
+    return (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer, null);
   }
 
   @Override

@@ -38,7 +38,6 @@ import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.time.format.*;
-import java.util.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
@@ -85,8 +84,6 @@ public class RemoteQueriesIT {
         int id = i + 1;
         database.transaction(() -> {
           String sqlString = "INSERT INTO Order SET id = ?, status = ?, processor = ?";
-          System.out.print(sqlString);
-          System.out.println("; parameters: " + id + ", " + processor + ", " + status);
           try (ResultSet resultSet1 = database.command("sql", sqlString, id, status, processor)) {
             Assertions.assertEquals("" + id, resultSet1.next().getProperty("id"));
           }
@@ -96,8 +93,6 @@ public class RemoteQueriesIT {
       database.transaction(() -> {
         Object[] parameters2 = { "ERROR", 1 };
         String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
-        System.out.print(sqlString);
-        System.out.println(", parameters: " + Arrays.toString(parameters2));
         try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
           Assertions.assertEquals("1", resultSet1.next().getProperty("id"));
         } catch (Exception e) {
@@ -112,8 +107,6 @@ public class RemoteQueriesIT {
       database.transaction(() -> {
         Object[] parameters2 = { "PENDING" };
         String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
-        System.out.print(sqlString);
-        System.out.println(", parameters: " + Arrays.toString(parameters2));
         try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
           Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
         } catch (Exception e) {
@@ -124,13 +117,10 @@ public class RemoteQueriesIT {
       // drop index
       database.getSchema().dropIndex(typeIndex[0].getName());
 
-      System.out.println("index dropped");
       // repeat select records with status = 'PENDING'
       database.transaction(() -> {
         Object[] parameters2 = { "PENDING" };
         String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
-        System.out.print(sqlString);
-        System.out.println(", parameters: " + Arrays.toString(parameters2));
         try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
           Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
         } catch (Exception e) {

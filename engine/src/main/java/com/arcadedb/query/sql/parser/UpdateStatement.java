@@ -46,28 +46,26 @@ public class UpdateStatement extends Statement {
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(getStatementType());
-    if (target != null) {
+    if (target != null)
       target.toString(params, builder);
-    }
 
     for (final UpdateOperations ops : this.operations) {
       builder.append(" ");
       ops.toString(params, builder);
     }
 
-    if (upsert) {
+    if (upsert)
       builder.append(" UPSERT");
-    }
 
     if (returnBefore || returnAfter || returnCount) {
       builder.append(" RETURN");
-      if (returnBefore) {
+      if (returnBefore)
         builder.append(" BEFORE");
-      } else if (returnAfter) {
+      else if (returnAfter)
         builder.append(" AFTER");
-      } else {
+      else
         builder.append(" COUNT");
-      }
+
       if (returnProjection != null) {
         builder.append(" ");
         returnProjection.toString(params, builder);
@@ -77,12 +75,11 @@ public class UpdateStatement extends Statement {
       builder.append(" WHERE ");
       whereClause.toString(params, builder);
     }
-    if (limit != null) {
+    if (limit != null)
       limit.toString(params, builder);
-    }
-    if (timeout != null) {
+
+    if (timeout != null)
       timeout.toString(params, builder);
-    }
   }
 
   protected String getStatementType() {
@@ -105,11 +102,11 @@ public class UpdateStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
-      context.setParentWithoutOverridingChild(parentcontext);
-    }
+    if (parentContext != null)
+      context.setParentWithoutOverridingChild(parentContext);
+
     context.setDatabase(db);
     context.setInputParameters(args);
     final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
@@ -120,9 +117,9 @@ public class UpdateStatement extends Statement {
   @Override
   public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
+    if (parentcontext != null)
       context.setParentWithoutOverridingChild(parentcontext);
-    }
+
     context.setDatabase(db);
     context.setInputParameters(params);
     final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);

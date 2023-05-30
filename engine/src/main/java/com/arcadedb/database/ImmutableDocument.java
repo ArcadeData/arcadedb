@@ -63,7 +63,7 @@ public class ImmutableDocument extends BaseDocument {
 
     checkForLazyLoading();
     buffer.rewind();
-    return new MutableDocument(database, type, rid, buffer.copy());
+    return new MutableDocument(database, type, rid, buffer.copyOfContent());
   }
 
   @Override

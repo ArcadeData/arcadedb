@@ -49,7 +49,7 @@ public class RetryStep extends AbstractExecutionStep {
     if (finalResult != null) {
       return finalResult.syncPull(ctx, nRecords);
     }
-    for (int i = 0; i < retries; i++) {
+    for (int attempt = 0; attempt < retries; attempt++) {
       try {
         final ScriptExecutionPlan plan = initPlan(body, ctx);
         final ExecutionStepInternal result = plan.executeFull();
@@ -62,9 +62,10 @@ public class RetryStep extends AbstractExecutionStep {
         try {
           ctx.getDatabase().rollback();
         } catch (Exception e) {
+          // IGNORE IT
         }
 
-        if (i == retries - 1) {
+        if (attempt >= retries - 1) {
           if (elseBody != null && elseBody.size() > 0) {
             final ScriptExecutionPlan plan = initPlan(elseBody, ctx);
             final ExecutionStepInternal result = plan.executeFull();

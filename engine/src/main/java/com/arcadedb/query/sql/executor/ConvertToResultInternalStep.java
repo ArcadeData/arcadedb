@@ -43,7 +43,6 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ExecutionStepInternal prevStep = checkForPrevious();
-
     return new ResultSet() {
       public boolean finished = false;
 
@@ -52,9 +51,9 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
 
       private void fetchNextItem() {
         nextItem = null;
-        if (finished) {
+        if (finished)
           return;
-        }
+
         if (prevResult == null) {
           prevResult = prevStep.syncPull(context, nRecords);
           if (!prevResult.hasNext()) {
@@ -82,9 +81,8 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
               break;
             }
           } finally {
-            if (profilingEnabled) {
+            if (profilingEnabled)
               cost += (System.nanoTime() - begin);
-            }
           }
           nextItem = null;
         }
@@ -92,28 +90,26 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (fetched >= nRecords || finished) {
+        if (fetched >= nRecords || finished)
           return false;
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           fetchNextItem();
-        }
 
         return nextItem != null;
-
       }
 
       @Override
       public Result next() {
-        if (fetched >= nRecords || finished) {
+        if (fetched >= nRecords || finished)
           throw new NoSuchElementException();
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           fetchNextItem();
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           throw new NoSuchElementException();
-        }
+
         final Result result = nextItem;
         nextItem = null;
         fetched++;
@@ -124,9 +120,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
       public void close() {
         ConvertToResultInternalStep.this.close();
       }
-
     };
-
   }
 
   @Override
@@ -137,5 +131,4 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
     }
     return result;
   }
-
 }

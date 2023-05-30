@@ -502,11 +502,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final List<MutablePage> modifiedPages = new ArrayList<>(2 + mutable.getTotalPages() - startingFromPage);
 
         final MutablePage subIndexMainPage = compactedIndex.setCompactedTotalPages();
-        modifiedPages.add(database.getPageManager().updatePage(subIndexMainPage, false));
+        modifiedPages.add(database.getPageManager().updatePageVersion(subIndexMainPage, false));
 
         // KEEP METADATA AND LEAVE IT EMPTY
         final MutablePage rootPage = newMutableIndex.createNewPage();
-        modifiedPages.add(database.getPageManager().updatePage(rootPage, true));
+        modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
 
         newMutableIndex.setPageCount(1);
 
@@ -520,7 +520,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           pageContent.rewind();
           newPage.getContent().put(pageContent);
 
-          modifiedPages.add(database.getPageManager().updatePage(newPage, true));
+          modifiedPages.add(database.getPageManager().updatePageVersion(newPage, true));
           newMutableIndex.setPageCount(i + 2);
         }
 

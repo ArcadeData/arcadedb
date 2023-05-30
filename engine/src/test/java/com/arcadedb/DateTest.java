@@ -220,6 +220,11 @@ public class DateTest extends TestHelper {
       doc.reload();
       Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.NANOS), doc.get("datetime_nanos"));
 
+      Assertions.assertNotNull(database.query("sql", "select datetime_second.asLong() as long from ConversionTest").nextIfAvailable().getProperty("long"));
+      Assertions.assertNotNull(database.query("sql", "select datetime_millis.asLong() as long from ConversionTest").nextIfAvailable().getProperty("long"));
+      Assertions.assertNotNull(database.query("sql", "select datetime_micros.asLong() as long from ConversionTest").nextIfAvailable().getProperty("long"));
+      Assertions.assertNotNull(database.query("sql", "select datetime_nanos.asLong() as long from ConversionTest").nextIfAvailable().getProperty("long"));
+
       Assertions.assertEquals(
           TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND),
           doc.getDate("datetime_millis").getTime());

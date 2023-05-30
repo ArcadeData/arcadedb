@@ -184,6 +184,9 @@ public interface BasicDatabase extends AutoCloseable {
    */
   ResultSet query(String language, String query, Object... args);
 
+  /**
+   * @Deprecated. Execute a script. Use the `command()` instead.
+   */
   @Deprecated
   ResultSet execute(String language, String script, Object... args);
 

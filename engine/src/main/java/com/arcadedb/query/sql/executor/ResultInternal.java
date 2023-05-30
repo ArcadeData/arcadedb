@@ -53,23 +53,21 @@ public class ResultInternal implements Result {
   }
 
   public void setTemporaryProperty(final String name, Object value) {
-    if (temporaryContent == null) {
+    if (temporaryContent == null)
       temporaryContent = new HashMap<>();
-    }
-    if (value instanceof Optional) {
+
+    if (value instanceof Optional)
       value = ((Optional) value).orElse(null);
-    }
-    if (value instanceof Result && ((Result) value).isElement()) {
+
+    if (value instanceof Result && ((Result) value).isElement())
       temporaryContent.put(name, ((Result) value).getElement().get());
-    } else {
+    else
       temporaryContent.put(name, value);
-    }
   }
 
   public Object getTemporaryProperty(final String name) {
-    if (name == null || temporaryContent == null) {
+    if (name == null || temporaryContent == null)
       return null;
-    }
     return temporaryContent.get(name);
   }
 
@@ -80,6 +78,9 @@ public class ResultInternal implements Result {
   public ResultInternal setProperty(final String name, Object value) {
     if (value instanceof Optional)
       value = ((Optional) value).orElse(null);
+
+    if (content == null)
+      throw new IllegalStateException("Impossible to mutate result set");
 
     if (value instanceof Result && ((Result) value).isElement())
       content.put(name, ((Result) value).getElement().get());
