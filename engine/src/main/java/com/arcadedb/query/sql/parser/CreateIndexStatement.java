@@ -99,15 +99,15 @@ public class CreateIndexStatement extends DDLStatement {
 
     final AtomicLong total = new AtomicLong();
 
-    database.getSchema()
-        .createTypeIndex(indexType, unique, typeName.getStringValue(), fields, LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy, (document, totalIndexed) -> {
+    database.getSchema().buildTypeIndex(typeName.getStringValue(), fields).withType(indexType).withUnique(unique)
+        .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE).withNullStrategy(nullStrategy).withCallback((document, totalIndexed) -> {
           total.incrementAndGet();
 
           if (totalIndexed % 100000 == 0) {
             System.out.print(".");
             System.out.flush();
           }
-        });
+        }).create();
 
     final InternalResultSet rs = new InternalResultSet();
     final ResultInternal result = new ResultInternal();

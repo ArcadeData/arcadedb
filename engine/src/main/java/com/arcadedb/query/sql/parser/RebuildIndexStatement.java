@@ -79,8 +79,10 @@ public class RebuildIndexStatement extends DDLStatement {
               final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
               database.getSchema().dropIndex(idx.getName());
-              database.getSchema()
-                  .createTypeIndex(indexType, unique, typeName, propNames.toArray(new String[propNames.size()]), pageSize, nullStrategy, callback);
+
+              database.getSchema().buildTypeIndex(typeName, propNames.toArray(new String[propNames.size()])).withType(indexType).withUnique(unique)
+                  .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE).withNullStrategy(nullStrategy).withCallback(callback).create();
+
               indexList.add(idx.getName());
             }
           } catch (final Exception e) {
@@ -109,8 +111,9 @@ public class RebuildIndexStatement extends DDLStatement {
               .createTypeIndex(type, unique, propertyNames.toArray(new String[propertyNames.size()]), LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy,
                   callback);
         } else {
-          database.getSchema().createBucketIndex(type, unique, idx.getTypeName(), database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
-              propertyNames.toArray(new String[propertyNames.size()]), pageSize, nullStrategy, callback);
+          database.getSchema().buildBucketIndex(typeName, database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
+                  propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique).withPageSize(pageSize).withCallback(callback)
+              .withNullStrategy(nullStrategy).create();
         }
 
         indexList.add(idx.getName());

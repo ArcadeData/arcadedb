@@ -54,29 +54,67 @@ public interface Schema {
 
   Index getIndexByName(String indexName);
 
+  TypeIndexBuilder buildTypeIndex(String typeName, String[] propertyNames);
+
+  BucketIndexBuilder buildBucketIndex(String typeName, String bucketName, String[] propertyNames);
+
+  ManualIndexBuilder buildManualIndex(String indexName, Type[] keyTypes);
+
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).create()` instead.
+   */
+  @Deprecated
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).create()` instead.
+   */
+  @Deprecated
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).create()` instead.
+   */
+  @Deprecated
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
   TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
+  /**
+   * @Deprecated. Use `buildBucketIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).create()` instead.
+   */
+  @Deprecated
   Index createBucketIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String bucketName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
+  /**
+   * @Deprecated. Use `buildManualIndex(indexName, keyTypes).withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create()` instead.
+   */
+  @Deprecated
   Index createManualIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String indexName, Type[] keyTypes, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy);
 

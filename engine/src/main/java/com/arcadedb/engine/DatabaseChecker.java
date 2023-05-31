@@ -90,8 +90,9 @@ public class DatabaseChecker {
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
         database.getSchema().dropIndex(idx.getName());
-        database.getSchema()
-            .createBucketIndex(indexType, unique, typeName, bucketName, propNames.toArray(new String[propNames.size()]), pageSize, nullStrategy, null);
+
+        database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()])).withType(indexType).withUnique(unique)
+            .withPageSize(pageSize).withNullStrategy(nullStrategy).create();
       }
 
     if (verboseLevel > 0)

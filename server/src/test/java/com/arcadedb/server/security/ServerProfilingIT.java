@@ -519,9 +519,10 @@ public class ServerProfilingIT {
     expectedSecurityException(() -> database.getSchema().createEdgeType("Edge1"));
     expectedSecurityException(() -> database.getSchema().createDocumentType("Document1"));
 
-    expectedSecurityException(() -> database.getSchema()
-        .createBucketIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Document1", "Bucket1", new String[] { "id" }, 10000, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR,
-            null));
+    expectedSecurityException(
+        () -> database.getSchema().buildBucketIndex("Document1", "Bucket1", new String[] { "id" }).withUnique(true).withType(Schema.INDEX_TYPE.LSM_TREE)
+            .withPageSize(10_000).withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.ERROR).create());
+
     expectedSecurityException(() -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Document1", "id"));
 
     expectedSecurityException(() -> database.getSchema().dropType("Document1"));
