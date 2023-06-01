@@ -32,8 +32,6 @@ import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
 import com.github.jelmerk.knn.SearchResult;
 import com.github.jelmerk.knn.util.Murmur3;
-import org.eclipse.collections.api.map.primitive.MutableObjectLongMap;
-import org.eclipse.collections.impl.map.mutable.primitive.ObjectLongHashMap;
 
 import java.io.*;
 import java.lang.reflect.*;
@@ -45,32 +43,31 @@ import java.util.concurrent.locks.*;
  * <p>
  * Implementation of {@link Index} that implements the hnsw algorithm.
  *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  * @see <a href="https://arxiv.org/abs/1603.09320">
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
-public class HnswIndex<TId, TVector, TDistance> {
-  private          DistanceFunction<TVector, TDistance> distanceFunction;
-  private          Comparator<TDistance>                distanceComparator;
-  private          MaxValueComparator<TDistance>        maxValueDistanceComparator;
-  private          int                                  dimensions;
-  private          int                                  maxItemCount;
-  private          int                                  m;
-  private          int                                  maxM;
-  private          int                                  maxM0;
-  private          double                               levelLambda;
+public class HnswVectorIndex<TId, TVector, TDistance> {
+  private final    DistanceFunction<TVector, TDistance> distanceFunction;
+  private final    Comparator<TDistance>                distanceComparator;
+  private final    MaxValueComparator<TDistance>        maxValueDistanceComparator;
+  private final    int                                  dimensions;
+  private final    int                                  maxItemCount;
+  private final    int                                  m;
+  private final    int                                  maxM;
+  private final    int                                  maxM0;
+  private final    double                               levelLambda;
   private          int                                  ef;
-  private          int                                  efConstruction;
+  private final    int                                  efConstruction;
   private volatile Vertex                               entryPoint;
-  private          TypeIndex                            lookup;
-  private          MutableObjectLongMap<TId>            deletedItemVersions;
-  private          Map<TId, Object>                     locks;
-  private          ReentrantLock                        globalLock;
-  private          Set<RID>                             excludedCandidates = new HashSet<>();
+  private final    TypeIndex                            lookup;
+  private final    ReentrantLock                        globalLock;
+  private final    Set<RID>                             excludedCandidates = new HashSet<>();
   private          String                               edgeType;
   private          String                               vectorPropertyName;
   private          String                               idPropertyName;
 
-  private HnswIndex(final DatabaseInternal database, final String typeName, final String vectorPropertyName, BuilderBase builder) {
+  private HnswVectorIndex(final DatabaseInternal database, final String typeName, final String vectorPropertyName, final BuilderBase builder) {
     this.dimensions = builder.dimensions;
     this.maxItemCount = builder.maxItemCount;
     this.distanceFunction = builder.distanceFunction;
@@ -87,8 +84,6 @@ public class HnswIndex<TId, TVector, TDistance> {
     this.lookup = database.getSchema().buildTypeIndex(typeName, new String[] { vectorPropertyName }).withUnique(true).withIgnoreIfExists(true)
         .withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
-    this.deletedItemVersions = new ObjectLongHashMap<>();
-    this.locks = new HashMap<>();
     this.globalLock = new ReentrantLock();
   }
 
@@ -166,52 +161,46 @@ public class HnswIndex<TId, TVector, TDistance> {
       }
 
       lookup.put(new Object[] { vertexId }, new RID[] { vertexRID });
-      deletedItemVersions.remove(vertexId);
-
-      Object lock = locks.computeIfAbsent(vertexId, k -> new Object());
 
       final Vertex entryPointCopy = entryPoint;
-
       try {
-        synchronized (lock) {
+        if (entryPoint != null && randomLevel <= getMaxLevelFromVertex(entryPoint)) {
+          globalLock.unlock();
+        }
 
-          if (entryPoint != null && randomLevel <= getMaxLevelFromVertex(entryPoint)) {
-            globalLock.unlock();
-          }
+        Vertex currObj = entryPointCopy;
+        final int entryPointCopyMaxLevel = getMaxLevelFromVertex(entryPointCopy);
 
-          Vertex currObj = entryPointCopy;
-          final int entryPointCopyMaxLevel = getMaxLevelFromVertex(entryPointCopy);
+        if (currObj != null) {
+          if (vertexMaxLevel < entryPointCopyMaxLevel) {
+            TDistance curDist = distanceFunction.distance(vertexVector, getVectorFromVertex(currObj));
+            for (int activeLevel = entryPointCopyMaxLevel; activeLevel > vertexMaxLevel; activeLevel--) {
+              boolean changed = true;
 
-          if (currObj != null) {
-            if (vertexMaxLevel < entryPointCopyMaxLevel) {
-              TDistance curDist = distanceFunction.distance(vertexVector, getVectorFromVertex(currObj));
-              for (int activeLevel = entryPointCopyMaxLevel; activeLevel > vertexMaxLevel; activeLevel--) {
-                boolean changed = true;
+              while (changed) {
+                changed = false;
 
-                while (changed) {
-                  changed = false;
+                synchronized (currObj) {
+                  final Iterator<Vertex> candidateConnections = getConnectionsFromVertex(currObj, activeLevel);
+                  while (candidateConnections.hasNext()) {
+                    final Vertex candidateNode = candidateConnections.next();
+                    final TDistance candidateDistance = distanceFunction.distance(vertexVector, getVectorFromVertex(candidateNode));
 
-                  synchronized (currObj) {
-                    final Iterator<Vertex> candidateConnections = getConnectionsFromVertex(currObj, activeLevel);
-                    while (candidateConnections.hasNext()) {
-                      final Vertex candidateNode = candidateConnections.next();
-                      final TDistance candidateDistance = distanceFunction.distance(vertexVector, getVectorFromVertex(candidateNode));
-
-                      if (lt(candidateDistance, curDist)) {
-                        curDist = candidateDistance;
-                        currObj = candidateNode;
-                        changed = true;
-                      }
+                    if (lt(candidateDistance, curDist)) {
+                      curDist = candidateDistance;
+                      currObj = candidateNode;
+                      changed = true;
                     }
                   }
                 }
               }
             }
+          }
 
-            for (int level = Math.min(randomLevel, entryPointCopyMaxLevel); level >= 0; level--) {
-              final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, vertexVector, efConstruction, level);
+          for (int level = Math.min(randomLevel, entryPointCopyMaxLevel); level >= 0; level--) {
+            final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, vertexVector, efConstruction, level);
 
-              // TODO: MANAGE DELETE OF ENTRYPOINT
+            // TODO: MANAGE DELETE OF ENTRYPOINT
 //              if (entryPointCopy.deleted) {
 //                TDistance distance = distanceFunction.distance(vertex.vector(), entryPointCopy.item.vector());
 //                topCandidates.add(new NodeIdAndDistance<>(entryPointCopy.id, distance, maxValueDistanceComparator));
@@ -221,18 +210,18 @@ public class HnswIndex<TId, TVector, TDistance> {
 //                }
 //              }
 
-              mutuallyConnectNewElement(vertex, topCandidates, level);
+            mutuallyConnectNewElement(vertex, topCandidates, level);
 
-            }
           }
-
-          // zoom out to the highest level
-          if (entryPoint == null || vertexMaxLevel > entryPointCopyMaxLevel)
-            // this is thread safe because we get the global lock when we add a level
-            this.entryPoint = vertex;
-
-          return true;
         }
+
+        // zoom out to the highest level
+        if (entryPoint == null || vertexMaxLevel > entryPointCopyMaxLevel)
+          // this is thread safe because we get the global lock when we add a level
+          this.entryPoint = vertex;
+
+        return true;
+
       } finally {
         synchronized (excludedCandidates) {
           excludedCandidates.remove(vertexRID);
@@ -261,7 +250,6 @@ public class HnswIndex<TId, TVector, TDistance> {
     final int bestN = level == 0 ? this.maxM0 : this.maxM;
     final RID newNodeId = newNode.getIdentity();
     final TVector newItemVector = getVectorFromVertex(newNode);
-    final Iterator<Vertex> newItemConnections = getConnectionsFromVertex(newNode, level);
 
     getNeighborsByHeuristic2(topCandidates, m);
 
@@ -720,7 +708,7 @@ public class HnswIndex<TId, TVector, TDistance> {
   }
 
   /**
-   * Builder for initializing an {@link HnswIndex} instance.
+   * Builder for initializing an {@link HnswVectorIndex} instance.
    *
    * @param <TVector>   Type of the vector to perform distance calculation on
    * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
