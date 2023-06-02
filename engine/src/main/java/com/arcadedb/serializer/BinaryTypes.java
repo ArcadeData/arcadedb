@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.DateUtils;
 
+import java.lang.reflect.*;
 import java.math.*;
 import java.time.*;
 import java.util.*;
@@ -53,6 +54,11 @@ public class BinaryTypes {
   public final static byte TYPE_DATETIME_MICROS   = 20; // @SINCE 23.1.1
   public final static byte TYPE_DATETIME_NANOS    = 21; // @SINCE 23.1.1
   public final static byte TYPE_DATETIME_SECOND   = 22; // @SINCE 23.1.1
+  public final static byte TYPE_ARRAY_OF_SHORT    = 23; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_INT      = 24; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_LONG     = 25; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_FLOAT    = 26; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_DOUBLE   = 27; // @SINCE 23.6.1
 
   public static byte getTypeFromValue(final Object value) {
     final byte type;
@@ -108,8 +114,22 @@ public class BinaryTypes {
       } else
         // SERIALIZE THE RESULT AS A MAP
         type = TYPE_MAP;
-    } else if (value instanceof Iterable || value.getClass().isArray())
-      // TODO: SUPPORT SET SEMANTIC TOO
+    } else if (value.getClass().isArray()) {
+      final Object firstElement = Array.getLength(value) > 0 ? Array.get(value, 0) : null;
+      if (firstElement instanceof Short)
+        type = TYPE_ARRAY_OF_SHORT;
+      else if (firstElement instanceof Integer)
+        type = TYPE_ARRAY_OF_INT;
+      else if (firstElement instanceof Long)
+        type = TYPE_ARRAY_OF_LONG;
+      else if (firstElement instanceof Float)
+        type = TYPE_ARRAY_OF_FLOAT;
+      else if (firstElement instanceof Double)
+        type = TYPE_ARRAY_OF_DOUBLE;
+      else
+        type = TYPE_LIST;
+
+    } else if (value instanceof Iterable)
       type = TYPE_LIST;
     else if (value instanceof Number) {
       // GENERIC NUMBER IMPLEMENTATION. THIS HAPPENS WITH JSON NUMBERS
@@ -212,6 +232,21 @@ public class BinaryTypes {
 
     case BinaryTypes.TYPE_EMBEDDED:
       return Document.class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_SHORT:
+      return short[].class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_INT:
+      return int[].class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_LONG:
+      return long[].class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_FLOAT:
+      return float[].class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLE:
+      return double[].class;
 
     default:
       // UNKNOWN

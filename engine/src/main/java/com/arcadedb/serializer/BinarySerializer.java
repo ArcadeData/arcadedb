@@ -359,12 +359,10 @@ public class BinarySerializer {
       content.putNumber(((Number) value).longValue());
       break;
     case BinaryTypes.TYPE_FLOAT:
-      final int fg = Float.floatToIntBits(((Number) value).floatValue());
-      content.putNumber(fg);
+      content.putNumber(Float.floatToIntBits(((Number) value).floatValue()));
       break;
     case BinaryTypes.TYPE_DOUBLE:
-      final long dg = Double.doubleToLongBits(((Number) value).doubleValue());
-      content.putNumber(dg);
+      content.putNumber(Double.doubleToLongBits(((Number) value).doubleValue()));
       break;
     case BinaryTypes.TYPE_DATE:
       if (value instanceof Date)
@@ -487,7 +485,41 @@ public class BinarySerializer {
       content.append(header);
       break;
     }
-
+    case BinaryTypes.TYPE_ARRAY_OF_SHORT: {
+      final int length = Array.getLength(value);
+      content.putUnsignedNumber(length);
+      for (int i = 0; i < length; ++i)
+        content.putNumber(Array.getShort(value, i));
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_INT: {
+      final int length = Array.getLength(value);
+      content.putUnsignedNumber(length);
+      for (int i = 0; i < length; ++i)
+        content.putNumber(Array.getInt(value, i));
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_LONG: {
+      final int length = Array.getLength(value);
+      content.putUnsignedNumber(length);
+      for (int i = 0; i < length; ++i)
+        content.putNumber(Array.getLong(value, i));
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_FLOAT: {
+      final int length = Array.getLength(value);
+      content.putUnsignedNumber(length);
+      for (int i = 0; i < length; ++i)
+        content.putNumber(Float.floatToIntBits(Array.getFloat(value, i)));
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLE: {
+      final int length = Array.getLength(value);
+      content.putUnsignedNumber(length);
+      for (int i = 0; i < length; ++i)
+        content.putNumber(Double.doubleToLongBits(Array.getDouble(value, i)));
+      break;
+    }
     default:
       LogManager.instance().log(this, Level.INFO, "Error on serializing value '" + value + "', type not supported");
     }
@@ -594,6 +626,46 @@ public class BinarySerializer {
           .newImmutableRecord(database, database.getSchema().getType(typeName), null, embeddedBuffer, embeddedModifier);
 
       content.position(content.position() + embeddedObjectSize);
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_SHORT: {
+      final int count = (int) content.getUnsignedNumber();
+      final short[] array = new short[count];
+      for (int i = 0; i < count; ++i)
+        array[i] = (short) content.getNumber();
+      value = array;
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_INT: {
+      final int count = (int) content.getUnsignedNumber();
+      final int[] array = new int[count];
+      for (int i = 0; i < count; ++i)
+        array[i] = (int) content.getNumber();
+      value = array;
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_LONG: {
+      final int count = (int) content.getUnsignedNumber();
+      final long[] array = new long[count];
+      for (int i = 0; i < count; ++i)
+        array[i] = content.getNumber();
+      value = array;
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_FLOAT: {
+      final int count = (int) content.getUnsignedNumber();
+      final float[] array = new float[count];
+      for (int i = 0; i < count; ++i)
+        array[i] = Float.intBitsToFloat((int) content.getNumber());
+      value = array;
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLE: {
+      final int count = (int) content.getUnsignedNumber();
+      final double[] array = new double[count];
+      for (int i = 0; i < count; ++i)
+        array[i] = Double.longBitsToDouble(content.getNumber());
+      value = array;
       break;
     }
 
