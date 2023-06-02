@@ -24,6 +24,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.lang.reflect.*;
 import java.util.*;
 
 /**
@@ -64,7 +65,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   @Override
   public synchronized void unsetDirty() {
-    map = null;
+    //map = null;
     dirty = false;
   }
 
@@ -327,7 +328,14 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
         result.append(entry.getKey());
         result.append('=');
-        result.append(entry.getValue());
+
+        final Object v = entry.getValue();
+        if (v != null && v.getClass().isArray()) {
+          result.append('[');
+          result.append(Array.getLength(v));
+          result.append(']');
+        } else
+          result.append(v);
         i++;
       }
     }

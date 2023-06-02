@@ -21,9 +21,9 @@
 
 package com.arcadedb.index.vector;
 
-import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -37,6 +37,7 @@ import java.io.*;
 import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.locks.*;
+import java.util.stream.*;
 
 /**
  * This work is derived from the excellent work made by Jelmer Kuperus on https://github.com/jelmerk/hnswlib.
@@ -63,11 +64,14 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
   private final    TypeIndex                            lookup;
   private final    ReentrantLock                        globalLock;
   private final    Set<RID>                             excludedCandidates = new HashSet<>();
-  private          String                               edgeType;
-  private          String                               vectorPropertyName;
-  private          String                               idPropertyName;
+  private final    Database                             database;
+  private final    String                               vertexType;
+  private final    String                               edgeType;
+  private final    String                               vectorPropertyName;
+  private final    String                               idPropertyName;
+  private final    Map<RID, Vertex>                     cache;
 
-  private HnswVectorIndex(final DatabaseInternal database, final String typeName, final String vectorPropertyName, final BuilderBase builder) {
+  private HnswVectorIndex(final BuilderBase builder) {
     this.dimensions = builder.dimensions;
     this.maxItemCount = builder.maxItemCount;
     this.distanceFunction = builder.distanceFunction;
@@ -81,7 +85,15 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     this.efConstruction = Math.max(builder.efConstruction, m);
     this.ef = builder.ef;
 
-    this.lookup = database.getSchema().buildTypeIndex(typeName, new String[] { vectorPropertyName }).withUnique(true).withIgnoreIfExists(true)
+    this.database = builder.database;
+    this.vertexType = builder.vertexType;
+    this.edgeType = builder.edgeType;
+    this.vectorPropertyName = builder.vectorPropertyName;
+    this.idPropertyName = builder.idPropertyName;
+
+    this.cache = builder.cache;
+
+    this.lookup = builder.database.getSchema().buildTypeIndex(builder.vertexType, new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
         .withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
     this.globalLock = new ReentrantLock();
@@ -94,7 +106,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
       if (!cursor.hasNext())
         return null;
 
-      return cursor.next().asVertex();
+      return loadVertexFromRID(cursor.next());
     } finally {
       globalLock.unlock();
     }
@@ -107,7 +119,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
       if (!cursor.hasNext())
         return false;
 
-      final Vertex vertex = cursor.next().asVertex();
+      final Vertex vertex = loadVertexFromRID(cursor.next());
       if (vertex.equals(entryPoint)) {
         // TODO: CHANGE THE ENTRYPOINT
       }
@@ -120,12 +132,21 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     }
   }
 
-  public boolean add(final Vertex vertex) {
-    if (getDimensionFromVertex(vertex) != dimensions)
+  public List<SearchResult<Vertex, TDistance>> findNeighbors(final TId id, final int k) {
+    final Vertex start = get(id);
+    if (start == null)
+      return Collections.emptyList();
+
+    return findNearest(getVectorFromVertex(start), k + 1).stream().filter(result -> !getIdFromVertex(result.item()).equals(id)).limit(k)
+        .collect(Collectors.toList());
+  }
+
+  public boolean add(Vertex vertex) {
+    final TVector vertexVector = getVectorFromVertex(vertex);
+    if (Array.getLength(vertexVector) != dimensions)
       throw new IllegalArgumentException("Item does not have dimensionality of " + dimensions);
 
     final TId vertexId = getIdFromVertex(vertex);
-    final TVector vertexVector = getVectorFromVertex(vertex);
     final int vertexMaxLevel = getMaxLevelFromVertex(vertex);
 
     final int randomLevel = assignLevel(vertexId, this.levelLambda);
@@ -140,27 +161,19 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     globalLock.lock();
     try {
 
-      final IndexCursor cursor = lookup.get(new Object[] { vertexId });
-      if (cursor.hasNext()) {
-        final Vertex node = cursor.next().asVertex();
-        if (Objects.deepEquals(getVectorFromVertex(node), vertexVector)) {
-          // ALREADY INSERTED
-          return true;
-        } else {
-          // DIFFERENT VERTEX, REMOVE CURRENT AND ADD THE NEW ONE
-          remove(vertexId);
-        }
-      }
+      final long totalEdges = vertex.countEdges(Vertex.DIRECTION.OUT, getEdgeType(0));
+      if (totalEdges > 0)
+        // ALREADY INSERTED
+        return true;
 
-      if (vertex.getIdentity() == null && vertex instanceof MutableVertex)
-        ((MutableVertex) vertex).save();
+      vertex = vertex.modify().set("vectorMaxLevel", randomLevel).save();
+      if (cache != null)
+        cache.put(vertex.getIdentity(), vertex);
 
       final RID vertexRID = vertex.getIdentity();
       synchronized (excludedCandidates) {
         excludedCandidates.add(vertexRID);
       }
-
-      lookup.put(new Object[] { vertexId }, new RID[] { vertexRID });
 
       final Vertex entryPointCopy = entryPoint;
       try {
@@ -243,7 +256,22 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
   }
 
   private int getMaxLevelFromVertex(final Vertex vertex) {
-    return vertex.getInteger("vectorMaxLevel");
+    if (vertex == null)
+      return 0;
+    final Integer vectorMaxLevel = vertex.getInteger("vectorMaxLevel");
+    return vectorMaxLevel != null ? vectorMaxLevel : 0;
+  }
+
+  private Vertex loadVertexFromRID(final Identifiable rid) {
+    if (rid instanceof Vertex)
+      return (Vertex) rid;
+
+    Vertex vertex = null;
+    if (cache != null)
+      vertex = cache.get(rid);
+    if (vertex == null)
+      vertex = rid.asVertex();
+    return vertex;
   }
 
   private void mutuallyConnectNewElement(final Vertex newNode, final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates, final int level) {
@@ -261,15 +289,19 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
         }
       }
 
-      newNode.newEdge(getEdgeType(level), selectedNeighbourId, false);
+      // CREATE THE EDGE TYPE IF NOT PRESENT
+      final String edgeTypeName = getEdgeType(level);
+      database.getSchema().getOrCreateEdgeType(edgeTypeName);
 
-      final Vertex neighbourNode = selectedNeighbourId.asVertex();
+      newNode.newEdge(edgeTypeName, selectedNeighbourId, false);
+
+      final Vertex neighbourNode = loadVertexFromRID(selectedNeighbourId);
       final TVector neighbourVector = getVectorFromVertex(neighbourNode);
       final int neighbourConnectionsAtLevelTotal = countConnectionsFromVertex(neighbourNode, level);
       final Iterator<Vertex> neighbourConnectionsAtLevel = getConnectionsFromVertex(neighbourNode, level);
 
       if (neighbourConnectionsAtLevelTotal < bestN) {
-        neighbourNode.newEdge(getEdgeType(level), newNode, false);
+        neighbourNode.newEdge(edgeTypeName, newNode, false);
       } else {
         // finding the "weakest" element to replace it with the new one
         final TDistance dMax = distanceFunction.distance(newItemVector, neighbourVector);
@@ -285,7 +317,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
         getNeighborsByHeuristic2(candidates, bestN);
 
         while (!candidates.isEmpty()) {
-          neighbourNode.newEdge(getEdgeType(level), candidates.poll().nodeId, false);
+          neighbourNode.newEdge(edgeTypeName, candidates.poll().nodeId, false);
         }
       }
     }
@@ -313,8 +345,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
       for (NodeIdAndDistance<TDistance> secondPair : returnList) {
 
         final TDistance curdist = distanceFunction.distance(//
-            getVectorFromVertex(secondPair.nodeId.asVertex()),//
-            getVectorFromVertex(currentPair.nodeId.asVertex()));
+            getVectorFromVertex(loadVertexFromRID(secondPair.nodeId)),//
+            getVectorFromVertex(loadVertexFromRID(currentPair.nodeId)));
 
         if (lt(curdist, distToQuery)) {
           good = false;
@@ -369,7 +401,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     List<SearchResult<Vertex, TDistance>> results = new ArrayList<>(topCandidates.size());
     while (!topCandidates.isEmpty()) {
       NodeIdAndDistance<TDistance> pair = topCandidates.poll();
-      results.add(0, new SearchResult<>(pair.nodeId.asVertex(), pair.distance, maxValueDistanceComparator));
+      results.add(0, new SearchResult<>(loadVertexFromRID(pair.nodeId), pair.distance, maxValueDistanceComparator));
     }
 
     return results;
@@ -405,7 +437,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
       if (gt(currentPair.distance, lowerBound))
         break;
 
-      final Vertex node = currentPair.nodeId.asVertex();
+      final Vertex node = loadVertexFromRID(currentPair.nodeId);
 
       final Iterator<Vertex> candidates = getConnectionsFromVertex(node, layer);
       while (candidates.hasNext()) {
@@ -524,8 +556,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
    *
    * @return a builder
    */
-  public static <TVector, TDistance extends Comparable<TDistance>> Builder<TVector, TDistance> newBuilder(int dimensions,
-      DistanceFunction<TVector, TDistance> distanceFunction, int maxItemCount) {
+  public static <TId, TVector, TDistance extends Comparable<TDistance>> Builder<TId, TVector, TDistance> newBuilder(final int dimensions,
+      final DistanceFunction<TVector, TDistance> distanceFunction, final int maxItemCount) {
 
     Comparator<TDistance> distanceComparator = Comparator.naturalOrder();
 
@@ -544,7 +576,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
    *
    * @return a builder
    */
-  public static <TVector, TDistance> Builder<TVector, TDistance> newBuilder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction,
+  public static <TId, TVector, TDistance> Builder<TId, TVector, TDistance> newBuilder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction,
       Comparator<TDistance> distanceComparator, int maxItemCount) {
 
     return new Builder<>(dimensions, distanceFunction, distanceComparator, maxItemCount);
@@ -585,7 +617,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
   }
 
   static class NodeIdAndDistance<TDistance> implements Comparable<NodeIdAndDistance<TDistance>> {
-
     final RID                   nodeId;
     final TDistance             distance;
     final Comparator<TDistance> distanceComparator;
@@ -639,15 +670,19 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     int                                  dimensions;
     DistanceFunction<TVector, TDistance> distanceFunction;
     Comparator<TDistance>                distanceComparator;
+    int                                  maxItemCount;
+    int                                  m              = DEFAULT_M;
+    int                                  ef             = DEFAULT_EF;
+    int                                  efConstruction = DEFAULT_EF_CONSTRUCTION;
+    Database                             database;
+    String                               vertexType;
+    String                               edgeType;
+    String                               vectorPropertyName;
+    String                               idPropertyName;
+    Map<RID, Vertex>                     cache;
 
-    int maxItemCount;
-
-    int m              = DEFAULT_M;
-    int ef             = DEFAULT_EF;
-    int efConstruction = DEFAULT_EF_CONSTRUCTION;
-
-    BuilderBase(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, Comparator<TDistance> distanceComparator, int maxItemCount) {
-
+    BuilderBase(final int dimensions, final DistanceFunction<TVector, TDistance> distanceFunction, final Comparator<TDistance> distanceComparator,
+        final int maxItemCount) {
       this.dimensions = dimensions;
       this.distanceFunction = distanceFunction;
       this.distanceComparator = distanceComparator;
@@ -655,6 +690,36 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     }
 
     abstract TBuilder self();
+
+    public TBuilder withDatabase(final Database database) {
+      this.database = database;
+      return self();
+    }
+
+    public TBuilder withVertexType(final String vertexType) {
+      this.vertexType = vertexType;
+      return self();
+    }
+
+    public TBuilder withEdgeType(final String edgeType) {
+      this.edgeType = edgeType;
+      return self();
+    }
+
+    public TBuilder withVectorPropertyName(final String vectorPropertyName) {
+      this.vectorPropertyName = vectorPropertyName;
+      return self();
+    }
+
+    public TBuilder withIdProperty(final String idPropertyName) {
+      this.idPropertyName = idPropertyName;
+      return self();
+    }
+
+    public TBuilder withCache(final Map<RID, Vertex> cache) {
+      this.cache = cache;
+      return self();
+    }
 
     /**
      * Sets the number of bi-directional links created for every new element during construction. Reasonable range
@@ -713,8 +778,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
    * @param <TVector>   Type of the vector to perform distance calculation on
    * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
    */
-  public static class Builder<TVector, TDistance> extends BuilderBase<Builder<TVector, TDistance>, TVector, TDistance> {
-
+  public static class Builder<TId, TVector, TDistance> extends BuilderBase<Builder<TId, TVector, TDistance>, TVector, TDistance> {
     /**
      * Constructs a new {@link Builder} instance.
      *
@@ -722,14 +786,18 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
      * @param distanceFunction the distance function
      * @param maxItemCount     the maximum number of elements in the index
      */
-    Builder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, Comparator<TDistance> distanceComparator, int maxItemCount) {
-
+    Builder(final int dimensions, final DistanceFunction<TVector, TDistance> distanceFunction, final Comparator<TDistance> distanceComparator,
+        final int maxItemCount) {
       super(dimensions, distanceFunction, distanceComparator, maxItemCount);
     }
 
     @Override
-    Builder<TVector, TDistance> self() {
+    Builder<TId, TVector, TDistance> self() {
       return this;
+    }
+
+    public HnswVectorIndex<TId, TVector, TDistance> build() {
+      return new HnswVectorIndex<>(this);
     }
   }
 }
