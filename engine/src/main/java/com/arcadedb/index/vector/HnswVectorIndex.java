@@ -24,20 +24,27 @@ package com.arcadedb.index.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.json.JSONObject;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
 import com.github.jelmerk.knn.SearchResult;
 import com.github.jelmerk.knn.util.Murmur3;
+import org.eclipse.collections.api.list.primitive.MutableIntList;
 
 import java.io.*;
 import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.locks.*;
+import java.util.logging.*;
 import java.util.stream.*;
+
+import static java.util.Comparator.*;
 
 /**
  * This work is derived from the excellent work made by Jelmer Kuperus on https://github.com/jelmerk/hnswlib.
@@ -97,6 +104,38 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
         .withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
     this.globalLock = new ReentrantLock();
+  }
+
+  public HnswVectorIndex(final Database database, final JSONObject json) throws ReflectiveOperationException {
+    this.database = database;
+
+    this.dimensions = json.getInt("dimensions");
+    this.distanceFunction = DistanceFunctionFactory.getImplementation(json.getString("distanceFunction"));
+    this.distanceComparator = (Comparator<TDistance>) Comparator.naturalOrder();
+    this.maxValueDistanceComparator = new MaxValueComparator<>(this.distanceComparator);
+    this.maxItemCount = json.getInt("maxItemCount");
+    this.m = json.getInt("m");
+    this.maxM = json.getInt("maxM");
+    this.maxM0 = json.getInt("maxM0");
+    this.levelLambda = json.getDouble("levelLambda");
+    this.ef = json.getInt("ef");
+    this.efConstruction = json.getInt("efConstruction");
+
+    if (json.getString("entryPoint").length() > 0) {
+      this.entryPoint = new RID(database, json.getString("entryPoint")).asVertex();
+    } else
+      this.entryPoint = null;
+
+    this.vertexType = json.getString("vertexType");
+    this.edgeType = json.getString("edgeType");
+    this.idPropertyName = json.getString("idPropertyName");
+    this.vectorPropertyName = json.getString("vectorPropertyName");
+
+    this.lookup = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
+        .withType(Schema.INDEX_TYPE.LSM_TREE).create();
+
+    this.globalLock = new ReentrantLock();
+    this.cache = null;
   }
 
   public Vertex get(Object id) {
@@ -558,9 +597,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
    */
   public static <TId, TVector, TDistance extends Comparable<TDistance>> Builder<TId, TVector, TDistance> newBuilder(final int dimensions,
       final DistanceFunction<TVector, TDistance> distanceFunction, final int maxItemCount) {
-
-    Comparator<TDistance> distanceComparator = Comparator.naturalOrder();
-
+    final Comparator<TDistance> distanceComparator = naturalOrder();
     return new Builder<>(dimensions, distanceFunction, distanceComparator, maxItemCount);
   }
 
@@ -580,6 +617,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
       Comparator<TDistance> distanceComparator, int maxItemCount) {
 
     return new Builder<>(dimensions, distanceFunction, distanceComparator, maxItemCount);
+  }
+
+  public static <TId, TVector, TDistance> Builder<TId, TVector, TDistance> newBuilder(final HnswVectorIndexRAM origin) {
+    return new Builder<>(origin);
   }
 
   private int assignLevel(final TId value, final double lambda) {
@@ -779,16 +820,18 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
    * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
    */
   public static class Builder<TId, TVector, TDistance> extends BuilderBase<Builder<TId, TVector, TDistance>, TVector, TDistance> {
-    /**
-     * Constructs a new {@link Builder} instance.
-     *
-     * @param dimensions       the dimensionality of the vectors stored in the index
-     * @param distanceFunction the distance function
-     * @param maxItemCount     the maximum number of elements in the index
-     */
+    private final HnswVectorIndexRAM origin;
+    private       int                transactionBatchSize = 10_000;
+
+    Builder(final HnswVectorIndexRAM origin) {
+      super(origin.getDimensions(), origin.getDistanceFunction(), origin.getDistanceComparator(), origin.getMaxItemCount());
+      this.origin = origin;
+    }
+
     Builder(final int dimensions, final DistanceFunction<TVector, TDistance> distanceFunction, final Comparator<TDistance> distanceComparator,
         final int maxItemCount) {
       super(dimensions, distanceFunction, distanceComparator, maxItemCount);
+      this.origin = null;
     }
 
     @Override
@@ -796,8 +839,122 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
       return this;
     }
 
-    public HnswVectorIndex<TId, TVector, TDistance> build() {
-      return new HnswVectorIndex<>(this);
+    public Builder<TId, TVector, TDistance> withTransactionBatchSize(final int transactionBatchSize) {
+      this.transactionBatchSize = transactionBatchSize;
+      return self();
     }
+
+    public HnswVectorIndex<TId, TVector, TDistance> build() {
+      final HnswVectorIndex<TId, TVector, TDistance> index = new HnswVectorIndex<>(this);
+
+      if (origin != null) {
+        // IMPORT FROM RAM Index
+        final RID[] pointersToRIDMapping = new RID[origin.size()];
+
+        LogManager.instance().log(this, Level.SEVERE, "Saving all the items as vertices at batch of %d items...", transactionBatchSize);
+
+        database.begin();
+
+        // SAVE ALL THE NODES AS VERTICES AND KEEP AN ARRAY OF RIDS TO BUILD EDGES LATER
+        int maxLevel = 0;
+        HnswVectorIndexRAM.ItemIterator iter = origin.iterateNodes();
+        for (int txCounter = 0; iter.hasNext(); ++txCounter) {
+          final HnswVectorIndexRAM.Node node = iter.next();
+
+          final int nodeMaxLevel = node.maxLevel();
+          if (nodeMaxLevel > maxLevel)
+            maxLevel = nodeMaxLevel;
+
+          final MutableVertex vertex = database.newVertex(vertexType).set(idPropertyName, node.item.id()).set(vectorPropertyName, node.item.vector());
+
+          if (nodeMaxLevel > 0)
+            // SAVE MAX LEVEL INTO THE VERTEX. IF NOT PRESENT, MEANS 0
+            vertex.set("vectorMaxLevel", nodeMaxLevel);
+
+          vertex.save();
+
+          pointersToRIDMapping[node.id] = vertex.getIdentity();
+
+          if (txCounter % transactionBatchSize == 0) {
+            database.commit();
+            LogManager.instance().log(this, Level.SEVERE, "- Saved %d items as vertices", txCounter);
+            database.begin();
+          }
+        }
+
+        database.commit();
+
+        final Integer entryPoint = origin.getEntryPoint();
+        if (entryPoint != null)
+          index.entryPoint = pointersToRIDMapping[entryPoint].asVertex();
+
+        LogManager.instance().log(this, Level.SEVERE, "All items are saved. Maximum level is %d", maxLevel);
+
+        // BUILD ALL EDGE TYPES (ONE PER LEVEL)
+        for (int level = 0; level <= maxLevel; level++) {
+          // ASSURE THE EDGE TYPE IS CREATED IN THE DATABASE
+          database.getSchema().getOrCreateEdgeType(index.getEdgeType(level));
+        }
+
+        LogManager.instance().log(this, Level.SEVERE, "Connecting the items with edges at batch of %d items...", transactionBatchSize);
+
+        database.begin();
+
+        // BUILD THE EDGES
+        long totalEdges = 0l;
+        iter = origin.iterateNodes();
+        for (int txCounter = 0; iter.hasNext(); ++txCounter) {
+          final HnswVectorIndexRAM.Node node = iter.next();
+
+          final Vertex source = pointersToRIDMapping[node.id].asVertex();
+
+          final MutableIntList[] connections = node.connections();
+          for (int level = 0; level < connections.length; level++) {
+            final String edgeTypeLevel = index.getEdgeType(level);
+
+            final MutableIntList pointers = connections[level];
+            for (int i = 0; i < pointers.size(); i++) {
+              final int pointer = pointers.get(i);
+
+              final RID destination = pointersToRIDMapping[pointer];
+              source.newEdge(edgeTypeLevel, destination, false);
+              ++totalEdges;
+            }
+          }
+
+          if (txCounter % transactionBatchSize == 0) {
+            database.commit();
+            LogManager.instance().log(this, Level.SEVERE, "- Connected %d items for a total of %d edges", txCounter, totalEdges);
+            database.begin();
+          }
+        }
+
+        database.commit();
+      }
+      return index;
+    }
+  }
+
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+    json.put("version", 0);
+    json.put("dimensions", dimensions);
+    json.put("distanceFunction", distanceFunction.getClass().getSimpleName());
+    json.put("distanceComparator", distanceComparator.getClass().getSimpleName());
+    json.put("maxItemCount", maxItemCount);
+    json.put("m", m);
+    json.put("maxM", maxM);
+    json.put("maxM0", maxM0);
+    json.put("levelLambda", levelLambda);
+    json.put("ef", ef);
+    json.put("efConstruction", efConstruction);
+    json.put("levelLambda", levelLambda);
+    json.put("entryPoint", entryPoint == null ? "" : entryPoint.getIdentity().toString());
+
+    json.put("vertexType", vertexType);
+    json.put("edgeType", edgeType);
+    json.put("idPropertyName", idPropertyName);
+    json.put("vectorPropertyName", vectorPropertyName);
+    return json;
   }
 }
