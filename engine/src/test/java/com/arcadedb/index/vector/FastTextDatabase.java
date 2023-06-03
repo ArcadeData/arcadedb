@@ -2,6 +2,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
@@ -100,38 +101,35 @@ public class FastTextDatabase {
 
       LogManager.instance().log(this, Level.SEVERE, "Creating index with took %d millis which is %d minutes.%n", duration, MILLISECONDS.toMinutes(duration));
 
-      //Console console = System.console();
-
       int k = 10;
 
-      while (true) {
-        System.out.println("Enter an english word : ");
+      final Random random = new Random();
 
-        String input = "dog";  // console.readLine();
+      while (true) {
+        System.out.println("Selecting a random word from the database...");
+
+        String input = "";
+        final int wordNum = random.nextInt(2_000_000 - 1);
+        final Iterator<Record> it = database.iterateType("Word", false);
+        for (int i = 0; it.hasNext(); ++i) {
+          final Record w = it.next();
+          if (i == wordNum) {
+            input = w.asVertex().getString("name");
+            break;
+          }
+        }
+
+        System.out.printf("Searching for words similar to '%s'...", input);
 
         final long startWord = System.currentTimeMillis();
 
         List<SearchResult<Vertex, Float>> approximateResults = persistentIndex.findNeighbors(input, k);
 
-        System.out.printf("Found similar words for '%s' in %dms%n", input, System.currentTimeMillis() - startWord);
+        System.out.printf("%nFound similar words for '%s' in %dms%n", input, System.currentTimeMillis() - startWord);
 
-//      final long startBruteForce = System.currentTimeMillis();
-//
-//      List<SearchResult<Word, Float>> groundTruthResults = groundTruthIndex.findNeighbors(input, k);
-//
-//      System.out.printf("Found similar words using brute force for '%s' in %dms%n", input, System.currentTimeMillis() - startBruteForce);
-//
-        System.out.printf("Most similar words found using HNSW index : %n%n");
         for (SearchResult<Vertex, Float> result : approximateResults) {
-          System.out.printf("%s %.4f%n", result.item().getString("name"), result.distance());
+          System.out.printf("- %s %.4f%n", result.item().getString("name"), result.distance());
         }
-//
-//      System.out.printf("%nMost similar words found using exact index: %n%n");
-//      for (SearchResult<Word, Float> result : groundTruthResults) {
-//        System.out.printf("%s %.4f%n", result.item().id(), result.distance());
-//      }
-//      int correct = groundTruthResults.stream().mapToInt(r -> approximateResults.contains(r) ? 1 : 0).sum();
-//      System.out.printf("%nAccuracy : %.4f%n%n", correct / (double) groundTruthResults.size());
 
         Thread.sleep(1000);
       }
