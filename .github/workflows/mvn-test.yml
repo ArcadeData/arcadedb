@@ -64,7 +64,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: E2E Test
-        if: success() && ${{ matrix.os != 'windows-latest' }}
+        if: ${{ success() && matrix.os != 'windows-latest' }}
         run: mvn verify -pl e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
