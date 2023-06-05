@@ -3,12 +3,14 @@ package com.arcadedb.server;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class HTTPGraphIT extends BaseGraphServerTest {
@@ -245,40 +247,22 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkCommandNoDuplication() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      final JSONObject responseAsJson = executeCommand(serverIndex, "sql", "SELECT FROM E1");
 
-      connection.setRequestMethod("POST");
-      connection.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPayload(connection, "sql", "SELECT FROM E1", "studio", Collections.emptyMap());
-      connection.connect();
+      final List<Object> vertices = responseAsJson.getJSONObject("result").getJSONArray("vertices").toList();
+      Assertions.assertEquals(2, vertices.size());
+      for (final Object o : vertices)
+        Assertions.assertTrue(((Map) o).get("t").equals("V1") || ((Map) o).get("t").equals("V2"));
 
-      try {
-        final String response = readResponse(connection);
-        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
+      final List<Object> records = responseAsJson.getJSONObject("result").getJSONArray("records").toList();
+      Assertions.assertEquals(3, records.size());
+      for (final Object o : records)
+        Assertions.assertTrue(((Map) o).get("@type").equals("V1") || ((Map) o).get("@type").equals("V2") || ((Map) o).get("@type").equals("E1"));
 
-        final JSONObject responseAsJson = new JSONObject(response);
-
-        final List<Object> vertices = responseAsJson.getJSONObject("result").getJSONArray("vertices").toList();
-        Assertions.assertEquals(2, vertices.size());
-        for (final Object o : vertices)
-          Assertions.assertTrue(((Map) o).get("t").equals("V1") || ((Map) o).get("t").equals("V2"));
-
-        final List<Object> records = responseAsJson.getJSONObject("result").getJSONArray("records").toList();
-        Assertions.assertEquals(3, records.size());
-        for (final Object o : records)
-          Assertions.assertTrue(((Map) o).get("@type").equals("V1") || ((Map) o).get("@type").equals("V2") || ((Map) o).get("@type").equals("E1"));
-
-        final List<Object> edges = responseAsJson.getJSONObject("result").getJSONArray("edges").toList();
-        Assertions.assertEquals(1, edges.size());
-        for (final Object o : edges)
-          Assertions.assertTrue(((Map) o).get("t").equals("E1"));
-
-      } finally {
-        connection.disconnect();
-      }
+      final List<Object> edges = responseAsJson.getJSONObject("result").getJSONArray("edges").toList();
+      Assertions.assertEquals(1, edges.size());
+      for (final Object o : edges)
+        Assertions.assertTrue(((Map) o).get("t").equals("E1"));
     });
   }
 
@@ -591,5 +575,115 @@ public class HTTPGraphIT extends BaseGraphServerTest {
         connection.disconnect();
       }
     });
+  }
+
+  @Test
+  public void testOneEdgePerTx() throws Exception {
+    testEachServer((serverIndex) -> {
+      executeCommand(serverIndex, "sqlscript", "create vertex type Photos;create vertex type Users;create edge type HasUploaded;");
+      executeCommand(serverIndex, "sql", "create vertex Users set id = 'u1111'");
+
+      executeCommand(serverIndex, "sqlscript", //
+          "LET photo = CREATE vertex Photos SET id = \"p12345\", name = \"download1.jpg\";" //
+              + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+              + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
+              + "commit retry 30;return $photo;");
+
+      executeCommand(serverIndex, "sqlscript", //
+          "LET photo = CREATE vertex Photos SET id = \"p2222\", name = \"download2.jpg\";" //
+              + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+              + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
+              + "commit retry 30;return $photo;");
+
+      executeCommand(serverIndex, "sqlscript", //
+          "LET photo = CREATE vertex Photos SET id = \"p5555\", name = \"download3.jpg\";" //
+              + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+              + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
+              + "commit retry 30;return $photo;");
+
+      final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql", //
+          "SELECT id FROM ( SELECT expand( outE('HasUploaded') ) FROM Users WHERE id = \"u1111\" )");
+
+      Assertions.assertEquals(3, responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length());
+    });
+  }
+
+  @Test
+  public void testOneEdgePerTxMultiThreads() throws Exception {
+    testEachServer((serverIndex) -> {
+      executeCommand(serverIndex, "sqlscript", "create vertex type Photos;create vertex type Users;create edge type HasUploaded;");
+
+      executeCommand(serverIndex, "sql", "create vertex Users set id = 'u1111'");
+
+      final int THREADS = 4;
+      final int SCRIPTS = 100;
+      final AtomicInteger atomic = new AtomicInteger();
+
+      final Thread[] threads = new Thread[THREADS];
+      for (int i = 0; i < THREADS; i++) {
+        threads[i] = new Thread(() -> {
+          for (int j = 0; j < SCRIPTS; j++) {
+            try {
+              final JSONObject responseAsJson = executeCommand(serverIndex, "sqlscript", //
+                  "BEGIN ISOLATION REPEATABLE_READ;LET photo = CREATE vertex Photos SET id = uuid(), name = \"downloadX.jpg\";" //
+                      + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+                      + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
+                      + "commit retry 100;return $photo;");
+
+              atomic.incrementAndGet();
+
+              if (responseAsJson == null) {
+                LogManager.instance().log(this, Level.SEVERE, "Error on execution from thread %d", Thread.currentThread().getId());
+                continue;
+              }
+
+              Assertions.assertNotNull(responseAsJson.getJSONObject("result").getJSONArray("records"));
+
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+          }
+        });
+        threads[i].start();
+      }
+
+      for (int i = 0; i < THREADS; i++)
+        threads[i].join(60 * 1_000);
+
+      Assertions.assertEquals(THREADS * SCRIPTS, atomic.get());
+
+      final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql", //
+          "SELECT id FROM ( SELECT expand( outE('HasUploaded') ) FROM Users WHERE id = \"u1111\" )");
+
+      Assertions.assertEquals(THREADS * SCRIPTS, responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length());
+    });
+  }
+
+  private JSONObject executeCommand(final int serverIndex, final String language, final String payloadCommand) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    formatPayload(connection, language, payloadCommand, "studio", Collections.emptyMap());
+    connection.connect();
+
+    try {
+      final String response = readResponse(connection);
+      LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+      Assertions.assertEquals(200, connection.getResponseCode());
+      Assertions.assertEquals("OK", connection.getResponseMessage());
+
+      return new JSONObject(response);
+
+    } catch (Exception e) {
+      if (connection.getErrorStream() != null) {
+        String responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), "UTF8");
+        LogManager.instance().log(this, Level.SEVERE, "Error: " + responsePayload);
+      }
+      return null;
+    } finally {
+      connection.disconnect();
+    }
   }
 }

@@ -183,28 +183,31 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
       } else
         lastRetryBlock.add(stm);
 
-      if (stm instanceof CommitStatement && nestedTxLevel > 0) {
-        nestedTxLevel--;
-        if (nestedTxLevel == 0) {
+      if (stm instanceof CommitStatement) {
+        if (nestedTxLevel > 0) {
+          nestedTxLevel--;
+          if (nestedTxLevel == 0) {
 
-          if (((CommitStatement) stm).getRetry() != null) {
-            int nRetries = ((CommitStatement) stm).getRetry().getValue().intValue();
-            if (nRetries <= 0)
-              throw new CommandExecutionException("Invalid retry number " + nRetries);
+            if (((CommitStatement) stm).getRetry() != null) {
+              int nRetries = ((CommitStatement) stm).getRetry().getValue().intValue();
+              if (nRetries <= 0)
+                throw new CommandExecutionException("Invalid retry number " + nRetries);
 
-            final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(), ((CommitStatement) stm).getElseFail(),
-                scriptContext, false);
-            final RetryExecutionPlan retryPlan = new RetryExecutionPlan(scriptContext);
-            retryPlan.chain(step);
-            plan.chain(retryPlan, false);
-            lastRetryBlock = new ArrayList<>();
-          } else {
-            for (final Statement statement : lastRetryBlock) {
-              final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
-              plan.chain(sub, false);
+              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(), ((CommitStatement) stm).getElseFail(),
+                  scriptContext, false);
+              final RetryExecutionPlan retryPlan = new RetryExecutionPlan(scriptContext);
+              retryPlan.chain(step);
+              plan.chain(retryPlan, false);
+              lastRetryBlock = new ArrayList<>();
+            } else {
+              for (final Statement statement : lastRetryBlock) {
+                final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
+                plan.chain(sub, false);
+              }
             }
           }
-        }
+        } else
+          throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
       }
 
       if (stm instanceof LetStatement)
