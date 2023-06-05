@@ -105,8 +105,8 @@ public class FastTextDatabase {
 
       final Random random = new Random();
 
-      while (true) {
-        System.out.println("Selecting a random word from the database...");
+      for (int cycle = 0; ; ++cycle) {
+        LogManager.instance().log(this, Level.SEVERE, "%d Selecting a random word from the database...", cycle);
 
         String input = "";
         final int wordNum = random.nextInt(2_000_000 - 1);
@@ -119,19 +119,19 @@ public class FastTextDatabase {
           }
         }
 
-        System.out.printf("Searching for words similar to '%s'...", input);
+        LogManager.instance().log(this, Level.SEVERE, "Searching for words similar to '%s'...", input);
 
         final long startWord = System.currentTimeMillis();
 
         List<SearchResult<Vertex, Float>> approximateResults = persistentIndex.findNeighbors(input, k);
 
-        System.out.printf("%nFound similar words for '%s' in %dms%n", input, System.currentTimeMillis() - startWord);
+        LogManager.instance().log(this, Level.SEVERE, "Found similar words for '%s' in %dms", input, System.currentTimeMillis() - startWord);
 
         for (SearchResult<Vertex, Float> result : approximateResults) {
-          System.out.printf("- %s %.4f%n", result.item().getString("name"), result.distance());
+          LogManager.instance().log(this, Level.SEVERE, "- %s %.4f", result.item().getString("name"), result.distance());
         }
 
-        Thread.sleep(1000);
+        //Thread.sleep(1000);
       }
     } finally {
       database.close();
