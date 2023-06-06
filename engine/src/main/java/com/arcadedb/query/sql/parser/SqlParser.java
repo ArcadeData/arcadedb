@@ -16412,7 +16412,7 @@ if (jjtc000) {
   jjtn000.jjtSetFirstToken(getToken(1));
     try {
       jj_consume_token(SLEEP);
-      jjtn000.millis = PInteger();
+      jjtn000.expression = Expression();
 jjtree.closeNodeScope(jjtn000, true);
     jjtc000 = false;
     jjtn000.jjtSetLastToken(getToken(0));
@@ -21574,7 +21574,7 @@ if (jjtc000) {
   private boolean jj_3R_SleepStatement_4093_3_276()
  {
     if (jj_scan_token(SLEEP)) return true;
-    if (jj_3R_PInteger_907_3_65()) return true;
+    if (jj_3R_Expression_2037_3_130()) return true;
     return false;
   }
 

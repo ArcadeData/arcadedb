@@ -4090,7 +4090,7 @@ IfStatement IfStatement():
 SleepStatement SleepStatement():
 { }
 {
-  <SLEEP> jjtThis.millis = PInteger()
+  <SLEEP> jjtThis.expression = Expression()
   { return jjtThis; }
 }
 
