@@ -162,6 +162,12 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     return parserText;
   }
 
+  @Override
+  public boolean isExecutedByTheLeader() {
+    // REPLICATE THE SCRIPT TO THE LEADER
+    return true;
+  }
+
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
 

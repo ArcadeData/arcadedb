@@ -296,7 +296,7 @@ public class TransactionManager {
         LogManager.instance()
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion, page.getVersion());
 
-        if (txPage.currentPageVersion < page.getVersion())
+        if (txPage.currentPageVersion <= page.getVersion())
           // SKIP IT
           continue;
 

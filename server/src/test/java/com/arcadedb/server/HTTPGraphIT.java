@@ -625,7 +625,8 @@ public class HTTPGraphIT extends BaseGraphServerTest {
           for (int j = 0; j < SCRIPTS; j++) {
             try {
               final JSONObject responseAsJson = executeCommand(serverIndex, "sqlscript", //
-                  "BEGIN ISOLATION REPEATABLE_READ;LET photo = CREATE vertex Photos SET id = uuid(), name = \"downloadX.jpg\";" //
+                  "BEGIN ISOLATION REPEATABLE_READ;" //
+                      + "LET photo = CREATE vertex Photos SET id = uuid(), name = \"downloadX.jpg\";" //
                       + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
                       + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
                       + "commit retry 100;return $photo;");
@@ -657,33 +658,5 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       Assertions.assertEquals(THREADS * SCRIPTS, responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length());
     });
-  }
-
-  private JSONObject executeCommand(final int serverIndex, final String language, final String payloadCommand) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
-
-    connection.setRequestMethod("POST");
-    connection.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-    formatPayload(connection, language, payloadCommand, "studio", Collections.emptyMap());
-    connection.connect();
-
-    try {
-      final String response = readResponse(connection);
-      LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-      Assertions.assertEquals(200, connection.getResponseCode());
-      Assertions.assertEquals("OK", connection.getResponseMessage());
-
-      return new JSONObject(response);
-
-    } catch (Exception e) {
-      if (connection.getErrorStream() != null) {
-        String responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), "UTF8");
-        LogManager.instance().log(this, Level.SEVERE, "Error: " + responsePayload);
-      }
-      return null;
-    } finally {
-      connection.disconnect();
-    }
   }
 }
