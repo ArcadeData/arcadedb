@@ -360,7 +360,8 @@ public class Neo4jImporter {
 
         final IndexCursor beginCursor = database.lookupByKey(startType.getFirst(), "id", startId);
         if (!beginCursor.hasNext()) {
-          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), startId);
+          log("- cannot create relationship with id '%s'. Vertex id '%s' not found in type '%s'. Skip it.", json.getString("id"), startId,
+              startType.getFirst());
           context.warnings.incrementAndGet();
           return null;
         }
