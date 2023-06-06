@@ -112,7 +112,8 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
             // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
             database.rollbackAllNested();
         } finally {
-          cleanTL(database, current);
+          // DO NOT CLEAN THE CURRENT SESSION BECAUSE IT COULD HAVE AN OPEN TX
+          cleanTL(database, null);
         }
       }
     }
