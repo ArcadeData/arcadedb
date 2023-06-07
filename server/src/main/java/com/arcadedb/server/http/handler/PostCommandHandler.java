@@ -113,16 +113,16 @@ public class PostCommandHandler extends AbstractQueryHandler {
       command += ";";
 
     if (params instanceof Object[])
-      return database.command("sqlscript", command, (Object[]) params);
+      return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Object[]) params);
 
-    return database.command("sqlscript", command, (Map<String, Object>) params);
+    return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }
 
   protected ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
     if (params instanceof Object[])
-      return database.command(language, command, (Object[]) params);
+      return database.command(language, command, httpServer.getServer().getConfiguration(), (Object[]) params);
 
     return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }
