@@ -122,7 +122,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       for (final Index index : database.getSchema().getIndexes()) {
         if (database.isOpen())
           try {
-            index.scheduleCompaction();
+            ((IndexInternal) index).scheduleCompaction();
             ((IndexInternal) index).compact();
           } catch (final Exception e) {
             Assertions.fail(e);
