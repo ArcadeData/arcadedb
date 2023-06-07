@@ -972,7 +972,7 @@ public class DocumentType {
       type.put("bucketSelectionStrategy", strategy.toJSON());
 
     for (final TypeIndex i : getAllIndexes(false)) {
-      for (final Index entry : i.getIndexesOnBuckets())
+      for (final IndexInternal entry : i.getIndexesOnBuckets())
         indexes.put(entry.getName(), entry.toJSON());
     }
 

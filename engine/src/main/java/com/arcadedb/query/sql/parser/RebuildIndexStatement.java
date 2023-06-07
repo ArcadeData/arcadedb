@@ -75,13 +75,13 @@ public class RebuildIndexStatement extends DDLStatement {
               final boolean unique = idx.isUnique();
               final List<String> propNames = idx.getPropertyNames();
               final String typeName = idx.getTypeName();
-              final int pageSize = idx.getPageSize();
+              final int pageSize = ((TypeIndex) idx).getPageSize();
               final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
               database.getSchema().dropIndex(idx.getName());
 
               database.getSchema().buildTypeIndex(typeName, propNames.toArray(new String[propNames.size()])).withType(indexType).withUnique(unique)
-                  .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE).withNullStrategy(nullStrategy).withCallback(callback).create();
+                  .withPageSize(pageSize).withNullStrategy(nullStrategy).withCallback(callback).create();
 
               indexList.add(idx.getName());
             }
