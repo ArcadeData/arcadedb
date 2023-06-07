@@ -276,6 +276,8 @@ TOKEN:
   |
   < ENGINE: ("E"|"e")("N"|"n")("G"|"g")("I"|"i")("N"|"n")("E"|"e")>
   |
+  < METADATA: ("M"|"m")("E"|"e")("T"|"t")("A"|"a")("D"|"d")("A"|"a")("T"|"t")("A"|"a")>
+  |
   < REBUILD: ("R"|"r")("E"|"e")("B"|"b")("U"|"u")("I"|"i")("L"|"l")("D"|"d")>
   |
   < FORMAT: ("F"|"f")("O"|"o")("R"|"r")("M"|"m")("A"|"a")("T"|"t") >
@@ -804,11 +806,11 @@ Identifier Identifier():
   |
   token = <FORCE>
   |
-  token = <SCHEMA>
-  |
   token = <INDEX>
   |
   token = <ENGINE>
+  |
+  token = <METADATA>
   |
   token = <REBUILD>
   |
@@ -3864,40 +3866,8 @@ CreateIndexStatement CreateIndexStatement():
         |
         jjtThis.type = Identifier()
     )
-    (
-      LOOKAHEAD(2)
-      <ENGINE> jjtThis.engine = Identifier()
-      [
-        LOOKAHEAD(2)
-        (
-           <SCHEMA> jjtThis.schema = Json()
-        )
-        |
-        (
-          lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
-          (
-            <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
-          )*
-          [ <SCHEMA> jjtThis.schema = Json() ]
-        )
-      ]
-      |
-      [
-        LOOKAHEAD(2)
-        (
-           <SCHEMA> jjtThis.schema = Json()
-        )
-        |
-        (
-          lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
-          (
-            <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
-          )*
-          [ <SCHEMA> jjtThis.schema = Json() ]
-        )
-      ]
-    )
-
+    [ <ENGINE> jjtThis.engine = Identifier() ]
+    [ <METADATA> jjtThis.metadata = Json() ]
     [ <NULL_STRATEGY>
       (
         <SKIP2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP; }
