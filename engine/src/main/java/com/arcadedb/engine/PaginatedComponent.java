@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 
 import java.io.*;
+import java.util.*;
 import java.util.concurrent.atomic.*;
 
 /**
@@ -87,7 +88,8 @@ public abstract class PaginatedComponent {
   }
 
   public void setPageCount(final int value) {
-    assert value > pageCount.get();
+    if (value <= pageCount.get())
+      throw new ConcurrentModificationException("Unable to update page count for component '" + name + "' (" + value + "<=" + pageCount.get() + ")");
     pageCount.set(value);
   }
 

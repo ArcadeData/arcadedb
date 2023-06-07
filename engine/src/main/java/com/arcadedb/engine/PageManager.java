@@ -190,9 +190,8 @@ public class PageManager extends LockContext {
     final PageId pageId = page.getPageId();
 
     if (!fileManager.existsFile(pageId.getFileId()))
-      throw new ConcurrentModificationException(
-          "Concurrent modification on page " + pageId + " file with id " + pageId.getFileId() + " does not exist anymore. Please retry the operation (threadId="
-              + Thread.currentThread().getId() + ")");
+      throw new ConcurrentModificationException("Concurrent modification on page " + pageId + ". The file with id " + pageId.getFileId()
+          + " does not exist anymore. Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
 
     final int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
 

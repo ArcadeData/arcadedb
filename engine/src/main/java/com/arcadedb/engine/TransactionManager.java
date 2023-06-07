@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -224,7 +225,7 @@ public class TransactionManager {
 
           lastTxId = lowerTxId;
 
-          applyChanges(walPositions[lowerTx]);
+          applyChanges(walPositions[lowerTx], true);
 
           walPositions[lowerTx] = activeWALFilePool[lowerTx].getTransaction(walPositions[lowerTx].endPositionInLog);
         }
@@ -266,7 +267,7 @@ public class TransactionManager {
     return map;
   }
 
-  public boolean applyChanges(final WALFile.WALTransaction tx) {
+  public boolean applyChanges(final WALFile.WALTransaction tx, final boolean ignoreErrors) {
     boolean changed = false;
     boolean involveDictionary = false;
 
@@ -277,9 +278,14 @@ public class TransactionManager {
     for (final WALFile.WALPage txPage : tx.pages) {
       final PaginatedFile file;
 
+      final PageId pageId = new PageId(txPage.fileId, txPage.pageNumber);
+
       if (!database.getFileManager().existsFile(txPage.fileId)) {
         LogManager.instance().log(this, Level.WARNING, "Error on restoring transaction: received operation on deleted file %d", null, txPage.fileId);
-        continue;
+        if (ignoreErrors)
+          continue;
+        throw new ConcurrentModificationException(
+            "Concurrent modification on page " + pageId + ". The file with id " + pageId.getFileId() + " does not exist anymore. Please retry the operation");
       }
 
       try {
@@ -289,22 +295,31 @@ public class TransactionManager {
         throw e;
       }
 
-      final PageId pageId = new PageId(txPage.fileId, txPage.pageNumber);
       try {
         final ImmutablePage page = database.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true);
 
         LogManager.instance()
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion, page.getVersion());
 
-        if (txPage.currentPageVersion < page.getVersion())
-          // SKIP IT
-          continue;
+        if (txPage.currentPageVersion <= page.getVersion()) {
+          if (ignoreErrors)
+            // SKIP IT
+            continue;
+          throw new ConcurrentModificationException(
+              "Concurrent modification on page " + pageId + " in file '" + database.getFileManager().getFile(pageId.getFileId()).getFileName() + "' (current v."
+                  + page.getVersion() + " <> database v." + page.getVersion() + "). Please retry the operation (threadId=" + Thread.currentThread().getId()
+                  + ")");
+        }
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {
           LogManager.instance().log(this, Level.WARNING,
               "Cannot apply changes to the database because modified page %s version in WAL (" + txPage.currentPageVersion
                   + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId, null, pageId);
-          continue;
+          if (ignoreErrors)
+            continue;
+          throw new ConcurrentModificationException(
+              "Cannot apply changes to the database because modified page " + pageId + " version in WAL (" + txPage.currentPageVersion
+                  + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId);
         }
 //          throw new WALException("Cannot apply changes to the database because modified page version in WAL (" + txPage.currentPageVersion
 //              + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId);

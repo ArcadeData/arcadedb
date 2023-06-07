@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
@@ -50,6 +51,9 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     final Database database;
     HttpSession activeSession = null;
     boolean atomicTransaction = false;
+
+    DatabaseContext.DatabaseContextTL current = null;
+
     if (requiresDatabase()) {
       final Deque<String> databaseName = exchange.getQueryParameters().get("database");
       if (databaseName.isEmpty())
@@ -57,7 +61,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
       database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
 
-      DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+      current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
       if (current != null && !current.transactions.isEmpty() && current.transactions.get(0).isActive()) {
         LogManager.instance().log(this, Level.WARNING, "Found a pending transaction from a previous operation. Rolling it back...");
         cleanTL(database, current);
@@ -70,7 +74,9 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         // INITIALIZE THE DATABASE CONTEXT
         current = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
 
-      current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
+      final SecurityDatabaseUser currentUser = current.getCurrentUser();
+      if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
+        current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
 
       if (requiresTransaction() && activeSession == null) {
         atomicTransaction = true;
@@ -106,6 +112,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
             // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
             database.rollbackAllNested();
         } finally {
+          // DO NOT CLEAN THE CURRENT SESSION BECAUSE IT COULD HAVE AN OPEN TX
           cleanTL(database, null);
         }
       }

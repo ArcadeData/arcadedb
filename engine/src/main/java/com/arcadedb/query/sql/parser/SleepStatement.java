@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -28,7 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class SleepStatement extends SimpleExecStatement {
-  protected PInteger millis;
+  protected Expression expression;
 
   public SleepStatement(final int id) {
     super(id);
@@ -40,10 +41,13 @@ public class SleepStatement extends SimpleExecStatement {
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "sleep");
+
+    final long millis = ((Number) expression.execute((Identifiable) null, context)).longValue();
+
     try {
-      Thread.sleep(millis.getValue().intValue());
+      Thread.sleep(millis);
       item.setProperty("result", "OK");
-      item.setProperty("millis", millis.getValue().intValue());
+      item.setProperty("millis", millis);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       item.setProperty("result", "failure");
@@ -57,13 +61,13 @@ public class SleepStatement extends SimpleExecStatement {
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("SLEEP ");
-    millis.toString(params, builder);
+    expression.toString(params, builder);
   }
 
   @Override
   public SleepStatement copy() {
     final SleepStatement result = new SleepStatement(-1);
-    result.millis = millis == null ? null : millis.copy();
+    result.expression = expression == null ? null : expression.copy();
     return result;
   }
 
@@ -76,12 +80,12 @@ public class SleepStatement extends SimpleExecStatement {
 
     final SleepStatement that = (SleepStatement) o;
 
-    return Objects.equals(millis, that.millis);
+    return Objects.equals(expression, that.expression);
   }
 
   @Override
   public int hashCode() {
-    return millis != null ? millis.hashCode() : 0;
+    return expression != null ? expression.hashCode() : 0;
   }
 }
 /* JavaCC - OriginalChecksum=2ea765ee266d4215414908b0e09c0779 (do not edit this line) */
