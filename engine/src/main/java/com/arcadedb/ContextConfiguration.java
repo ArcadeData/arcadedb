@@ -209,7 +209,7 @@ public class ContextConfiguration implements Serializable {
   }
 
   private String getVariable(final String name, final String defValue) {
-    String result = customResolver.resolveSystemVariables(name);
+    String result = customResolver.resolveSystemVariables(name, defValue);
     if (result == null)
       result = defValue;
     return result;
