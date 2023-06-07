@@ -3,7 +3,6 @@ package com.arcadedb.server;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -584,19 +583,22 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       executeCommand(serverIndex, "sql", "create vertex Users set id = 'u1111'");
 
       executeCommand(serverIndex, "sqlscript", //
-          "LET photo = CREATE vertex Photos SET id = \"p12345\", name = \"download1.jpg\";" //
+          "BEGIN;" //
+              + "LET photo = CREATE vertex Photos SET id = \"p12345\", name = \"download1.jpg\";" //
+              + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+              + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
+              + "SLEEP randomInt( 500 );" //
+              + "commit retry 30;return $photo;");
+
+      executeCommand(serverIndex, "sqlscript", //
+          "BEGIN;" //
+              + "LET photo = CREATE vertex Photos SET id = \"p2222\", name = \"download2.jpg\";" //
               + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
               + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
               + "commit retry 30;return $photo;");
 
-      executeCommand(serverIndex, "sqlscript", //
-          "LET photo = CREATE vertex Photos SET id = \"p2222\", name = \"download2.jpg\";" //
-              + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
-              + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
-              + "commit retry 30;return $photo;");
-
-      executeCommand(serverIndex, "sqlscript", //
-          "LET photo = CREATE vertex Photos SET id = \"p5555\", name = \"download3.jpg\";" //
+      executeCommand(serverIndex, "sqlscript", // //
+          "BEGIN;" + "LET photo = CREATE vertex Photos SET id = \"p5555\", name = \"download3.jpg\";" //
               + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
               + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
               + "commit retry 30;return $photo;");

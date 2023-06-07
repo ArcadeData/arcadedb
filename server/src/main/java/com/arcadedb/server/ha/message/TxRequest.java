@@ -92,7 +92,7 @@ public class TxRequest extends TxRequestAbstract {
     try {
       LogManager.instance().log(this, Level.FINE, "Applying tx %d from server %s (modifiedPages=%d)...", walTx.txId, remoteServerName, walTx.pages.length);
 
-      db.getTransactionManager().applyChanges(walTx);
+      db.getTransactionManager().applyChanges(walTx, false);
 
     } catch (final WALException e) {
       if (e.getCause() instanceof ClosedChannelException) {
