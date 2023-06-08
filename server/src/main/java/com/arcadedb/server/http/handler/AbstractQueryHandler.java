@@ -89,46 +89,48 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final JSONArray edges = new JSONArray();
       final JSONArray records = new JSONArray();
 
-      while (qResult.hasNext()) {
-        final Result row = qResult.next();
+      if (qResult != null) {
+        while (qResult.hasNext()) {
+          final Result row = qResult.next();
 
-        boolean recordIncluded = true;
-        if (!row.getIdentity().isEmpty()) {
-          final RID rid = row.getIdentity().get();
-          recordIncluded = includedRecords.add(rid);
-          if (recordIncluded)
+          boolean recordIncluded = true;
+          if (!row.getIdentity().isEmpty()) {
+            final RID rid = row.getIdentity().get();
+            recordIncluded = includedRecords.add(rid);
+            if (recordIncluded)
+              records.put(serializerImpl.serializeResult(row, database));
+          } else
             records.put(serializerImpl.serializeResult(row, database));
-        } else
-          records.put(serializerImpl.serializeResult(row, database));
 
-        if (row.isVertex()) {
-          if (recordIncluded) {
-            final Vertex v = row.getVertex().get();
-            if (includedVertices.add(v.getIdentity()))
-              vertices.put(serializerImpl.serializeGraphElement(v));
-          }
-        } else if (row.isEdge()) {
-          final Edge e = row.getEdge().get();
-          if (recordIncluded)
-            edges.put(serializerImpl.serializeGraphElement(e));
-          if (includedVertices.add(e.getIn())) {
-            if (includedRecords.add(e.getIn()))
-              records.put(serializerImpl.serializeDocument(e.getInVertex()));
+          if (row.isVertex()) {
+            if (recordIncluded) {
+              final Vertex v = row.getVertex().get();
+              if (includedVertices.add(v.getIdentity()))
+                vertices.put(serializerImpl.serializeGraphElement(v));
+            }
+          } else if (row.isEdge()) {
+            final Edge e = row.getEdge().get();
+            if (recordIncluded)
+              edges.put(serializerImpl.serializeGraphElement(e));
+            if (includedVertices.add(e.getIn())) {
+              if (includedRecords.add(e.getIn()))
+                records.put(serializerImpl.serializeDocument(e.getInVertex()));
 
-            vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
-          }
-          if (includedVertices.add(e.getOut())) {
-            if (includedRecords.add(e.getOut()))
-              records.put(serializerImpl.serializeDocument(e.getOutVertex()));
+              vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
+            }
+            if (includedVertices.add(e.getOut())) {
+              if (includedRecords.add(e.getOut()))
+                records.put(serializerImpl.serializeDocument(e.getOutVertex()));
 
-            vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+              vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+            }
+          } else {
+            analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
           }
-        } else {
-          analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
+
+          if (limit > -1 && records.length() >= limit)
+            break;
         }
-
-        if (limit > -1 && records.length() >= limit)
-          break;
       }
 
       // FILTER OUT NOT CONNECTED EDGES
@@ -154,14 +156,16 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
     case "record": {
       final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
-      final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r, database)).collect(Collectors.toList()));
+      final JSONArray result = new JSONArray(
+          qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r, database)).collect(Collectors.toList()));
       response.put("result", result);
       break;
     }
 
     default: {
       final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
-      final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r, database)).collect(Collectors.toList()));
+      final JSONArray result = new JSONArray(
+          qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r, database)).collect(Collectors.toList()));
       response.put("result", result);
     }
     }
