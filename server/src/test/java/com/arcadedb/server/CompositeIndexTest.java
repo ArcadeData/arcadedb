@@ -50,7 +50,7 @@ public class CompositeIndexTest {
 
   @Test
   public void testWhereAfterUpdate() {
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("../databases/" + DATABASE_NAME)) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
       if (databaseFactory.exists()) {
         databaseFactory.open().drop();
       }
