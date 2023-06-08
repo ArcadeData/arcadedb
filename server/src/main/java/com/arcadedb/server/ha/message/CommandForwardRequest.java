@@ -125,9 +125,9 @@ public class CommandForwardRequest extends HAAbstractCommand {
 
     final ResultSet result;
     if (namedParameters != null)
-      result = db.command(language, command, namedParameters);
+      result = db.command(language, command, server.getServer().getConfiguration(), namedParameters);
     else
-      result = db.command(language, command, ordinalParameters);
+      result = db.command(language, command, server.getServer().getConfiguration(), ordinalParameters);
 
     return new CommandForwardResponse(database, result);
   }

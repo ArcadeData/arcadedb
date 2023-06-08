@@ -576,7 +576,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet command(final String language, final String query, final Object... args) {
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Object... args) {
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getInstance(language, this);
       if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
@@ -584,15 +584,20 @@ public class ReplicatedDatabase implements DatabaseInternal {
         final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
         return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
       }
-      return proxied.command(language, query, args);
+      return proxied.command(language, query, configuration, args);
     }
 
-    return proxied.command(language, query, args);
+    return proxied.command(language, query, configuration, args);
+  }
+
+  @Override
+  public ResultSet command(final String language, final String query, final Object... args) {
+    return command(language, query, server.getConfiguration(), args);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> args) {
-    return command(language, query, null, args);
+    return command(language, query, server.getConfiguration(), args);
   }
 
   @Override
@@ -628,7 +633,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> args) {
-    return proxied.execute(language, script, args);
+    return proxied.execute(language, script, server.getConfiguration(), args);
   }
 
   @Override

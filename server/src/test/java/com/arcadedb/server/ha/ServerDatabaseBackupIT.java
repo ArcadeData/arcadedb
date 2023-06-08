@@ -52,11 +52,29 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void backup() {
+  public void sqlBackup() {
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 
       final ResultSet result = database.command("sql", "backup database");
+      Assertions.assertTrue(result.hasNext());
+      final Result response = result.next();
+
+      final String backupFile = response.getProperty("backupFile");
+      Assertions.assertNotNull(backupFile);
+
+      final File file = new File("target/backups/graph/" + backupFile);
+      Assertions.assertTrue(file.exists());
+      file.delete();
+    }
+  }
+
+  @Test
+  public void sqlScriptBackup() {
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database database = getServer(i).getDatabase(getDatabaseName());
+
+      final ResultSet result = database.command("sqlscript", "backup database");
       Assertions.assertTrue(result.hasNext());
       final Result response = result.next();
 
