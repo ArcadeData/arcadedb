@@ -55,16 +55,18 @@ public class CompositeIndexTest {
         databaseFactory.open().drop();
       }
       try (Database db = databaseFactory.create()) {
-        DocumentType dtOrders = db.getSchema().createDocumentType("Order");
-        dtOrders.createProperty("id", Type.INTEGER);
-        dtOrders.createProperty("processor", Type.STRING);
-        dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
-        dtOrders.createProperty("vstop", Type.DATETIME_MICROS);
-        dtOrders.createProperty("status", Type.STRING);
-        dtOrders.createProperty("node", Type.STRING);
-        dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
-        dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
-        dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
+        db.transaction(() -> {
+          DocumentType dtOrders = db.getSchema().createDocumentType("Order");
+          dtOrders.createProperty("id", Type.INTEGER);
+          dtOrders.createProperty("processor", Type.STRING);
+          dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
+          dtOrders.createProperty("vstop", Type.DATETIME_MICROS);
+          dtOrders.createProperty("status", Type.STRING);
+          dtOrders.createProperty("node", Type.STRING);
+          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+          dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
+        });
       }
     }
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";

@@ -166,9 +166,9 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
     // CHECK THE VALIDITY OF CURSORS
     for (int i = 0; i < pageCursors.length; ++i) {
-      final LSMTreeIndexUnderlyingAbstractCursor pageCursor = pageCursors[i];
 
-      if (pageCursor != null) {
+      LSMTreeIndexUnderlyingAbstractCursor pageCursor = pageCursors[i];
+      while (pageCursor != null) {
         if (fromKeys != null && !beginKeysInclusive) {
           if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[i], fromKeys) == 0) {
             // SKIP THIS
@@ -212,6 +212,17 @@ public class LSMTreeIndexCursor implements IndexCursor {
             }
           }
         }
+
+        if (validIterators == 0) {
+          // CHECK FOR THE NEXT ENTRY
+          if (pageCursor.hasNext())
+            pageCursor.next();
+          else
+            break;
+        } else
+          break;
+
+        pageCursor = pageCursors[i];
       }
     }
 
