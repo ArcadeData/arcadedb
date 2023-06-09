@@ -33,7 +33,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <metrics.version>4.2.18</metrics.version>
+        <metrics.version>4.2.19</metrics.version>
         <slf4j.version>2.0.7</slf4j.version>
         <undertow-core.version>2.3.6.Final</undertow-core.version>
     </properties>
