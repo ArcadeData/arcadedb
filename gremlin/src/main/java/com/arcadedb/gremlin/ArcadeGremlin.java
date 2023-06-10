@@ -85,10 +85,10 @@ public class ArcadeGremlin extends ArcadeQuery {
     }
   }
 
-  public static Map<String, Object> getStringObjectMap(final Map<Object, Object> next) {
+  public static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {
     // TRANSFORM TO A MAP WITH STRINGS AS KEYS
-    final Map<Object, Object> map = next;
-    final Map<String, Object> stringMap = new LinkedHashMap<>();
+    final Map<Object, Object> map = originalMap;
+    final Map<String, Object> stringMap = new LinkedHashMap<>(originalMap.size());
 
     for (Map.Entry<Object, Object> entry : map.entrySet())
       stringMap.put(entry.getKey().toString(), entry.getValue());
