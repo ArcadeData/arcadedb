@@ -31,7 +31,7 @@ import java.util.stream.*;
 
 public class Json extends SimpleNode {
 
-  protected List<JsonItem> items = new ArrayList<JsonItem>();
+  protected List<JsonItem> items = new ArrayList<>();
 
   public Json(final int id) {
     super(id);
@@ -167,11 +167,6 @@ public class Json extends SimpleNode {
   @Override
   public boolean refersToParent() {
     return false;
-  }
-
-  @Override
-  protected SimpleNode[] getCacheableElements() {
-    return items.toArray(new SimpleNode[items.size()]);
   }
 }
 /* JavaCC - OriginalChecksum=3beec9f6db486de944498588b51a505d (do not edit this line) */
