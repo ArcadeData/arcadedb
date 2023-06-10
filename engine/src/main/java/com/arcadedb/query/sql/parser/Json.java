@@ -114,7 +114,7 @@ public class Json extends SimpleNode {
     for (final JsonItem item : items) {
       final String left = item.getLeftValue();
       if (left != null && left.toLowerCase(Locale.ENGLISH).equals("@type")) {
-        return "" + item.right.execute((Result) null, context);
+        return String.valueOf(item.right.execute((Result) null, context));
       }
     }
 
@@ -157,6 +157,16 @@ public class Json extends SimpleNode {
     for (final JsonItem item : items) {
       item.extractSubQueries(collector);
     }
+  }
+
+  @Override
+  public boolean isCacheable() {
+    return true;
+  }
+
+  @Override
+  public boolean refersToParent() {
+    return false;
   }
 
   @Override
