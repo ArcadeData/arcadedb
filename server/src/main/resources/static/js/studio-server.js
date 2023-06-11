@@ -3,7 +3,7 @@ var serverData = {};
 function updateServer( callback ){
   jQuery.ajax({
     type: "GET",
-    url: "/api/v1/server",
+    url: basePath + "/api/v1/server",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
@@ -207,7 +207,7 @@ function updateServerSetting(key, value){
     if (result.value) {
       jQuery.ajax({
        type: "POST",
-       url: "/api/v1/server",
+       url: basePath + "/api/v1/server",
        data: JSON.stringify(
          {
            language: "sql",

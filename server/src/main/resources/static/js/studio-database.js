@@ -3,6 +3,9 @@ var globalResultset = null;
 var globalGraphMaxResult = 1000;
 var globalCredentials = null;
 
+/* API Gateway route */
+var basePath = "/api/v1/arcadedb";
+
 function make_base_auth(user, password) {
   var tok = user + ':' + password;
   var hash = btoa(tok);
@@ -47,7 +50,7 @@ function updateDatabases( callback ){
 
   jQuery.ajax({
     type: "POST",
-    url: "/api/v1/server",
+    url: basePath + "/api/v1/server",
     data: "{ command: 'list databases' }",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
@@ -109,7 +112,7 @@ function createDatabase(){
 
       jQuery.ajax({
         type: "POST",
-        url: "/api/v1/server",
+        url: basePath + "/api/v1/server",
         data: "{ 'command': 'create database " + database + "' }",
         beforeSend: function (xhr){
           xhr.setRequestHeader('Authorization', globalCredentials);
@@ -138,7 +141,7 @@ function dropDatabase(){
   globalConfirm("Drop database", "Are you sure you want to drop the database '"+database+"'?<br>WARNING: The operation cannot be undone.", "warning", function(){
     jQuery.ajax({
       type: "POST",
-      url: "/api/v1/server",
+      url: basePath + "/api/v1/server",
       data: "{ 'command': 'drop database " + database + "' }",
       beforeSend: function (xhr){
         xhr.setRequestHeader('Authorization', globalCredentials);
@@ -163,7 +166,7 @@ function backupDatabase(){
   globalConfirm("Backup database", "Are you sure you want to backup the database '"+database+"'?<br>The database archive will be created under the 'backup' directory of the server.", "info", function(){
     jQuery.ajax({
       type: "POST",
-      url: "/api/v1/command/" + database,
+      url: basePath + "/api/v1/command/" + database,
       data: JSON.stringify(
         {
           language: "sql",
@@ -194,7 +197,7 @@ function dropProperty(type, property){
   globalConfirm("Drop property", "Are you sure you want to drop the property '"+property+"' on type '"+type+"'?<br>WARNING: The operation cannot be undone.", "warning", function(){
     jQuery.ajax({
       type: "POST",
-      url: "/api/v1/command/" + database,
+      url: basePath + "/api/v1/command/" + database,
       data: JSON.stringify(
         {
           language: "sql",
@@ -226,7 +229,7 @@ function dropIndex(indexName){
   globalConfirm("Drop index", "Are you sure you want to drop the index '"+indexName+"'?<br>WARNING: The operation cannot be undone.", "warning", function(){
     jQuery.ajax({
       type: "POST",
-      url: "/api/v1/command/" + database,
+      url: basePath + "/api/v1/command/" + database,
       data: JSON.stringify(
         {
           language: "sql",
@@ -370,7 +373,7 @@ function executeCommandTable(){
 
   jQuery.ajax({
     type: "POST",
-    url: "/api/v1/command/" + database,
+    url: basePath + "/api/v1/command/" + database,
     data: JSON.stringify(
       {
         language: language,
@@ -417,7 +420,7 @@ function executeCommandGraph(){
 
   jQuery.ajax({
     type: "POST",
-    url: "/api/v1/command/" + database,
+    url: basePath + "/api/v1/command/" + database,
     data: JSON.stringify(
       {
         language: language,
@@ -474,7 +477,7 @@ function displaySchema(){
 
   jQuery.ajax({
     type: "POST",
-    url: "/api/v1/query/" + database,
+    url: basePath + "/api/v1/query/" + database,
     data: JSON.stringify(
       {
         language: "sql",
@@ -579,7 +582,7 @@ function displayDatabaseSettings(){
 
   jQuery.ajax({
     type: "POST",
-    url: "/api/v1/query/" + database,
+    url: basePath + "/api/v1/query/" + database,
     data: JSON.stringify(
       {
         language: "sql",
@@ -648,7 +651,7 @@ function updateDatabaseSetting(key, value){
     if (result.value) {
       jQuery.ajax({
        type: "POST",
-       url: "/api/v1/server",
+       url: basePath + "/api/v1/server",
        data: JSON.stringify(
          {
            language: "sql",
