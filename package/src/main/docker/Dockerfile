@@ -32,9 +32,10 @@ RUN useradd -ms /bin/bash arcadedb
 WORKDIR /home/arcadedb
 
 USER arcadedb
-
+RUN pwd && ls
 COPY --chown=arcadedb:arcadedb ./arcadedb-* ./
 
+RUN pwd && ls
 RUN chmod +x ./bin/*.sh
 
 # Volumes available
