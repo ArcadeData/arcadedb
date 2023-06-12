@@ -65,20 +65,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.CR_PAT }}
 
+
+      - name: Publish to OSS and Docker hub
+        run: mvn deploy -Dmaven.deploy.skip deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests
+        env:
+            GITHUB_TOKEN:  ${{ secrets.CR_PAT }}
+            DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USER }}
+            DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_SECRET }}
+
       - name: List Files
         run: ls
 
-      - name: Build and push - GHCR
-        uses: docker/build-push-action@v2.9.0
-        with:
-          context: ./package/target
-          platforms: linux/amd64,linux/arm64
-          push: false
-          tags: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{env.TAG}}
+    #   - name: Build and push - GHCR
+    #     uses: docker/build-push-action@v2.9.0
+    #     with:
+    #       context: ./package/target
+    #       platforms: linux/amd64,linux/arm64
+    #       push: false
+    #       tags: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{env.TAG}}
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v1.12.0
-        with:
-          registry: ${{ env.DOCKERHUB_REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_SECRET }}
+    #   - name: Login to DockerHub
+    #     uses: docker/login-action@v1.12.0
+    #     with:
+    #       registry: ${{ env.DOCKERHUB_REGISTRY }}
+    #       username: ${{ secrets.DOCKERHUB_USER }}
+    #       password: ${{ secrets.DOCKERHUB_SECRET }}

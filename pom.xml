@@ -385,7 +385,7 @@
                             <generateBackupPoms>false</generateBackupPoms>
                         </configuration>
                     </plugin>
-                    <plugin>
+                    <!-- <plugin>
                         <groupId>org.sonatype.plugins</groupId>
                         <artifactId>nexus-staging-maven-plugin</artifactId>
                         <version>${nexus-staging-maven-plugin.version}</version>
@@ -405,7 +405,7 @@
                                 </goals>
                             </execution>
                         </executions>
-                    </plugin>
+                    </plugin> -->
                 </plugins>
             </build>
         </profile>
