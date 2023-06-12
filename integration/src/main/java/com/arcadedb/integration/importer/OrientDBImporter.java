@@ -43,6 +43,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.zip.*;
 
 import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
@@ -64,7 +65,7 @@ public class OrientDBImporter {
   private final Set<String>                edgeClasses                     = new HashSet<>();
   private final List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
   private final Map<RID, RID>              vertexRidMap                    = new HashMap<>();
-  private final Map<String, Long>          totalEdgesByVertexType          = new HashMap<>();
+  private final Map<String, AtomicLong>    totalEdgesByVertexType          = new HashMap<>();
   private final ImporterSettings           settings;
   private final ConsoleLogger              logger;
   private       String                     databasePath;
@@ -602,8 +603,8 @@ public class OrientDBImporter {
 
     context.createdEdges.incrementAndGet();
 
-    final Long edgesByVertexType = totalEdgesByVertexType.computeIfAbsent(className, k -> 0L);
-    totalEdgesByVertexType.put(className, edgesByVertexType + 1);
+    final AtomicLong edgesByVertexType = totalEdgesByVertexType.computeIfAbsent(className, k -> new AtomicLong());
+    edgesByVertexType.incrementAndGet();
 
     incrementRecordByClass(className);
   }
