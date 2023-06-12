@@ -33,7 +33,7 @@ WORKDIR /home/arcadedb
 
 USER arcadedb
 
-COPY --chown=arcadedb:arcadedb ./../../../target/*/arcadedb ./
+COPY --chown=arcadedb:arcadedb ./target/*/arcadedb ./
 
 RUN chmod +x ./bin/*.sh
 

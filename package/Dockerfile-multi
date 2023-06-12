@@ -14,6 +14,12 @@
 # limitations under the License.
 #
 
+#--------------------------------------------------------------------------------------------------------------
+# USE THIS FROM THE COMMAND LINE (FROM MAVEN IS STILL NOT SUPPORTED BUILDX TO GENERATE MULTIPLE ARCHITECTURES)
+#--------------------------------------------------------------------------------------------------------------
+# $> cd package
+# $> docker buildx build --platform  linux/amd64,linux/arm64 --push -t arcadedata/arcadedb -f src/main/docker/Dockerfile-multi ./target/arcadedb-23.3.1-SNAPSHOT.dir/
+#--------------------------------------------------------------------------------------------------------------
 
 FROM eclipse-temurin:11
 
@@ -31,9 +37,7 @@ RUN useradd -ms /bin/bash arcadedb
 
 WORKDIR /home/arcadedb
 
-USER arcadedb
-
-COPY --chown=arcadedb:arcadedb ./../../../target/*/arcadedb ./
+COPY --chown=arcadedb:arcadedb ./target/*/arcadedb ./
 
 RUN chmod +x ./bin/*.sh
 
