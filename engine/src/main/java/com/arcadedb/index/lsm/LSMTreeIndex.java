@@ -283,6 +283,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public String getMostRecentFileName() {
+    return mutable.getName();
+  }
+
+  @Override
   public long countEntries() {
     checkIsValid();
     long total = 0;

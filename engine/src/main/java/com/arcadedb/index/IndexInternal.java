@@ -61,5 +61,7 @@ public interface IndexInternal extends Index {
 
   boolean scheduleCompaction();
 
+  String getMostRecentFileName();
+
   JSONObject toJSON();
 }
