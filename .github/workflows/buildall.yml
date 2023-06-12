@@ -17,6 +17,7 @@ env:
   GHCR_REPOSITORY: raft-tech
   DOCKERHUB_REPOSITORY: rafttech
   IMAGE_NAME: data-fabric-arcadedb
+  TAG: 'latest'
 
 jobs:
   docker:
@@ -26,11 +27,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2.4.0
 
-      - name: Set Tag
-        run: cat .version >> $GITHUB_ENV
+    #   - name: Set Tag
+    #     run: cat .version >> $GITHUB_ENV
 
-      - name: Check Tag
-        run: echo ${{env.TAG}}
+    #   - name: Check Tag
+    #     run: echo ${{env.TAG}}
 
       - name: Setup Hugo
         uses: peaceiris/actions-hugo@v2
