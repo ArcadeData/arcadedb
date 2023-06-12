@@ -49,9 +49,6 @@ jobs:
             # server-username: MAVEN_USERNAME
             # server-password: MAVEN_PASSWORD
 
-      - name: Build maven
-        run: mvn package -DskipTests
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1.2.0
 
