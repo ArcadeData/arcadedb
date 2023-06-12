@@ -37,7 +37,9 @@ RUN useradd -ms /bin/bash arcadedb
 
 WORKDIR /home/arcadedb
 
-COPY --chown=arcadedb:arcadedb ./target/arcadedb ./
+USER arcadedb
+
+COPY --chown=arcadedb:arcadedb ./target/arcadedb-*/arcadedb-* ./
 
 RUN chmod +x ./bin/*.sh
 
