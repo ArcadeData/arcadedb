@@ -1,0 +1,79 @@
+name: MAIN - Build DF Backend Docker Image
+
+on:
+  workflow_run:
+    workflows: ["Tag & Release"]
+  #  branch: ["main"]
+    types:
+      - completed
+
+env:
+  GHCR_REGISTRY: ghcr.io
+  DOCKERHUB_REGISTRY: docker.io
+  GHCR_REPOSITORY: raft-tech
+  DOCKERHUB_REPOSITORY: rafttech
+  IMAGE_NAME: data-fabric-arcadedb
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      
+      - name: Checkout repository
+        uses: actions/checkout@v2.4.0
+
+      - name: Set Tag
+        run: cat .version >> $GITHUB_ENV
+
+      - name: Check Tag
+        run: echo ${{env.TAG}}
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v2
+        with:
+          hugo-version: '0.89.4'
+          extended: true
+      
+      - name: Set up JDK 11
+        uses: actions/setup-java@v3
+        with:
+            distribution: "temurin"
+            java-version: 11
+            # cache: 'maven'
+            # server-id: ossrh
+            # server-username: MAVEN_USERNAME
+            # server-password: MAVEN_PASSWORD
+
+      - name: Build maven
+        run: mvn package -DskipTests
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1.6.0
+      
+      - name: Login to GHCR
+        uses: docker/login-action@v1.12.0
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.CR_PAT }}
+
+      - name: List Files
+        run: ls
+
+      - name: Build and push - GHCR
+        uses: docker/build-push-action@v2.9.0
+        with:
+          context: ./package/src/main/docker
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{env.TAG}}
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v1.12.0
+        with:
+          registry: ${{ env.DOCKERHUB_REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_SECRET }}
