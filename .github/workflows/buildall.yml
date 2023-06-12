@@ -1,11 +1,15 @@
 name: buildall
 
 on:
-  workflow_run:
-    workflows: ["Tag & Release"]
-    branch: ["*"]
-    types:
-      - completed
+  workflow_dispatch:
+  push:
+    branches:
+      - '*'
+#   workflow_run:
+#     workflows: ["Tag & Release"]
+#     branch: ["*"]
+#     types:
+#       - completed
 
 env:
   GHCR_REGISTRY: ghcr.io
