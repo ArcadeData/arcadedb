@@ -17,7 +17,8 @@ env:
   GHCR_REPOSITORY: raft-tech
   DOCKERHUB_REPOSITORY: rafttech
   IMAGE_NAME: data-fabric-arcadedb
-  TAG: 'latest'
+  TAG: 'dev'
+ # TAG: ${{'dev' || github.event.inputs.tag }}
 
 jobs:
   docker:
@@ -26,12 +27,6 @@ jobs:
       
       - name: Checkout repository
         uses: actions/checkout@v2.4.0
-
-    #   - name: Set Tag
-    #     run: cat .version >> $GITHUB_ENV
-
-    #   - name: Check Tag
-    #     run: echo ${{env.TAG}}
 
       - name: Setup Hugo
         uses: peaceiris/actions-hugo@v2
@@ -44,10 +39,6 @@ jobs:
         with:
             distribution: "temurin"
             java-version: 11
-            # cache: 'maven'
-            # server-id: ossrh
-            # server-username: MAVEN_USERNAME
-            # server-password: MAVEN_PASSWORD
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1.2.0
@@ -62,37 +53,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.CR_PAT }}
 
-      # - name: Login to DockerHub
-      #   uses: docker/login-action@v1.12.0
-      #   with:
-      #     registry: ${{ env.DOCKERHUB_REGISTRY }}
-      #     username: ${{ secrets.DOCKERHUB_USER }}
-      #     password: ${{ secrets.DOCKERHUB_SECRET }}
-
       - name: Maven build
         run: mvn package -DskipTests
 
-#      - name: Publish to OSS and Docker hub
-#        run: mvn -Dmaven.deploy.skip -Ddockerfile.skip deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests
-#        env:
-#            GITHUB_TOKEN:  ${{ secrets.CR_PAT }}
-#            DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USER }}
-#            DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_SECRET }}
-#
-#      - name: List Files
-#        run: ls
+      - name: List Files
+        run: ls
 
       - name: Build and push - GHCR
         uses: docker/build-push-action@v2.9.0
         with:
           context: ./package
           platforms: linux/amd64,linux/arm64
-          push: false
+          push: true
           tags: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{env.TAG}}
-
-    #   - name: Login to DockerHub
-    #     uses: docker/login-action@v1.12.0
-    #     with:
-    #       registry: ${{ env.DOCKERHUB_REGISTRY }}
-    #       username: ${{ secrets.DOCKERHUB_USER }}
-    #       password: ${{ secrets.DOCKERHUB_SECRET }}
