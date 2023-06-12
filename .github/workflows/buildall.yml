@@ -1,9 +1,9 @@
-name: MAIN - Build DF Backend Docker Image
+name: buildall
 
 on:
   workflow_run:
     workflows: ["Tag & Release"]
-  #  branch: ["main"]
+    branch: ["*"]
     types:
       - completed
 
