@@ -57,6 +57,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     switch (entityType) {
     case DOCUMENT:
+    case DATABASE:
       loadDocuments(sourceSchema, parser, database, context, settings);
       break;
 
@@ -89,7 +90,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       if (!database.isTransactionActive())
         database.begin();
 
-      final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.vertexTypeName);
+      final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (!settings.documentPropertiesInclude.equalsIgnoreCase("*")) {
@@ -449,9 +450,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final List<String> fieldNames = new ArrayList<>();
 
-    final String entityName = entityType == AnalyzedEntity.ENTITY_TYPE.DOCUMENT ?
-        settings.documentTypeName :
-        entityType == AnalyzedEntity.ENTITY_TYPE.VERTEX ? settings.vertexTypeName : settings.edgeTypeName;
+    final String entityName = entityType == AnalyzedEntity.ENTITY_TYPE.VERTEX ?
+        settings.vertexTypeName :
+        entityType == AnalyzedEntity.ENTITY_TYPE.EDGE ? settings.edgeTypeName : settings.documentTypeName;
 
     long skipEntries = 0;
     final String header;

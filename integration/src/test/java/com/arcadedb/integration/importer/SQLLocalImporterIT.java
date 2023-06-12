@@ -18,35 +18,36 @@
  */
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.net.*;
 
-public class ImporterTest {
+public class SQLLocalImporterIT {
   @Test
-  public void importGraph() throws IOException {
-    final String databasePath = "target/databases/test-import-graph";
+  public void importOrientDB() {
+    final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-    Importer importer = new Importer(("-vertices src/test/resources/importer-vertices.csv -database " + databasePath
-        + " -typeIdProperty Id -typeIdType Long -typeIdPropertyIsUnique true -forceDatabaseCreate true").split(" "));
-    importer.load();
+    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
 
-    try (final Database db = new DatabaseFactory(databasePath).open()) {
-      Assertions.assertEquals(6, db.countType("Node", true));
+    try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
+      database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
+
+      //database.command("sql", "import database " + "file:///Users/luca/Downloads/Reactome.gz");
+      database.command("sql", "import database file://" + inputFile.getFile());
+
+      Assertions.assertEquals(500, database.countType("Person", false));
+      Assertions.assertEquals(10000, database.countType("Friend", false));
     }
 
-    importer = new Importer(("-edges src/test/resources/importer-edges.csv -database " + databasePath
-        + " -typeIdProperty Id -typeIdType Long -edgeFromField From -edgeToField To").split(" "));
-    importer.load();
-
-    try (final Database db = new DatabaseFactory(databasePath).open()) {
-      Assertions.assertEquals(6, db.countType("Node", true));
-      Assertions.assertEquals("Jay", db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex().get("First Name"));
-    }
     TestHelper.checkActiveDatabases();
+    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
   }
 }
