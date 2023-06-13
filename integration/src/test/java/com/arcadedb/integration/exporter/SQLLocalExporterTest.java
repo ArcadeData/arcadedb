@@ -53,7 +53,7 @@ public class SQLLocalExporterTest {
       final Result stats = result.next();
       Assertions.assertEquals(500L, (long) stats.getProperty("vertices"));
       Assertions.assertEquals(10000L, (long) stats.getProperty("edges"));
-      Assertions.assertEquals(0L, (long) stats.getProperty("documents"));
+      Assertions.assertNull(stats.getProperty("documents"));
 
       final File exportFile = new File("./exports/export.jsonl.tgz");
       Assertions.assertTrue(exportFile.exists());
@@ -84,8 +84,8 @@ public class SQLLocalExporterTest {
 
       final Result stats = result.next();
       Assertions.assertEquals(500L, (long) stats.getProperty("vertices"));
-      Assertions.assertEquals(0L, (long) stats.getProperty("edges"));
-      Assertions.assertEquals(0L, (long) stats.getProperty("documents"));
+      Assertions.assertNull(stats.getProperty("edges"));
+      Assertions.assertNull(stats.getProperty("documents"));
 
       final File exportFile = new File("./exports/export.jsonl.tgz");
       Assertions.assertTrue(exportFile.exists());
