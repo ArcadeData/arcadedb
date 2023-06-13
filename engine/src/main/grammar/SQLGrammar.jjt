@@ -4179,7 +4179,7 @@ ExportDatabaseStatement ExportDatabaseStatement():
 { }
 {
   <EXPORT> <DATABASE>
-  jjtThis.url = Url()
+  [ jjtThis.url = Url() ]
   [ <FORMAT> jjtThis.format = Identifier() ]
   [ <OVERWRITE> ( <TRUE> { jjtThis.overwrite = BooleanExpression.TRUE;} | <FALSE> { jjtThis.overwrite = BooleanExpression.FALSE;} ) ]
   [

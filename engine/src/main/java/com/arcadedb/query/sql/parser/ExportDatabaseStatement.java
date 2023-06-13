@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.io.*;
 import java.lang.reflect.*;
+import java.time.*;
+import java.time.format.*;
 import java.util.*;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
@@ -46,6 +48,15 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
+    if (this.url == null) {
+      // ASSIGN DEFAULT NAME
+      this.url = new Url(String.format("%s-export-%s.%s.tgz",//
+          context.getDatabase().getName(),//
+          DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
+          format.getStringValue())//
+      );
+    }
+
     final String targetUrl = this.url.getUrlString();
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "export database");
