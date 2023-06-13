@@ -49,6 +49,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   public TypeIndex create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+    if (database.async().isProcessing())
+      throw new SchemaException("Cannot create a new index while asynchronous tasks are running");
+
     final EmbeddedSchema schema = database.getSchema().getEmbedded();
     if (ignoreIfExists) {
       final DocumentType type = schema.getType(typeName);
