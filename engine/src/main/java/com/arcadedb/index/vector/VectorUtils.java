@@ -38,7 +38,7 @@ public final class VectorUtils {
    *
    * @return The magnitude.
    */
-  public static double magnitude(double[] vector) {
+  public static double magnitude(final double[] vector) {
     double magnitude = 0.0f;
     for (double aDouble : vector) {
       magnitude += aDouble * aDouble;
@@ -53,11 +53,11 @@ public final class VectorUtils {
    *
    * @return the input vector as a unit vector
    */
-  public static double[] normalize(double[] vector) {
+  public static double[] normalize(final double[] vector) {
 
-    double[] result = new double[vector.length];
+    final double[] result = new double[vector.length];
 
-    double normFactor = 1 / magnitude(vector);
+    final double normFactor = 1 / magnitude(vector);
     for (int i = 0; i < vector.length; i++) {
       result[i] = vector[i] * normFactor;
     }
@@ -71,7 +71,7 @@ public final class VectorUtils {
    *
    * @return The magnitude.
    */
-  public static float magnitude(float[] vector) {
+  public static float magnitude(final float[] vector) {
     float magnitude = 0.0f;
     for (float aFloat : vector) {
       magnitude += aFloat * aFloat;
@@ -86,15 +86,13 @@ public final class VectorUtils {
    *
    * @return the input vector as a unit vector
    */
-  public static float[] normalize(float[] vector) {
+  public static float[] normalize(final float[] vector) {
+    final float[] result = new float[vector.length];
 
-    float[] result = new float[vector.length];
-
-    float normFactor = 1 / magnitude(vector);
+    final float normFactor = 1 / magnitude(vector);
     for (int i = 0; i < vector.length; i++) {
       result[i] = vector[i] * normFactor;
     }
     return result;
   }
-
 }

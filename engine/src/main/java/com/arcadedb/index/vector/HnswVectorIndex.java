@@ -22,14 +22,21 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
@@ -55,7 +62,7 @@ import static java.util.Comparator.*;
  * @see <a href="https://arxiv.org/abs/1603.09320">
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
-public class HnswVectorIndex<TId, TVector, TDistance> {
+public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.index.Index, IndexInternal {
   private final    DistanceFunction<TVector, TDistance> distanceFunction;
   private final    Comparator<TDistance>                distanceComparator;
   private final    MaxValueComparator<TDistance>        maxValueDistanceComparator;
@@ -68,15 +75,24 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
   private          int                                  ef;
   private final    int                                  efConstruction;
   private volatile Vertex                               entryPoint;
-  private final    TypeIndex                            lookup;
-  private final    ReentrantLock                        globalLock;
-  private final    Set<RID>                             excludedCandidates = new HashSet<>();
-  private final    Database                             database;
-  private final    String                               vertexType;
-  private final    String                               edgeType;
-  private final    String                               vectorPropertyName;
-  private final    String                               idPropertyName;
-  private final    Map<RID, Vertex>                     cache;
+
+  private final TypeIndex        underlyingIndex;
+  private final ReentrantLock    globalLock;
+  private final Set<RID>         excludedCandidates = new HashSet<>();
+  private final Database         database;
+  private final String           vertexType;
+  private final String           edgeType;
+  private final String           vectorPropertyName;
+  private final String           idPropertyName;
+  private final Map<RID, Vertex> cache;
+
+  public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
+    @Override
+    public IndexInternal create(DatabaseInternal database, String name, boolean unique, String filePath, PaginatedFile.MODE mode, Type[] keyTypes, int pageSize,
+        LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, BuildIndexCallback callback) {
+      return null;
+    }
+  }
 
   private HnswVectorIndex(final BuilderBase builder) {
     this.dimensions = builder.dimensions;
@@ -100,8 +116,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
 
     this.cache = builder.cache;
 
-    this.lookup = builder.database.getSchema().buildTypeIndex(builder.vertexType, new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
-        .withType(Schema.INDEX_TYPE.LSM_TREE).create();
+    this.underlyingIndex = builder.database.getSchema().buildTypeIndex(builder.vertexType, new String[] { idPropertyName }).withUnique(true)
+        .withIgnoreIfExists(true).withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
     this.globalLock = new ReentrantLock();
   }
@@ -131,44 +147,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     this.idPropertyName = json.getString("idPropertyName");
     this.vectorPropertyName = json.getString("vectorPropertyName");
 
-    this.lookup = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
+    this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
         .withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
     this.globalLock = new ReentrantLock();
     this.cache = null;
-  }
-
-  public Vertex get(Object id) {
-    globalLock.lock();
-    try {
-      final IndexCursor cursor = lookup.get(new Object[] { id });
-      if (!cursor.hasNext())
-        return null;
-
-      return loadVertexFromRID(cursor.next());
-    } finally {
-      globalLock.unlock();
-    }
-  }
-
-  public boolean remove(final Object id) {
-    globalLock.lock();
-    try {
-      final IndexCursor cursor = lookup.get(new Object[] { id });
-      if (!cursor.hasNext())
-        return false;
-
-      final Vertex vertex = loadVertexFromRID(cursor.next());
-      if (vertex.equals(entryPoint)) {
-        // TODO: CHANGE THE ENTRYPOINT
-      }
-
-      vertex.delete();
-
-      return true;
-    } finally {
-      globalLock.unlock();
-    }
   }
 
   public List<SearchResult<Vertex, TDistance>> findNeighbors(final TId id, final int k) {
@@ -935,6 +918,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     }
   }
 
+  @Override
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
     json.put("version", 0);
@@ -956,5 +940,263 @@ public class HnswVectorIndex<TId, TVector, TDistance> {
     json.put("idPropertyName", idPropertyName);
     json.put("vectorPropertyName", vectorPropertyName);
     return json;
+  }
+
+  @Override
+  public void drop() {
+    underlyingIndex.drop();
+  }
+
+  @Override
+  public String getName() {
+    return underlyingIndex.getName();
+  }
+
+  @Override
+  public Map<String, Long> getStats() {
+    return underlyingIndex.getStats();
+  }
+
+  @Override
+  public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
+    return underlyingIndex.getNullStrategy();
+  }
+
+  @Override
+  public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+    underlyingIndex.setNullStrategy(nullStrategy);
+  }
+
+  @Override
+  public boolean isUnique() {
+    return underlyingIndex.isUnique();
+  }
+
+  @Override
+  public boolean supportsOrderedIterations() {
+    return underlyingIndex.supportsOrderedIterations();
+  }
+
+  @Override
+  public boolean isAutomatic() {
+    return underlyingIndex.isAutomatic();
+  }
+
+  @Override
+  public int getPageSize() {
+    return underlyingIndex.getPageSize();
+  }
+
+  @Override
+  public long build(final BuildIndexCallback callback) {
+    return underlyingIndex.build(callback);
+  }
+
+  @Override
+  public boolean equals(final Object obj) {
+    return underlyingIndex.equals(obj);
+  }
+
+  public List<IndexInternal> getSubIndexes() {
+    return underlyingIndex.getSubIndexes();
+  }
+
+  @Override
+  public int hashCode() {
+    return underlyingIndex.hashCode();
+  }
+
+  @Override
+  public String toString() {
+    return underlyingIndex.toString();
+  }
+
+  @Override
+  public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
+    underlyingIndex.setMetadata(name, propertyNames, associatedBucketId);
+  }
+
+  @Override
+  public int getFileId() {
+    return underlyingIndex.getFileId();
+  }
+
+  @Override
+  public PaginatedComponent getPaginatedComponent() {
+    return underlyingIndex.getPaginatedComponent();
+  }
+
+  @Override
+  public Type[] getKeyTypes() {
+    return underlyingIndex.getKeyTypes();
+  }
+
+  @Override
+  public byte[] getBinaryKeyTypes() {
+    return underlyingIndex.getBinaryKeyTypes();
+  }
+
+  @Override
+  public List<Integer> getFileIds() {
+    return underlyingIndex.getFileIds();
+  }
+
+  @Override
+  public void setTypeIndex(final TypeIndex typeIndex) {
+    underlyingIndex.setTypeIndex(typeIndex);
+  }
+
+  @Override
+  public TypeIndex getTypeIndex() {
+    return underlyingIndex.getTypeIndex();
+  }
+
+  @Override
+  public int getAssociatedBucketId() {
+    return underlyingIndex.getAssociatedBucketId();
+  }
+
+  public void addIndexOnBucket(final IndexInternal index) {
+    underlyingIndex.addIndexOnBucket(index);
+  }
+
+  public void removeIndexOnBucket(final IndexInternal index) {
+    underlyingIndex.removeIndexOnBucket(index);
+  }
+
+  public IndexInternal[] getIndexesOnBuckets() {
+    return underlyingIndex.getIndexesOnBuckets();
+  }
+
+  public List<? extends com.arcadedb.index.Index> getIndexesByKeys(final Object[] keys) {
+    return underlyingIndex.getIndexesByKeys(keys);
+  }
+
+  public IndexCursor iterator(final boolean ascendingOrder) {
+    return underlyingIndex.iterator(ascendingOrder);
+  }
+
+  public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) {
+    return underlyingIndex.iterator(ascendingOrder, fromKeys, inclusive);
+  }
+
+  public IndexCursor range(final boolean ascending, final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys,
+      boolean endKeysInclusive) {
+    return underlyingIndex.range(ascending, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive);
+  }
+
+  @Override
+  public IndexCursor get(final Object[] keys) {
+    return underlyingIndex.get(keys);
+  }
+
+  @Override
+  public IndexCursor get(final Object[] keys, final int limit) {
+    return underlyingIndex.get(keys, limit);
+  }
+
+  @Override
+  public void put(final Object[] keys, RID[] rid) {
+    underlyingIndex.put(keys, rid);
+  }
+
+  @Override
+  public void remove(final Object[] keys) {
+    globalLock.lock();
+    try {
+      final IndexCursor cursor = underlyingIndex.get(keys);
+      if (!cursor.hasNext())
+        return;
+
+      final Vertex vertex = loadVertexFromRID(cursor.next());
+      if (vertex.equals(entryPoint)) {
+        // TODO: CHANGE THE ENTRYPOINT
+      }
+
+      vertex.delete();
+    } finally {
+      globalLock.unlock();
+    }
+  }
+
+  @Override
+  public void remove(final Object[] keys, final Identifiable rid) {
+    globalLock.lock();
+    try {
+      final IndexCursor cursor = underlyingIndex.get(keys);
+      if (!cursor.hasNext())
+        return;
+
+      final Identifiable itemRID = cursor.next();
+      if (!itemRID.equals(rid))
+        return;
+
+      final Vertex vertex = loadVertexFromRID(itemRID);
+      if (vertex.equals(entryPoint)) {
+        // TODO: CHANGE THE ENTRYPOINT
+      }
+
+      vertex.delete();
+    } finally {
+      globalLock.unlock();
+    }
+  }
+
+  @Override
+  public long countEntries() {
+    return underlyingIndex.countEntries();
+  }
+
+  @Override
+  public boolean compact() throws IOException, InterruptedException {
+    return underlyingIndex.compact();
+  }
+
+  @Override
+  public boolean isCompacting() {
+    return underlyingIndex.isCompacting();
+  }
+
+  @Override
+  public boolean scheduleCompaction() {
+    return underlyingIndex.scheduleCompaction();
+  }
+
+  @Override
+  public String getMostRecentFileName() {
+    return underlyingIndex.getMostRecentFileName();
+  }
+
+  @Override
+  public EmbeddedSchema.INDEX_TYPE getType() {
+    return EmbeddedSchema.INDEX_TYPE.HSNW;
+  }
+
+  @Override
+  public String getTypeName() {
+    return underlyingIndex.getTypeName();
+  }
+
+  @Override
+  public List<String> getPropertyNames() {
+    return underlyingIndex.getPropertyNames();
+  }
+
+  @Override
+  public void close() {
+    underlyingIndex.close();
+  }
+
+  private Vertex get(final Object id) {
+    globalLock.lock();
+    try {
+      final IndexCursor cursor = underlyingIndex.get(new Object[] { id });
+      if (!cursor.hasNext())
+        return null;
+
+      return loadVertexFromRID(cursor.next());
+    } finally {
+      globalLock.unlock();
+    }
   }
 }
