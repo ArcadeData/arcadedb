@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
@@ -1044,6 +1045,67 @@ public class UpdateStatementExecutionTest extends TestHelper {
         Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
       }
     });
+
+    database.transaction(() -> {
+      Object[] parameters2 = { "PENDING" };
+      try (ResultSet resultSet1 = database.query("sql", "SELECT id, status FROM Order WHERE status = 'PENDING' OR status = 'READY' ORDER BY id ASC LIMIT 1")) {
+        Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
+      }
+    });
+  }
+
+  @Test
+  public void testSelectAfterUpdate() {
+    database.transaction(() -> {
+      DocumentType dtOrders = database.getSchema().buildDocumentType().withName("Order").create();
+      dtOrders.createProperty("id", Type.INTEGER);
+      dtOrders.createProperty("processor", Type.STRING);
+      dtOrders.createProperty("status", Type.STRING);
+      dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+      dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+      dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
+    });
+
+    String INSERT_ORDER = "INSERT INTO Order SET id = ?, status = ?";
+    database.begin();
+    try (ResultSet resultSet = database.command("sql", INSERT_ORDER, 1, "PENDING")) {
+      System.out.print("insert order 1 = ");
+      Assertions.assertTrue(resultSet.hasNext());
+      System.out.println(resultSet.next().toJSON());
+    }
+    database.commit();
+    // update order
+    database.begin();
+    String UPDATE_ORDER = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
+    try (ResultSet resultSet = database.command("sql", UPDATE_ORDER, "ERROR", 1)) {
+      System.out.print("update order 1 = ");
+      Assertions.assertTrue(resultSet.hasNext());
+      System.out.println(resultSet.next().toJSON());
+    }
+    database.commit();
+    // resubmit order 1
+    database.begin();
+    // "UPDATE Order SET status = ? WHERE (status != ? AND status != ?) AND id = ?";
+    String RESUBMIT_ORDER = "UPDATE Order SET status = ? RETURN AFTER WHERE (status != ? AND status != ?) AND id = ?";
+    try (ResultSet resultSet = database.command("sql", RESUBMIT_ORDER, "PENDING", "PENDING", "PROCESSING", 1)) {
+      System.out.print("resubmit order 1 = ");
+      Assertions.assertTrue(resultSet.hasNext());
+      System.out.println(resultSet.next().toJSON());
+    }
+    database.commit();
+    // retrieve order 1 by id
+    try (ResultSet resultSet = database.query("sql", "SELECT FROM Order WHERE id = 1")) {
+      System.out.print("retrieve order 1 by id = ");
+      Assertions.assertTrue(resultSet.hasNext());
+      System.out.println(resultSet.next().toJSON());
+    }
+    // retrieve order 1 by status
+    String RETRIEVE_NEXT_ELIGIBLE_ORDERS = "SELECT id, status FROM Order WHERE status = 'PENDING' OR status = 'READY' ORDER BY id ASC LIMIT 1";
+    try (ResultSet resultSet = database.query("sql", RETRIEVE_NEXT_ELIGIBLE_ORDERS)) {
+      System.out.print("retrieve order 1 by status = ");
+      Assertions.assertTrue(resultSet.hasNext());
+      System.out.println(resultSet.next().toJSON());
+    }
   }
 
   //@Test

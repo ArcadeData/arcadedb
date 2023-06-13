@@ -283,7 +283,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
     do {
       if (currentValues != null && currentValueIndex < currentValues.length) {
         final RID value = currentValues[currentValueIndex++];
-        if (!index.isDeletedEntry(value))
+        if (value != null && !index.isDeletedEntry(value))
           return value;
 
         continue;

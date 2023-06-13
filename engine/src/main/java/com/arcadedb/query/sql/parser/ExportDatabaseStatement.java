@@ -110,7 +110,8 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("EXPORT DATABASE ");
-    url.toString(params, builder);
+    if (url != null)
+      url.toString(params, builder);
   }
 
   @Override
