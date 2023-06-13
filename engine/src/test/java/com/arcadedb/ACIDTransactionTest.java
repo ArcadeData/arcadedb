@@ -96,6 +96,7 @@ public class ACIDTransactionTest extends TestHelper {
     final AtomicInteger total = new AtomicInteger(0);
 
     try {
+      db.async().setParallelLevel(2);
       for (; total.get() < TOT; total.incrementAndGet()) {
         final MutableDocument v = db.newDocument("V");
         v.set("id", total.get());
