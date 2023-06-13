@@ -291,7 +291,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     for (int i = 0; i < semaphores.length; ++i)
       try {
-        semaphores[i].waitForCompetition(currentTimeout);
+        if (!semaphores[i].waitForCompetition(currentTimeout))
+          return false;
 
         // UPDATE THE TIMEOUT
         currentTimeout = timeout - (System.currentTimeMillis() - beginTime);
