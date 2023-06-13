@@ -72,14 +72,27 @@ public class ArcadeGremlin extends ArcadeQuery {
             return new ResultInternal((Document) next);
           else if (next instanceof ArcadeElement)
             return new ResultInternal(((ArcadeElement) next).getBaseElement());
-          else if (next instanceof Map)
-            return new ResultInternal((Map<String, Object>) next);
+          else if (next instanceof Map) {
+            final Map<String, Object> stringMap = getStringObjectMap((Map<Object, Object>) next);
+
+            return new ResultInternal(stringMap);
+          }
           return new ResultInternal(Map.of("result", next));
         }
       });
     } catch (Exception e) {
       throw new CommandExecutionException("Error on executing command", e);
     }
+  }
+
+  public static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {
+    // TRANSFORM TO A MAP WITH STRINGS AS KEYS
+    final Map<Object, Object> map = originalMap;
+    final Map<String, Object> stringMap = new LinkedHashMap<>(originalMap.size());
+
+    for (Map.Entry<Object, Object> entry : map.entrySet())
+      stringMap.put(entry.getKey().toString(), entry.getValue());
+    return stringMap;
   }
 
   public QueryEngine.AnalyzedQuery parse() {

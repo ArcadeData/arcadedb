@@ -39,7 +39,7 @@ public class OrientDBImporterFormat extends AbstractImporterFormat {
     context.parsed.set(0);
 
     try {
-      new OrientDBImporter(database) {
+      new OrientDBImporter(database, settings) {
         @Override
         public GZIPInputStream openInputStream() throws IOException {
           sourceSchema.getSource().reset();

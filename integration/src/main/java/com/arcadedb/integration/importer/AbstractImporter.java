@@ -246,6 +246,7 @@ public abstract class AbstractImporter {
         type = getOrCreateEdgeType(entity.getName());
         break;
       case DOCUMENT:
+      case DATABASE:
         type = getOrCreateDocumentType(entity.getName());
         break;
       default:

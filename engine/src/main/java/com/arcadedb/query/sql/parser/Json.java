@@ -31,7 +31,7 @@ import java.util.stream.*;
 
 public class Json extends SimpleNode {
 
-  protected List<JsonItem> items = new ArrayList<JsonItem>();
+  protected List<JsonItem> items = new ArrayList<>();
 
   public Json(final int id) {
     super(id);
@@ -114,7 +114,7 @@ public class Json extends SimpleNode {
     for (final JsonItem item : items) {
       final String left = item.getLeftValue();
       if (left != null && left.toLowerCase(Locale.ENGLISH).equals("@type")) {
-        return "" + item.right.execute((Result) null, context);
+        return String.valueOf(item.right.execute((Result) null, context));
       }
     }
 
@@ -160,8 +160,13 @@ public class Json extends SimpleNode {
   }
 
   @Override
-  protected SimpleNode[] getCacheableElements() {
-    return items.toArray(new SimpleNode[items.size()]);
+  public boolean isCacheable() {
+    return true;
+  }
+
+  @Override
+  public boolean refersToParent() {
+    return false;
   }
 }
 /* JavaCC - OriginalChecksum=3beec9f6db486de944498588b51a505d (do not edit this line) */

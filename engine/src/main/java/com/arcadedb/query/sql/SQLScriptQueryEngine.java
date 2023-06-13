@@ -104,6 +104,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();
+    context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
 
@@ -115,6 +116,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();
+    context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
     return executeInternal(statements, context);

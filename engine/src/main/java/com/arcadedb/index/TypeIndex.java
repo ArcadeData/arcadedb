@@ -183,6 +183,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public String getMostRecentFileName() {
+    return indexesOnBuckets.get(0).getMostRecentFileName();
+  }
+
+  @Override
   public EmbeddedSchema.INDEX_TYPE getType() {
     checkIsValid();
     if (indexesOnBuckets.isEmpty())

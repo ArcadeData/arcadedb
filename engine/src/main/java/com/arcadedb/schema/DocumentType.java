@@ -973,7 +973,7 @@ public class DocumentType {
 
     for (final TypeIndex i : getAllIndexes(false)) {
       for (final IndexInternal entry : i.getIndexesOnBuckets())
-        indexes.put(entry.getName(), entry.toJSON());
+        indexes.put(entry.getMostRecentFileName(), entry.toJSON());
     }
 
     type.put("custom", new JSONObject(custom));
