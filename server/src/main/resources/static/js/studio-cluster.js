@@ -1,7 +1,7 @@
 function updateCluster( callback ){
   jQuery.ajax({
     type: "GET",
-    url: basePath + "//server?mode=cluster",
+    url: basePath + "/server?mode=cluster",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
