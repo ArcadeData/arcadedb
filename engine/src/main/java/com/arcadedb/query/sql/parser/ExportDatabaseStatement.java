@@ -76,6 +76,9 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
         settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
       clazz.getMethod("setSettings", Map.class).invoke(exporter, settingsToString);
 
+      if (context.getDatabase().isTransactionActive())
+        context.getDatabase().rollbackAllNested();
+
       final Map<String, Object> exportResult = (Map<String, Object>) clazz.getMethod("exportDatabase").invoke(exporter);
 
       result.setPropertiesFromMap(exportResult);
