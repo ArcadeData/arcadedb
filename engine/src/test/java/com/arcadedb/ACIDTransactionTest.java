@@ -43,23 +43,6 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class ACIDTransactionTest extends TestHelper {
-  @Override
-  protected void beginTest() {
-    GlobalConfiguration.TX_RETRIES.setValue(50);
-
-    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
-
-    database.transaction(() -> {
-      if (!database.getSchema().existsType("V")) {
-        final DocumentType v = database.getSchema().createDocumentType("V");
-
-        v.createProperty("id", Integer.class);
-        v.createProperty("name", String.class);
-        v.createProperty("surname", String.class);
-      }
-    });
-  }
-
   @Test
   public void testAsyncTX() {
     final Database db = database;
@@ -90,6 +73,47 @@ public class ACIDTransactionTest extends TestHelper {
         Thread.currentThread().interrupt();
         // IGNORE IT
       }
+
+    } catch (final TransactionException e) {
+      Assertions.assertTrue(e.getCause() instanceof IOException);
+    }
+
+    ((DatabaseInternal) db).kill();
+
+    verifyWALFilesAreStillPresent();
+
+    verifyDatabaseWasNotClosedProperly();
+
+    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("V", true)));
+  }
+
+  @Test
+  public void testIndexCreationWhileAsyncMustFail() {
+    final Database db = database;
+
+    final int TOT = 1000;
+
+    final AtomicInteger total = new AtomicInteger(0);
+
+    try {
+      db.async().setParallelLevel(2);
+      for (; total.get() < TOT; total.incrementAndGet()) {
+        final MutableDocument v = db.newDocument("V");
+        v.set("id", total.get());
+        v.set("name", "Crash");
+        v.set("surname", "Test");
+
+        db.async().createRecord(v, null);
+      }
+
+      try {
+        database.getSchema().getType("V").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+        Assertions.fail();
+      } catch (Exception e) {
+        // EXPECTED
+      }
+
+      db.async().waitCompletion();
 
     } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof IOException);
@@ -437,5 +461,22 @@ public class ACIDTransactionTest extends TestHelper {
     Assertions.assertTrue(dbDir.isDirectory());
     final File[] files = dbDir.listFiles((dir, name) -> name.endsWith("wal"));
     Assertions.assertTrue(files.length > 0);
+  }
+
+  @Override
+  protected void beginTest() {
+    GlobalConfiguration.TX_RETRIES.setValue(50);
+
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
+
+    database.transaction(() -> {
+      if (!database.getSchema().existsType("V")) {
+        final DocumentType v = database.getSchema().createDocumentType("V");
+
+        v.createProperty("id", Integer.class);
+        v.createProperty("name", String.class);
+        v.createProperty("surname", String.class);
+      }
+    });
   }
 }

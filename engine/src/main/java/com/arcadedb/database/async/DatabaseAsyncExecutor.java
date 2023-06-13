@@ -388,4 +388,9 @@ public interface DatabaseAsyncExecutor {
   void onOk();
 
   void onError(Throwable e);
+
+  /**
+   * Returns true if there is any asynchronous tasks executing or scheduled.
+   */
+  boolean isProcessing();
 }

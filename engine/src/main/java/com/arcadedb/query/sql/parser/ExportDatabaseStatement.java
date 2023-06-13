@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.io.*;
 import java.lang.reflect.*;
+import java.time.*;
+import java.time.format.*;
 import java.util.*;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
@@ -46,6 +48,15 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
+    if (this.url == null) {
+      // ASSIGN DEFAULT NAME
+      this.url = new Url(String.format("%s-export-%s.%s.tgz",//
+          context.getDatabase().getName(),//
+          DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
+          format.getStringValue())//
+      );
+    }
+
     final String targetUrl = this.url.getUrlString();
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "export database");
@@ -76,6 +87,9 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
         settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
       clazz.getMethod("setSettings", Map.class).invoke(exporter, settingsToString);
 
+      if (context.getDatabase().isTransactionActive())
+        context.getDatabase().rollbackAllNested();
+
       final Map<String, Object> exportResult = (Map<String, Object>) clazz.getMethod("exportDatabase").invoke(exporter);
 
       result.setPropertiesFromMap(exportResult);
@@ -96,7 +110,8 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("EXPORT DATABASE ");
-    url.toString(params, builder);
+    if (url != null)
+      url.toString(params, builder);
   }
 
   @Override

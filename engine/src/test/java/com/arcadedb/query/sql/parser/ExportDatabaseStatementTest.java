@@ -28,8 +28,8 @@ public class ExportDatabaseStatementTest extends ParserTestAbstract {
     checkRightSyntax("export database http://www.foo.bar");
     checkRightSyntax("EXPORT DATABASE https://www.foo.bar");
     checkRightSyntax("EXPORT DATABASE file:///foo/bar/");
+    checkRightSyntax("export database ");
 
-    checkWrongSyntax("export database ");
     checkWrongSyntax("export database file:///foo/bar/ foo bar");
     checkWrongSyntax("export database http://www.foo.bar asdf ");
     checkWrongSyntax("EXPORT DATABASE https://www.foo.bar asd ");
