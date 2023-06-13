@@ -17,7 +17,7 @@ env:
   GHCR_REPOSITORY: raft-tech
   DOCKERHUB_REPOSITORY: rafttech
   IMAGE_NAME: data-fabric-arcadedb
-  TAG: '23.4.1'
+  TAG: 'dev'
  # TAG: ${{'dev' || github.event.inputs.tag }}
 
 jobs:

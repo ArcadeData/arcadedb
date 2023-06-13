@@ -1,7 +1,7 @@
 function updateCluster( callback ){
   jQuery.ajax({
     type: "GET",
-    url: basePath + "/api/v1/server?mode=cluster",
+    url: basePath + "//server?mode=cluster",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
@@ -158,7 +158,7 @@ function connectToCluster(){
 
       jQuery.ajax({
         type: "POST",
-        url: basePath + "/api/v1/server",
+        url: basePath + "/server",
         data: "{ 'command': 'connect cluster " + serverAddress + "' }",
         beforeSend: function (xhr){
           xhr.setRequestHeader('Authorization', globalCredentials);
@@ -183,7 +183,7 @@ function executeServerCommand(command, successMessage) {
 
   jQuery.ajax({
     type: "POST",
-    url: basePath + "/api/v1/server",
+    url: basePath + "/server",
     data: JSON.stringify({
       command: command,
     }),

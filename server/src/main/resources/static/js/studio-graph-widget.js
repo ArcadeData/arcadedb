@@ -418,7 +418,7 @@ function loadNodeNeighbors( direction, rid ){
 
   jQuery.ajax({
     type: "POST",
-    url: basePath + "/api/v1/command/" + database,
+    url: basePath + "/command/" + database,
     data: JSON.stringify(
       {
         language: "sql",
@@ -529,7 +529,7 @@ function addNodeFromRecord( rid ){
     // LOAD FROM THE DATABASE
     jQuery.ajax({
       type: "POST",
-      url: basePath + "/api/v1/command/" + escapeHtml( $("#inputDatabase").val() ),
+      url: basePath + "/command/" + escapeHtml( $("#inputDatabase").val() ),
       async: false,
       data: JSON.stringify(
         {
