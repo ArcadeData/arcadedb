@@ -5,7 +5,7 @@ var globalCredentials = null;
 
 /* API Gateway route */
 // TODO pull window relative path, or env var.
-var basePath = "/api/v1/arcadedb/api";
+var basePath = "/api/v1/arcadedb";
 
 function make_base_auth(user, password) {
   var tok = user + ':' + password;
