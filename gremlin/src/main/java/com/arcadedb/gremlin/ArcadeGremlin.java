@@ -26,7 +26,10 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
+import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
@@ -57,9 +60,46 @@ public class ArcadeGremlin extends ArcadeQuery {
   @Override
   public ResultSet execute() {
     try {
+      final boolean profileExecution =
+          parameters != null && parameters.containsKey("$profileExecution") ? (Boolean) parameters.remove("$profileExecution") : false;
+
       final Iterator resultSet = executeStatement();
 
-      return new IteratorResultSet(new Iterator() {
+      ExecutionPlan executionPlan = null;
+      if (profileExecution) {
+        final String originalQuery = query;
+        query += ".profile()";
+        try {
+          final Iterator profilerResultSet = executeStatement();
+          if (profilerResultSet.hasNext()) {
+            final Object result = profilerResultSet.next();
+            executionPlan = new ExecutionPlan() {
+              @Override
+              public List<ExecutionStep> getSteps() {
+                return null;
+              }
+
+              @Override
+              public String prettyPrint(int depth, int indent) {
+                return result.toString();
+              }
+
+              @Override
+              public Result toResult() {
+                return null;
+              }
+            };
+          }
+        } catch (Exception e) {
+          // NO EXECUTION PLAN
+        } finally {
+          query = originalQuery;
+        }
+      }
+
+      final ExecutionPlan activeExecutionPlan = executionPlan;
+
+      final IteratorResultSet result = new IteratorResultSet(new Iterator() {
         @Override
         public boolean hasNext() {
           return resultSet.hasNext();
@@ -79,7 +119,15 @@ public class ArcadeGremlin extends ArcadeQuery {
           }
           return new ResultInternal(Map.of("result", next));
         }
-      });
+      }) {
+        @Override
+        public Optional<ExecutionPlan> getExecutionPlan() {
+          return activeExecutionPlan != null ? Optional.of(activeExecutionPlan) : Optional.empty();
+        }
+      };
+
+      return result;
+
     } catch (Exception e) {
       throw new CommandExecutionException("Error on executing command", e);
     }

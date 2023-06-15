@@ -77,10 +77,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
               command += " limit " + limit;
           }
         }
-
-        if ("detailed".equalsIgnoreCase(profileExecution))
-          paramMap.put("$profileExecution", true);
       }
+
+      if ("detailed".equalsIgnoreCase(profileExecution))
+        paramMap.put("$profileExecution", true);
 
       final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
           executeScript(database, command, paramMap) :

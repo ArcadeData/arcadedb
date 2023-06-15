@@ -390,7 +390,7 @@ function executeCommandTable(){
 
     $("#result-num").html( data.result.records.length );
     $("#resultJson").val( JSON.stringify(data, null, 2) );
-    $("#resultExplain").val( data.explain != null ? data.explain : "'" );
+    $("#resultExplain").val( data.explain != null ? data.explain : "No profiler data found" );
 
     globalResultset = data.result;
     globalCy = null;
