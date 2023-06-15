@@ -24,6 +24,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGremlin;
 import com.arcadedb.cypher.query.CypherQueryEngine;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -64,7 +65,12 @@ public class ArcadeCypher extends ArcadeGremlin {
   public ResultSet execute() {
     final ResultSet resultSet = super.execute();
 
-    final InternalResultSet result = new InternalResultSet();
+    final InternalResultSet result = new InternalResultSet() {
+      @Override
+      public Optional<ExecutionPlan> getExecutionPlan() {
+        return resultSet.getExecutionPlan();
+      }
+    };
 
     while (resultSet.hasNext()) {
       final Result next = resultSet.next();

@@ -158,7 +158,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       }
 
       try {
-        if (database.isTransactionActive())
+        if (database.isOpen() && database.isTransactionActive())
           database.commit();
         onOk();
       } catch (final Exception e) {
@@ -623,9 +623,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private void shutdownThreads() {
     if (executorThreads != null) {
       try {
-        // WAIT FOR SHUTDOWN, MAX 1S EACH
-        for (int i = 0; i < executorThreads.length; ++i) {
+        // SET SHUTDOWN STATUS TO ALL THE THREADS
+        for (int i = 0; i < executorThreads.length; ++i)
           executorThreads[i].shutdown = true;
+
+        // WAIT FOR SHUTDOWN, MAX 10S EACH
+        for (int i = 0; i < executorThreads.length; ++i) {
           executorThreads[i].queue.put(FORCE_EXIT);
           executorThreads[i].join(10000);
         }
