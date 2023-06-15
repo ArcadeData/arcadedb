@@ -1007,7 +1007,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNonExistingRids() {
-    final int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).get(0).getId();
+    final int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).get(0).getFileId();
     final ResultSet result = database.query("sql", "select from #" + bucketId + ":100000000");
     Assertions.assertTrue(result.hasNext());
 
@@ -3442,7 +3442,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     if (clusterIds.length < 3) {
       return;
     }
-    System.arraycopy(clazz.getBuckets(false).stream().mapToInt(x -> x.getId()).toArray(), 0, clusterIds, 0, clusterIds.length);
+    System.arraycopy(clazz.getBuckets(false).stream().mapToInt(x -> x.getFileId()).toArray(), 0, clusterIds, 0, clusterIds.length);
     Arrays.sort(clusterIds);
 
     for (int i = 0; i < clusterIds.length; i++) {
@@ -3478,7 +3478,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     if (clusterIds.length < 3) {
       return;
     }
-    System.arraycopy(clazz.getBuckets(false).stream().mapToInt(x -> x.getId()).toArray(), 0, clusterIds, 0, clusterIds.length);
+    System.arraycopy(clazz.getBuckets(false).stream().mapToInt(x -> x.getFileId()).toArray(), 0, clusterIds, 0, clusterIds.length);
     Arrays.sort(clusterIds);
 
     for (int i = 0; i < clusterIds.length; i++) {

@@ -29,10 +29,10 @@ import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.Component;
+import com.arcadedb.engine.ComponentFactory;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
-import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.PaginatedComponentFactory;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -49,6 +49,7 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
+import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
@@ -73,18 +74,19 @@ public class EmbeddedSchema implements Schema {
   public static final String                                 DEFAULT_ENCODING      = "UTF-8";
   public static final String                                 SCHEMA_FILE_NAME      = "schema.json";
   public static final String                                 SCHEMA_PREV_FILE_NAME = "schema.prev.json";
+  public static final int                                    BUILD_TX_BATCH_SIZE   = 100_000;
   final               IndexFactory                           indexFactory          = new IndexFactory();
   final               Map<String, DocumentType>              types                 = new HashMap<>();
   private             String                                 encoding              = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
-  private final       List<PaginatedComponent>               files                 = new ArrayList<>();
+  private final       List<Component>                        files                 = new ArrayList<>();
   private final       Map<String, Bucket>                    bucketMap             = new HashMap<>();
   private             Map<Integer, DocumentType>             bucketId2TypeMap      = new HashMap<>();
   protected final     Map<String, IndexInternal>             indexMap              = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
-  private final       PaginatedComponentFactory              paginatedComponentFactory;
+  private final       ComponentFactory                       componentFactory;
   private             Dictionary                             dictionary;
   private             String                                 dateFormat            = GlobalConfiguration.DATE_FORMAT.getValueAsString();
   private             String                                 dateTimeFormat        = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
@@ -102,16 +104,18 @@ public class EmbeddedSchema implements Schema {
     this.databasePath = databasePath;
     this.security = security;
 
-    paginatedComponentFactory = new PaginatedComponentFactory(database);
-    paginatedComponentFactory.registerComponent(Dictionary.DICT_EXT, new Dictionary.PaginatedComponentFactoryHandler());
-    paginatedComponentFactory.registerComponent(Bucket.BUCKET_EXT, new Bucket.PaginatedComponentFactoryHandler());
-    paginatedComponentFactory.registerComponent(LSMTreeIndexMutable.UNIQUE_INDEX_EXT, new LSMTreeIndex.PaginatedComponentFactoryHandlerUnique());
-    paginatedComponentFactory.registerComponent(LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
-    paginatedComponentFactory.registerComponent(LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, new LSMTreeIndex.PaginatedComponentFactoryHandlerUnique());
-    paginatedComponentFactory.registerComponent(LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
+    componentFactory = new ComponentFactory(database);
+    componentFactory.registerComponent(Dictionary.DICT_EXT, new Dictionary.PaginatedComponentFactoryHandler());
+    componentFactory.registerComponent(Bucket.BUCKET_EXT, new Bucket.PaginatedComponentFactoryHandler());
+    componentFactory.registerComponent(LSMTreeIndexMutable.UNIQUE_INDEX_EXT, new LSMTreeIndex.PaginatedComponentFactoryHandlerUnique());
+    componentFactory.registerComponent(LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
+    componentFactory.registerComponent(LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, new LSMTreeIndex.PaginatedComponentFactoryHandlerUnique());
+    componentFactory.registerComponent(LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
+    componentFactory.registerComponent(HnswVectorIndex.FILE_EXT, new HnswVectorIndex.PaginatedComponentFactoryHandlerUnique());
 
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
+    indexFactory.register(INDEX_TYPE.HSNW.name(), new HnswVectorIndex.IndexFactoryHandler());
     configurationFile = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
   }
 
@@ -120,7 +124,7 @@ public class EmbeddedSchema implements Schema {
     return this;
   }
 
-  public void create(final PaginatedFile.MODE mode) {
+  public void create(final ComponentFile.MODE mode) {
     loadInRamCompleted = true;
     database.begin();
     try {
@@ -136,19 +140,19 @@ public class EmbeddedSchema implements Schema {
     }
   }
 
-  public void load(final PaginatedFile.MODE mode, final boolean initialize) throws IOException {
+  public void load(final ComponentFile.MODE mode, final boolean initialize) throws IOException {
     files.clear();
     types.clear();
     bucketMap.clear();
     indexMap.clear();
     dictionary = null;
 
-    final Collection<PaginatedFile> filesToOpen = database.getFileManager().getFiles();
+    final Collection<ComponentFile> filesToOpen = database.getFileManager().getFiles();
 
     // REGISTER THE DICTIONARY FIRST
-    for (final PaginatedFile file : filesToOpen) {
+    for (final ComponentFile file : filesToOpen) {
       if (Dictionary.DICT_EXT.equals(file.getFileExtension())) {
-        dictionary = (Dictionary) paginatedComponentFactory.createComponent(file, mode);
+        dictionary = (Dictionary) componentFactory.createComponent(file, mode);
         registerFile(dictionary);
         break;
       }
@@ -157,9 +161,9 @@ public class EmbeddedSchema implements Schema {
     if (dictionary == null)
       throw new ConfigurationException("Dictionary file not found in database directory");
 
-    for (final PaginatedFile file : filesToOpen) {
+    for (final ComponentFile file : filesToOpen) {
       if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
-        final PaginatedComponent pf = paginatedComponentFactory.createComponent(file, mode);
+        final Component pf = componentFactory.createComponent(file, mode);
 
         if (pf != null) {
           final Object mainComponent = pf.getMainComponent();
@@ -178,6 +182,11 @@ public class EmbeddedSchema implements Schema {
       initComponents();
 
     readConfiguration();
+
+    for (final Component f : files)
+      if (f != null)
+        f.onAfterSchemaLoad();
+
     updateSecurity();
   }
 
@@ -221,18 +230,18 @@ public class EmbeddedSchema implements Schema {
   }
 
   @Override
-  public PaginatedComponent getFileById(final int id) {
+  public Component getFileById(final int id) {
     if (id >= files.size())
       throw new SchemaException("File with id '" + id + "' was not found");
 
-    final PaginatedComponent p = files.get(id);
+    final Component p = files.get(id);
     if (p == null)
       throw new SchemaException("File with id '" + id + "' was not found");
     return p;
   }
 
   @Override
-  public PaginatedComponent getFileByIdIfExists(final int id) {
+  public Component getFileByIdIfExists(final int id) {
     if (id >= files.size())
       return null;
 
@@ -270,7 +279,7 @@ public class EmbeddedSchema implements Schema {
     if (id < 0 || id >= files.size())
       throw new SchemaException("Bucket with id '" + id + "' was not found");
 
-    final PaginatedComponent p = files.get(id);
+    final Component p = files.get(id);
     if (!(p instanceof Bucket))
       throw new SchemaException("Bucket with id '" + id + "' was not found");
     return (Bucket) p;
@@ -289,7 +298,7 @@ public class EmbeddedSchema implements Schema {
 
     return recordFileChanges(() -> {
       try {
-        final Bucket bucket = new Bucket(database, bucketName, databasePath + File.separator + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize,
+        final Bucket bucket = new Bucket(database, bucketName, databasePath + File.separator + bucketName, ComponentFile.MODE.READ_WRITE, pageSize,
             Bucket.CURRENT_VERSION);
         registerFile(bucket);
         bucketMap.put(bucketName, bucket);
@@ -481,6 +490,11 @@ public class EmbeddedSchema implements Schema {
   }
 
   @Override
+  public VectorIndexBuilder buildVectorIndex() {
+    return new VectorIndexBuilder(database);
+  }
+
+  @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String... propertyNames) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).create();
   }
@@ -590,7 +604,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public DocumentType getTypeByBucketName(final String bucketName) {
-    return bucketId2TypeMap.get(getBucketByName(bucketName).getId());
+    return bucketId2TypeMap.get(getBucketByName(bucketName).getFileId());
   }
 
   public boolean existsType(final String typeName) {
@@ -656,18 +670,18 @@ public class EmbeddedSchema implements Schema {
               "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + type.getName() + "'. Remove the association first");
       }
 
-      database.getPageManager().deleteFile(bucket.getId());
+      database.getPageManager().deleteFile(bucket.getFileId());
       try {
-        database.getFileManager().dropFile(bucket.getId());
+        database.getFileManager().dropFile(bucket.getFileId());
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
       }
-      removeFile(bucket.getId());
+      removeFile(bucket.getFileId());
 
       bucketMap.remove(bucketName);
 
       for (final Index idx : new ArrayList<>(indexMap.values())) {
-        if (idx.getAssociatedBucketId() == bucket.getId())
+        if (idx.getAssociatedBucketId() == bucket.getFileId())
           dropIndex(idx.getName());
       }
 
@@ -944,7 +958,7 @@ public class EmbeddedSchema implements Schema {
                 indexJSON.put("type", typeName);
                 LogManager.instance().log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName, index.getName());
               } else
-                type.addIndexInternal(index, bucket.getId(), properties, null);
+                type.addIndexInternal(index, bucket.getFileId(), properties, null);
 
             } else {
               orphanIndexes.put(indexName, indexJSON);
@@ -999,7 +1013,7 @@ public class EmbeddedSchema implements Schema {
                         LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
 
                     index.setNullStrategy(nullStrategy);
-                    type.addIndexInternal(index, bucket.getId(), properties, null);
+                    type.addIndexInternal(index, bucket.getFileId(), properties, null);
                     LogManager.instance().log(this, Level.WARNING, "Relinked orphan index '%s' to type '%s'", null, indexName, type.getName());
                     saveConfiguration = true;
                     completed = false;
@@ -1081,8 +1095,8 @@ public class EmbeddedSchema implements Schema {
     return root;
   }
 
-  public void registerFile(final PaginatedComponent file) {
-    final int fileId = file.getId();
+  public void registerFile(final Component file) {
+    final int fileId = file.getFileId();
 
     while (files.size() < fileId + 1)
       files.add(null);
@@ -1094,7 +1108,7 @@ public class EmbeddedSchema implements Schema {
   }
 
   public void initComponents() {
-    for (final PaginatedComponent f : files)
+    for (final Component f : files)
       if (f != null)
         f.onAfterLoad();
   }
@@ -1213,16 +1227,19 @@ public class EmbeddedSchema implements Schema {
     if (indexMap.containsKey(indexName))
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
-    final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + File.separator + indexName,
-        PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
+    final IndexBuilder<Index> builder = buildBucketIndex(typeName, bucket.getName(), propertyNames).withUnique(unique).withType(indexType)
+        .withFilePath(databasePath + File.separator + indexName).withKeyTypes(keyTypes).withPageSize(pageSize).withNullStrategy(nullStrategy)
+        .withCallback(callback).withIndexName(indexName);
+
+    final IndexInternal index = indexFactory.createIndex(builder);
 
     try {
-      registerFile(index.getPaginatedComponent());
+      registerFile(index.getComponent());
 
       indexMap.put(indexName, index);
 
-      type.addIndexInternal(index, bucket.getId(), propertyNames, propIndex);
-      index.build(callback);
+      type.addIndexInternal(index, bucket.getFileId(), propertyNames, propIndex);
+      index.build(BUILD_TX_BATCH_SIZE, callback);
 
       return index;
 
@@ -1245,7 +1262,7 @@ public class EmbeddedSchema implements Schema {
 
     for (final DocumentType t : types.values()) {
       for (final Bucket b : t.getBuckets(false))
-        newBucketId2TypeMap.put(b.getId(), t);
+        newBucketId2TypeMap.put(b.getFileId(), t);
     }
 
     bucketId2TypeMap = newBucketId2TypeMap;

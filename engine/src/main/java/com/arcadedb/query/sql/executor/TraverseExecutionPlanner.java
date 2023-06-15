@@ -244,7 +244,7 @@ public class TraverseExecutionPlanner {
       final Bucket bucket = clusters.get(0);
       Integer bucketId = bucket.getBucketNumber();
       if (bucketId == null) {
-        bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getId();
+        bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
       }
 
       final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context, profilingEnabled);
@@ -261,7 +261,7 @@ public class TraverseExecutionPlanner {
         final Bucket bucket = clusters.get(i);
         Integer bucketId = bucket.getBucketNumber();
         if (bucketId == null) {
-          bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getId();
+          bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
         }
         bucketIds[i] = bucketId;
       }

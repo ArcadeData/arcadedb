@@ -65,8 +65,21 @@ public class ParseException extends Exception {
    * a new object of this type with the fields "currentToken",
    * "expectedTokenSequences", and "tokenImage" set.
    */
+  public ParseException(final String command, final Token currentTokenVal, final int[][] expectedTokenSequencesVal, final String[] tokenImageVal) {
+    super(initialise(command, currentTokenVal, expectedTokenSequencesVal, tokenImageVal));
+    currentToken = currentTokenVal;
+    expectedTokenSequences = expectedTokenSequencesVal;
+    tokenImage = tokenImageVal;
+  }
+
+  /**
+   * This constructor is used by the method "generateParseException"
+   * in the generated parser.  Calling this constructor generates
+   * a new object of this type with the fields "currentToken",
+   * "expectedTokenSequences", and "tokenImage" set.
+   */
   public ParseException(final Token currentTokenVal, final int[][] expectedTokenSequencesVal, final String[] tokenImageVal) {
-    super(initialise(currentTokenVal, expectedTokenSequencesVal, tokenImageVal));
+    super(initialise(null, currentTokenVal, expectedTokenSequencesVal, tokenImageVal));
     currentToken = currentTokenVal;
     expectedTokenSequences = expectedTokenSequencesVal;
     tokenImage = tokenImageVal;
@@ -93,6 +106,14 @@ public class ParseException extends Exception {
     super(message);
   }
 
+  public String toString(final String command) {
+    return initialise(command, currentToken, expectedTokenSequences, tokenImage);
+  }
+
+  private static String initialise(final Token currentToken, final int[][] expectedTokenSequences, final String[] tokenImage) {
+    return initialise(null, currentToken, expectedTokenSequences, tokenImage);
+  }
+
   /**
    * It uses "currentToken" and "expectedTokenSequences" to generate a parse
    * error message and returns it.  If this object has been created
@@ -100,10 +121,10 @@ public class ParseException extends Exception {
    * from the parser) the correct error message
    * gets displayed.
    */
-  private static String initialise(final Token currentToken, final int[][] expectedTokenSequences, final String[] tokenImage) {
+  private static String initialise(final String command, final Token currentToken, final int[][] expectedTokenSequences, final String[] tokenImage) {
     final String eol = System.getProperty("line.separator", "\n");
     final StringBuilder expected = new StringBuilder();
-    int maxSize = 0;
+    int maxSize = 1;
     for (int i = 0; i < expectedTokenSequences.length; i++) {
       if (maxSize < expectedTokenSequences[i].length) {
         maxSize = expectedTokenSequences[i].length;
@@ -116,7 +137,7 @@ public class ParseException extends Exception {
       }
       expected.append(eol).append("    ");
     }
-    String retval = "Encountered \"";
+    String retval = "Encountered ";
     Token tok = currentToken.next;
     for (int i = 0; i < maxSize; i++) {
       if (i != 0)
@@ -125,20 +146,30 @@ public class ParseException extends Exception {
         retval += tokenImage[0];
         break;
       }
-      retval += " " + tokenImage[tok.kind];
+      retval += tokenImage[tok.kind];
       retval += " \"";
       retval += add_escapes(tok.image);
-      retval += " \"";
+      retval += "\"";
       tok = tok.next;
     }
-    retval += "\" at line " + currentToken.next.beginLine + ", column " + currentToken.next.beginColumn;
+    retval += " at line " + currentToken.next.beginLine + ", column " + currentToken.next.beginColumn;
     retval += "." + eol;
-    if (expectedTokenSequences.length == 1) {
-      retval += "Was expecting:" + eol + "    ";
-    } else {
-      retval += "Was expecting one of:" + eol + "    ";
+
+    if (command != null) {
+      retval += command + eol;
+      for (int i = 0; i < currentToken.next.beginColumn - 1; ++i)
+        retval += '-';
+      retval += '^' + eol;
     }
-    retval += expected.toString();
+
+    if (expected.length() > 0) {
+      if (expectedTokenSequences.length == 1) {
+        retval += "Was expecting:" + eol + "    ";
+      } else {
+        retval += "Was expecting one of:" + eol + "    ";
+      }
+      retval += expected.toString();
+    }
     return retval;
   }
 

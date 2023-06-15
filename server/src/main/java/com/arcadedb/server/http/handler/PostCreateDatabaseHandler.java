@@ -20,7 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
@@ -61,7 +61,7 @@ public class PostCreateDatabaseHandler extends AbstractHandler {
 
     server.getServerMetrics().meter("http.create-database").mark();
 
-    final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
+    final DatabaseInternal db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       ((ReplicatedDatabase) db).createInReplicas();

@@ -838,8 +838,8 @@ public class DocumentType {
     buckets = CollectionUtils.addToUnmodifiableList(buckets, bucket);
     cachedPolymorphicBuckets = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBuckets, bucket);
 
-    bucketIds = CollectionUtils.addToUnmodifiableList(bucketIds, bucket.getId());
-    cachedPolymorphicBucketIds = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBucketIds, bucket.getId());
+    bucketIds = CollectionUtils.addToUnmodifiableList(bucketIds, bucket.getFileId());
+    cachedPolymorphicBucketIds = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
 
     bucketSelectionStrategy.setType(this);
 
@@ -865,8 +865,8 @@ public class DocumentType {
     buckets = CollectionUtils.removeFromUnmodifiableList(buckets, bucket);
     cachedPolymorphicBuckets = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBuckets, bucket);
 
-    bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getId());
-    cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getId());
+    bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getFileId());
+    cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
 
     // AUTOMATICALLY DROP THE INDEX ON THE REMOVED BUCKET
     final Collection<TypeIndex> existentIndexes = getAllIndexes(false);
@@ -875,7 +875,7 @@ public class DocumentType {
       schema.getDatabase().transaction(() -> {
         for (TypeIndex idx : existentIndexes) {
           for (IndexInternal subIndex : idx.getIndexesOnBuckets())
-            if (subIndex.getAssociatedBucketId() == bucket.getId())
+            if (subIndex.getAssociatedBucketId() == bucket.getFileId())
               schema.dropIndex(subIndex.getName());
         }
       });
@@ -890,7 +890,7 @@ public class DocumentType {
   }
 
   public int getFirstBucketId() {
-    return buckets.get(0).getId();
+    return buckets.get(0).getFileId();
   }
 
   public boolean isSubTypeOf(final String type) {

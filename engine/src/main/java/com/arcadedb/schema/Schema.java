@@ -19,8 +19,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.Component;
 import com.arcadedb.engine.Dictionary;
-import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
@@ -32,13 +32,13 @@ import java.util.*;
 
 public interface Schema {
 
-  PaginatedComponent getFileById(int id);
+  Component getFileById(int id);
 
   boolean existsBucket(String bucketName);
 
   Bucket getBucketByName(String name);
 
-  PaginatedComponent getFileByIdIfExists(int id);
+  Component getFileByIdIfExists(int id);
 
   Collection<Bucket> getBuckets();
 
@@ -59,6 +59,8 @@ public interface Schema {
   BucketIndexBuilder buildBucketIndex(String typeName, String bucketName, String[] propertyNames);
 
   ManualIndexBuilder buildManualIndex(String indexName, Type[] keyTypes);
+
+  VectorIndexBuilder buildVectorIndex();
 
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 

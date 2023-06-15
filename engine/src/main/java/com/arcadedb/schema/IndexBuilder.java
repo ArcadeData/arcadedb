@@ -31,17 +31,20 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
  */
 public abstract class IndexBuilder<T extends Index> {
   final DatabaseInternal       database;
-  final Class<? extends Index> indexMode;
+  final Class<? extends Index> indexImplementation;
   Schema.INDEX_TYPE                  indexType;
   boolean                            unique;
   int                                pageSize       = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
   LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy   = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   Index.BuildIndexCallback           callback;
   boolean                            ignoreIfExists = false;
+  String                             indexName      = null;
+  String                             filePath       = null;
+  Type[]                             keyTypes;
 
-  protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexMode) {
+  protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexImplementation) {
     this.database = database;
-    this.indexMode = indexMode;
+    this.indexImplementation = indexImplementation;
   }
 
   public abstract T create();
@@ -92,8 +95,8 @@ public abstract class IndexBuilder<T extends Index> {
     return indexType;
   }
 
-  public Class<? extends Index> getIndexMode() {
-    return indexMode;
+  public Class<? extends Index> getIndexImplementation() {
+    return indexImplementation;
   }
 
   public Index.BuildIndexCallback getCallback() {
@@ -102,5 +105,32 @@ public abstract class IndexBuilder<T extends Index> {
 
   public boolean isUnique() {
     return unique;
+  }
+
+  public String getIndexName() {
+    return indexName;
+  }
+
+  public String getFilePath() {
+    return filePath;
+  }
+
+  public Type[] getKeyTypes() {
+    return keyTypes;
+  }
+
+  public IndexBuilder<T> withIndexName(final String indexName) {
+    this.indexName = indexName;
+    return this;
+  }
+
+  public IndexBuilder<T> withFilePath(final String path) {
+    this.filePath = path;
+    return this;
+  }
+
+  public IndexBuilder<T> withKeyTypes(final Type[] keyTypes) {
+    this.keyTypes = keyTypes;
+    return this;
   }
 }

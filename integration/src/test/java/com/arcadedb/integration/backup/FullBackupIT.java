@@ -24,7 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporter;
@@ -61,8 +61,8 @@ public class FullBackupIT {
 
     new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o").split(" ")).restoreDatabase();
 
-    try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
-      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
+    try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY)) {
+      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(ComponentFile.MODE.READ_ONLY)) {
         new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
     }
@@ -80,7 +80,7 @@ public class FullBackupIT {
 
       new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
 
-      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
+      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(ComponentFile.MODE.READ_ONLY)) {
         new DatabaseComparator().compare(importedDatabase, restoredDatabase);
       }
     }
@@ -133,7 +133,7 @@ public class FullBackupIT {
               importedDatabase.begin();
               for (int k = 0; k < 500; k++) {
                 final MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
-                Assertions.assertEquals(threadBucket.getId(), v.getIdentity().getBucketId());
+                Assertions.assertEquals(threadBucket.getFileId(), v.getIdentity().getBucketId());
 
                 if (k + 1 % 100 == 0) {
                   importedDatabase.commit();
@@ -173,7 +173,7 @@ public class FullBackupIT {
 
         new Restore(FILE + "_" + i, databasePath).setVerboseLevel(1).restoreDatabase();
 
-        try (final Database restoredDatabase = new DatabaseFactory(databasePath).open(PaginatedFile.MODE.READ_ONLY)) {
+        try (final Database restoredDatabase = new DatabaseFactory(databasePath).open(ComponentFile.MODE.READ_ONLY)) {
           // VERIFY ONLY WHOLE TRANSACTION ARE WRITTEN
           Assertions.assertTrue(restoredDatabase.countType("BackupTest", true) % 500 == 0);
         }

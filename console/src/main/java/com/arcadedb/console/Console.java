@@ -28,7 +28,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.AsyncResultsetCallback;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.misc.IntegrationUtils;
@@ -409,9 +409,9 @@ public class Console {
 
       checkDatabaseIsLocked(localUrl);
 
-      PaginatedFile.MODE mode = PaginatedFile.MODE.READ_WRITE;
+      ComponentFile.MODE mode = ComponentFile.MODE.READ_WRITE;
       if (urlParts.length > 1)
-        mode = PaginatedFile.MODE.valueOf(urlParts[1].toUpperCase());
+        mode = ComponentFile.MODE.valueOf(urlParts[1].toUpperCase());
 
       databaseFactory = new DatabaseFactory(localUrl);
       databaseProxy = databaseFactory.setAutoTransaction(true).open(mode);

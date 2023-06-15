@@ -115,18 +115,21 @@ public class BinaryTypes {
         // SERIALIZE THE RESULT AS A MAP
         type = TYPE_MAP;
     } else if (value.getClass().isArray()) {
-      final Object firstElement = Array.getLength(value) > 0 ? Array.get(value, 0) : null;
-      if (firstElement instanceof Short)
-        type = TYPE_ARRAY_OF_SHORT;
-      else if (firstElement instanceof Integer)
-        type = TYPE_ARRAY_OF_INT;
-      else if (firstElement instanceof Long)
-        type = TYPE_ARRAY_OF_LONG;
-      else if (firstElement instanceof Float)
-        type = TYPE_ARRAY_OF_FLOAT;
-      else if (firstElement instanceof Double)
-        type = TYPE_ARRAY_OF_DOUBLE;
-      else
+      if (value.getClass().getComponentType().isPrimitive()) {
+        final Object firstElement = Array.getLength(value) > 0 ? Array.get(value, 0) : null;
+        if (firstElement instanceof Short)
+          type = TYPE_ARRAY_OF_SHORT;
+        else if (firstElement instanceof Integer)
+          type = TYPE_ARRAY_OF_INT;
+        else if (firstElement instanceof Long)
+          type = TYPE_ARRAY_OF_LONG;
+        else if (firstElement instanceof Float)
+          type = TYPE_ARRAY_OF_FLOAT;
+        else if (firstElement instanceof Double)
+          type = TYPE_ARRAY_OF_DOUBLE;
+        else
+          type = TYPE_LIST;
+      } else
         type = TYPE_LIST;
 
     } else if (value instanceof Iterable)

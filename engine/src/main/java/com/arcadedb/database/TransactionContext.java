@@ -21,12 +21,13 @@ package com.arcadedb.database;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -198,7 +199,7 @@ public class TransactionContext implements Transaction {
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
       if (modifiedPages != null) {
-        final int dictionaryId = database.getSchema().getDictionary().getId();
+        final int dictionaryId = database.getSchema().getDictionary().getFileId();
 
         for (final PageId pageId : modifiedPages.keySet()) {
           if (dictionaryId == pageId.getFileId()) {
@@ -269,7 +270,7 @@ public class TransactionContext implements Transaction {
         case READ_COMMITTED:
           break;
         case REPEATABLE_READ:
-          final PaginatedFile file = database.getFileManager().getFile(pageId.getFileId());
+          final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(pageId.getFileId());
           final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
           if (!isNewPage)
             // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
@@ -349,7 +350,7 @@ public class TransactionContext implements Transaction {
   public long getFileSize(final int fileId) throws IOException {
     final Integer lastPage = newPageCounters.get(fileId);
     if (lastPage != null)
-      return (long) (lastPage + 1) * database.getFileManager().getFile(fileId).getPageSize();
+      return (long) (lastPage + 1) * ((PaginatedComponentFile) database.getFileManager().getFile(fileId)).getPageSize();
 
     return database.getFileManager().getVirtualFileSize(fileId);
   }
@@ -430,11 +431,11 @@ public class TransactionContext implements Transaction {
       indexChanges.setKeys(keysTx);
       indexChanges.addFilesToLock(modifiedFiles);
 
-      final int dictionaryFileId = database.getSchema().getDictionary().getId();
+      final int dictionaryFileId = database.getSchema().getDictionary().getFileId();
       boolean dictionaryModified = false;
 
       for (final WALFile.WALPage p : buffer.pages) {
-        final PaginatedFile file = database.getFileManager().getFile(p.fileId);
+        final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(p.fileId);
         final int pageSize = file.getPageSize();
 
         final PageId pageId = new PageId(p.fileId, p.pageNumber);
@@ -562,7 +563,7 @@ public class TransactionContext implements Transaction {
       if (changes == null)
         return;
 
-      if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
+      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
         throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
 
       if (status != STATUS.COMMIT_1ST_PHASE)
@@ -583,9 +584,10 @@ public class TransactionContext implements Transaction {
 
       if (newPages != null) {
         for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
-          database.getSchema().getFileById(entry.getKey()).setPageCount(entry.getValue());
-          database.getFileManager()
-              .setVirtualFileSize(entry.getKey(), (long) entry.getValue() * database.getFileManager().getFile(entry.getKey()).getPageSize());
+          final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(entry.getKey());
+          component.setPageCount(entry.getValue());
+          database.getFileManager().setVirtualFileSize(entry.getKey(),
+              (long) entry.getValue() * ((PaginatedComponentFile) database.getFileManager().getFile(entry.getKey())).getPageSize());
         }
       }
 
@@ -593,7 +595,7 @@ public class TransactionContext implements Transaction {
         ((RecordInternal) r).unsetDirty();
 
       for (final int fileId : lockedFiles) {
-        final PaginatedComponent file = database.getSchema().getFileByIdIfExists(fileId);
+        final PaginatedComponent file = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
         if (file != null)
           // THE FILE COULD BE NULL IN CASE OF INDEX COMPACTION
           file.onAfterCommit();
@@ -661,7 +663,7 @@ public class TransactionContext implements Transaction {
     if (lockedFiles != null)
       lockedFiles.remove(fileId);
 
-    final PaginatedComponent component = database.getSchema().getFileByIdIfExists(fileId);
+    final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
     if (component instanceof LSMTreeIndexAbstract)
       indexChanges.removeIndex(component.getName());
   }

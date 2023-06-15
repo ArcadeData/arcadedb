@@ -19,7 +19,7 @@
 package com.arcadedb.server.security;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
@@ -149,7 +149,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (configuredGroups == null)
       return;
 
-    final List<PaginatedFile> files = database.getFileManager().getFiles();
+    final List<ComponentFile> files = database.getFileManager().getFiles();
 
     fileAccessMap = new boolean[files.size()][];
 

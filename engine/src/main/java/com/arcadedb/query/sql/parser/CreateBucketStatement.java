@@ -53,7 +53,7 @@ public class CreateBucketStatement extends DDLStatement {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "create bucket");
     result.setProperty("bucketName", bucketName);
-    result.setProperty("bucketId", bucket.getId());
+    result.setProperty("bucketId", bucket.getFileId());
 
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);

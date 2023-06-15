@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
-import static com.arcadedb.engine.PaginatedFile.MODE.READ_ONLY;
+import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
 
 public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
 

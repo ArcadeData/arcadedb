@@ -1,5 +1,7 @@
 package com.arcadedb.index.vector;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.schema.VectorIndexBuilder;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
 import com.github.jelmerk.knn.Item;
@@ -1060,15 +1062,15 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     return maxValueDistanceComparator.compare(x, y) > 0;
   }
 
-  public HnswVectorIndex.Builder<TId, TVector, TDistance> createPersistentIndex() {
-    return HnswVectorIndex.newBuilder(this);
+  public VectorIndexBuilder createPersistentIndex(final Database database) {
+    return new VectorIndexBuilder(database, this);
   }
 
   public Integer getEntryPoint() {
     return entryPoint != null ? entryPoint.id : null;
   }
 
-  class ItemIterator implements Iterator<Node<TItem>> {
+  public class ItemIterator implements Iterator<Node<TItem>> {
 
     private int done  = 0;
     private int index = 0;
@@ -1092,15 +1094,15 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     }
   }
 
-  static class Node<TItem extends Item> implements Serializable {
+  public static class Node<TItem extends Item> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    final int id;
+    public final int id;
 
     final MutableIntList[] connections;
 
-    volatile TItem item;
+    public volatile TItem item;
 
     volatile boolean deleted;
 
@@ -1111,7 +1113,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
       this.deleted = deleted;
     }
 
-    int maxLevel() {
+    public int maxLevel() {
       return this.connections.length - 1;
     }
 

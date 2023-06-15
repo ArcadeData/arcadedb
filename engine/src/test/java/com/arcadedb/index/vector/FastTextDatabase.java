@@ -7,7 +7,6 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.github.jelmerk.knn.DistanceFunctions;
 import com.github.jelmerk.knn.SearchResult;
@@ -53,9 +52,7 @@ public class FastTextDatabase {
       database = factory.open();
       LogManager.instance().log(this, Level.SEVERE, "Found existent database with %d words", database.countType("Word", false));
 
-      final String indexJsonCfg = FileUtils.readFileAsString(new File("index.json"), "UTF8");
-
-      persistentIndex = new HnswVectorIndex(database, new JSONObject(indexJsonCfg));
+      persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
 
     } else {
       database = factory.create();
@@ -86,11 +83,10 @@ public class FastTextDatabase {
 
       LogManager.instance().log(null, Level.SEVERE, "Saving index into the database...");
 
-      persistentIndex = hnswIndex.createPersistentIndex()//
-          .withDatabase(database)//
-          .withVertexType("Word").withEdgeType("Proximity").withVectorPropertyName("vector").withIdProperty("name").build();
+      persistentIndex = hnswIndex.createPersistentIndex(database)//
+          .withVertexType("Word").withEdgeType("Proximity").withVectorPropertyName("vector").withIdProperty("name").create();
 
-      FileUtils.writeFile(new File("index.json"), persistentIndex.toJSON().toString());
+      persistentIndex.save();
 
       LogManager.instance().log(null, Level.SEVERE, "Index saved in %ds.", System.currentTimeMillis() - end);
     }

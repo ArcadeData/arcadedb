@@ -41,11 +41,11 @@ public class CreateIndexStatement extends DDLStatement {
   protected Identifier                         typeName;
   protected List<Property>                     propertyList = new ArrayList<Property>();
   protected Identifier                         type;
+  protected boolean                            ifNotExists  = false;
   protected Identifier                         engine;
+  protected Json                               metadata;
   protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   protected List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
-  protected Json                               metadata;
-  protected boolean                            ifNotExists  = false;
 
   public CreateIndexStatement(final int id) {
     super(id);
@@ -170,6 +170,16 @@ public class CreateIndexStatement extends DDLStatement {
     }
     builder.append(" ");
     type.toString(params, builder);
+
+    if (engine != null) {
+      builder.append(" ENGINE ");
+      engine.toString(params, builder);
+    }
+    if (metadata != null) {
+      builder.append(" METADATA ");
+      metadata.toString(params, builder);
+    }
+
     if (nullStrategy != null) {
       builder.append(" NULL_STRATEGY ");
       builder.append(nullStrategy);
@@ -184,14 +194,6 @@ public class CreateIndexStatement extends DDLStatement {
         keyType.toString(params, builder);
         first = false;
       }
-    }
-    if (engine != null) {
-      builder.append(" ENGINE ");
-      engine.toString(params, builder);
-    }
-    if (metadata != null) {
-      builder.append(" METADATA ");
-      metadata.toString(params, builder);
     }
   }
 

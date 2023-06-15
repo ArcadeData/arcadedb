@@ -131,7 +131,7 @@ public class MatchEdgeTraverser {
       className = targetClassName(item, iCommandContext);
       final String clusterName = targetClusterName(item, iCommandContext);
       if (clusterName != null) {
-        clusterId = iCommandContext.getDatabase().getSchema().getBucketByName(clusterName).getId();
+        clusterId = iCommandContext.getDatabase().getSchema().getBucketByName(clusterName).getFileId();
       }
       targetRid = targetRid(item, iCommandContext);
     }

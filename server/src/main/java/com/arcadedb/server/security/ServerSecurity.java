@@ -24,6 +24,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
 import com.arcadedb.server.ServerException;
@@ -32,8 +34,6 @@ import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.LRUCache;
-import com.arcadedb.serializer.json.JSONException;
-import com.arcadedb.serializer.json.JSONObject;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;

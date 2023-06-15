@@ -21,7 +21,7 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -140,7 +140,7 @@ public abstract class TestHelper {
       Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
     }
 
-    database = factory.open(PaginatedFile.MODE.READ_ONLY);
+    database = factory.open(ComponentFile.MODE.READ_ONLY);
     Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
   }
 
@@ -174,7 +174,7 @@ public abstract class TestHelper {
       if (isCheckingDatabaseIntegrity())
         checkDatabaseIntegrity();
 
-      if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
+      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
         reopenDatabase();
 
       ((DatabaseInternal) database).getEmbedded().drop();

@@ -286,6 +286,10 @@ public class FileUtils {
     }
   }
 
+  public static String readFileAsString(final File file) throws IOException {
+    return readFileAsString(file, "UTF8");
+  }
+
   public static Binary readStreamAsBinary(final InputStream iStream) throws IOException {
     final Binary buffer = new Binary();
 

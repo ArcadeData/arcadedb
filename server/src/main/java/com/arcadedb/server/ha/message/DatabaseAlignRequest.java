@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
@@ -95,7 +95,7 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
 
         for (final Map.Entry<Integer, Long> entry : fileSizes.entrySet()) {
           final Integer fileId = entry.getKey();
-          final PaginatedFile file = database.getFileManager().getFile(fileId);
+          final ComponentFile file = database.getFileManager().getFile(fileId);
 
           final Long leaderFileSize = entry.getValue();
           if (file.getSize() < leaderFileSize) {

@@ -353,7 +353,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final CountDownLatch semaphore = new CountDownLatch(buckets.size());
 
       for (final Bucket b : buckets) {
-        final int slot = getSlot(b.getId());
+        final int slot = getSlot(b.getFileId());
         scheduleTask(slot, new DatabaseAsyncScanBucket(semaphore, callback, errorRecordCallback, b), true, backPressurePercentage);
       }
 
@@ -391,7 +391,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (record.getIdentity() == null) {
       // NEW
       final Bucket bucket = type.getBucketIdByRecord(record, false);
-      final int slot = getSlot(bucket.getId());
+      final int slot = getSlot(bucket.getFileId());
 
       scheduleTask(slot, new DatabaseAsyncCreateRecord(record, bucket, newRecordCallback, errorCallback), true, backPressurePercentage);
 
@@ -407,7 +407,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public void createRecord(final Record record, final String bucketName, final NewRecordCallback newRecordCallback, final ErrorCallback errorCallback) {
     final Bucket bucket = database.getSchema().getBucketByName(bucketName);
-    final int slot = getSlot(bucket.getId());
+    final int slot = getSlot(bucket.getFileId());
 
     if (record.getIdentity() == null)
       // NEW

@@ -120,7 +120,7 @@ public class DeleteEdgeExecutionPlanner {
       final boolean profilingEnabled) {
     if (targetClusterName != null) {
       final String name = targetClusterName.getStringValue();
-      final int bucketId = context.getDatabase().getSchema().getBucketByName(name).getId();
+      final int bucketId = context.getDatabase().getSchema().getBucketByName(name).getFileId();
       if (bucketId < 0)
         throw new CommandExecutionException("Cluster not found: " + name);
 

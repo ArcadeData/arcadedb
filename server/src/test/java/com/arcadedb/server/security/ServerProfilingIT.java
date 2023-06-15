@@ -32,12 +32,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
@@ -493,7 +493,7 @@ public class ServerProfilingIT {
     final File file = new File("./target/config/server-groups.json");
     Assertions.assertTrue(file.exists());
 
-    final JSONObject json = new JSONObject(FileUtils.readFileAsString(file, "UTF8"));
+    final JSONObject json = new JSONObject(FileUtils.readFileAsString(file));
 
     final byte[] original = json.toString(2).getBytes();
 

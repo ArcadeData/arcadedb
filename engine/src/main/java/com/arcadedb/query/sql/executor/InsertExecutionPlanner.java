@@ -130,7 +130,7 @@ public class InsertExecutionPlanner {
       if (bucket == null)
         throw new CommandSQLParsingException("Target not specified");
 
-      targetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getId()));
+      targetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }
 
     result.chain(new CreateRecordStep(targetType.getStringValue(), context, tot, profilingEnabled));

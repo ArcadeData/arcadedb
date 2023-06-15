@@ -20,9 +20,9 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
-import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;

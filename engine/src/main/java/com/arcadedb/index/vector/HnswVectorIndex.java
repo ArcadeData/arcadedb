@@ -21,23 +21,27 @@
 
 package com.arcadedb.index.vector;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.Component;
+import com.arcadedb.engine.ComponentFactory;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
 import com.github.jelmerk.knn.SearchResult;
@@ -51,8 +55,6 @@ import java.util.concurrent.locks.*;
 import java.util.logging.*;
 import java.util.stream.*;
 
-import static java.util.Comparator.*;
-
 /**
  * This work is derived from the excellent work made by Jelmer Kuperus on https://github.com/jelmerk/hnswlib.
  * <p>
@@ -62,68 +64,91 @@ import static java.util.Comparator.*;
  * @see <a href="https://arxiv.org/abs/1603.09320">
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
-public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.index.Index, IndexInternal {
-  private final    DistanceFunction<TVector, TDistance> distanceFunction;
-  private final    Comparator<TDistance>                distanceComparator;
-  private final    MaxValueComparator<TDistance>        maxValueDistanceComparator;
-  private final    int                                  dimensions;
-  private final    int                                  maxItemCount;
-  private final    int                                  m;
-  private final    int                                  maxM;
-  private final    int                                  maxM0;
-  private final    double                               levelLambda;
-  private          int                                  ef;
-  private final    int                                  efConstruction;
-  private volatile Vertex                               entryPoint;
+public class HnswVectorIndex<TId, TVector, TDistance> extends Component implements com.arcadedb.index.Index, IndexInternal {
+  public static final  String FILE_EXT        = "hnswidx";
+  private static final int    CURRENT_VERSION = 1;
 
-  private final TypeIndex        underlyingIndex;
+  private final   DistanceFunction<TVector, TDistance> distanceFunction;
+  private final   Comparator<TDistance>                distanceComparator;
+  private final   MaxValueComparator<TDistance>        maxValueDistanceComparator;
+  private final   int                                  dimensions;
+  private final   int                                  maxItemCount;
+  private final   int                                  m;
+  private final   int                                  maxM;
+  private final   int                                  maxM0;
+  private final   double                               levelLambda;
+  private         int                                  ef;
+  private final   int                                  efConstruction;
+  public volatile Vertex                               entryPoint;
+
+  private       TypeIndex        underlyingIndex;
   private final ReentrantLock    globalLock;
   private final Set<RID>         excludedCandidates = new HashSet<>();
-  private final Database         database;
   private final String           vertexType;
   private final String           edgeType;
   private final String           vectorPropertyName;
   private final String           idPropertyName;
   private final Map<RID, Vertex> cache;
+  private       String           indexName;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
-    public IndexInternal create(DatabaseInternal database, String name, boolean unique, String filePath, PaginatedFile.MODE mode, Type[] keyTypes, int pageSize,
-        LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, BuildIndexCallback callback) {
-      return null;
+    public IndexInternal create(final IndexBuilder builder) {
+      if (!(builder instanceof VectorIndexBuilder))
+        throw new IndexException("Expected VectorIndexBuilder but received " + builder);
+
+      return new HnswVectorIndex<>((VectorIndexBuilder) builder);
     }
   }
 
-  private HnswVectorIndex(final BuilderBase builder) {
-    this.dimensions = builder.dimensions;
-    this.maxItemCount = builder.maxItemCount;
-    this.distanceFunction = builder.distanceFunction;
-    this.distanceComparator = builder.distanceComparator;
+  public static class PaginatedComponentFactoryHandlerUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
+    @Override
+    public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id, final ComponentFile.MODE mode,
+        final int pageSize, final int version) throws IOException {
+      return new HnswVectorIndex(database, name, filePath, id, version);
+    }
+  }
+
+  protected HnswVectorIndex(final VectorIndexBuilder builder) {
+    super(builder.getDatabase(), builder.getIndexName(), 0, CURRENT_VERSION, builder.getFilePath());
+
+    this.dimensions = builder.getDimensions();
+    this.maxItemCount = builder.getMaxItemCount();
+    this.distanceFunction = builder.getDistanceFunction();
+    this.distanceComparator = builder.getDistanceComparator();
     this.maxValueDistanceComparator = new MaxValueComparator<>(this.distanceComparator);
 
-    this.m = builder.m;
-    this.maxM = builder.m;
-    this.maxM0 = builder.m * 2;
+    this.m = builder.getM();
+    this.maxM = m;
+    this.maxM0 = m * 2;
     this.levelLambda = 1 / Math.log(this.m);
-    this.efConstruction = Math.max(builder.efConstruction, m);
-    this.ef = builder.ef;
+    this.efConstruction = Math.max(builder.getEfConstruction(), m);
+    this.ef = builder.getEf();
 
-    this.database = builder.database;
-    this.vertexType = builder.vertexType;
-    this.edgeType = builder.edgeType;
-    this.vectorPropertyName = builder.vectorPropertyName;
-    this.idPropertyName = builder.idPropertyName;
+    this.vertexType = builder.getVertexType();
+    this.edgeType = builder.getEdgeType();
+    this.vectorPropertyName = builder.getVectorPropertyName();
+    this.idPropertyName = builder.getIdPropertyName();
 
-    this.cache = builder.cache;
+    this.cache = builder.getCache();
 
-    this.underlyingIndex = builder.database.getSchema().buildTypeIndex(builder.vertexType, new String[] { idPropertyName }).withUnique(true)
+    this.underlyingIndex = builder.getDatabase().getSchema().buildTypeIndex(builder.getVertexType(), new String[] { idPropertyName }).withUnique(true)
         .withIgnoreIfExists(true).withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
     this.globalLock = new ReentrantLock();
+    this.indexName = vertexType + "[" + idPropertyName + "," + vectorPropertyName + "]";
   }
 
-  public HnswVectorIndex(final Database database, final JSONObject json) throws ReflectiveOperationException {
-    this.database = database;
+  /**
+   * Load time.
+   */
+  protected HnswVectorIndex(final DatabaseInternal database, final String indexName, final String filePath, final int id, final int version)
+      throws IOException {
+    super(database, indexName, id, version, filePath);
+
+    final String fileContent = FileUtils.readFileAsString(new File(filePath));
+
+    final JSONObject json = new JSONObject(fileContent);
 
     this.dimensions = json.getInt("dimensions");
     this.distanceFunction = DistanceFunctionFactory.getImplementation(json.getString("distanceFunction"));
@@ -147,11 +172,20 @@ public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.in
     this.idPropertyName = json.getString("idPropertyName");
     this.vectorPropertyName = json.getString("vectorPropertyName");
 
-    this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
-        .withType(Schema.INDEX_TYPE.LSM_TREE).create();
-
     this.globalLock = new ReentrantLock();
     this.cache = null;
+    this.indexName = vertexType + "[" + idPropertyName + "," + vectorPropertyName + "]";
+  }
+
+  @Override
+  public void onAfterSchemaLoad() {
+    this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withIgnoreIfExists(true).withUnique(true)
+        .withType(Schema.INDEX_TYPE.LSM_TREE).create();
+  }
+
+  @Override
+  public String getName() {
+    return indexName;
   }
 
   public List<SearchResult<Vertex, TDistance>> findNeighbors(final TId id, final int k) {
@@ -567,45 +601,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.in
     }
   }
 
-  /**
-   * Start the process of building a new HNSW index.
-   *
-   * @param dimensions       the dimensionality of the vectors stored in the index
-   * @param distanceFunction the distance function
-   * @param maxItemCount     maximum number of items the index can hold
-   * @param <TVector>        Type of the vector to perform distance calculation on
-   * @param <TDistance>      Type of distance between items (expect any numeric type: float, double, int, ..)
-   *
-   * @return a builder
-   */
-  public static <TId, TVector, TDistance extends Comparable<TDistance>> Builder<TId, TVector, TDistance> newBuilder(final int dimensions,
-      final DistanceFunction<TVector, TDistance> distanceFunction, final int maxItemCount) {
-    final Comparator<TDistance> distanceComparator = naturalOrder();
-    return new Builder<>(dimensions, distanceFunction, distanceComparator, maxItemCount);
-  }
-
-  /**
-   * Start the process of building a new HNSW index.
-   *
-   * @param dimensions         the dimensionality of the vectors stored in the index
-   * @param distanceFunction   the distance function
-   * @param distanceComparator used to compare distances
-   * @param maxItemCount       maximum number of items the index can hold
-   * @param <TVector>          Type of the vector to perform distance calculation on
-   * @param <TDistance>        Type of distance between items (expect any numeric type: float, double, int, ..)
-   *
-   * @return a builder
-   */
-  public static <TId, TVector, TDistance> Builder<TId, TVector, TDistance> newBuilder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction,
-      Comparator<TDistance> distanceComparator, int maxItemCount) {
-
-    return new Builder<>(dimensions, distanceFunction, distanceComparator, maxItemCount);
-  }
-
-  public static <TId, TVector, TDistance> Builder<TId, TVector, TDistance> newBuilder(final HnswVectorIndexRAM origin) {
-    return new Builder<>(origin);
-  }
-
   private int assignLevel(final TId value, final double lambda) {
     // by relying on the external id to come up with the level, the graph construction should be a lot more stable
     // see : https://github.com/nmslib/hnswlib/issues/28
@@ -677,251 +672,15 @@ public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.in
     }
   }
 
-  /**
-   * Base class for HNSW index builders.
-   *
-   * @param <TBuilder>  Concrete class that extends from this builder
-   * @param <TVector>   Type of the vector to perform distance calculation on
-   * @param <TDistance> Type of items stored in the index
-   */
-  public static abstract class BuilderBase<TBuilder extends BuilderBase<TBuilder, TVector, TDistance>, TVector, TDistance> {
-
-    public static final int     DEFAULT_M               = 10;
-    public static final int     DEFAULT_EF              = 10;
-    public static final int     DEFAULT_EF_CONSTRUCTION = 200;
-    public static final boolean DEFAULT_REMOVE_ENABLED  = false;
-
-    int                                  dimensions;
-    DistanceFunction<TVector, TDistance> distanceFunction;
-    Comparator<TDistance>                distanceComparator;
-    int                                  maxItemCount;
-    int                                  m              = DEFAULT_M;
-    int                                  ef             = DEFAULT_EF;
-    int                                  efConstruction = DEFAULT_EF_CONSTRUCTION;
-    Database                             database;
-    String                               vertexType;
-    String                               edgeType;
-    String                               vectorPropertyName;
-    String                               idPropertyName;
-    Map<RID, Vertex>                     cache;
-
-    BuilderBase(final int dimensions, final DistanceFunction<TVector, TDistance> distanceFunction, final Comparator<TDistance> distanceComparator,
-        final int maxItemCount) {
-      this.dimensions = dimensions;
-      this.distanceFunction = distanceFunction;
-      this.distanceComparator = distanceComparator;
-      this.maxItemCount = maxItemCount;
-    }
-
-    abstract TBuilder self();
-
-    public TBuilder withDatabase(final Database database) {
-      this.database = database;
-      return self();
-    }
-
-    public TBuilder withVertexType(final String vertexType) {
-      this.vertexType = vertexType;
-      return self();
-    }
-
-    public TBuilder withEdgeType(final String edgeType) {
-      this.edgeType = edgeType;
-      return self();
-    }
-
-    public TBuilder withVectorPropertyName(final String vectorPropertyName) {
-      this.vectorPropertyName = vectorPropertyName;
-      return self();
-    }
-
-    public TBuilder withIdProperty(final String idPropertyName) {
-      this.idPropertyName = idPropertyName;
-      return self();
-    }
-
-    public TBuilder withCache(final Map<RID, Vertex> cache) {
-      this.cache = cache;
-      return self();
-    }
-
-    /**
-     * Sets the number of bi-directional links created for every new element during construction. Reasonable range
-     * for m is 2-100. Higher m work better on datasets with high intrinsic dimensionality and/or high recall,
-     * while low m work better for datasets with low intrinsic dimensionality and/or low recalls. The parameter
-     * also determines the algorithm's memory consumption.
-     * As an example for d = 4 random vectors optimal m for search is somewhere around 6, while for high dimensional
-     * datasets (word embeddings, good face descriptors), higher M are required (e.g. m = 48, 64) for optimal
-     * performance at high recall. The range mM = 12-48 is ok for the most of the use cases. When m is changed one
-     * has to update the other parameters. Nonetheless, ef and efConstruction parameters can be roughly estimated by
-     * assuming that m  efConstruction is a constant.
-     *
-     * @param m the number of bi-directional links created for every new element during construction
-     *
-     * @return the builder.
-     */
-    public TBuilder withM(int m) {
-      this.m = m;
-      return self();
-    }
-
-    /**
-     * `
-     * The parameter has the same meaning as ef, but controls the index time / index precision. Bigger efConstruction
-     * leads to longer construction, but better index quality. At some point, increasing efConstruction does not
-     * improve the quality of the index. One way to check if the selection of ef_construction was ok is to measure
-     * a recall for M nearest neighbor search when ef = efConstruction: if the recall is lower than 0.9, then
-     * there is room for improvement.
-     *
-     * @param efConstruction controls the index time / index precision
-     *
-     * @return the builder
-     */
-    public TBuilder withEfConstruction(int efConstruction) {
-      this.efConstruction = efConstruction;
-      return self();
-    }
-
-    /**
-     * The size of the dynamic list for the nearest neighbors (used during the search). Higher ef leads to more
-     * accurate but slower search. The value ef of can be anything between k and the size of the dataset.
-     *
-     * @param ef size of the dynamic list for the nearest neighbors
-     *
-     * @return the builder
-     */
-    public TBuilder withEf(int ef) {
-      this.ef = ef;
-      return self();
-    }
-  }
-
-  /**
-   * Builder for initializing an {@link HnswVectorIndex} instance.
-   *
-   * @param <TVector>   Type of the vector to perform distance calculation on
-   * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
-   */
-  public static class Builder<TId, TVector, TDistance> extends BuilderBase<Builder<TId, TVector, TDistance>, TVector, TDistance> {
-    private final HnswVectorIndexRAM origin;
-    private       int                transactionBatchSize = 10_000;
-
-    Builder(final HnswVectorIndexRAM origin) {
-      super(origin.getDimensions(), origin.getDistanceFunction(), origin.getDistanceComparator(), origin.getMaxItemCount());
-      this.origin = origin;
-    }
-
-    Builder(final int dimensions, final DistanceFunction<TVector, TDistance> distanceFunction, final Comparator<TDistance> distanceComparator,
-        final int maxItemCount) {
-      super(dimensions, distanceFunction, distanceComparator, maxItemCount);
-      this.origin = null;
-    }
-
-    @Override
-    Builder<TId, TVector, TDistance> self() {
-      return this;
-    }
-
-    public Builder<TId, TVector, TDistance> withTransactionBatchSize(final int transactionBatchSize) {
-      this.transactionBatchSize = transactionBatchSize;
-      return self();
-    }
-
-    public HnswVectorIndex<TId, TVector, TDistance> build() {
-      final HnswVectorIndex<TId, TVector, TDistance> index = new HnswVectorIndex<>(this);
-
-      if (origin != null) {
-        // IMPORT FROM RAM Index
-        final RID[] pointersToRIDMapping = new RID[origin.size()];
-
-        LogManager.instance().log(this, Level.SEVERE, "Saving all the items as vertices at batch of %d items...", transactionBatchSize);
-
-        database.begin();
-
-        // SAVE ALL THE NODES AS VERTICES AND KEEP AN ARRAY OF RIDS TO BUILD EDGES LATER
-        int maxLevel = 0;
-        HnswVectorIndexRAM.ItemIterator iter = origin.iterateNodes();
-        for (int txCounter = 0; iter.hasNext(); ++txCounter) {
-          final HnswVectorIndexRAM.Node node = iter.next();
-
-          final int nodeMaxLevel = node.maxLevel();
-          if (nodeMaxLevel > maxLevel)
-            maxLevel = nodeMaxLevel;
-
-          final MutableVertex vertex = database.newVertex(vertexType).set(idPropertyName, node.item.id()).set(vectorPropertyName, node.item.vector());
-
-          if (nodeMaxLevel > 0)
-            // SAVE MAX LEVEL INTO THE VERTEX. IF NOT PRESENT, MEANS 0
-            vertex.set("vectorMaxLevel", nodeMaxLevel);
-
-          vertex.save();
-
-          pointersToRIDMapping[node.id] = vertex.getIdentity();
-
-          if (txCounter % transactionBatchSize == 0) {
-            database.commit();
-            LogManager.instance().log(this, Level.SEVERE, "- Saved %d items as vertices", txCounter);
-            database.begin();
-          }
-        }
-
-        database.commit();
-
-        final Integer entryPoint = origin.getEntryPoint();
-        if (entryPoint != null)
-          index.entryPoint = pointersToRIDMapping[entryPoint].asVertex();
-
-        LogManager.instance().log(this, Level.SEVERE, "All items are saved. Maximum level is %d", maxLevel);
-
-        // BUILD ALL EDGE TYPES (ONE PER LEVEL)
-        for (int level = 0; level <= maxLevel; level++) {
-          // ASSURE THE EDGE TYPE IS CREATED IN THE DATABASE
-          database.getSchema().getOrCreateEdgeType(index.getEdgeType(level));
-        }
-
-        LogManager.instance().log(this, Level.SEVERE, "Connecting the items with edges at batch of %d items...", transactionBatchSize);
-
-        database.begin();
-
-        // BUILD THE EDGES
-        long totalEdges = 0l;
-        iter = origin.iterateNodes();
-        for (int txCounter = 0; iter.hasNext(); ++txCounter) {
-          final HnswVectorIndexRAM.Node node = iter.next();
-
-          final Vertex source = pointersToRIDMapping[node.id].asVertex();
-
-          final MutableIntList[] connections = node.connections();
-          for (int level = 0; level < connections.length; level++) {
-            final String edgeTypeLevel = index.getEdgeType(level);
-
-            final MutableIntList pointers = connections[level];
-            for (int i = 0; i < pointers.size(); i++) {
-              final int pointer = pointers.get(i);
-
-              final RID destination = pointersToRIDMapping[pointer];
-              source.newEdge(edgeTypeLevel, destination, false);
-              ++totalEdges;
-            }
-          }
-
-          if (txCounter % transactionBatchSize == 0) {
-            database.commit();
-            LogManager.instance().log(this, Level.SEVERE, "- Connected %d items for a total of %d edges", txCounter, totalEdges);
-            database.begin();
-          }
-        }
-
-        database.commit();
-      }
-      return index;
-    }
+  public void save() throws IOException {
+    FileUtils.writeFile(new File(filePath), toJSON().toString());
   }
 
   @Override
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
-    json.put("version", 0);
+    json.put("indexName", getName());
+    json.put("version", CURRENT_VERSION);
     json.put("dimensions", dimensions);
     json.put("distanceFunction", distanceFunction.getClass().getSimpleName());
     json.put("distanceComparator", distanceComparator.getClass().getSimpleName());
@@ -945,11 +704,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.in
   @Override
   public void drop() {
     underlyingIndex.drop();
-  }
-
-  @Override
-  public String getName() {
-    return underlyingIndex.getName();
   }
 
   @Override
@@ -988,13 +742,106 @@ public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.in
   }
 
   @Override
-  public long build(final BuildIndexCallback callback) {
-    return underlyingIndex.build(callback);
+  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
+    return underlyingIndex.build(buildIndexBatchSize, callback);
+  }
+
+  public long build(final HnswVectorIndexRAM origin, final int buildIndexBatchSize, final BuildIndexCallback callback) {
+    if (origin != null) {
+      // IMPORT FROM RAM Index
+      final RID[] pointersToRIDMapping = new RID[origin.size()];
+
+      LogManager.instance().log(this, Level.SEVERE, "Saving all the items as vertices at batch of %d items...", buildIndexBatchSize);
+
+      database.begin();
+
+      // SAVE ALL THE NODES AS VERTICES AND KEEP AN ARRAY OF RIDS TO BUILD EDGES LATER
+      int maxLevel = 0;
+      HnswVectorIndexRAM.ItemIterator iter = origin.iterateNodes();
+      for (int txCounter = 0; iter.hasNext(); ++txCounter) {
+        final HnswVectorIndexRAM.Node node = iter.next();
+
+        final int nodeMaxLevel = node.maxLevel();
+        if (nodeMaxLevel > maxLevel)
+          maxLevel = nodeMaxLevel;
+
+        final MutableVertex vertex = database.newVertex(vertexType).set(idPropertyName, node.item.id()).set(vectorPropertyName, node.item.vector());
+        if (nodeMaxLevel > 0)
+          // SAVE MAX LEVEL INTO THE VERTEX. IF NOT PRESENT, MEANS 0
+          vertex.set("vectorMaxLevel", nodeMaxLevel);
+
+        vertex.save();
+
+        pointersToRIDMapping[node.id] = vertex.getIdentity();
+
+        if (txCounter % buildIndexBatchSize == 0) {
+          database.commit();
+          LogManager.instance().log(this, Level.SEVERE, "- Saved %d items as vertices", txCounter);
+          database.begin();
+        }
+      }
+
+      database.commit();
+
+      final Integer entryPoint = origin.getEntryPoint();
+      if (entryPoint != null)
+        this.entryPoint = pointersToRIDMapping[entryPoint].asVertex();
+
+      LogManager.instance().log(this, Level.SEVERE, "All items are saved. Maximum level is %d", maxLevel);
+
+      // BUILD ALL EDGE TYPES (ONE PER LEVEL)
+      for (int level = 0; level <= maxLevel; level++) {
+        // ASSURE THE EDGE TYPE IS CREATED IN THE DATABASE
+        database.getSchema().getOrCreateEdgeType(getEdgeType(level));
+      }
+
+      LogManager.instance().log(this, Level.SEVERE, "Connecting the items with edges at batch of %d items...", buildIndexBatchSize);
+
+      database.begin();
+
+      // BUILD THE EDGES
+      long totalVertices = 0L;
+      long totalEdges = 0L;
+      iter = origin.iterateNodes();
+      for (int txCounter = 0; iter.hasNext(); ++txCounter) {
+        final HnswVectorIndexRAM.Node node = iter.next();
+
+        final Vertex source = pointersToRIDMapping[node.id].asVertex();
+
+        final MutableIntList[] connections = node.connections();
+        for (int level = 0; level < connections.length; level++) {
+          final String edgeTypeLevel = getEdgeType(level);
+
+          final MutableIntList pointers = connections[level];
+          for (int i = 0; i < pointers.size(); i++) {
+            final int pointer = pointers.get(i);
+
+            final RID destination = pointersToRIDMapping[pointer];
+            source.newEdge(edgeTypeLevel, destination, false);
+            ++totalEdges;
+          }
+        }
+
+        if (txCounter % buildIndexBatchSize == 0) {
+          database.commit();
+          LogManager.instance().log(this, Level.SEVERE, "- Connected %d items for a total of %d edges", txCounter, totalEdges);
+          database.begin();
+        }
+      }
+
+      database.commit();
+      return totalVertices;
+    }
+
+    // TODO: NOT SUPPORTED WITHOUT RAM INDEX
+    return 0L;
   }
 
   @Override
   public boolean equals(final Object obj) {
-    return underlyingIndex.equals(obj);
+    if (!(obj instanceof HnswVectorIndex))
+      return false;
+    return componentName.equals(((HnswVectorIndex) obj).componentName) && underlyingIndex.equals(obj);
   }
 
   public List<IndexInternal> getSubIndexes() {
@@ -1003,7 +850,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.in
 
   @Override
   public int hashCode() {
-    return underlyingIndex.hashCode();
+    return Objects.hash(componentName, underlyingIndex.hashCode());
   }
 
   @Override
@@ -1017,13 +864,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.in
   }
 
   @Override
-  public int getFileId() {
-    return underlyingIndex.getFileId();
-  }
-
-  @Override
-  public PaginatedComponent getPaginatedComponent() {
-    return underlyingIndex.getPaginatedComponent();
+  public Component getComponent() {
+    return this;
   }
 
   @Override
@@ -1174,12 +1016,12 @@ public class HnswVectorIndex<TId, TVector, TDistance> implements com.arcadedb.in
 
   @Override
   public String getTypeName() {
-    return underlyingIndex.getTypeName();
+    return vertexType;
   }
 
   @Override
   public List<String> getPropertyNames() {
-    return underlyingIndex.getPropertyNames();
+    return List.of(idPropertyName, vectorPropertyName);
   }
 
   @Override

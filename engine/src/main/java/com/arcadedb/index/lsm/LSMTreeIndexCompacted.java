@@ -23,9 +23,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.log.LogManager;
@@ -58,7 +58,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
   }
 
@@ -80,7 +80,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       return set;
 
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Cannot lookup key '" + Arrays.toString(keys) + "' in index '" + name + "'", e);
+      throw new DatabaseOperationException("Cannot lookup key '" + Arrays.toString(keys) + "' in index '" + componentName + "'", e);
     }
   }
 

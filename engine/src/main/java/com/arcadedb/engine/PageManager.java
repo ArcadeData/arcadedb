@@ -300,7 +300,7 @@ public class PageManager extends LockContext {
 
   protected void flushPage(final MutablePage page) throws IOException {
     if (fileManager.existsFile(page.pageId.getFileId())) {
-      final PaginatedFile file = fileManager.getFile(page.pageId.getFileId());
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(page.pageId.getFileId());
       if (!file.isOpen())
         throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
 
@@ -322,7 +322,7 @@ public class PageManager extends LockContext {
   }
 
   private CachedPage loadPage(final PageId pageId, final int size, final boolean createIfNotExists, final boolean cache) throws IOException {
-    final PaginatedFile file = fileManager.getFile(pageId.getFileId());
+    final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(pageId.getFileId());
 
     final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
     if (!createIfNotExists && isNewPage)

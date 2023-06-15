@@ -714,7 +714,7 @@ public class MatchExecutionPlanner {
         if (db.getSchema().getBucketByName(bucketName) == null) {
           throw new CommandExecutionException("Bucket '" + bucketName + "' not defined");
         }
-        final int bucketId = db.getSchema().getBucketByName(bucketName).getId();
+        final int bucketId = db.getSchema().getBucketByName(bucketName).getFileId();
         final DocumentType oClass = db.getSchema().getTypeByBucketId(bucketId);
         if (oClass != null) {
           final long upperBound;

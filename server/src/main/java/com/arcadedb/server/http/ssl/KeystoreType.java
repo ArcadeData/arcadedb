@@ -1,6 +1,6 @@
 package com.arcadedb.server.http.ssl;
 
-import static java.util.Arrays.stream;
+import static java.util.Arrays.*;
 
 public enum KeystoreType {
 

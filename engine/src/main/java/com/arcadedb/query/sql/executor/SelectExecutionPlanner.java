@@ -835,7 +835,7 @@ public class SelectExecutionPlanner {
   }
 
   private boolean clusterMatchesRidRange(final String bucketName, final AndBlock ridRangeConditions, final Database database, final CommandContext context) {
-    final int thisClusterId = database.getSchema().getBucketByName(bucketName).getId();
+    final int thisClusterId = database.getSchema().getBucketByName(bucketName).getFileId();
     for (final BooleanExpression ridRangeCondition : ridRangeConditions.getSubBlocks()) {
       if (ridRangeCondition instanceof BinaryCondition) {
         final BinaryCompareOperator operator = ((BinaryCondition) ridRangeCondition).getOperator();
@@ -1001,7 +1001,7 @@ public class SelectExecutionPlanner {
 
     int[] filterClusterIds = null;
     if (filterClusters != null) {
-      filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getId()).mapToInt(i -> i).toArray();
+      filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).toArray();
     }
 
     switch (indexIdentifier.getType()) {
@@ -1273,7 +1273,7 @@ public class SelectExecutionPlanner {
             subPlan.chain(step);
             int[] filterClusterIds = null;
             if (filterClusters != null) {
-              filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getId()).mapToInt(i -> i)
+              filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i)
                   .toArray();
             }
             subPlan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds, profilingEnabled));
@@ -1425,7 +1425,7 @@ public class SelectExecutionPlanner {
         plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, orderType.equals(OrderByItem.ASC), context, profilingEnabled));
         int[] filterClusterIds = null;
         if (filterClusters != null) {
-          filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getId()).mapToInt(i -> i).toArray();
+          filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).toArray();
         }
         plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds, profilingEnabled));
         info.orderApplied = true;
@@ -1594,7 +1594,7 @@ public class SelectExecutionPlanner {
           new FetchFromIndexStep(desc.idx, desc.keyCondition, desc.additionalRangeCondition, !Boolean.FALSE.equals(orderAsc), context, profilingEnabled));
       int[] filterClusterIds = null;
       if (filterClusters != null) {
-        filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getId()).mapToInt(i -> i).toArray();
+        filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).toArray();
       }
       result.add(new GetValueFromIndexEntryStep(context, filterClusterIds, profilingEnabled));
       if (requiresMultipleIndexLookups(desc.keyCondition)) {
@@ -1711,7 +1711,7 @@ public class SelectExecutionPlanner {
       subPlan.chain(new FetchFromIndexStep(desc.idx, desc.keyCondition, desc.additionalRangeCondition, context, profilingEnabled));
       int[] filterClusterIds = null;
       if (filterClusters != null) {
-        filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getId()).mapToInt(i -> i).toArray();
+        filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).toArray();
       }
       subPlan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds, profilingEnabled));
       if (requiresMultipleIndexLookups(desc.keyCondition)) {
@@ -2157,7 +2157,7 @@ public class SelectExecutionPlanner {
       if (bucketId == null) {
         final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(name);
         if (bucket != null)
-          bucketId = bucket.getId();
+          bucketId = bucket.getFileId();
       }
 
       if (name != null) {
@@ -2208,7 +2208,7 @@ public class SelectExecutionPlanner {
       if (bucketId == null) {
         final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(parserBucket.getBucketName());
         if (bucket != null)
-          bucketId = bucket.getId();
+          bucketId = bucket.getFileId();
       }
 
       if (bucketId == null)
@@ -2229,7 +2229,7 @@ public class SelectExecutionPlanner {
         if (bucketId == null) {
           final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(parserBucket.getBucketName());
           if (bucket != null)
-            bucketId = bucket.getId();
+            bucketId = bucket.getFileId();
         }
 
         if (bucketId == null) {
@@ -2390,7 +2390,7 @@ public class SelectExecutionPlanner {
       } else {
         final String className = item.getIdentifier().getStringValue();
         final DocumentType typez = db.getSchema().getType(className);
-        final int[] bucketIds = typez.getBuckets(true).stream().mapToInt(com.arcadedb.engine.Bucket::getId).toArray();
+        final int[] bucketIds = typez.getBuckets(true).stream().mapToInt(com.arcadedb.engine.Bucket::getFileId).toArray();
         for (final int bucketId : bucketIds) {
           final String bucketName = db.getSchema().getBucketById(bucketId).getName();
           if (bucketName != null) {

@@ -75,10 +75,10 @@ public class Bucket extends PaginatedComponent {
     public boolean  createNewPage     = false;
   }
 
-  public static class PaginatedComponentFactoryHandler implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
+  public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
       return new Bucket(database, name, filePath, id, mode, pageSize, version);
     }
   }
@@ -86,7 +86,7 @@ public class Bucket extends PaginatedComponent {
   /**
    * Called at creation time.
    */
-  public Bucket(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize, final int version)
+  public Bucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode, final int pageSize, final int version)
       throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
@@ -95,7 +95,7 @@ public class Bucket extends PaginatedComponent {
   /**
    * Called at load time.
    */
-  public Bucket(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode, final int pageSize,
+  public Bucket(final DatabaseInternal database, final String name, final String filePath, final int id, final ComponentFile.MODE mode, final int pageSize,
       final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
@@ -106,17 +106,17 @@ public class Bucket extends PaginatedComponent {
   }
 
   public RID createRecord(final Record record, final boolean discardRecordAfter) {
-    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
     return createRecordInternal(record, false, discardRecordAfter);
   }
 
   public void updateRecord(final Record record, final boolean discardRecordAfter) {
-    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
     updateRecordInternal(record, record.getIdentity(), false, discardRecordAfter);
   }
 
   public Binary getRecord(final RID rid) {
-    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     final Binary rec = getRecordInternal(rid, false);
     if (rec == null)
@@ -126,7 +126,7 @@ public class Bucket extends PaginatedComponent {
   }
 
   public boolean existsRecord(final RID rid) {
-    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
@@ -159,12 +159,12 @@ public class Bucket extends PaginatedComponent {
   }
 
   public void deleteRecord(final RID rid) {
-    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
     deleteRecordInternal(rid, false, false);
   }
 
   public void scan(final RawRecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
-    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     final int txPageCount = getTotalPages();
 
@@ -175,7 +175,7 @@ public class Bucket extends PaginatedComponent {
 
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
-            final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
+            final RID rid = new RID(database, fileId, ((long) pageId) * maxRecordsInPage + recordIdInPage);
 
             try {
               final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
@@ -196,7 +196,7 @@ public class Bucket extends PaginatedComponent {
 
               } else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
                 // LOAD PLACEHOLDER CONTENT
-                final RID placeHolderPointer = new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1])));
+                final RID placeHolderPointer = new RID(database, fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
                 final Binary view = getRecordInternal(placeHolderPointer, true);
                 if (view != null && !callback.onRecord(rid, view))
                   return;
@@ -219,7 +219,7 @@ public class Bucket extends PaginatedComponent {
         }
       }
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Cannot scan bucket '" + name + "'", e);
+      throw new DatabaseOperationException("Cannot scan bucket '" + componentName + "'", e);
     }
   }
 
@@ -242,17 +242,17 @@ public class Bucket extends PaginatedComponent {
   }
 
   public Iterator<Record> iterator() {
-    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
     return new BucketIterator(this, database);
   }
 
-  public int getId() {
-    return id;
+  public int getFileId() {
+    return fileId;
   }
 
   @Override
   public String toString() {
-    return name;
+    return componentName;
   }
 
   @Override
@@ -260,16 +260,16 @@ public class Bucket extends PaginatedComponent {
     if (!(obj instanceof Bucket))
       return false;
 
-    return ((Bucket) obj).id == this.id;
+    return ((Bucket) obj).fileId == this.fileId;
   }
 
   @Override
   public int hashCode() {
-    return id;
+    return fileId;
   }
 
   public long count() {
-    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     long total = 0;
 
@@ -296,7 +296,7 @@ public class Bucket extends PaginatedComponent {
         }
       }
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Cannot count bucket '" + name + "'", e);
+      throw new DatabaseOperationException("Cannot count bucket '" + componentName + "'", e);
     }
     return total;
   }
@@ -307,7 +307,7 @@ public class Bucket extends PaginatedComponent {
     final int totalPages = getTotalPages();
 
     if (verboseLevel > 1)
-      LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", name, totalPages,
+      LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", componentName, totalPages,
           FileUtils.getSizeAsString((long) totalPages * pageSize), FileUtils.getSizeAsString(pageSize));
 
     long totalAllocatedRecords = 0L;
@@ -453,7 +453,7 @@ public class Bucket extends PaginatedComponent {
     stats.put("totalDeletedRecords", totalDeletedRecords);
     stats.put("totalMaxOffset", totalMaxOffset);
 
-    final DocumentType type = database.getSchema().getTypeByBucketId(id);
+    final DocumentType type = database.getSchema().getTypeByBucketId(fileId);
     if (type instanceof VertexType) {
       stats.put("totalAllocatedVertices", totalAllocatedRecords);
       stats.put("totalActiveVertices", totalActiveRecords);
@@ -594,7 +594,7 @@ public class Bucket extends PaginatedComponent {
       return rid;
 
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Cannot add a new record to the bucket '" + name + "'", e);
+      throw new DatabaseOperationException("Cannot add a new record to the bucket '" + componentName + "'", e);
     }
   }
 
@@ -636,7 +636,7 @@ public class Bucket extends PaginatedComponent {
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
 
         // FOUND A RECORD POINTED FROM A PLACEHOLDER
-        final RID placeHolderContentRID = new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1])));
+        final RID placeHolderContentRID = new RID(database, fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
         if (updateRecordInternal(record, placeHolderContentRID, true, discardRecordAfter)) {
           // UPDATE PLACEHOLDER CONTENT, THE PLACEHOLDER POINTER STAY THE SAME
           if (!discardRecordAfter)
@@ -798,7 +798,7 @@ public class Bucket extends PaginatedComponent {
 
         if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
           // FOUND PLACEHOLDER POINTER: DELETE THE PLACEHOLDER CONTENT FIRST
-          final RID placeHolderContentRID = new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1])));
+          final RID placeHolderContentRID = new RID(database, fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
           deleteRecordInternal(placeHolderContentRID, true, false);
 
         } else if (recordSize[0] == FIRST_CHUNK) {
@@ -822,7 +822,7 @@ public class Bucket extends PaginatedComponent {
             if (recordSize[0] != NEXT_CHUNK)
               throw new DatabaseOperationException("Error on fetching multi page record " + rid + " chunk " + chunkId);
 
-            deleteRecordInternal(new RID(database, id, nextChunkPointer), false, true);
+            deleteRecordInternal(new RID(database, fileId, nextChunkPointer), false, true);
           }
 
         } else if (recordSize[0] == NEXT_CHUNK) {

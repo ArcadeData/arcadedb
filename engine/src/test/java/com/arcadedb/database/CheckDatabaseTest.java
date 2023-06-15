@@ -245,7 +245,7 @@ public class CheckDatabaseTest extends TestHelper {
       final Bucket bucket = database.getSchema().getBucketById(root.getIdentity().bucketId);
 
       try {
-        final MutablePage page = ((DatabaseInternal) database).getTransaction().getPageToModify(new PageId(bucket.getId(), 0), bucket.getPageSize(), false);
+        final MutablePage page = ((DatabaseInternal) database).getTransaction().getPageToModify(new PageId(bucket.getFileId(), 0), bucket.getPageSize(), false);
         for (int i = 0; i < page.getAvailableContentSize(); i++) {
           page.writeByte(i, (byte) 4);
         }
