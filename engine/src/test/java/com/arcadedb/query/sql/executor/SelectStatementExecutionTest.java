@@ -3134,9 +3134,17 @@ public class SelectStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     final Result item = result.next();
     Assertions.assertNotNull(item);
-    // TODO refine this!
-    Assertions.assertTrue(item.getProperty("elem1") instanceof Result);
-    Assertions.assertEquals("a", ((Result) item.getProperty("elem1")).getProperty("name"));
+
+    final Result elem1Result = item.getProperty("elem1");
+    Assertions.assertEquals("a", elem1Result.getProperty("name"));
+    Assertions.assertEquals(elem1.getIdentity(), elem1Result.getProperty("@rid"));
+    Assertions.assertEquals(elem1.getTypeName(), elem1Result.getProperty("@type"));
+
+    final Result elem2Result = item.getProperty("elem2");
+    Assertions.assertEquals("b", elem2Result.getProperty("name"));
+    Assertions.assertNull(elem2Result.getProperty("surname"));
+    Assertions.assertEquals(elem2.getIdentity(), elem2Result.getProperty("@rid"));
+    Assertions.assertEquals(elem2.getTypeName(), elem2Result.getProperty("@type"));
 
     result.close();
   }

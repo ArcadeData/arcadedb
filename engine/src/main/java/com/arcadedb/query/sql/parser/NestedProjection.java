@@ -45,25 +45,22 @@ public class NestedProjection extends SimpleNode {
    * @param context
    */
   public Object apply(final Expression expression, final Object input, final CommandContext context) {
-    if (input instanceof Result) {
+    if (input instanceof Result)
       return apply(expression, (Result) input, context, recursion == null ? 0 : recursion.getValue().intValue());
-    }
-    if (input instanceof Identifiable) {
+    else if (input instanceof Identifiable)
       return apply(expression, (Document) ((Identifiable) input).getRecord(), context, recursion == null ? 0 : recursion.getValue().intValue());
-    }
-    if (input instanceof Map) {
+    else if (input instanceof Map)
       return apply(expression, (Map) input, context, recursion == null ? 0 : recursion.getValue().intValue());
-    }
-    if (input instanceof Collection) {
+    else if (input instanceof Collection)
       return ((Collection) input).stream().map(x -> apply(expression, x, context)).collect(Collectors.toList());
-    }
+
     Iterator iter = null;
-    if (input instanceof Iterable) {
+    if (input instanceof Iterable)
       iter = ((Iterable) input).iterator();
-    }
-    if (input instanceof Iterator) {
+
+    if (input instanceof Iterator)
       iter = (Iterator) input;
-    }
+
     if (iter != null) {
       final List result = new ArrayList();
       while (iter.hasNext()) {
@@ -77,12 +74,14 @@ public class NestedProjection extends SimpleNode {
   private Object apply(final Expression expression, final Result elem, final CommandContext context, final int recursion) {
     final ResultInternal result = new ResultInternal();
     if (starItem != null || includeItems.size() == 0) {
-      for (final String property : elem.getPropertyNames()) {
-        if (isExclude(property)) {
-          continue;
-        }
-        result.setProperty(property, convert(tryExpand(expression, property, elem.getProperty(property), context, recursion)));
+      if (elem.isElement()) {
+        final Document document = elem.getElement().get();
+        addPropertyToResult(expression, context, recursion, "@rid", document.getIdentity(), result);
+        addPropertyToResult(expression, context, recursion, "@type", document.getTypeName(), result);
       }
+
+      for (final String property : elem.getPropertyNames())
+        addPropertyToResult(expression, context, recursion, property, elem.getProperty(property), result);
     }
     if (includeItems.size() > 0) {
       //TODO manage wildcards!
@@ -100,18 +99,17 @@ public class NestedProjection extends SimpleNode {
 
   private boolean isExclude(final String propertyName) {
     for (final NestedProjectionItem item : excludeItems) {
-      if (item.matches(propertyName)) {
+      if (item.matches(propertyName))
         return true;
-      }
+
     }
     return false;
   }
 
   private Object tryExpand(final Expression rootExpr, final String propName, final Object propValue, final CommandContext context, final int recursion) {
     for (final NestedProjectionItem item : includeItems) {
-      if (item.matches(propName) && item.expansion != null) {
+      if (item.matches(propName) && item.expansion != null)
         return item.expand(rootExpr, propName, propValue, context, recursion);
-      }
     }
     return propValue;
   }
@@ -120,12 +118,11 @@ public class NestedProjection extends SimpleNode {
     final Document elem = input;
     final ResultInternal result = new ResultInternal();
     if (starItem != null || includeItems.size() == 0) {
-      for (final String property : elem.getPropertyNames()) {
-        if (isExclude(property)) {
-          continue;
-        }
-        result.setProperty(property, convert(tryExpand(expression, property, elem.get(property), context, recursion)));
-      }
+      addPropertyToResult(expression, context, recursion, "@rid", elem.getIdentity(), result);
+      addPropertyToResult(expression, context, recursion, "@type", elem.getTypeName(), result);
+
+      for (final String property : elem.getPropertyNames())
+        addPropertyToResult(expression, context, recursion, property, elem.get(property), result);
     }
     if (includeItems.size() > 0) {
       //TODO manage wildcards!
@@ -141,14 +138,21 @@ public class NestedProjection extends SimpleNode {
     return result;
   }
 
+  private void addPropertyToResult(final Expression expression, final CommandContext context, final int recursion, final String propertyName,
+      final Object propertyValue, final ResultInternal result) {
+    if (isExclude(propertyName))
+      return;
+
+    result.setProperty(propertyName, convert(tryExpand(expression, propertyName, propertyValue, context, recursion)));
+  }
+
   private Object apply(final Expression expression, final Map<String, Object> input, final CommandContext context, final int recursion) {
     final ResultInternal result = new ResultInternal();
-
     if (starItem != null || includeItems.size() == 0) {
       for (final Map.Entry<String, Object> entry : input.entrySet()) {
-        if (isExclude(entry.getKey())) {
+        if (isExclude(entry.getKey()))
           continue;
-        }
+
         result.setProperty(entry.getKey(), convert(tryExpand(expression, entry.getKey(), entry.getValue(), context, recursion)));
       }
     }
@@ -159,9 +163,9 @@ public class NestedProjection extends SimpleNode {
         final ResultInternal elem = new ResultInternal();
         input.entrySet().forEach(x -> elem.setProperty(x.getKey(), x.getValue()));
         Object value = item.expression.execute(elem, context);
-        if (item.expansion != null) {
+        if (item.expansion != null)
           value = item.expand(expression, alias, value, context, recursion - 1);
-        }
+
         result.setProperty(alias, convert(value));
       }
     }
