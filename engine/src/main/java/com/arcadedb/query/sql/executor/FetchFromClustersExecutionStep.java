@@ -26,7 +26,6 @@ import java.util.*;
  * Created by luigidellaquila on 21/07/16.
  */
 public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
-
   final   List<ExecutionStep> subSteps;
   private boolean             orderByRidAsc  = false;
   private boolean             orderByRidDesc = false;

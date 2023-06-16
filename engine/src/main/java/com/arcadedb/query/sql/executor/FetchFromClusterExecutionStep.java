@@ -32,9 +32,9 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   public static final Object            ORDER_ASC  = "ASC";
   public static final Object            ORDER_DESC = "DESC";
   private final       QueryPlanningInfo queryPlanning;
-
-  private final int    bucketId;
-  private       Object order;
+  private final       int               bucketId;
+  private             Object            order;
+  private             long              nFetched   = 0L;
 
   private Iterator<Record> iterator;
 
@@ -67,9 +67,6 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //        }
       }
       return new ResultSet() {
-
-        int nFetched = 0;
-
         @Override
         public boolean hasNext() {
           final long begin1 = profilingEnabled ? System.nanoTime() : 0;
@@ -193,7 +190,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + context.getDatabase().getSchema().getBucketById(bucketId)
-            .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC");
+            .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC" + " = " + nFetched + " RECORDS");
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }
