@@ -50,7 +50,7 @@ public class FastTextDatabase {
 
     if (factory.exists()) {
       database = factory.open();
-      LogManager.instance().log(this, Level.SEVERE, "Found existent database with %d words", database.countType("Word", false));
+      //LogManager.instance().log(this, Level.SEVERE, "Found existent database with %d words", database.countType("Word", false));
 
       persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
 
