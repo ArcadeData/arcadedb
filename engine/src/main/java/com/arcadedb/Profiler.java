@@ -195,6 +195,10 @@ public class Profiler {
 
         json.put("ramOsUsed", new JSONObject().put("space", osUsedMem));
         json.put("ramOsTotal", new JSONObject().put("space", osTotalMem));
+
+        final OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
+        json.put("cpuLoad", new JSONObject().put("space", bean.getSystemLoadAverage()));
+
       }
     } catch (final Exception e) {
       // JMX NOT AVAILABLE, AVOID OS DATA

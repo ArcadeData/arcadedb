@@ -1,4 +1,6 @@
 var serverData = {};
+var serverChartCPU = null;
+var serverChartSpace = null;
 
 function updateServer( callback ){
   jQuery.ajax({
@@ -18,6 +20,7 @@ function updateServer( callback ){
 
     serverData = data;
 
+    displayServerSummary();
     displayMetrics();
     displayServerSettings();
 
@@ -80,6 +83,100 @@ function displayServerSettings(){
     ],
     data: tableRecords,
   });
+}
+
+function displayServerSummary(){
+  // CPU CHART
+  let cpuLoad = serverData.metrics.profiler.cpuLoad.space;
+
+  var cpuOptions = {
+    series: [cpuLoad, 100 - cpuLoad],
+    labels: [ 'Used', 'Available' ],
+    chart: {
+      type: 'donut',
+      selection: { enable: false },
+      height: 200,
+      toolbar: { show: false }
+    },
+    legend: { show: false },
+    tooltip: {
+      enabled: false,
+    },
+    dataLabels: {
+      enabled: false,
+      formatter: function (val) {
+        return globalFormatDouble( val, 0 ) + "%"
+      }
+    },
+    plotOptions: {
+      pie: { expandOnClick: false, donut: { labels: { show: true, name: { show: true }, value: { formatter: () => globalFormatDouble( cpuLoad, 0 ) + '%' }, total: { show: true, label: "CPU", formatter: () => globalFormatDouble( cpuLoad, 0 ) + '%' } } } }
+    }
+  };
+
+  if( serverChartCPU != null )
+    serverChartCPU.destroy();
+
+  serverChartCPU = new ApexCharts(document.querySelector("#serverChartCPU"), cpuOptions);
+  serverChartCPU.render();
+
+  // SPACE CHART
+  let ramHeapUsed = serverData.metrics.profiler.ramHeapUsed.space;
+  let ramHeapMax = serverData.metrics.profiler.ramHeapMax.space;
+
+  let ramOsUsed = serverData.metrics.profiler.ramOsUsed.space;
+  let ramOsTotal = serverData.metrics.profiler.ramOsTotal.space;
+
+  let readCacheUsed = serverData.metrics.profiler.readCacheUsed.space;
+  let cacheMax = serverData.metrics.profiler.cacheMax.space;
+
+  let diskFreeSpace = serverData.metrics.profiler.diskFreeSpace.space;
+  let diskTotalSpace = serverData.metrics.profiler.diskTotalSpace.space;
+
+  var spaceOptions = {
+    series: [{
+      name: 'Used',
+      data: [ramHeapUsed, ramOsUsed, readCacheUsed, diskTotalSpace - diskFreeSpace]
+    }, {
+      name: 'Available',
+      data: [ramHeapMax - ramHeapUsed, ramOsTotal - ramOsUsed, cacheMax - readCacheUsed, diskFreeSpace ]
+    }],
+    chart: {
+      type: 'bar',
+      height: 400,
+      stacked: true,
+      stackType: '100%',
+      toolbar: { show: false }
+    },
+    legend: { show: false },
+    plotOptions: {
+      bar: {
+        horizontal: true,
+      },
+    },
+    stroke: {
+      width: 1,
+      colors: ['#fff']
+    },
+    xaxis: {
+      categories: ["Server RAM", "OS RAM", "Cache", "Disk"],
+    },
+    tooltip: {
+      y: {
+        formatter: function (val) {
+          return globalFormatDouble( val / ( 1024 * 1024 * 1024 ), 2 ) + "GB"
+        }
+      }
+    },
+    fill: {
+      opacity: 1
+    }
+  };
+
+  if( serverChartSpace != null )
+    serverChartSpace.destroy();
+
+  serverChartSpace = new ApexCharts(document.querySelector("#serverChartSpace"), spaceOptions);
+  serverChartSpace.render();
 }
 
 function displayMetrics(){

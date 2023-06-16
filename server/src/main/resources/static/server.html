@@ -23,7 +23,8 @@
     </div>
     <div class="col-6">
       <ul class="nav nav-tabs text-center" id="tabs-database" style="float:right;">
-        <li class="nav-item"><a data-toggle="tab" href="#tab-metrics" class="active show nav-link" id="tab-metrics-sel">Metrics</a></li>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-server-summary" class="active show nav-link" id="tab-summary-sel">Summary</a></li>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-metrics" class="nav-link" id="tab-metrics-sel">Metrics</a></li>
         <li class="nav-item text-center"><a data-toggle="tab" href="#tab-server-settings" class="nav-link" id="tab-server-settings-sel">Server Settings</a></li>
       </ul>
     </div>
@@ -34,7 +35,16 @@
   <div class="row">
     <div class="col-12">
       <div class="tab-content">
-        <div class="tab-pane fade show active" id="tab-metrics" role="tabpanel">
+        <div class="tab-pane fade show active" id="tab-server-summary" role="tabpanel">
+          <div class="row">
+            <div class="col-12">
+              <div id="serverChartCPU" style="min-height: 400px;"></div>
+              <div id="serverChartSpace" style="min-height: 400px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-pane fade show" id="tab-metrics" role="tabpanel">
           <div class="row">
             <div class="col-12">
               <div class="table-responsive">
