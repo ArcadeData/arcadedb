@@ -135,7 +135,7 @@ public interface DatabaseAsyncExecutor {
   /**
    * Schedules the request to execute a lambda in the transaction scope. In case an exception is thrown inside the lambda method, the transaction is rolled back.
    * The difference with the method {@link #transaction(Database.TransactionScope)} is that in case the NeedRetryException exception is thrown, the
-   * * transaction is re-executed for a number of retries.
+   * transaction is re-executed for a number of retries.
    *
    * @param txBlock Transaction lambda to execute
    * @param retries Number of retries in case the NeedRetryException exception is thrown
@@ -143,6 +143,19 @@ public interface DatabaseAsyncExecutor {
    * @param error   Callback executed in case of error after the transaction is rolled back
    */
   void transaction(Database.TransactionScope txBlock, int retries, OkCallback ok, ErrorCallback error);
+
+  /**
+   * Schedules the request to execute a lambda in the transaction scope. In case an exception is thrown inside the lambda method, the transaction is rolled back.
+   * The difference with the method {@link #transaction(Database.TransactionScope)} is that in case the NeedRetryException exception is thrown, the
+   * transaction is re-executed for a number of retries. The slot parameter is useful to avoid concurrency in particular use cases.
+   *
+   * @param txBlock Transaction lambda to execute
+   * @param retries Number of retries in case the NeedRetryException exception is thrown
+   * @param ok      Callback executed in case the transaction is committed
+   * @param error   Callback executed in case of error after the transaction is rolled back
+   * @param slot    slot number to execute the transaction
+   */
+  void transaction(Database.TransactionScope txBlock, int retries, OkCallback ok, ErrorCallback error, int slot);
 
   /**
    * Schedules the request to create a record. If the record is created successfully, the callback @{@link NewRecordCallback} is executed.

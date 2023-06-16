@@ -376,7 +376,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok, final ErrorCallback error) {
-    scheduleTask(getSlot((int) transactionCounter.getAndIncrement()), new DatabaseAsyncTransaction(txBlock, retries, ok, error), true, backPressurePercentage);
+    transaction(txBlock, retries, ok, error, getSlot((int) transactionCounter.getAndIncrement()));
+  }
+
+  @Override
+  public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok, final ErrorCallback error, final int slot) {
+    scheduleTask(slot, new DatabaseAsyncTransaction(txBlock, retries, ok, error), true, backPressurePercentage);
   }
 
   @Override
