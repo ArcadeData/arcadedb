@@ -95,10 +95,10 @@ public class CollectionUtils {
   }
 
   public static <T> List<T> addAllToUnmodifiableList(List<T> list, List<T> objsToAdd) {
-    final ArrayList<T> result = new ArrayList<>(list.size() + objsToAdd.size());
+    final Set<T> result = new HashSet<>(list.size() + objsToAdd.size());
     result.addAll(list);
     result.addAll(objsToAdd);
-    return Collections.unmodifiableList(result);
+    return Collections.unmodifiableList(new ArrayList(result));
   }
 
   public static <T> List<T> removeAllFromUnmodifiableList(List<T> list, List<T> objsToRemove) {
