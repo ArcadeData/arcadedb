@@ -25,13 +25,15 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
+import static com.arcadedb.query.sql.executor.AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL;
+
 /**
  * Created by luigidellaquila on 07/07/16.
  */
 public class LocalResultSet implements ResultSet {
-  private final        InternalExecutionPlan executionPlan;
-  private              ResultSet             lastFetch                      = null;
-  private              boolean               finished                       = false;
+  private final InternalExecutionPlan executionPlan;
+  private       ResultSet             lastFetch = null;
+  private       boolean               finished  = false;
 
   public LocalResultSet(final InternalExecutionPlan executionPlan) {
     this.executionPlan = executionPlan;
