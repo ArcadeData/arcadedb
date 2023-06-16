@@ -62,15 +62,18 @@ public class DropTypeStatement extends DDLStatement {
       throw new CommandExecutionException("Type '" + typeName + "' does not exist");
     }
 
-    if (!unsafe && context.getDatabase().countType(typez.getName(), false) > 0) {
-      //check vertex or edge
-      if (typez.getType() == Vertex.RECORD_TYPE) {
-        throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName
-            + "' because it contains Vertices. Use 'DELETE VERTEX' command first to avoid broken edges in a database, or apply the 'UNSAFE' keyword to force it");
-      } else if (typez.getType() == Edge.RECORD_TYPE) {
-        // FOUND EDGE TYPE
-        throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName
-            + "' because it contains Edges. Use 'DELETE EDGE' command first to avoid broken vertices in a database, or apply the 'UNSAFE' keyword to force it");
+    if (!unsafe && (typez.getType() == Vertex.RECORD_TYPE || typez.getType() == Edge.RECORD_TYPE)) {
+      final boolean hasRecords = context.getDatabase().iterateType(typez.getName(), false).hasNext();
+      if (hasRecords) {
+        //check vertex or edge
+        if (typez.getType() == Vertex.RECORD_TYPE) {
+          throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName
+              + "' because it contains Vertices. Use 'DELETE VERTEX' command first to avoid broken edges in a database, or apply the 'UNSAFE' keyword to force it");
+        } else if (typez.getType() == Edge.RECORD_TYPE) {
+          // FOUND EDGE TYPE
+          throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName
+              + "' because it contains Edges. Use 'DELETE EDGE' command first to avoid broken vertices in a database, or apply the 'UNSAFE' keyword to force it");
+        }
       }
     }
 
