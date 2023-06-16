@@ -622,15 +622,16 @@ public class EmbeddedSchema implements Schema {
         for (final Index m : type.getAllIndexes(true))
           dropIndex(m.getName());
 
+        if (type instanceof VertexType)
+          // DELETE IN/OUT EDGE FILES
+          database.getGraphEngine().dropVertexType((VertexType) type);
+
         // DELETE ALL ASSOCIATED BUCKETS
         final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
         for (final Bucket b : buckets) {
           type.removeBucket(b);
           dropBucket(b.getName());
         }
-
-        if (type instanceof VertexType)
-          database.getGraphEngine().dropVertexType((VertexType) type);
 
         if (types.remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");
