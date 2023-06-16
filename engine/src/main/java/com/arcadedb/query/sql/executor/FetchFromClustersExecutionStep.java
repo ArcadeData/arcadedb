@@ -131,11 +131,6 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
           ((AbstractExecutionStep) step).close();
         }
       }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return new HashMap<>();
-      }
     };
 
   }

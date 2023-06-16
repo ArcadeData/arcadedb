@@ -96,11 +96,6 @@ public class OrderByStep extends AbstractExecutionStep {
         if (prev != null)
           prev.close();
       }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return new HashMap<>();
-      }
     };
   }
 
@@ -109,7 +104,7 @@ public class OrderByStep extends AbstractExecutionStep {
     final long maxElementsAllowed = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
     boolean sorted = true;
     do {
-      final ResultSet lastBatch = p.syncPull(context, 100);
+      final ResultSet lastBatch = p.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!lastBatch.hasNext())
         break;
 

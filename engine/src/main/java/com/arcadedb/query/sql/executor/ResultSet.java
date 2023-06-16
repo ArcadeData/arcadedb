@@ -60,10 +60,6 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
     return Optional.empty();
   }
 
-  default Map<String, Long> getQueryStats() {
-    return null;
-  }
-
   default void reset() {
     throw new UnsupportedOperationException("Implement RESET on " + getClass().getSimpleName());
   }
@@ -218,7 +214,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
   /**
    * Creates a copy of the resultset. If the resultset is not resettable, the iteration will be completely consumed.
    */
-  default ResultSet copy(){
+  default ResultSet copy() {
     return new InternalResultSet(this);
   }
 }

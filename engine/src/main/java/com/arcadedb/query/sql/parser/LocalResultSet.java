@@ -29,10 +29,9 @@ import java.util.*;
  * Created by luigidellaquila on 07/07/16.
  */
 public class LocalResultSet implements ResultSet {
-  private final InternalExecutionPlan executionPlan;
-  private       ResultSet             lastFetch          = null;
-  private       boolean               finished           = false;
-  private       long                  totalExecutionTime = 0;
+  private final        InternalExecutionPlan executionPlan;
+  private              ResultSet             lastFetch                      = null;
+  private              boolean               finished                       = false;
 
   public LocalResultSet(final InternalExecutionPlan executionPlan) {
     this.executionPlan = executionPlan;
@@ -40,17 +39,12 @@ public class LocalResultSet implements ResultSet {
   }
 
   private boolean fetchNext() {
-    final long begin = System.currentTimeMillis();
-    try {
-      lastFetch = executionPlan.fetchNext(100);
-      if (!lastFetch.hasNext()) {
-        finished = true;
-        return false;
-      }
-      return true;
-    } finally {
-      totalExecutionTime += (System.currentTimeMillis() - begin);
+    lastFetch = executionPlan.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
+    if (!lastFetch.hasNext()) {
+      finished = true;
+      return false;
     }
+    return true;
   }
 
   @Override
@@ -102,10 +96,5 @@ public class LocalResultSet implements ResultSet {
       buffer.append(i + ": " + next().toJSON());
     }
     return buffer.toString();
-  }
-
-  @Override
-  public Map<String, Long> getQueryStats() {
-    return new HashMap<>();//TODO
   }
 }

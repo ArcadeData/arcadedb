@@ -57,9 +57,4 @@ public class ExplainResultSet implements ResultSet {
   public Optional<ExecutionPlan> getExecutionPlan() {
     return Optional.of(executionPlan);
   }
-
-  @Override
-  public Map<String, Long> getQueryStats() {
-    return new HashMap<>();
-  }
 }

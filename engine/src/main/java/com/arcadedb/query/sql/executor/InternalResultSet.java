@@ -71,11 +71,6 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
     this.plan = plan;
   }
 
-  @Override
-  public Map<String, Long> getQueryStats() {
-    return new HashMap<>();
-  }
-
   public InternalResultSet add(final Result nextResult) {
     content.add(nextResult);
     return this;
