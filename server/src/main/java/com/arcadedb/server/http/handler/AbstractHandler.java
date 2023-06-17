@@ -122,7 +122,7 @@ public abstract class AbstractHandler implements HttpHandler {
         }
       }
 
-      final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.request");
+      final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.all");
       try {
         final ExecutionResponse response = execute(exchange, user);
         if (response != null)

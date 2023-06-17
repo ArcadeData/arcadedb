@@ -143,10 +143,10 @@ public class GetServerHandler extends AbstractHandler {
 
       timersJSON.put(entry.getKey(), new JSONObject().put("count", timer.getCount())//
           .put("oneMinRate", timer.getOneMinuteRate())//
-          .put("mean", snapshot.getMean() / 1000000)//
-          .put("perc99", snapshot.get99thPercentile() / 1000000)//
-          .put("min", snapshot.getMin() / 1000000)//
-          .put("max", snapshot.getMax() / 1000000)//
+          .put("mean", snapshot.getMean() / 1_000_000D)//
+          .put("perc99", snapshot.get99thPercentile() / 1_000_000D)//
+          .put("min", snapshot.getMin() / 1_000_000D)//
+          .put("max", snapshot.getMax() / 1_000_000D)//
       );
     }
 

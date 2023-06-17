@@ -1,13 +1,25 @@
 var GB_SIZE = 1024 * 1024 * 1024;
 
+var lastUpdate = null;
+var refreshTimeout = null;
 var serverData = {};
 var serverChartOSCPU = null;
 var serverChartOSRAM = null;
 var serverChartOSDisk = null;
 var serverChartServerRAM = null;
 var serverChartCache = null;
+var serverChartCommands = null;
+var oneMinRate = {};
 
 function updateServer( callback ){
+  let currentDate = new Date();
+  let currentSecond = currentDate.getHours() + ":" + currentDate.getMinutes() + ":" + currentDate.getSeconds();
+  if( currentSecond == lastUpdate )
+    // SKIP SAME SECOND
+    return;
+
+  lastUpdate = currentSecond;
+
   jQuery.ajax({
     type: "GET",
     url: "/api/v1/server",
@@ -37,7 +49,10 @@ function updateServer( callback ){
     if( callback )
       callback();
 
-    setTimeout(function() {
+    if( refreshTimeout != null )
+      clearTimeout( refreshTimeout );
+
+    refreshTimeout = setTimeout(function() {
       if( studioCurrentTab == "server" )
         updateServer();
     }, 60000);
@@ -96,6 +111,56 @@ function displayServerSettings(){
 }
 
 function displayServerSummary(){
+  // COMMANDS
+  let currentDate = new Date();
+  let x = currentDate.getHours() + ":" + currentDate.getMinutes() + ":" + currentDate.getSeconds();
+  if( oneMinRate.length > 0 && x == oneMinRate[0].x )
+    // SKIP SAME SECOND
+    return;
+
+  let series = [];
+  for( commandsMetricName in serverData.metrics.timers ) {
+    let metric = serverData.metrics.timers[commandsMetricName];
+    let array = oneMinRate[commandsMetricName];
+    if( !array ) {
+      array = [];
+      oneMinRate[commandsMetricName] = array;
+    }
+    array.unshift( { x: x, y: globalFormatDouble( metric.oneMinRate, 2 ) } );
+
+    if( array.length > 50 )
+      // KEEP ONLY THE LATEST 50 VALUES
+      array.pop();
+
+    series.push( { name: commandsMetricName, data: array } );
+  }
+
+  var serverCommandsOptions = {
+    series: series,
+    labels: [ 'Used', 'Available' ],
+    chart: { type: 'line', height: 300 },
+    legend: { show: false },
+    tooltip: { enabled: true },
+    fill: {  opacity: [0.24, 1, 1] },
+    dataLabels: { enabled: true },
+    stroke: { curve: 'smooth' },
+    grid: {
+      borderColor: '#e7e7e7',
+      row: {
+        colors: ['#f3f3f3', 'transparent'], // takes an array which will be repeated on columns
+        opacity: 0.5
+      },
+    },
+    markers: { size: 1 },
+    yaxis: { title: { text: 'Req/Sec' } },
+  };
+
+  if( serverChartCommands != null )
+    serverChartCommands.destroy();
+
+  serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
+  serverChartCommands.render();
+
   // CPU CHART
   let cpuLoad = serverData.metrics.profiler.cpuLoad.space;
 
