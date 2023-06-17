@@ -1,6 +1,11 @@
+var GB_SIZE = 1024 * 1024 * 1024;
+
 var serverData = {};
-var serverChartCPU = null;
-var serverChartSpace = null;
+var serverChartOSCPU = null;
+var serverChartOSRAM = null;
+var serverChartOSDisk = null;
+var serverChartServerRAM = null;
+var serverChartCache = null;
 
 function updateServer( callback ){
   jQuery.ajax({
@@ -16,7 +21,12 @@ function updateServer( callback ){
     if( pos > -1 ) {
       version = version.substring( 0, pos ) + " <span style='font-size: 70%'>" + version.substring( pos ) + "</span>";
     }
-    $("#serverConnection").html( data.user + "@" + data.serverName + " - v." + version);
+
+    let serverInfo = "Connected to <b>" + data.user + "@" + data.serverName + "</b> - v." + version;
+    if( data.metrics.profiler.configuration.description )
+      serverInfo += "<br>Runs on " + data.metrics.profiler.configuration.description;
+
+    $("#serverConnection").html( serverInfo );
 
     serverData = data;
 
@@ -92,91 +102,108 @@ function displayServerSummary(){
   var cpuOptions = {
     series: [cpuLoad, 100 - cpuLoad],
     labels: [ 'Used', 'Available' ],
-    chart: {
-      type: 'donut',
-      selection: { enable: false },
-      height: 200,
-      toolbar: { show: false }
-    },
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
     legend: { show: false },
-    tooltip: {
-      enabled: false,
-    },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble( val, 0 ) + "%"
-      }
-    },
+    tooltip: { enabled: false },
+    dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
     plotOptions: {
-      pie: { expandOnClick: false, donut: { labels: { show: true, name: { show: true }, value: { formatter: () => globalFormatDouble( cpuLoad, 0 ) + '%' }, total: { show: true, label: "CPU", formatter: () => globalFormatDouble( cpuLoad, 0 ) + '%' } } } }
+      pie: { expandOnClick: false, donut: { labels: { show: true, name: { show: true }, value: { formatter: () => globalFormatDouble( cpuLoad, 0 ) + '%' }, total: { show: true, label: "OS CPU", formatter: () => globalFormatDouble( cpuLoad, 0 ) + '%' } } } }
     }
   };
 
-  if( serverChartCPU != null )
-    serverChartCPU.destroy();
+  if( serverChartOSCPU != null )
+    serverChartOSCPU.destroy();
 
-  serverChartCPU = new ApexCharts(document.querySelector("#serverChartCPU"), cpuOptions);
-  serverChartCPU.render();
+  serverChartOSCPU = new ApexCharts(document.querySelector("#serverChartOSCPU"), cpuOptions);
+  serverChartOSCPU.render();
 
-  // SPACE CHART
-  let ramHeapUsed = serverData.metrics.profiler.ramHeapUsed.space;
-  let ramHeapMax = serverData.metrics.profiler.ramHeapMax.space;
-
+  // OS RAM
   let ramOsUsed = serverData.metrics.profiler.ramOsUsed.space;
   let ramOsTotal = serverData.metrics.profiler.ramOsTotal.space;
 
-  let readCacheUsed = serverData.metrics.profiler.readCacheUsed.space;
-  let cacheMax = serverData.metrics.profiler.cacheMax.space;
-
-  let diskFreeSpace = serverData.metrics.profiler.diskFreeSpace.space;
-  let diskTotalSpace = serverData.metrics.profiler.diskTotalSpace.space;
-
-  var spaceOptions = {
-    series: [{
-      name: 'Used',
-      data: [ramHeapUsed, ramOsUsed, readCacheUsed, diskTotalSpace - diskFreeSpace]
-    }, {
-      name: 'Available',
-      data: [ramHeapMax - ramHeapUsed, ramOsTotal - ramOsUsed, cacheMax - readCacheUsed, diskFreeSpace ]
-    }],
-    chart: {
-      type: 'bar',
-      height: 400,
-      stacked: true,
-      stackType: '100%',
-      toolbar: { show: false }
-    },
+  var serverRamOSOptions = {
+    series: [ramOsUsed, ramOsTotal - ramOsUsed],
+    labels: [ 'Used', 'Available' ],
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
     legend: { show: false },
+    tooltip: { enabled: false },
+    dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
     plotOptions: {
-      bar: {
-        horizontal: true,
-      },
-    },
-    stroke: {
-      width: 1,
-      colors: ['#fff']
-    },
-    xaxis: {
-      categories: ["Server RAM", "OS RAM", "Cache", "Disk"],
-    },
-    tooltip: {
-      y: {
-        formatter: function (val) {
-          return globalFormatDouble( val / ( 1024 * 1024 * 1024 ), 2 ) + "GB"
-        }
-      }
-    },
-    fill: {
-      opacity: 1
+      pie: { expandOnClick: false, donut: { labels: { show: true, name: { show: true }, value: { formatter: (val) => globalFormatDouble( val / GB_SIZE, 2 ) + "GB" }, total: { show: true, label: "OS RAM", formatter: () => globalFormatDouble( ramOsUsed / GB_SIZE, 2 ) + 'GB' } } } }
     }
   };
 
-  if( serverChartSpace != null )
-    serverChartSpace.destroy();
+  if( serverChartOSRAM != null )
+    serverChartOSRAM.destroy();
 
-  serverChartSpace = new ApexCharts(document.querySelector("#serverChartSpace"), spaceOptions);
-  serverChartSpace.render();
+  serverChartOSRAM = new ApexCharts(document.querySelector("#serverChartOSRAM"), serverRamOSOptions);
+  serverChartOSRAM.render();
+
+  // OS DISK
+  let diskFreeSpace = serverData.metrics.profiler.diskFreeSpace.space;
+  let diskTotalSpace = serverData.metrics.profiler.diskTotalSpace.space;
+
+  var serverDiskOSOptions = {
+    series: [diskTotalSpace - diskFreeSpace, diskFreeSpace],
+    labels: [ 'Used', 'Available' ],
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
+    legend: { show: false },
+    tooltip: { enabled: false },
+    dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
+    plotOptions: {
+      pie: { expandOnClick: false, donut: { labels: { show: true, name: { show: true }, value: { formatter: (val) => globalFormatDouble( val / GB_SIZE, 2 ) + "GB" }, total: { show: true, label: "OS DISK", formatter: () => globalFormatDouble( ( diskTotalSpace - diskFreeSpace ) / GB_SIZE, 2 ) + 'GB' } } } }
+    }
+  };
+
+  if( serverChartOSDisk != null )
+    serverChartOSDisk.destroy();
+
+  serverChartOSDisk = new ApexCharts(document.querySelector("#serverChartOSDisk"), serverDiskOSOptions);
+  serverChartOSDisk.render();
+
+  // SERVER RAM
+  let ramHeapUsed = serverData.metrics.profiler.ramHeapUsed.space;
+  let ramHeapMax = serverData.metrics.profiler.ramHeapMax.space;
+
+  var serverRamOptions = {
+    series: [ramHeapUsed, ramHeapMax - ramHeapUsed],
+    labels: [ 'Used', 'Available' ],
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
+    legend: { show: false },
+    tooltip: { enabled: false },
+    dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
+    plotOptions: {
+      pie: { expandOnClick: false, donut: { labels: { show: true, name: { show: true }, value: { formatter: (val) => globalFormatDouble( val / GB_SIZE, 2 ) + "GB" }, total: { show: true, label: "Server RAM", formatter: () => globalFormatDouble( ramHeapUsed / GB_SIZE, 2 ) + 'GB' } } } }
+    }
+  };
+
+  if( serverChartServerRAM != null )
+    serverChartServerRAM.destroy();
+
+  serverChartServerRAM = new ApexCharts(document.querySelector("#serverChartServerRAM"), serverRamOptions);
+  serverChartServerRAM.render();
+
+  // CACHE
+  let readCacheUsed = serverData.metrics.profiler.readCacheUsed.space;
+  let cacheMax = serverData.metrics.profiler.cacheMax.space;
+
+  var serverCacheOptions = {
+    series: [readCacheUsed, cacheMax - readCacheUsed],
+    labels: [ 'Used', 'Available' ],
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
+    legend: { show: false },
+    tooltip: { enabled: false },
+    dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
+    plotOptions: {
+      pie: { expandOnClick: false, donut: { labels: { show: true, name: { show: true }, value: { formatter: (val) => globalFormatDouble( val / GB_SIZE, 2 ) + "GB" }, total: { show: true, label: "Server Cache", formatter: () => globalFormatDouble( readCacheUsed / GB_SIZE, 2 ) + 'GB' } } } }
+    }
+  };
+
+  if( serverChartCache != null )
+    serverChartCache.destroy();
+
+  serverChartCache = new ApexCharts(document.querySelector("#serverChartCache"), serverCacheOptions);
+  serverChartCache.render();
 }
 
 function displayMetrics(){

@@ -207,6 +207,16 @@ public class Profiler {
     json.put("totalDatabases", new JSONObject().put("count", databases.size()));
     json.put("cpuCores", new JSONObject().put("count", Runtime.getRuntime().availableProcessors()));
 
+    final String osName = System.getProperty("os.name");
+    final String osVersion = System.getProperty("os.version");
+    final String vmName = System.getProperty("java.vm.name");
+    final String vmVendorVersion = System.getProperty("java.vendor.version");
+    final String vmVersion = System.getProperty("java.version");
+    json.put("configuration", new JSONObject().put("description",
+        osName + " " + osVersion + " - " + (vmName != null ? vmName : "Java") + " " + vmVersion + " " + (vmVendorVersion != null ?
+            "(" + vmVendorVersion + ")" :
+            "")));
+
     return json;
   }
 

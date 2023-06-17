@@ -4,10 +4,7 @@
   </div>
 
   <div class="row">
-    <div class="col-2">
-      <label for="serverConnection">Connected to</label>
-    </div>
-    <div class="col-8">
+    <div class="col-10">
       <span id="serverConnection"></span>
     </div>
     <div class="col-2 text-right">
@@ -37,9 +34,29 @@
       <div class="tab-content">
         <div class="tab-pane fade show active" id="tab-server-summary" role="tabpanel">
           <div class="row">
-            <div class="col-12">
-              <div id="serverChartCPU" style="min-height: 400px;"></div>
-              <div id="serverChartSpace" style="min-height: 400px;"></div>
+            <b>Operative System</b>
+          </div>
+          <div class="row">
+            <div class="col-4">
+              <div id="serverChartOSCPU" style="min-height: 400px;"></div>
+            </div>
+            <div class="col-4">
+              <div id="serverChartOSRAM" style="min-height: 400px;"></div>
+            </div>
+            <div class="col-4">
+              <div id="serverChartOSDisk" style="min-height: 400px;"></div>
+            </div>
+          </div>
+          <hr>
+          <div class="row">
+            <b>ArcadeDB Server</b>
+          </div>
+          <div class="row">
+            <div class="col-4">
+              <div id="serverChartServerRAM" style="min-height: 400px;"></div>
+            </div>
+            <div class="col-4">
+              <div id="serverChartCache" style="min-height: 400px;"></div>
             </div>
           </div>
         </div>
