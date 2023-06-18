@@ -32,7 +32,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.security.SecurityUser;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -122,15 +121,9 @@ public abstract class AbstractHandler implements HttpHandler {
         }
       }
 
-      final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.all");
-      try {
-        final ExecutionResponse response = execute(exchange, user);
-        if (response != null)
-          response.send(exchange);
-
-      } finally {
-        timer.stop();
-      }
+      final ExecutionResponse response = execute(exchange, user);
+      if (response != null)
+        response.send(exchange);
 
     } catch (final ServerSecurityException e) {
       // PASS SecurityException TO THE CLIENT

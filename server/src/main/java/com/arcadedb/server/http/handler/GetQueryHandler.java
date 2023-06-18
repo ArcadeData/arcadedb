@@ -21,7 +21,6 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -57,7 +56,6 @@ public class GetQueryHandler extends AbstractQueryHandler {
 
     final JSONObject response = createResult(user, database);
 
-    final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.query");
     try {
 
       final ResultSet qResult = database.query(language, text);
@@ -65,7 +63,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
       serializeResultSet(database, serializer, limit, response, qResult);
 
     } finally {
-      timer.stop();
+      httpServer.getServer().getServerMetrics().meter("http.query").hit();
     }
 
     return new ExecutionResponse(200, response.toString());

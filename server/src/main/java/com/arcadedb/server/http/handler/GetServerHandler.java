@@ -25,14 +25,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerDatabase;
-import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.metric.ServerMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.codahale.metrics.Meter;
-import com.codahale.metrics.Snapshot;
-import com.codahale.metrics.Timer;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
@@ -64,6 +61,9 @@ public class GetServerHandler extends AbstractHandler {
     } else if ("cluster".equals(mode)) {
       exportCluster(exchange, response);
     }
+
+    httpServer.getServer().getServerMetrics().meter("http.server-info").hit();
+
     return new ExecutionResponse(200, response.toString());
   }
 
@@ -133,31 +133,15 @@ public class GetServerHandler extends AbstractHandler {
 
     metricsJSON.put("profiler", Profiler.INSTANCE.toJSON());
 
-    final JSONObject timersJSON = new JSONObject();
-    metricsJSON.put("timers", timersJSON);
-
-    final ServerMetrics metrics = httpServer.getServer().getServerMetrics();
-    for (Map.Entry<String, Timer> entry : metrics.getTimers().entrySet()) {
-      final Timer timer = entry.getValue();
-      final Snapshot snapshot = timer.getSnapshot();
-
-      timersJSON.put(entry.getKey(), new JSONObject().put("count", timer.getCount())//
-          .put("oneMinRate", timer.getOneMinuteRate())//
-          .put("mean", snapshot.getMean() / 1_000_000D)//
-          .put("perc99", snapshot.get99thPercentile() / 1_000_000D)//
-          .put("min", snapshot.getMin() / 1_000_000D)//
-          .put("max", snapshot.getMax() / 1_000_000D)//
-      );
-    }
-
     final JSONObject metersJSON = new JSONObject();
     metricsJSON.put("meters", metersJSON);
 
-    for (Map.Entry<String, Meter> entry : metrics.getMeters().entrySet()) {
-      final Meter meter = entry.getValue();
+    for (Map.Entry<String, ServerMetrics.Meter> entry : httpServer.getServer().getServerMetrics().getMeters().entrySet()) {
+      final ServerMetrics.Meter meter = entry.getValue();
 
-      metersJSON.put(entry.getKey(), new JSONObject().put("count", meter.getCount())//
-          .put("oneMinRate", meter.getOneMinuteRate())//
+      metersJSON.put(entry.getKey(), new JSONObject().put("count", meter.getTotalCounter())//
+          .put("reqPerSecLastMinute", meter.getRequestsPerSecondInLastMinute())//
+          .put("reqPerSecSinceLastTime", meter.getRequestsPerSecondSinceLastAsked())//
       );
     }
   }

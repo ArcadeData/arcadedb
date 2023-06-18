@@ -38,6 +38,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.metric.DefaultServerMetrics;
+import com.arcadedb.server.metric.ServerMetrics;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -117,9 +119,10 @@ public class ArcadeDBServer {
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
-      serverMetrics.stop();
-      serverMetrics = new JMXServerMetrics();
-      LogManager.instance().log(this, Level.INFO, "- JMX Metrics Started...");
+      if (serverMetrics != null)
+        serverMetrics.stop();
+      serverMetrics = new DefaultServerMetrics();
+      LogManager.instance().log(this, Level.INFO, "- Metrics Collection Started...");
     }
 
     security = new ServerSecurity(this, configuration, serverRootPath + "/config");
@@ -174,7 +177,9 @@ public class ArcadeDBServer {
     final String vmVendorVersion = System.getProperty("java.vendor.version");
     final String vmVersion = System.getProperty("java.version");
     LogManager.instance().log(this, Level.INFO,
-      "Running on " + osName + " " + osVersion + " - " + (vmName != null ? vmName : "Java") + " " + vmVersion + " " + (vmVendorVersion != null ? "(" + vmVendorVersion + ")" : ""));
+        "Running on " + osName + " " + osVersion + " - " + (vmName != null ? vmName : "Java") + " " + vmVersion + " " + (vmVendorVersion != null ?
+            "(" + vmVendorVersion + ")" :
+            ""));
   }
 
   private Set<String> getPluginNames() {
@@ -587,6 +592,9 @@ public class ArcadeDBServer {
   }
 
   private void init() {
+    // SERVER DOES NOT NEED ASYNC WORKERS
+    GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(1);
+
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       stop();
     }));

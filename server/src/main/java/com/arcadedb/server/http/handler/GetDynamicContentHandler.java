@@ -90,6 +90,8 @@ public class GetDynamicContentHandler extends AbstractHandler {
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
 
+    httpServer.getServer().getServerMetrics().meter("http.static-content").hit();
+
     LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/static" + uri);
 
     final InputStream file = getClass().getClassLoader().getResourceAsStream("static" + uri);

@@ -9,7 +9,7 @@ var serverChartOSDisk = null;
 var serverChartServerRAM = null;
 var serverChartCache = null;
 var serverChartCommands = null;
-var oneMinRate = {};
+var reqPerSecLastMinute = {};
 
 function updateServer( callback ){
   let currentDate = new Date();
@@ -114,19 +114,19 @@ function displayServerSummary(){
   // COMMANDS
   let currentDate = new Date();
   let x = currentDate.getHours() + ":" + currentDate.getMinutes() + ":" + currentDate.getSeconds();
-  if( oneMinRate.length > 0 && x == oneMinRate[0].x )
+  if( reqPerSecLastMinute.length > 0 && x == reqPerSecLastMinute[0].x )
     // SKIP SAME SECOND
     return;
 
   let series = [];
-  for( commandsMetricName in serverData.metrics.timers ) {
-    let metric = serverData.metrics.timers[commandsMetricName];
-    let array = oneMinRate[commandsMetricName];
+  for( commandsMetricName in serverData.metrics.meters ) {
+    let metric = serverData.metrics.meters[commandsMetricName];
+    let array = reqPerSecLastMinute[commandsMetricName];
     if( !array ) {
       array = [];
-      oneMinRate[commandsMetricName] = array;
+      reqPerSecLastMinute[commandsMetricName] = array;
     }
-    array.unshift( { x: x, y: globalFormatDouble( metric.oneMinRate, 2 ) } );
+    array.unshift( { x: x, y: metric.reqPerSecSinceLastTime } );
 
     if( array.length > 50 )
       // KEEP ONLY THE LATEST 50 VALUES
@@ -138,7 +138,7 @@ function displayServerSummary(){
   var serverCommandsOptions = {
     series: series,
     labels: [ 'Used', 'Available' ],
-    chart: { type: 'line', height: 300 },
+    chart: { type: 'line', height: 300, animations: { enabled: false, speed: 50 } },
     legend: { show: false },
     tooltip: { enabled: true },
     fill: {  opacity: [0.24, 1, 1] },
@@ -277,21 +277,6 @@ function displayMetrics(){
 
   var tableRecords = [];
 
-  for( let name in serverData.metrics.timers ){
-    let timer = serverData.metrics.timers[name];
-
-    let record = [];
-    record.push( escapeHtml( name ) );
-    record.push( "" );
-    record.push( timer.count );
-    record.push( globalFormatDouble( timer.oneMinRate ) );
-    record.push( globalFormatDouble( timer.mean ) );
-    record.push( globalFormatDouble( timer.perc99 ) );
-    record.push(  timer.min );
-    record.push( timer.max );
-    tableRecords.push( record );
-  }
-
   for( let name in serverData.metrics.meters ){
     let meter = serverData.metrics.meters[name];
 
@@ -299,7 +284,7 @@ function displayMetrics(){
     record.push( escapeHtml( name ) );
     record.push( "" );
     record.push( meter.count );
-    record.push( globalFormatDouble( meter.oneMinRate ) );
+    record.push( globalFormatDouble( meter.reqPerSecLastMinute ) );
     record.push( "" );
     record.push( "" );
     record.push( "" );

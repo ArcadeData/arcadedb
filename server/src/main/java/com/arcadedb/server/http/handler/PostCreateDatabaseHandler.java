@@ -59,7 +59,7 @@ public class PostCreateDatabaseHandler extends AbstractHandler {
       // NOT THE LEADER
       throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", server.getHA().getLeaderName());
 
-    server.getServerMetrics().meter("http.create-database").mark();
+    server.getServerMetrics().meter("http.create-database").hit();
 
     final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
 

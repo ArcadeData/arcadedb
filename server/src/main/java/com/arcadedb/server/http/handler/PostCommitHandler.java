@@ -36,6 +36,7 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     database.commit();
     exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
+    httpServer.getServer().getServerMetrics().meter("http.commit").hit();
     return new ExecutionResponse(204, "");
   }
 

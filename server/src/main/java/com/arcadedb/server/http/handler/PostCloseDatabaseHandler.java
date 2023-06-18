@@ -42,7 +42,7 @@ public class PostCloseDatabaseHandler extends DatabaseAbstractHandler {
 
     ((DatabaseInternal) database).getEmbedded().close();
 
-    httpServer.getServer().getServerMetrics().meter("http.close-database").mark();
+    httpServer.getServer().getServerMetrics().meter("http.close-database").hit();
 
     httpServer.getServer().removeDatabase(database.getName());
 
