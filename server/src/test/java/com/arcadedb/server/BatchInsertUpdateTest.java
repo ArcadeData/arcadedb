@@ -193,6 +193,13 @@ public class BatchInsertUpdateTest {
 
     database.async().waitCompletion(10_000);
 
+    try {
+      countDownLatch.await(10, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      System.out.println("interrupted");
+    }
+
     result.put("totalRows", counter.get());
     System.out.println("insert orders result = " + result + " in " + (System.currentTimeMillis() - begin) + "ms");
     return result;
