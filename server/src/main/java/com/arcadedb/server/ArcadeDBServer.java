@@ -38,6 +38,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.event.FileServerEventLog;
+import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.metric.DefaultServerMetrics;
 import com.arcadedb.server.metric.ServerMetrics;
 import com.arcadedb.server.security.ServerSecurity;
@@ -63,6 +65,7 @@ public class ArcadeDBServer {
   private final       String                                  serverName;
   private             String                                  hostAddress;
   private final       boolean                                 testEnabled;
+  private             FileServerEventLog                      eventLog;
   private final       Map<String, ServerPlugin>               plugins                              = new LinkedHashMap<>();
   private             String                                  serverRootPath;
   private             HAServer                                haServer;
@@ -107,6 +110,9 @@ public class ArcadeDBServer {
       return;
 
     status = STATUS.STARTING;
+
+    eventLog.start();
+    ;
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_STARTING, null);
@@ -154,8 +160,11 @@ public class ArcadeDBServer {
 
     final String mode = GlobalConfiguration.SERVER_MODE.getValueAsString();
 
-    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)", mode, Runtime.getRuntime().availableProcessors(),
+    final String msg = String.format("ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)", mode, Runtime.getRuntime().availableProcessors(),
         FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
+    LogManager.instance().log(this, Level.INFO, msg);
+
+    getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, msg);
 
     if (!"production".equals(mode))
       LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://%s:%d ", hostAddress, httpServer.getPort());
@@ -272,6 +281,8 @@ public class ArcadeDBServer {
 
     LogManager.instance().setContext(null);
     status = STATUS.OFFLINE;
+
+    getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, "Server shutdown correctly");
   }
 
   public Collection<ServerPlugin> getPlugins() {
@@ -288,6 +299,10 @@ public class ArcadeDBServer {
 
   public Database getOrCreateDatabase(final String databaseName) {
     return getDatabase(databaseName, true, true);
+  }
+
+  public FileServerEventLog getEventLog() {
+    return eventLog;
   }
 
   public boolean isStarted() {
@@ -592,6 +607,8 @@ public class ArcadeDBServer {
   }
 
   private void init() {
+    eventLog = new FileServerEventLog(this);
+
     // SERVER DOES NOT NEED ASYNC WORKERS
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(1);
 

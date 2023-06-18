@@ -403,3 +403,59 @@ function updateServerSetting(key, value){
     }
   });
 }
+
+function getServerEvents(){
+  jQuery.ajax({
+    type: "POST",
+    url: "/api/v1/server",
+    data: "{ command: 'get server events' }",
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+
+    if ( $.fn.dataTable.isDataTable( '#serverEvents' ) )
+      try{ $('#serverEvents').DataTable().destroy(); $('#serverEvents').empty(); } catch(e){};
+
+    var rows = [];
+
+    for( let i in data.result ){
+      let event = data.result[i];
+
+      let row = [];
+      row.push( event.time != null ? event.time : "" );
+      row.push( event.type != null ? event.type : "" );
+      row.push( event.component != null ? event.component : "" );
+      row.push( event.db != null ? event.db : "" );
+      row.push( event.message != null ? event.message : "" );
+      rows.push( row );
+    }
+
+    $("#serverEvents").DataTable({
+      paging: true,
+      ordering: false,
+      columns: [
+        {title: "Time", width: "10%"},
+        {title: "Type", width: "10%"},
+        {title: "Component", width: "10%"},
+        {title: "Database", width: "10%"},
+        {title: "Message", width: "60%"},
+      ],
+      data: rows,
+    });
+
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotifyError( jqXHR.responseText );
+  });
+}
+
+document.addEventListener("DOMContentLoaded", function(event) {
+  $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
+    var activeTab = this.id;
+    if( activeTab == "tab-server-events-sel" ) {
+      getServerEvents();
+    }
+  });
+});
