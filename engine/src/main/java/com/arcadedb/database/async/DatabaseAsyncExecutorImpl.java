@@ -81,7 +81,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public          long                             count         = 0;
 
     private AsyncThread(final DatabaseInternal database, final int id) {
-      super("AsyncExecutor-" + id);
+      super("AsyncExecutor-" + database.getName() + "-" + id);
       this.database = database;
 
       final int queueSize = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE) / parallelLevel;
