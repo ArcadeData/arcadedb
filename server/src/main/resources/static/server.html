@@ -70,21 +70,42 @@
           </div>
         </div>
 
-        <div class="tab-pane fade show" id="tab-metrics" role="tabpanel">
+        <div class="tab-pane fade show" id="tab-server-events" role="tabpanel">
+          <div class="row">
+            <div class="col-1"><label for="serverEventsFile">File</label></div>
+            <div class="col-3"><select id="serverEventsFile"></select></div>
+            <div class="col-1"><label for="serverEventsType">Type</label></div>
+            <div class="col-1"><select id="serverEventsType">
+              <option value="ALL">ALL</option>
+              <option value="CRITICAL">CRITICAL</option>
+              <option value="WARNING">WARNING</option>
+              <option value="INFO">INFO</option>
+              <option value="HINT">HINT</option>
+            </select></div>
+            <div class="col-1"><label for="serverEventsComponent">Component</label></div>
+            <div class="col-2"><select id="serverEventsComponent">
+              <option value="ALL">ALL</option>
+            </select></div>
+            <div class="col-1"><label for="serverEventsDb">Database</label></div>
+            <div class="col-2"><select id="serverEventsDb">
+              <option value="ALL">ALL</option>
+            </select></div>
+          </div>
+          <br>
           <div class="row">
             <div class="col-12">
               <div class="table-responsive">
-                <table id="serverMetrics" class="table table-striped table-sm" style="width: 100%; table-layout: fixed;"></table>
+                <table id="serverEvents" class="table table-striped table-sm" style="width: 100%; table-layout: fixed;"></table>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="tab-pane fade show" id="tab-server-events" role="tabpanel">
+        <div class="tab-pane fade show" id="tab-metrics" role="tabpanel">
           <div class="row">
             <div class="col-12">
               <div class="table-responsive">
-                <table id="serverEvents" class="table table-striped table-sm" style="width: 100%; table-layout: fixed;"></table>
+                <table id="serverMetrics" class="table table-striped table-sm" style="width: 100%; table-layout: fixed;"></table>
               </div>
             </div>
           </div>

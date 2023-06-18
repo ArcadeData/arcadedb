@@ -3,6 +3,7 @@ var GB_SIZE = 1024 * 1024 * 1024;
 var lastUpdate = null;
 var refreshTimeout = null;
 var serverData = {};
+var eventsData = {};
 var serverChartOSCPU = null;
 var serverChartOSRAM = null;
 var serverChartOSDisk = null;
@@ -19,6 +20,24 @@ function updateServer( callback ){
     return;
 
   lastUpdate = currentSecond;
+
+  // DISPLAY EMPTY SUMMARY FIRST, LOAD REAL DATA IN THE BACKGROUND
+  serverData = {
+    metrics: {
+      profiler: {
+        cpuLoad: { space : 0 },
+        ramOsUsed: { space : 0 },
+        ramOsTotal: { space : 0 },
+        diskFreeSpace: { space : 0 },
+        diskTotalSpace: { space : 0 },
+        ramHeapUsed: { space : 0 },
+        ramHeapMax: { space : 0 },
+        readCacheUsed: { space : 0 },
+        cacheMax: { space : 0 },
+      }
+    }
+  };
+  displayServerSummary();
 
   jQuery.ajax({
     type: "GET",
@@ -404,50 +423,104 @@ function updateServerSetting(key, value){
   });
 }
 
-function getServerEvents(){
+function getServerEvents(file){
   jQuery.ajax({
     type: "POST",
     url: "/api/v1/server",
-    data: "{ command: 'get server events' }",
+    data: "{ command: 'get server events"+(file!=null ? " " + file : "")+"' }",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
   })
   .done(function(data){
+    eventsData = data;
 
-    if ( $.fn.dataTable.isDataTable( '#serverEvents' ) )
-      try{ $('#serverEvents').DataTable().destroy(); $('#serverEvents').empty(); } catch(e){};
+    let html = "";
+    for( let i in data.result.files ){
+      let file = data.result.files[i];
+      html += "<option value='" + file + "'" + ( i == 0 ? " selected":"")+">" + file + "</option>";
+    }
+    $("#serverEventsFile").html(html);
 
-    var rows = [];
+    // BUILD SELECT FOR FILTERING BASED ON REAL VALUES
+    let components = {};
+    let databases = {};
+    for( let i in eventsData.result.events ){
+      let event = eventsData.result.events[i];
 
-    for( let i in data.result ){
-      let event = data.result[i];
-
-      let row = [];
-      row.push( event.time != null ? event.time : "" );
-      row.push( event.type != null ? event.type : "" );
-      row.push( event.component != null ? event.component : "" );
-      row.push( event.db != null ? event.db : "" );
-      row.push( event.message != null ? event.message : "" );
-      rows.push( row );
+      if( event.component != null ) {
+        if( components[event.component] == null )
+          components[event.component] = true;
+      }
+      if( event.db != null ) {
+        if( databases[event.db] == null )
+          databases[event.db] = true;
+      }
     }
 
-    $("#serverEvents").DataTable({
-      paging: true,
-      ordering: false,
-      columns: [
-        {title: "Time", width: "10%"},
-        {title: "Type", width: "10%"},
-        {title: "Component", width: "10%"},
-        {title: "Database", width: "10%"},
-        {title: "Message", width: "60%"},
-      ],
-      data: rows,
-    });
+    html = "";
+    for( comp in components)
+      html += "<option value='" + comp + "'>" + comp + "</option>";
+    $("#serverEventsComponent").html(html);
 
+    html = "";
+    for( db in databases)
+      html += "<option value='" + db + "'>" + db + "</option>";
+    $("#serverEventsDb").html(html);
+
+    filterServerEvents();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotifyError( jqXHR.responseText );
+  });
+}
+
+
+function filterServerEvents(){
+  if ( $.fn.dataTable.isDataTable( '#serverEvents' ) )
+    try{ $('#serverEvents').DataTable().destroy(); $('#serverEvents').empty(); } catch(e){};
+
+  let serverEventsType = $("#serverEventsType").val();
+  let serverEventsComponent = $("#serverEventsComponent").val();
+  let serverEventsDb = $("#serverEventsDb").val();
+
+  var rows = [];
+
+  for( let i in eventsData.result.events ){
+    let event = eventsData.result.events[i];
+
+    if( serverEventsType != null && serverEventsType.length > 0 && serverEventsType != "ALL" && serverEventsType != event.type )
+      // FILTER IT OUT
+      continue;
+
+    if( serverEventsComponent != null && serverEventsComponent.length > 0 && serverEventsComponent != "ALL" && serverEventsComponent != event.component )
+      // FILTER IT OUT
+      continue;
+
+    if( serverEventsDb != null && serverEventsDb.length > 0 && serverEventsDb != "ALL" && serverEventsDb != event.db )
+      // FILTER IT OUT
+      continue;
+
+    let row = [];
+    row.push( event.time != null ? event.time : "" );
+    row.push( event.type != null ? event.type : "" );
+    row.push( event.component != null ? event.component : "" );
+    row.push( event.db != null ? event.db : "" );
+    row.push( event.message != null ? event.message : "" );
+    rows.push( row );
+  }
+
+  $("#serverEvents").DataTable({
+    paging: true,
+    ordering: false,
+    columns: [
+      {title: "Time", width: "10%"},
+      {title: "Type", width: "10%"},
+      {title: "Component", width: "10%"},
+      {title: "Database", width: "10%"},
+      {title: "Message", width: "60%"},
+    ],
+    data: rows,
   });
 }
 
@@ -457,5 +530,19 @@ document.addEventListener("DOMContentLoaded", function(event) {
     if( activeTab == "tab-server-events-sel" ) {
       getServerEvents();
     }
+  });
+
+  $('#serverEventsFile').change( function() {
+    getServerEvents( $('#serverEventsFile').val() );
+  });
+
+  $('#serverEventsType').change( function() {
+    filterServerEvents();
+  });
+  $('#serverEventsComponent').change( function() {
+    filterServerEvents();
+  });
+  $('#serverEventsDb').change( function() {
+    filterServerEvents();
   });
 });

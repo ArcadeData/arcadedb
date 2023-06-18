@@ -28,4 +28,8 @@ public interface ServerEventLog {
   void reportEvent(EVENT_TYPE eventType, String component, String databaseName, String message);
 
   JSONArray getCurrentEvents();
+
+  JSONArray getEvents(String fileName);
+
+  JSONArray getFiles();
 }

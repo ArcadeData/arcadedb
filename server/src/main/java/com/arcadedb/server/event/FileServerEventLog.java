@@ -39,6 +39,8 @@ public class FileServerEventLog implements ServerEventLog {
   private final        ArcadeDBServer   server;
   private final        SimpleDateFormat dateFormat;
   private              File             newFileName;
+  private              List<String>     existentFiles;
+  private              File             logDirectory;
 
   public FileServerEventLog(final ArcadeDBServer server) {
     this.server = server;
@@ -48,12 +50,12 @@ public class FileServerEventLog implements ServerEventLog {
   public void start() {
     int maxCounter = -1;
 
-    File logDirectory = new File(server.getRootPath() + File.separator + "log");
+    logDirectory = new File(server.getRootPath() + File.separator + "log");
     if (!logDirectory.exists()) {
       if (!logDirectory.mkdirs())
         LogManager.instance().log(this, Level.INFO, "Error on creating log directory tree " + logDirectory);
     } else {
-      final List<String> existentFiles = new ArrayList<>();
+      existentFiles = new ArrayList<>();
       final File[] files = logDirectory.listFiles((f) -> f.getName().startsWith(FILE_PREFIX) && f.getName().endsWith(FILE_EXT));
       if (files != null) {
         for (File f : files) {
@@ -75,15 +77,15 @@ public class FileServerEventLog implements ServerEventLog {
         }
       }
 
+      existentFiles.sort(Comparator.reverseOrder());
+
       if (existentFiles.size() > KEEP_FILES) {
         // REMOVE THE OLDEST FILES
-        existentFiles.sort(Comparator.naturalOrder());
         while (existentFiles.size() > KEEP_FILES) {
           final String removed = existentFiles.remove(existentFiles.size() - 1);
           LogManager.instance().log(this, Level.FINE, "Deleted server event log file %s (keep max %d files)", removed, KEEP_FILES);
         }
       }
-
     }
 
     // ASSIGN THE NEXT NUMBER
@@ -135,5 +137,32 @@ public class FileServerEventLog implements ServerEventLog {
       LogManager.instance().log(this, Level.SEVERE, "Error on reading from server event log file %s", e, newFileName);
     }
     return null;
+  }
+
+  @Override
+  public JSONArray getEvents(final String fileName) {
+    final File file = new File(logDirectory, fileName);
+
+    try {
+      final JSONArray result = new JSONArray();
+
+      try (final BufferedReader reader = new BufferedReader(new FileReader(file))) {
+        String line = reader.readLine();
+        while (line != null) {
+          result.put(new JSONObject(line));
+          line = reader.readLine();
+        }
+      }
+
+      return result;
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on reading from server event log file %s", e, file);
+    }
+    return null;
+  }
+
+  @Override
+  public JSONArray getFiles() {
+    return new JSONArray(existentFiles);
   }
 }

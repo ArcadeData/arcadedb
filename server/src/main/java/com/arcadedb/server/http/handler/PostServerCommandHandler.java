@@ -88,8 +88,8 @@ public class PostServerCommandHandler extends AbstractHandler {
       setDatabaseSetting(command);
     else if (command.startsWith("set server setting "))
       setServerSetting(command);
-    else if (command.equals("get server events"))
-      return getServerEvents();
+    else if (command.startsWith("get server events"))
+      return getServerEvents(command);
     else if (command.startsWith("align database "))
       alignDatabase(command);
     else {
@@ -179,13 +179,16 @@ public class PostServerCommandHandler extends AbstractHandler {
       ((ReplicatedDatabase) db).createInReplicas();
   }
 
-  private ExecutionResponse getServerEvents() {
+  private ExecutionResponse getServerEvents(final String command) {
+    final String fileName = command.substring("get server events".length()).trim();
+
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.get-server-events").hit();
 
-    final JSONArray events = server.getEventLog().getCurrentEvents();
+    final JSONArray events = fileName.isEmpty() ? server.getEventLog().getCurrentEvents() : server.getEventLog().getEvents(fileName);
+    final JSONArray files = server.getEventLog().getFiles();
 
-    return new ExecutionResponse(200, "{ \"result\" : " + events + "}");
+    return new ExecutionResponse(200, "{ \"result\" : { \"events\": " + events + ", \"files\": " + files + " } }");
   }
 
   private ExecutionResponse listDatabases(final ServerSecurityUser user) {
