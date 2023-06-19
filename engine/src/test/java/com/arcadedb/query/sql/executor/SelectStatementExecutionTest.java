@@ -3813,6 +3813,54 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  public void testContainsMultipleConditions() {
+    final String className = "testContainsMultipleConditions";
+
+    database.getSchema().getOrCreateVertexType("Legajo");
+    database.getSchema().getOrCreateVertexType("Interviniente");
+    database.getSchema().getOrCreateVertexType("PersonaDifusa");
+    database.getSchema().getOrCreateVertexType("PresuntoResponsable");
+
+    database.getSchema().getOrCreateEdgeType("Legajo_intervinientes");
+    database.getSchema().getOrCreateEdgeType("Interviniente_roles");
+    database.getSchema().getOrCreateEdgeType("Interviniente_persona");
+
+    database.begin();
+    MutableVertex legajo = database.newVertex("Legajo").set("cuij", "21087591856").save();
+    database.newVertex("Legajo").set("cuij", "1").save();
+    database.newVertex("Legajo").set("cuij", "2").save();
+
+    MutableVertex interviniente = database.newVertex("Interviniente").set("id", 0).save();
+    database.newVertex("Interviniente").set("id", 1).save();
+    database.newVertex("Interviniente").set("id", 2).save();
+
+    MutableVertex personaDifusa = database.newVertex("PersonaDifusa").set("id", 0).set("nroDoc", "1234567890").save();
+    database.newVertex("PersonaDifusa").set("id", 1).save();
+    database.newVertex("PersonaDifusa").set("id", 2).save();
+
+    MutableVertex presuntoResponsable = database.newVertex("PresuntoResponsable").set("id", 0).save();
+
+    legajo.newEdge("Legajo_intervinientes", interviniente, true).save();
+
+    interviniente.newEdge("Interviniente_roles", presuntoResponsable, true).save();
+    interviniente.newEdge("Interviniente_persona", personaDifusa, true).save();
+
+    database.commit();
+
+    final String TEST_QUERY = "select cuij, count(*) as count from Legajo \n" +//
+        "let intervinientes = out('Legajo_intervinientes')" + //
+        "where cuij = '21087591856' and " + //
+        "$intervinientes.out('Interviniente_persona') contains (nroDoc.length() > 5) and " + //
+        "      $intervinientes.out('Interviniente_roles') contains( @this instanceof 'PresuntoResponsable' )";
+
+    try (final ResultSet result = database.query("sql", TEST_QUERY)) {
+      final Result row = result.nextIfAvailable();
+      Assertions.assertEquals("21087591856", row.getProperty("cuij"));
+      Assertions.assertEquals(1L, (Long) row.getProperty("count"));
+    }
+  }
+
+  @Test
   public void testContainsEmptyCollection() {
     final String className = "testContainsEmptyCollection";
     database.begin();
