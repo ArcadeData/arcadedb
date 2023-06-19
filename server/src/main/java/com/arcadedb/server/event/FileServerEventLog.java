@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
@@ -141,7 +142,12 @@ public class FileServerEventLog implements ServerEventLog {
 
   @Override
   public JSONArray getEvents(final String fileName) {
+    if (fileName.contains("..") || fileName.contains("/"))
+      throw new ServerSecurityException("Invalid file name " + fileName);
+
     final File file = new File(logDirectory, fileName);
+    if (!file.exists())
+      return new JSONArray();
 
     try {
       final JSONArray result = new JSONArray();

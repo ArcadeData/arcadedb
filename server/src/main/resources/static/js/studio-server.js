@@ -443,8 +443,8 @@ function getServerEvents(file){
     $("#serverEventsFile").html(html);
 
     // BUILD SELECT FOR FILTERING BASED ON REAL VALUES
-    let components = {};
-    let databases = {};
+    let components = { "ALL": true };
+    let databases = { "ALL": true };
     for( let i in eventsData.result.events ){
       let event = eventsData.result.events[i];
 
