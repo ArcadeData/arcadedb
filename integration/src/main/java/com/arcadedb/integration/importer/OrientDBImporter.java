@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.Index;
@@ -430,8 +431,9 @@ public class OrientDBImporter {
         final MutableDocument record = database.lookupByRID(rid, true).asDocument().modify();
         for (String pName : record.getPropertyNames()) {
           final Object pValue = record.get(pName);
-          if (pValue instanceof RID)
-            record.set(pName, compressedRecordsRidMap.get((RID) pValue));
+          final RID converted = convertRIDs(pValue);
+          if (converted != null)
+            record.set(pName, converted);
         }
         record.save();
 
@@ -445,6 +447,35 @@ public class OrientDBImporter {
       database.commit();
       logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());
     }
+
+  }
+
+  private RID convertRIDs(final Object pValue) {
+    if (pValue instanceof RID)
+      return compressedRecordsRidMap.get((RID) pValue);
+    else if (pValue instanceof List) {
+      final List list = (List) pValue;
+      for (int i = 0; i < list.size(); i++) {
+        final Object item = list.get(i);
+        if (item instanceof RID)
+          list.set(i, compressedRecordsRidMap.get((RID) item));
+        else if (item instanceof List)
+          convertRIDs(item);
+        else if (item instanceof Map)
+          convertRIDs(item);
+
+      }
+    } else if (pValue instanceof Map) {
+      final Map map = (Map) pValue;
+      final List keys = new ArrayList(map.keySet());
+      for (int i = 0; i < keys.size(); i++) {
+        final Object key = keys.get(i);
+        final Object value = map.get(key);
+        if (value instanceof RID)
+          map.put(key, compressedRecordsRidMap.get((RID) value));
+      }
+    }
+    return null;
   }
 
   private void createEdges(final long processedItems, final Map<String, Object> attributes, final String className) {
@@ -531,7 +562,7 @@ public class OrientDBImporter {
             else
               record = database.newDocument(className);
 
-            boolean rememberToUpdateThisDocumentBecauseContainsLinks = false;
+            final boolean rememberToUpdateThisDocumentBecauseContainsLinks = containsLinks(record, attributes);
 
             for (final Map.Entry<String, Object> entry : attributes.entrySet()) {
               final String attrName = entry.getKey();
@@ -542,10 +573,9 @@ public class OrientDBImporter {
 
               if (attrValue instanceof Map) {
                 final Map<String, Object> attrValueMap = (Map<String, Object>) attrValue;
-                if (!attrValueMap.containsKey("@class"))
+                if (!attrValueMap.containsKey("@class")) {
                   // EMBEDDED MAP
-                  ;
-                else if (!attrValueMap.containsKey("@rid")) {
+                } else if (!attrValueMap.containsKey("@rid")) {
                   createEmbeddedDocument(record, attrName, attrValueMap);
                   // ALREADY SET BY THE NEW EMBEDDED DOCUMENT API
                   continue;
@@ -556,8 +586,6 @@ public class OrientDBImporter {
                 if (record instanceof Vertex && (attrName.startsWith("out_") || attrName.startsWith("in_")))
                   // EDGES WILL BE CREATE BELOW IN THE 2ND PHASE
                   attrValue = null;
-              } else if (RID.is(attrValue)) {
-                rememberToUpdateThisDocumentBecauseContainsLinks = true;
               }
 
               if (attrValue != null)
@@ -592,6 +620,36 @@ public class OrientDBImporter {
     return record;
   }
 
+  private boolean containsLinks(final Record record, final Map<String, Object> map) {
+    for (Map.Entry<String, Object> entry : map.entrySet()) {
+      final String entryName = entry.getKey();
+      final Object entryValue = entry.getValue();
+      if (entryValue instanceof Map) {
+        if (containsLinks(null, (Map<String, Object>) entryValue))
+          return true;
+      } else if (entryValue instanceof List) {
+        if (record instanceof Vertex && (entryName.startsWith("out_") || entryName.startsWith("in_")))
+          // SKIP EDGE LIST
+          ;
+        else {
+          final List<?> list = (List<?>) entryValue;
+          for (int i = 0; i < list.size(); i++) {
+            final Object item = list.get(i);
+
+            if (item instanceof Map)
+              if (containsLinks(null, (Map<String, Object>) item))
+                return true;
+              else if (RID.is(item))
+                return true;
+          }
+        }
+
+      } else if (RID.is(entry.getValue()))
+        return true;
+    }
+    return false;
+  }
+
   private MutableEmbeddedDocument createEmbeddedDocument(final MutableDocument record, final String propertyName, final Map<String, Object> attributes)
       throws IOException {
     MutableEmbeddedDocument embedded = null;
@@ -603,8 +661,6 @@ public class OrientDBImporter {
     context.parsed.incrementAndGet();
 
     if (!excludeClasses.contains(className)) {
-      final DocumentType type = database.getSchema().getType(className);
-
       embedded = record.newEmbeddedDocument(className, propertyName);
 
       for (final Map.Entry<String, Object> entry : attributes.entrySet()) {
