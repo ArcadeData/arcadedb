@@ -21,26 +21,6 @@ function updateServer( callback ){
 
   lastUpdate = currentSecond;
 
-  // DISPLAY EMPTY SUMMARY FIRST, LOAD REAL DATA IN THE BACKGROUND
-  if( serverData == null )
-    serverData = {
-      metrics: {
-        profiler: {
-          cpuLoad: { perc : 0 },
-          ramOsUsed: { space : 0 },
-          ramOsTotal: { space : 0 },
-          diskFreeSpace: { space : 0 },
-          diskTotalSpace: { space : 0 },
-          ramHeapUsed: { space : 0 },
-          ramHeapMax: { space : 0 },
-          readCacheUsed: { space : 0 },
-          cacheMax: { space : 0 },
-        }
-      }
-    };
-
-  displayServerSummary();
-
   jQuery.ajax({
     type: "GET",
     url: "/api/v1/server",
@@ -139,48 +119,50 @@ function displayServerSummary(){
     // SKIP SAME SECOND
     return;
 
-  let series = [];
-  for( commandsMetricName in serverData.metrics.meters ) {
-    let metric = serverData.metrics.meters[commandsMetricName];
-    let array = reqPerSecLastMinute[commandsMetricName];
-    if( !array ) {
-      array = [];
-      reqPerSecLastMinute[commandsMetricName] = array;
+  if( serverData.metrics.meters ) {
+    let series = [];
+    for( commandsMetricName in serverData.metrics.meters ) {
+      let metric = serverData.metrics.meters[commandsMetricName];
+      let array = reqPerSecLastMinute[commandsMetricName];
+      if( !array ) {
+        array = [];
+        reqPerSecLastMinute[commandsMetricName] = array;
+      }
+      array.unshift( { x: x, y: metric.reqPerSecSinceLastTime } );
+
+      if( array.length > 50 )
+        // KEEP ONLY THE LATEST 50 VALUES
+        array.pop();
+
+      series.push( { name: commandsMetricName, data: array } );
     }
-    array.unshift( { x: x, y: metric.reqPerSecSinceLastTime } );
 
-    if( array.length > 50 )
-      // KEEP ONLY THE LATEST 50 VALUES
-      array.pop();
-
-    series.push( { name: commandsMetricName, data: array } );
-  }
-
-  var serverCommandsOptions = {
-    series: series,
-    labels: [ 'Used', 'Available' ],
-    chart: { type: 'line', height: 300, animations: { enabled: false, speed: 50 } },
-    legend: { show: false },
-    tooltip: { enabled: true },
-    fill: {  opacity: [0.24, 1, 1] },
-    dataLabels: { enabled: true },
-    stroke: { curve: 'smooth' },
-    grid: {
-      borderColor: '#e7e7e7',
-      row: {
-        colors: ['#f3f3f3', 'transparent'], // takes an array which will be repeated on columns
-        opacity: 0.5
+    var serverCommandsOptions = {
+      series: series,
+      labels: [ 'Used', 'Available' ],
+      chart: { type: 'line', height: 300, animations: { enabled: false } },
+      legend: { show: false },
+      tooltip: { enabled: true },
+      fill: {  opacity: [0.24, 1, 1] },
+      dataLabels: { enabled: true },
+      stroke: { curve: 'smooth' },
+      grid: {
+        borderColor: '#e7e7e7',
+        row: {
+          colors: ['#f3f3f3', 'transparent'], // takes an array which will be repeated on columns
+          opacity: 0.5
+        },
       },
-    },
-    markers: { size: 1 },
-    yaxis: { title: { text: 'Req/Sec' } },
-  };
+      markers: { size: 1 },
+      yaxis: { title: { text: 'Req/Sec' } },
+    };
 
-  if( serverChartCommands != null )
-    serverChartCommands.destroy();
+    if( serverChartCommands != null )
+      serverChartCommands.destroy();
 
-  serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
-  serverChartCommands.render();
+    serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
+    serverChartCommands.render();
+  }
 
   // CPU CHART
   let cpuLoad = serverData.metrics.profiler.cpuLoad.perc;
