@@ -148,6 +148,10 @@
                 <configuration>
                     <source>11</source>
                     <target>11</target>
+                    <compilerArgs>
+                        <arg>--add-exports</arg>
+                        <arg>java.management/sun.management=ALL-UNNAMED</arg>
+                    </compilerArgs>
                     <!--                    <compilerArgs>-->
                     <!--                        <arg>&#45;&#45;add-modules</arg>-->
                     <!--                        <arg>jdk.hotspot.agent</arg>-->
