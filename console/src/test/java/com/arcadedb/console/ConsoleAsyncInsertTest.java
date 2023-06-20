@@ -46,6 +46,8 @@ import java.time.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
+import static com.arcadedb.server.StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+
 /**
  * From Discussion https://github.com/ArcadeData/arcadedb/discussions/1129#discussioncomment-6226545
  */
@@ -120,7 +122,10 @@ public class ConsoleAsyncInsertTest {
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(PARALLEL_LEVEL);
+
     ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+
     AtomicLong txErrorCounter = new AtomicLong();
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
