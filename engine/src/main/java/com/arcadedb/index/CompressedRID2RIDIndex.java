@@ -114,7 +114,12 @@ public class CompressedRID2RIDIndex {
     }
   }
 
-  public CompressedRID2RIDIndex(final Database database, final int expectedVertices, int expectedEdges) throws ClassNotFoundException {
+  public CompressedRID2RIDIndex(final Database database, int expectedVertices, int expectedEdges) throws ClassNotFoundException {
+    if (expectedVertices < 1)
+      expectedVertices = 1_000_000;
+    if (expectedEdges < 1)
+      expectedEdges = expectedVertices;
+
     this.database = database;
     this.keys = expectedVertices;
     this.serializer = new BinarySerializer(database.getConfiguration());
