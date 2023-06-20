@@ -27,6 +27,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -64,7 +65,8 @@ public class OrientDBImporter {
       Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
   private final Set<String>                edgeClasses                     = new HashSet<>();
   private final List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
-  private final Map<RID, RID>              recordsRidMap                   = new HashMap<>();
+  private       Map<RID, RID>              recordsRidMap                   = new HashMap<>();
+  private       CompressedRID2RIDIndex     compressedRecordsRidMap;
   private final Set<RID>                   documentsWithLinksToUpdate      = new HashSet<>();
   private final Map<String, AtomicLong>    totalEdgesByVertexType          = new HashMap<>();
   private final ImporterSettings           settings;
@@ -141,13 +143,14 @@ public class OrientDBImporter {
     file = new File(inputFile);
   }
 
-  public OrientDBImporter(final DatabaseInternal database, final ImporterSettings settings) throws IOException {
+  public OrientDBImporter(final DatabaseInternal database, final ImporterSettings settings) throws ClassNotFoundException {
     this.settings = settings;
     this.database = database;
     this.databasePath = database.getDatabasePath();
     this.batchSize = settings.commitEvery;
     this.file = null;
     this.logger = new ConsoleLogger(settings.verboseLevel);
+    this.compressedRecordsRidMap = new CompressedRID2RIDIndex(database, (int) settings.expectedVertices, (int) settings.expectedEdges);
   }
 
   public static void main(final String[] args) throws IOException {
@@ -174,6 +177,10 @@ public class OrientDBImporter {
       if (!createDatabase())
         return null;
     }
+
+//    if (settings.expectedVertices > 0 && recordsRidMap.isEmpty())
+//      // SIZE THE RECORD RID MAP PROPERLY
+//      recordsRidMap = new HashMap<>((int) settings.expectedVertices);
 
     beginTime = System.currentTimeMillis();
 
@@ -387,11 +394,11 @@ public class OrientDBImporter {
       database.begin();
 
       for (RID rid : documentsWithLinksToUpdate) {
-        final MutableDocument record = rid.asDocument(true).modify();
+        final MutableDocument record = database.lookupByRID(rid, true).asDocument().modify();
         for (String pName : record.getPropertyNames()) {
           final Object pValue = record.get(pName);
           if (pValue instanceof RID)
-            record.set(pName, recordsRidMap.get(pValue));
+            record.set(pName, compressedRecordsRidMap.get((RID) pValue));
         }
         record.save();
 
@@ -522,6 +529,8 @@ public class OrientDBImporter {
 
             record.save();
 
+            final RID recordRID = record.getIdentity();
+
             if (type instanceof VertexType)
               context.createdVertices.incrementAndGet();
             else
@@ -529,10 +538,10 @@ public class OrientDBImporter {
 
             if (!(type instanceof EdgeType))
               // REMEMBER THE DOCUMENT FOR LINKS AND VERTEX TO ATTACH EDGES ON 2ND PHASE
-              recordsRidMap.put(recordRid, record.getIdentity());
+              compressedRecordsRidMap.put(recordRid, recordRID);
 
             if (rememberToUpdateThisDocumentBecauseContainsLinks) {
-              documentsWithLinksToUpdate.add(record.getIdentity());
+              documentsWithLinksToUpdate.add(recordRID);
               context.documentsWithLinksToUpdate.set(documentsWithLinksToUpdate.size());
             }
           }
@@ -609,7 +618,7 @@ public class OrientDBImporter {
       }
 
     final RID out = new RID(database, (String) attributes.get("out"));
-    final RID newOut = recordsRidMap.get(out);
+    final RID newOut = compressedRecordsRidMap.get(out);
     if (newOut == null) {
       ++skippedEdgeBecauseMissingVertex;
       ++warnings;
@@ -623,7 +632,7 @@ public class OrientDBImporter {
     }
 
     final RID in = new RID(database, (String) attributes.get("in"));
-    final RID newIn = recordsRidMap.get(in);
+    final RID newIn = compressedRecordsRidMap.get(in);
     if (newIn == null) {
       ++skippedEdgeBecauseMissingVertex;
       ++warnings;
