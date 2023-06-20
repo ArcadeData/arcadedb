@@ -28,7 +28,7 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.metric.ServerMetrics;
+import com.arcadedb.server.monitor.ServerMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -144,6 +144,41 @@ public class GetServerHandler extends AbstractHandler {
           .put("reqPerSecSinceLastTime", meter.getRequestsPerSecondSinceLastAsked())//
       );
     }
+
+    int serverEventsSummaryErrors = 0;
+    int serverEventsSummaryWarnings = 0;
+    int serverEventsSummaryInfo = 0;
+    int serverEventsSummaryHints = 0;
+
+    final JSONArray events = httpServer.getServer().getEventLog().getCurrentEvents();
+    for (int i = 0; i < events.length(); i++) {
+      final JSONObject event = events.getJSONObject(i);
+      switch (event.getString("type")) {
+      case "ERROR":
+        serverEventsSummaryErrors++;
+        break;
+
+      case "WARNING":
+        serverEventsSummaryWarnings++;
+        break;
+
+      case "INFO":
+        serverEventsSummaryInfo++;
+        break;
+
+      case "HINT":
+        serverEventsSummaryHints++;
+        break;
+      }
+    }
+
+    final JSONObject eventsJSON = new JSONObject();
+    metricsJSON.put("events", eventsJSON);
+
+    eventsJSON.put("errors", serverEventsSummaryErrors);
+    eventsJSON.put("warnings", serverEventsSummaryWarnings);
+    eventsJSON.put("info", serverEventsSummaryInfo);
+    eventsJSON.put("hints", serverEventsSummaryHints);
   }
 
   private void exportSettings(final JSONObject response) {

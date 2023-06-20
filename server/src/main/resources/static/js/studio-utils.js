@@ -265,7 +265,7 @@ function globalFormatDoubleNoCommas(x,decimals) {
 
 function globalFormatSpace(value){
   if (typeof value == 'undefined' || value == "")
-    return "";
+    return "0";
   if( value > 1000000000000)
     return globalFormatDouble(value/1000000000000) + "TB";
   if( value > 1000000000)

@@ -59,6 +59,30 @@
             <div class="col-4">
               <div id="serverChartCache" style="min-height: 400px;"></div>
             </div>
+            <div class="col-4">
+              <div id="serverEventsSummary">
+                <table style="font-size: 200%; border-spacing: 20px; margin: 0 auto;" onclick="globalActivateTab('tab-server-events')">
+                  <tbody>
+                  <tr>
+                    <td style="padding-right: 20px;"><span style="color: red;">Errors</span></td>
+                    <td id="serverEventsSummaryErrors">0</td>
+                  </tr>
+                  <tr>
+                    <td style="padding-right: 20px;"><span style="color: orange;">Warnings</span></td>
+                    <td id="serverEventsSummaryWarnings">0</td>
+                  </tr>
+                  <tr>
+                    <td style="padding-right: 20px;"><span style="color: blue;">Info</span></td>
+                    <td id="serverEventsSummaryInfo">0</td>
+                  </tr>
+                  <tr>
+                    <td style="padding-right: 20px;">Hints</td>
+                    <td id="serverEventsSummaryHints">0</td>
+                  </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
           <div class="row">
             <b>HTTP Requests</b>

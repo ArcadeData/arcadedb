@@ -18,26 +18,35 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package com.arcadedb.server.metric;
+package com.arcadedb.server.monitor;
 
 import java.util.*;
+import java.util.concurrent.*;
 
-public interface ServerMetrics {
-  interface Meter {
-    void hit();
+/**
+ * Stores the metrics in RAM.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class DefaultServerMetrics implements ServerMetrics {
+  protected ConcurrentHashMap<String, Meter> metricsRegistry;
 
-    float getRequestsPerSecondInLastMinute();
-
-    float getRequestsPerSecondSinceLastAsked();
-
-    long getTotalRequestsInLastMinute();
-
-    long getTotalCounter();
+  public DefaultServerMetrics() {
+    metricsRegistry = new ConcurrentHashMap<>();
   }
 
-  void stop();
+  @Override
+  public void stop() {
+    metricsRegistry = null;
+  }
 
-  Map<String, Meter> getMeters();
+  @Override
+  public Meter meter(final String name) {
+    return metricsRegistry.computeIfAbsent(name, k -> new MetricMeter());
+  }
 
-  Meter meter(String name);
+  @Override
+  public Map<String, Meter> getMeters() {
+    return metricsRegistry;
+  }
 }

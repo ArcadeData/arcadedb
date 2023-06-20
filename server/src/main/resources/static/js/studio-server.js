@@ -2,7 +2,7 @@ var GB_SIZE = 1024 * 1024 * 1024;
 
 var lastUpdate = null;
 var refreshTimeout = null;
-var serverData = {};
+var serverData = null;
 var eventsData = {};
 var serverChartOSCPU = null;
 var serverChartOSRAM = null;
@@ -22,21 +22,23 @@ function updateServer( callback ){
   lastUpdate = currentSecond;
 
   // DISPLAY EMPTY SUMMARY FIRST, LOAD REAL DATA IN THE BACKGROUND
-  serverData = {
-    metrics: {
-      profiler: {
-        cpuLoad: { space : 0 },
-        ramOsUsed: { space : 0 },
-        ramOsTotal: { space : 0 },
-        diskFreeSpace: { space : 0 },
-        diskTotalSpace: { space : 0 },
-        ramHeapUsed: { space : 0 },
-        ramHeapMax: { space : 0 },
-        readCacheUsed: { space : 0 },
-        cacheMax: { space : 0 },
+  if( serverData == null )
+    serverData = {
+      metrics: {
+        profiler: {
+          cpuLoad: { perc : 0 },
+          ramOsUsed: { space : 0 },
+          ramOsTotal: { space : 0 },
+          diskFreeSpace: { space : 0 },
+          diskTotalSpace: { space : 0 },
+          ramHeapUsed: { space : 0 },
+          ramHeapMax: { space : 0 },
+          readCacheUsed: { space : 0 },
+          cacheMax: { space : 0 },
+        }
       }
-    }
-  };
+    };
+
   displayServerSummary();
 
   jQuery.ajax({
@@ -181,12 +183,12 @@ function displayServerSummary(){
   serverChartCommands.render();
 
   // CPU CHART
-  let cpuLoad = serverData.metrics.profiler.cpuLoad.space;
+  let cpuLoad = serverData.metrics.profiler.cpuLoad.perc;
 
   var cpuOptions = {
     series: [cpuLoad, 100 - cpuLoad],
     labels: [ 'Used', 'Available' ],
-    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
     dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
@@ -208,7 +210,7 @@ function displayServerSummary(){
   var serverRamOSOptions = {
     series: [ramOsUsed, ramOsTotal - ramOsUsed],
     labels: [ 'Used', 'Available' ],
-    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
     dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
@@ -230,7 +232,7 @@ function displayServerSummary(){
   var serverDiskOSOptions = {
     series: [diskTotalSpace - diskFreeSpace, diskFreeSpace],
     labels: [ 'Used', 'Available' ],
-    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
     dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
@@ -252,7 +254,7 @@ function displayServerSummary(){
   var serverRamOptions = {
     series: [ramHeapUsed, ramHeapMax - ramHeapUsed],
     labels: [ 'Used', 'Available' ],
-    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
     dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
@@ -274,7 +276,7 @@ function displayServerSummary(){
   var serverCacheOptions = {
     series: [readCacheUsed, cacheMax - readCacheUsed],
     labels: [ 'Used', 'Available' ],
-    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false } },
+    chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
     dataLabels: { enabled: false, formatter: function (val) { return globalFormatDouble( val, 0 ) + "%" } },
@@ -288,6 +290,13 @@ function displayServerSummary(){
 
   serverChartCache = new ApexCharts(document.querySelector("#serverChartCache"), serverCacheOptions);
   serverChartCache.render();
+
+  if( serverData.metrics.events ) {
+    $("#serverEventsSummaryErrors").html(serverData.metrics.events.errors);
+    $("#serverEventsSummaryWarnings").html(serverData.metrics.events.warnings);
+    $("#serverEventsSummaryInfo").html(serverData.metrics.events.info);
+    $("#serverEventsSummaryHints").html(serverData.metrics.events.hints);
+  }
 }
 
 function displayMetrics(){
@@ -301,68 +310,28 @@ function displayMetrics(){
 
     let record = [];
     record.push( escapeHtml( name ) );
-    record.push( "" );
     record.push( meter.count );
     record.push( globalFormatDouble( meter.reqPerSecLastMinute ) );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
     tableRecords.push( record );
   }
 
   for( let name in serverData.metrics.profiler ){
-    let record = [];
-
     let entry = serverData.metrics.profiler[name];
-    if( entry.count == null || entry.count == 0 )
+
+    let record = [];
+    record.push( escapeHtml( name ) );
+
+    if( entry.perc != null )
+      record.push( globalFormatDouble( entry.perc, 2 ) + "%" );
+    else if( entry.count != null && entry.count != 0)
+      record.push( globalFormatDouble( entry.count, 0 ) );
+    else if( entry.space != null && entry.space != 0 )
+      record.push( globalFormatSpace( entry.space ) );
+    else if( entry.value != null )
+      record.push( entry.value );
+    else
       continue;
 
-    record.push( escapeHtml( name ) );
-    record.push( "" );
-    record.push( globalFormatDouble( entry.count, 0 ) );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-
-    tableRecords.push( record );
-  }
-
-  for( let name in serverData.metrics.profiler ){
-    let record = [];
-
-    let entry = serverData.metrics.profiler[name];
-    if( entry.value == null || entry.value == 0 )
-      continue;
-
-    record.push( escapeHtml( name ) );
-    record.push( globalFormatDouble( entry.value, 0 ) );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-
-    tableRecords.push( record );
-  }
-
-  for( let name in serverData.metrics.profiler ){
-    let record = [];
-
-    let entry = serverData.metrics.profiler[name];
-    if( entry.space == null || entry.space == 0 )
-      continue;
-
-    record.push( escapeHtml( name ) );
-    record.push( globalFormatSpace( entry.space ) );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
-    record.push( "" );
     record.push( "" );
 
     tableRecords.push( record );
@@ -374,12 +343,7 @@ function displayMetrics(){
     columns: [
       {title: "Metric Name"},
       {title: "Value"},
-      {title: "Count"},
-      {title: "1 Minute Rate"},
-      {title: "Mean (ms)"},
-      {title: "99 Percentile (ms)"},
-      {title: "Minimum (ms)"},
-      {title: "Maximum (ms)"},
+      {title: "Req/Sec"},
     ],
     data: tableRecords,
   });
@@ -484,7 +448,12 @@ function filterServerEvents(){
   let serverEventsComponent = $("#serverEventsComponent").val();
   let serverEventsDb = $("#serverEventsDb").val();
 
-  var rows = [];
+  let rows = [];
+
+  let serverEventsSummaryErrors = 0;
+  let serverEventsSummaryWarnings = 0;
+  let serverEventsSummaryInfo = 0;
+  let serverEventsSummaryHints = 0;
 
   for( let i in eventsData.result.events ){
     let event = eventsData.result.events[i];

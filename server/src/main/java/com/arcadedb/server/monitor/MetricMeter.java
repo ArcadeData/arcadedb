@@ -18,7 +18,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package com.arcadedb.server.metric;
+package com.arcadedb.server.monitor;
 
 /**
  * Stores the metrics in RAM.

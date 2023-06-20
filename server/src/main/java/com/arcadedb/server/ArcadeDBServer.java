@@ -35,13 +35,14 @@ import com.arcadedb.network.binary.ChannelBinary;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.event.FileServerEventLog;
+import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.event.FileServerEventLog;
-import com.arcadedb.server.event.ServerEventLog;
-import com.arcadedb.server.metric.DefaultServerMetrics;
-import com.arcadedb.server.metric.ServerMetrics;
+import com.arcadedb.server.monitor.DefaultServerMetrics;
+import com.arcadedb.server.monitor.ServerMetrics;
+import com.arcadedb.server.monitor.ServerMonitor;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -75,6 +76,7 @@ public class ArcadeDBServer {
   private final       List<TestCallback>                      testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                  status                               = STATUS.OFFLINE;
   private             ServerMetrics                           serverMetrics                        = new DefaultServerMetrics();
+  private             ServerMonitor                           serverMonitor;
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
@@ -112,7 +114,6 @@ public class ArcadeDBServer {
     status = STATUS.STARTING;
 
     eventLog.start();
-    ;
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_STARTING, null);
@@ -175,6 +176,8 @@ public class ArcadeDBServer {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
+
+    serverMonitor.start();
   }
 
   private void welcomeBanner() {
@@ -236,6 +239,9 @@ public class ArcadeDBServer {
   public synchronized void stop() {
     if (status == STATUS.OFFLINE || status == STATUS.SHUTTING_DOWN)
       return;
+
+    if (serverMonitor != null)
+      serverMonitor.stop();
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_SHUTTING_DOWN, null);
@@ -617,6 +623,7 @@ public class ArcadeDBServer {
     }));
 
     hostAddress = assignHostAddress();
+    serverMonitor = new ServerMonitor(this);
   }
 
   private String assignHostAddress() {

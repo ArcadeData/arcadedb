@@ -50,9 +50,6 @@ public class Profiler {
   public synchronized JSONObject toJSON() {
     final JSONObject json = new JSONObject();
 
-    json.put("diskFreeSpace", new JSONObject().put("space", new File(".").getFreeSpace()));
-    json.put("diskTotalSpace", new JSONObject().put("space", new File(".").getTotalSpace()));
-
     long readCacheUsed = 0;
     long writeCacheUsed = 0;
     long cacheMax = 0;
@@ -179,11 +176,21 @@ public class Profiler {
     json.put("writeCachePages", new JSONObject().put("count", writeCachePages));
     json.put("indexCompactions", new JSONObject().put("count", indexCompactions));
 
+    final long freeSpace = new File(".").getFreeSpace();
+    final long totalSpace = new File(".").getTotalSpace();
+    final float freeSpacePerc = freeSpace * 100F / totalSpace;
+
+    json.put("diskFreeSpace", new JSONObject().put("space", freeSpace));
+    json.put("diskTotalSpace", new JSONObject().put("space", totalSpace));
+    json.put("diskFreeSpacePerc", new JSONObject().put("perc", freeSpacePerc));
+
     json.put("gcTime", new JSONObject().put("count", getGarbageCollectionTime()));
 
     final Runtime runtime = Runtime.getRuntime();
     json.put("ramHeapUsed", new JSONObject().put("space", runtime.totalMemory() - runtime.freeMemory()));
     json.put("ramHeapMax", new JSONObject().put("space", runtime.maxMemory()));
+    json.put("ramHeapAvailablePerc",
+        new JSONObject().put("perc", (runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())) * 100F / runtime.maxMemory()));
 
     try {
       final MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
@@ -197,9 +204,14 @@ public class Profiler {
         json.put("ramOsTotal", new JSONObject().put("space", osTotalMem));
 
         final OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
-        json.put("cpuLoad", new JSONObject().put("space", bean.getSystemLoadAverage()));
-
+        json.put("cpuLoad", new JSONObject().put("perc", bean.getSystemLoadAverage()));
       }
+
+      final sun.management.HotspotRuntimeMBean hotSpotRunTime = sun.management.ManagementFactoryHelper.getHotspotRuntimeMBean();
+      json.put("jvmSafePointTime", new JSONObject().put("value", hotSpotRunTime.getTotalSafepointTime()));
+      json.put("jvmSafePointCount", new JSONObject().put("count", hotSpotRunTime.getSafepointCount()));
+      json.put("jvmAvgSafePointTime", new JSONObject().put("value", hotSpotRunTime.getTotalSafepointTime() / (float) hotSpotRunTime.getSafepointCount()));
+
     } catch (final Exception e) {
       // JMX NOT AVAILABLE, AVOID OS DATA
     }
