@@ -203,7 +203,6 @@ public class OrientDBImporter {
 
     phase = PHASE.CREATE_SCHEMA;
     totalAttributesParsed = 0L;
-    context.parsed.set(0L);
 
     // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
     logger.logLine(1, "Creation of the schema: types, properties and indexes");
@@ -230,10 +229,14 @@ public class OrientDBImporter {
 
     final long elapsed = (System.currentTimeMillis() - beginTime) / 1000;
 
+    long totalRecords = 0L;
+    for (Long t : totalRecordByType.values())
+      totalRecords += t;
+
     logger.logLine(1, "***************************************************************************************************");
     logger.logLine(1, "Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors, warnings);
     logger.logLine(1, "\nSUMMARY\n");
-    logger.logLine(1, "- Records..................................: %,d", context.parsed.get());
+    logger.logLine(1, "- Records..................................: %,d", totalRecords);
     for (final Map.Entry<String, OrientDBClass> entry : classes.entrySet()) {
       final String className = entry.getKey();
       final Long recordsByClass = totalRecordByType.get(className);
@@ -363,6 +366,8 @@ public class OrientDBImporter {
 
     while (reader.peek() == BEGIN_OBJECT) {
       final Map<String, Object> attributes = parseRecord(reader, false);
+
+      context.parsed.incrementAndGet();
 
       final String className = (String) attributes.get("@class");
 
@@ -727,8 +732,6 @@ public class OrientDBImporter {
         ++totalAttributesParsed;
       }
     }
-
-    context.parsed.incrementAndGet();
 
     reader.endObject();
     return attributes;
