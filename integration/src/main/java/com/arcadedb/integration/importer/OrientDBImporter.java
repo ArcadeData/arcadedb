@@ -66,7 +66,6 @@ public class OrientDBImporter {
       Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
   private final Set<String>                edgeClasses                     = new HashSet<>();
   private final List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
-  private       Map<RID, RID>              recordsRidMap                   = new HashMap<>();
   private       CompressedRID2RIDIndex     compressedRecordsRidMap;
   private final Set<RID>                   documentsWithLinksToUpdate      = new HashSet<>();
   private final Map<String, AtomicLong>    totalEdgesByVertexType          = new HashMap<>();
@@ -177,10 +176,6 @@ public class OrientDBImporter {
       if (!createDatabase())
         return null;
     }
-
-//    if (settings.expectedVertices > 0 && recordsRidMap.isEmpty())
-//      // SIZE THE RECORD RID MAP PROPERLY
-//      recordsRidMap = new HashMap<>((int) settings.expectedVertices);
 
     beginTime = System.currentTimeMillis();
 
