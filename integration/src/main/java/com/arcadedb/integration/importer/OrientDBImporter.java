@@ -472,6 +472,10 @@ public class OrientDBImporter {
         final Object value = map.get(key);
         if (RID.is(value))
           map.put(key, convertRID(value));
+        else if (value instanceof List)
+          convertRIDs(value);
+        else if (value instanceof Map)
+          convertRIDs(value);
       }
     }
     return null;
