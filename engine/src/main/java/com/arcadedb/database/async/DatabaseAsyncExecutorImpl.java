@@ -139,6 +139,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
               } catch (final Throwable e) {
                 onError(e);
+                database.rollback();
               } finally {
                 message.completed();
                 executingTask = false;

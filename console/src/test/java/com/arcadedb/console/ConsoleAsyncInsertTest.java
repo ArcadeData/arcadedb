@@ -40,6 +40,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -133,42 +134,44 @@ public class ConsoleAsyncInsertTest {
     AtomicLong txErrorCounter = new AtomicLong();
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
-    final String userName = "root";
-    final String password = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
-    if (serverSecurity.getUser(userName) == null) {
-      serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
-          .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
-    }
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
-    database.async().setParallelLevel(PARALLEL_LEVEL);
-    database.async().onError(exception -> {
-      System.out.println("database.async() error: " + exception.getMessage());
-      exception.printStackTrace();
-      txErrorCounter.incrementAndGet();
-    });
-    final AtomicLong okCount = new AtomicLong();
-    final AtomicLong errCount = new AtomicLong();
-    String name;
-    final long N = 100_000;
-    Product product;
-    LocalDateTime start, stop, ref;
-    ref = LocalDateTime.now().minusMonths(1);
-
-    final long begin = System.currentTimeMillis();
-
-    for (int i = 0; i < N; i++) {
-      name = UUID.randomUUID().toString();
-      start = ref.plusMinutes(i);
-      stop = ref.plusMinutes(i + 1);
-      product = new Product(name, "SIR1LRM_0_", start, stop, "0001");
-      inventoryProductAsyncWithSQL(database, product, okCount, errCount);
-    }
 
     try {
+      ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
+      final String userName = "root";
+      final String password = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+      if (serverSecurity.getUser(userName) == null) {
+        serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
+            .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
+      }
+      Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+      database.async().setParallelLevel(PARALLEL_LEVEL);
+      database.async().onError(exception -> {
+        System.out.println("database.async() error: " + exception.getMessage());
+        exception.printStackTrace();
+        txErrorCounter.incrementAndGet();
+      });
+      final AtomicLong okCount = new AtomicLong();
+      final AtomicLong errCount = new AtomicLong();
+      String name;
+      final long N = 100_000;
+      Product product;
+      LocalDateTime start, stop, ref;
+      ref = LocalDateTime.now().minusMonths(1);
+
+      final long begin = System.currentTimeMillis();
+
+      for (int i = 0; i < N; i++) {
+        name = UUID.randomUUID().toString();
+        start = ref.plusMinutes(i);
+        stop = ref.plusMinutes(i + 1);
+        product = new Product(name, "SIR1LRM_0_", start, stop, "0001");
+        inventoryProductAsyncWithSQL(database, product, okCount, errCount);
+      }
+
       checkResults(txErrorCounter, userName, password, database, okCount, errCount, N, begin);
     } finally {
       arcadeDBServer.stop();
+      FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
     }
   }
 
@@ -212,42 +215,44 @@ public class ConsoleAsyncInsertTest {
     AtomicLong txErrorCounter = new AtomicLong();
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
-    final String userName = "root";
-    final String password = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
-    if (serverSecurity.getUser(userName) == null) {
-      serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
-          .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
-    }
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
-    database.async().setParallelLevel(PARALLEL_LEVEL);
-    database.async().onError(exception -> {
-      System.out.println("database.async() error: " + exception.getMessage());
-      exception.printStackTrace();
-      txErrorCounter.incrementAndGet();
-    });
-    final AtomicLong okCount = new AtomicLong();
-    final AtomicLong errCount = new AtomicLong();
-    String name;
-    final long N = 100_000;
-    Product product;
-    LocalDateTime start, stop, ref;
-    ref = LocalDateTime.now().minusMonths(1);
-
-    final long begin = System.currentTimeMillis();
-
-    for (int i = 0; i < N; i++) {
-      name = UUID.randomUUID().toString();
-      start = ref.plusMinutes(i);
-      stop = ref.plusMinutes(i + 1);
-      product = new Product(name, "SIR1LRM_0_", start, stop, "0001");
-      inventoryProductAsyncWithAPI(database, product, okCount, errCount);
-    }
 
     try {
+      ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
+      final String userName = "root";
+      final String password = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+      if (serverSecurity.getUser(userName) == null) {
+        serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
+            .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
+      }
+      Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+      database.async().setParallelLevel(PARALLEL_LEVEL);
+      database.async().onError(exception -> {
+        System.out.println("database.async() error: " + exception.getMessage());
+        exception.printStackTrace();
+        txErrorCounter.incrementAndGet();
+      });
+      final AtomicLong okCount = new AtomicLong();
+      final AtomicLong errCount = new AtomicLong();
+      String name;
+      final long N = 100_000;
+      Product product;
+      LocalDateTime start, stop, ref;
+      ref = LocalDateTime.now().minusMonths(1);
+
+      final long begin = System.currentTimeMillis();
+
+      for (int i = 0; i < N; i++) {
+        name = UUID.randomUUID().toString();
+        start = ref.plusMinutes(i);
+        stop = ref.plusMinutes(i + 1);
+        product = new Product(name, "SIR1LRM_0_", start, stop, "0001");
+        inventoryProductAsyncWithAPI(database, product, okCount, errCount);
+      }
+
       checkResults(txErrorCounter, userName, password, database, okCount, errCount, N, begin);
     } finally {
       arcadeDBServer.stop();
+      FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
     }
   }
 
