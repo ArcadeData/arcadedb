@@ -280,12 +280,6 @@ public class FileUtils {
     return dump.toString();
   }
 
-  public static String readFileAsString(final File file) throws IOException {
-    try (final FileInputStream is = new FileInputStream(file)) {
-      return readStreamAsString(is, "UTF8", 0);
-    }
-  }
-
   public static String readFileAsString(final File file, final String iCharset) throws IOException {
     try (final FileInputStream is = new FileInputStream(file)) {
       return readStreamAsString(is, iCharset, 0);
