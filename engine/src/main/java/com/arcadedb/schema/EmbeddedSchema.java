@@ -913,16 +913,6 @@ public class EmbeddedSchema implements Schema {
           }
         }
 
-        if (schemaType.has("bucketSelectionStrategy")) {
-          final JSONObject bucketSelectionStrategy = schemaType.getJSONObject("bucketSelectionStrategy");
-
-          final Object[] properties = bucketSelectionStrategy.has("properties") ?
-              bucketSelectionStrategy.getJSONArray("properties").toList().toArray() :
-              new Object[0];
-
-          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
-        }
-
         type.custom.clear();
         if (schemaType.has("custom"))
           type.custom.putAll(schemaType.getJSONObject("custom").toMap());
@@ -1023,6 +1013,21 @@ public class EmbeddedSchema implements Schema {
                 break;
             }
           }
+        }
+      }
+
+      // SET THE BUCKET STRATEGY AFTER THE INDEXES BECAUSE SOME OF THEM REQUIRE INDEXES (LIKE THE PARTITIONED)
+      for (final String typeName : types.keySet()) {
+        final JSONObject schemaType = types.getJSONObject(typeName);
+        if (schemaType.has("bucketSelectionStrategy")) {
+          final JSONObject bucketSelectionStrategy = schemaType.getJSONObject("bucketSelectionStrategy");
+
+          final Object[] properties = bucketSelectionStrategy.has("properties") ?
+              bucketSelectionStrategy.getJSONArray("properties").toList().toArray() :
+              new Object[0];
+
+          final DocumentType type = getType(typeName);
+          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
         }
       }
 
