@@ -356,7 +356,6 @@ function executeCommand(language, query){
   loadQueryHistory();
 }
 
-
 function executeCommandTable(){
   let database = getCurrentDatabase();
   let language = escapeHtml( $("#inputLanguage").val() );

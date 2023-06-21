@@ -111,7 +111,7 @@ public class DocumentType {
       superType.subTypes.add(this);
 
       // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE
-      superType.updatePolymorphicBucketsCache(true, buckets, bucketIds);
+      superType.updatePolymorphicBucketsCache(true, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
 
       // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
       final Collection<TypeIndex> indexes = new ArrayList<>(getAllIndexes(true));
@@ -994,6 +994,6 @@ public class DocumentType {
     }
 
     for (DocumentType s : superTypes)
-      s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
+      s.updatePolymorphicBucketsCache(add, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
   }
 }

@@ -42,6 +42,8 @@ public class GetDatabasesHandler extends AbstractHandler {
 
     final JSONObject result = createResult(user, null).put("result", new JSONArray(installedDatabases));
 
+    httpServer.getServer().getServerMetrics().meter("http.list-databases").hit();
+
     return new ExecutionResponse(200, result.toString());
   }
 }

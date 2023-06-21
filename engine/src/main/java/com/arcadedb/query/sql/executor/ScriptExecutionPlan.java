@@ -27,6 +27,8 @@ import com.arcadedb.query.sql.parser.Statement;
 import java.util.*;
 import java.util.stream.*;
 
+import static com.arcadedb.query.sql.executor.AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL;
+
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
@@ -186,13 +188,13 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
             return lastStep;
           }
         }
-        ResultSet lastResult = step.syncPull(context, 100);
+        ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
 
         while (lastResult.hasNext()) {
           while (lastResult.hasNext()) {
             lastResult.next();
           }
-          lastResult = step.syncPull(context, 100);
+          lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
         }
       }
       this.lastStep = steps.get(steps.size() - 1);
@@ -214,13 +216,13 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
           return returnStep;
         }
       }
-      ResultSet lastResult = step.syncPull(context, 100);
+      ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
 
       while (lastResult.hasNext()) {
         while (lastResult.hasNext()) {
           lastResult.next();
         }
-        lastResult = step.syncPull(context, 100);
+        lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       }
     }
 

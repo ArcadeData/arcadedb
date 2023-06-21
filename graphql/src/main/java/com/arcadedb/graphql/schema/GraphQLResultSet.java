@@ -109,11 +109,6 @@ public class GraphQLResultSet implements ResultSet {
     return Optional.empty();
   }
 
-  @Override
-  public Map<String, Long> getQueryStats() {
-    return new HashMap<>();
-  }
-
   private Object evaluateDirectives(final Result current, final AbstractField fieldDefinition) {
     Object projectionValue = null;
 

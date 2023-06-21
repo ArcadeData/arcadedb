@@ -38,7 +38,7 @@ public class GetExistsDatabaseHandler extends AbstractHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
     final ArcadeDBServer server = httpServer.getServer();
-    server.getServerMetrics().meter("http.exists-database").mark();
+    server.getServerMetrics().meter("http.exists-database").hit();
 
     final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
     final Set<String> allowedDatabases = user.getAuthorizedDatabases();

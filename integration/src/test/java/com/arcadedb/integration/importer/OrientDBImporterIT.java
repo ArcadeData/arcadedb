@@ -36,7 +36,7 @@ public class OrientDBImporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
 
   @Test
-  public void testImportOK() throws IOException {
+  public void testImportOK() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     try {
@@ -77,7 +77,7 @@ public class OrientDBImporterIT {
   }
 
   @Test
-  public void testImportNoFile() throws IOException {
+  public void testImportNoFile() throws Exception {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
     final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + "2 -d " + DATABASE_PATH + " -s -o").split(" "));
     try {

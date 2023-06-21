@@ -40,7 +40,7 @@ public class PostOpenDatabaseHandler extends DatabaseAbstractHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     checkRootUser(user);
 
-    httpServer.getServer().getServerMetrics().meter("http.open-database").mark();
+    httpServer.getServer().getServerMetrics().meter("http.open-database").hit();
 
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
 

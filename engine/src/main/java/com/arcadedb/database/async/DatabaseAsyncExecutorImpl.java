@@ -81,7 +81,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public          long                             count         = 0;
 
     private AsyncThread(final DatabaseInternal database, final int id) {
-      super("AsyncExecutor-" + id);
+      super("AsyncExecutor-" + database.getName() + "-" + id);
       this.database = database;
 
       final int queueSize = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE) / parallelLevel;
@@ -376,7 +376,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok, final ErrorCallback error) {
-    scheduleTask(getSlot((int) transactionCounter.getAndIncrement()), new DatabaseAsyncTransaction(txBlock, retries, ok, error), true, backPressurePercentage);
+    transaction(txBlock, retries, ok, error, getSlot((int) transactionCounter.getAndIncrement()));
+  }
+
+  @Override
+  public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok, final ErrorCallback error, final int slot) {
+    scheduleTask(slot, new DatabaseAsyncTransaction(txBlock, retries, ok, error), true, backPressurePercentage);
   }
 
   @Override

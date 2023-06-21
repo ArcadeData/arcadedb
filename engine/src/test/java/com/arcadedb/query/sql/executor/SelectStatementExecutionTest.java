@@ -3134,9 +3134,17 @@ public class SelectStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     final Result item = result.next();
     Assertions.assertNotNull(item);
-    // TODO refine this!
-    Assertions.assertTrue(item.getProperty("elem1") instanceof Result);
-    Assertions.assertEquals("a", ((Result) item.getProperty("elem1")).getProperty("name"));
+
+    final Result elem1Result = item.getProperty("elem1");
+    Assertions.assertEquals("a", elem1Result.getProperty("name"));
+    Assertions.assertEquals(elem1.getIdentity(), elem1Result.getProperty("@rid"));
+    Assertions.assertEquals(elem1.getTypeName(), elem1Result.getProperty("@type"));
+
+    final Result elem2Result = item.getProperty("elem2");
+    Assertions.assertEquals("b", elem2Result.getProperty("name"));
+    Assertions.assertNull(elem2Result.getProperty("surname"));
+    Assertions.assertEquals(elem2.getIdentity(), elem2Result.getProperty("@rid"));
+    Assertions.assertEquals(elem2.getTypeName(), elem2Result.getProperty("@type"));
 
     result.close();
   }
@@ -3801,6 +3809,54 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
+    }
+  }
+
+  @Test
+  public void testContainsMultipleConditions() {
+    final String className = "testContainsMultipleConditions";
+
+    database.getSchema().getOrCreateVertexType("Legajo");
+    database.getSchema().getOrCreateVertexType("Interviniente");
+    database.getSchema().getOrCreateVertexType("PersonaDifusa");
+    database.getSchema().getOrCreateVertexType("PresuntoResponsable");
+
+    database.getSchema().getOrCreateEdgeType("Legajo_intervinientes");
+    database.getSchema().getOrCreateEdgeType("Interviniente_roles");
+    database.getSchema().getOrCreateEdgeType("Interviniente_persona");
+
+    database.begin();
+    MutableVertex legajo = database.newVertex("Legajo").set("cuij", "21087591856").save();
+    database.newVertex("Legajo").set("cuij", "1").save();
+    database.newVertex("Legajo").set("cuij", "2").save();
+
+    MutableVertex interviniente = database.newVertex("Interviniente").set("id", 0).save();
+    database.newVertex("Interviniente").set("id", 1).save();
+    database.newVertex("Interviniente").set("id", 2).save();
+
+    MutableVertex personaDifusa = database.newVertex("PersonaDifusa").set("id", 0).set("nroDoc", "1234567890").save();
+    database.newVertex("PersonaDifusa").set("id", 1).save();
+    database.newVertex("PersonaDifusa").set("id", 2).save();
+
+    MutableVertex presuntoResponsable = database.newVertex("PresuntoResponsable").set("id", 0).save();
+
+    legajo.newEdge("Legajo_intervinientes", interviniente, true).save();
+
+    interviniente.newEdge("Interviniente_roles", presuntoResponsable, true).save();
+    interviniente.newEdge("Interviniente_persona", personaDifusa, true).save();
+
+    database.commit();
+
+    final String TEST_QUERY = "select cuij, count(*) as count from Legajo \n" +//
+        "let intervinientes = out('Legajo_intervinientes')" + //
+        "where cuij = '21087591856' and " + //
+        "$intervinientes.out('Interviniente_persona') contains (nroDoc.length() > 5) and " + //
+        "      $intervinientes.out('Interviniente_roles') contains( @this instanceof 'PresuntoResponsable' )";
+
+    try (final ResultSet result = database.query("sql", TEST_QUERY)) {
+      final Result row = result.nextIfAvailable();
+      Assertions.assertEquals("21087591856", row.getProperty("cuij"));
+      Assertions.assertEquals(1L, (Long) row.getProperty("count"));
     }
   }
 

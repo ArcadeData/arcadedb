@@ -39,7 +39,7 @@ public class JsonlExporterIT {
   private final static String FILE          = "target/arcadedb-export.jsonl.tgz";
 
   @Test
-  public void testExportOK() throws IOException {
+  public void testExportOK() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     final File file = new File(FILE);

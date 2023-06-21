@@ -62,7 +62,7 @@ public class PostCreateUserHandler extends AbstractHandler {
 
     json.put("password", httpServer.getServer().getSecurity().encodePassword(userPassword));
 
-    httpServer.getServer().getServerMetrics().meter("http.create-user").mark();
+    httpServer.getServer().getServerMetrics().meter("http.create-user").hit();
 
     httpServer.getServer().getSecurity().createUser(json);
 

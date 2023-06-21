@@ -57,7 +57,7 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
     if (typeName == null)
       return new ExecutionResponse(400, "{ \"error\" : \"@type attribute not found in the record payload\"}");
 
-    httpServer.getServer().getServerMetrics().meter("http.create-record").mark();
+    httpServer.getServer().getServerMetrics().meter("http.create-record").hit();
 
     final DocumentType type = database.getSchema().getType(typeName);
 

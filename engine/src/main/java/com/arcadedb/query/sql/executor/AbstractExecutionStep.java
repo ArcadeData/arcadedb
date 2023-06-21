@@ -24,11 +24,12 @@ import java.text.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public abstract class AbstractExecutionStep implements ExecutionStepInternal {
-  protected final CommandContext        context;
-  protected       ExecutionStepInternal prev     = null;
-  protected       boolean               timedOut = false;
-  protected       long                  cost     = -1;
-  protected final boolean               profilingEnabled;
+  public final static int                   DEFAULT_FETCH_RECORDS_PER_PULL = 100;
+  protected final     CommandContext        context;
+  protected           ExecutionStepInternal prev                           = null;
+  protected           boolean               timedOut                       = false;
+  protected           long                  cost                           = -1;
+  protected final     boolean               profilingEnabled;
 
   public AbstractExecutionStep(final CommandContext context, final boolean profilingEnabled) {
     this.context = context;

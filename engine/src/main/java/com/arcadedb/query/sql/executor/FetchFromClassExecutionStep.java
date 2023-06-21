@@ -34,7 +34,6 @@ import java.util.stream.*;
  * Created by luigidellaquila on 08/07/16.
  */
 public class FetchFromClassExecutionStep extends AbstractExecutionStep {
-
   private String              className;
   private boolean             orderByRidAsc  = false;
   private boolean             orderByRidDesc = false;
@@ -194,13 +193,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
           ((AbstractExecutionStep) step).close();
         }
       }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return new HashMap<>();
-      }
     };
-
   }
 
   @Override

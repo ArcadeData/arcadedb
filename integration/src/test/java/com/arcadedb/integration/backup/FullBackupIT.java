@@ -50,7 +50,7 @@ public class FullBackupIT {
   private final        File   file              = new File(FILE);
 
   @Test
-  public void testFullBackupCommandLineOK() throws IOException {
+  public void testFullBackupCommandLineOK() throws Exception {
     final Database importedDatabase = importDatabase();
     importedDatabase.close();
 
@@ -70,7 +70,7 @@ public class FullBackupIT {
   }
 
   @Test
-  public void testFullBackupAPIOK() throws IOException {
+  public void testFullBackupAPIOK() throws Exception {
     try (final Database importedDatabase = importDatabase()) {
 
       new Backup(importedDatabase, FILE).backupDatabase();
@@ -95,7 +95,7 @@ public class FullBackupIT {
    * each backup file is restored and tested the number of vertices is mod (%) 500, so no inconsistent backup has been taken (each transaction is 500 vertices).
    */
   @Test
-  public void testFullBackupConcurrency() throws IOException, InterruptedException {
+  public void testFullBackupConcurrency() throws Exception {
     final int CONCURRENT_THREADS = 8;
 
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
@@ -215,7 +215,7 @@ public class FullBackupIT {
     }
   }
 
-  private Database importDatabase() throws IOException {
+  private Database importDatabase() throws Exception {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
     final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));

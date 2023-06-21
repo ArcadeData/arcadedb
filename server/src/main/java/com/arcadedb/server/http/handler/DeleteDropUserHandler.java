@@ -48,7 +48,7 @@ public class DeleteDropUserHandler extends AbstractHandler {
     if (userName == null)
       return new ExecutionResponse(400, "{ \"error\" : \"User name parameter is null\"}");
 
-    httpServer.getServer().getServerMetrics().meter("http.drop-user").mark();
+    httpServer.getServer().getServerMetrics().meter("http.drop-user").hit();
 
     final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
     if (!result)
