@@ -442,18 +442,22 @@ public class OrientDBImporter {
       database.commit();
       logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());
     }
+  }
 
+  private RID convertRID(final Object value) {
+    final RID rid = value instanceof RID ? (RID) value : new RID(database, value.toString());
+    return compressedRecordsRidMap.get(rid);
   }
 
   private RID convertRIDs(final Object pValue) {
-    if (pValue instanceof RID)
-      return compressedRecordsRidMap.get((RID) pValue);
+    if (RID.is(pValue))
+      return convertRID(pValue);
     else if (pValue instanceof List) {
       final List list = (List) pValue;
       for (int i = 0; i < list.size(); i++) {
         final Object item = list.get(i);
-        if (item instanceof RID)
-          list.set(i, compressedRecordsRidMap.get((RID) item));
+        if (RID.is(item))
+          list.set(i, convertRID(item));
         else if (item instanceof List)
           convertRIDs(item);
         else if (item instanceof Map)
@@ -466,8 +470,8 @@ public class OrientDBImporter {
       for (int i = 0; i < keys.size(); i++) {
         final Object key = keys.get(i);
         final Object value = map.get(key);
-        if (value instanceof RID)
-          map.put(key, compressedRecordsRidMap.get((RID) value));
+        if (RID.is(value))
+          map.put(key, convertRID(value));
       }
     }
     return null;
@@ -639,7 +643,7 @@ public class OrientDBImporter {
           }
         }
 
-      } else if (RID.is(entry.getValue()))
+      } else if (RID.is(entryValue))
         return true;
     }
     return false;
