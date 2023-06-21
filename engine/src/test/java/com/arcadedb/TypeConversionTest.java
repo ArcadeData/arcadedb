@@ -118,10 +118,12 @@ public class TypeConversionTest extends TestHelper {
 
       doc.save();
 
-      Assertions.assertEquals("33.3",
+      Assertions.assertEquals(String.format("%.1f", 33.3F),
           database.query("sql", "select decimal.format('%.1f') as d from " + doc.getIdentity()).nextIfAvailable().getProperty("d"));
-      Assertions.assertEquals("33.33",
+      Assertions.assertEquals(String.format("%.2f", 33.33F),
           database.query("sql", "select decimal.format('%.2f') as d from " + doc.getIdentity()).nextIfAvailable().getProperty("d"));
+
+      doc.delete();
     });
   }
 
