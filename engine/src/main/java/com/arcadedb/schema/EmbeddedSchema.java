@@ -927,17 +927,30 @@ public class EmbeddedSchema implements Schema {
           }
         }
 
+        type.custom.clear();
+        if (schemaType.has("custom"))
+          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
+      }
+
+      // RESTORE THE INHERITANCE
+      for (final Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
+        final DocumentType type = getType(entry.getKey());
+        for (final String p : entry.getValue())
+          type.addSuperType(getType(p), false);
+      }
+
+      // PARSE INDEXES
+      for (final String typeName : types.keySet()) {
+        final JSONObject schemaType = types.getJSONObject(typeName);
         final JSONObject typeIndexesJSON = schemaType.getJSONObject("indexes");
         if (typeIndexesJSON != null) {
+          final DocumentType type = getType(typeName);
 
           final List<String> orderedIndexes = new ArrayList<>(typeIndexesJSON.keySet());
           orderedIndexes.sort(Comparator.naturalOrder());
 
           for (final String indexName : orderedIndexes) {
             final JSONObject indexJSON = typeIndexesJSON.getJSONObject(indexName);
-
-            if (!indexName.startsWith(typeName))
-              continue;
 
             final JSONArray schemaIndexProperties = indexJSON.getJSONArray("properties");
             final String[] properties = new String[schemaIndexProperties.length()];
@@ -968,20 +981,6 @@ public class EmbeddedSchema implements Schema {
             }
           }
         }
-
-        if (schemaType.has("bucketSelectionStrategy")) {
-          final JSONObject bucketSelectionStrategy = schemaType.getJSONObject("bucketSelectionStrategy");
-
-          final Object[] properties = bucketSelectionStrategy.has("properties") ?
-              bucketSelectionStrategy.getJSONArray("properties").toList().toArray() :
-              new Object[0];
-
-          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
-        }
-
-        type.custom.clear();
-        if (schemaType.has("custom"))
-          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
       }
 
       // ASSOCIATE ORPHAN INDEXES
@@ -1030,15 +1029,23 @@ public class EmbeddedSchema implements Schema {
         }
       }
 
+      // SET THE BUCKET STRATEGY AFTER THE INDEXES BECAUSE SOME OF THEM REQUIRE INDEXES (LIKE THE PARTITIONED)
+      for (final String typeName : types.keySet()) {
+        final JSONObject schemaType = types.getJSONObject(typeName);
+        if (schemaType.has("bucketSelectionStrategy")) {
+          final JSONObject bucketSelectionStrategy = schemaType.getJSONObject("bucketSelectionStrategy");
+
+          final Object[] properties = bucketSelectionStrategy.has("properties") ?
+              bucketSelectionStrategy.getJSONArray("properties").toList().toArray() :
+              new Object[0];
+
+          final DocumentType type = getType(typeName);
+          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
+        }
+      }
+
       if (saveConfiguration)
         saveConfiguration();
-
-      // RESTORE THE INHERITANCE
-      for (final Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
-        final DocumentType type = getType(entry.getKey());
-        for (final String p : entry.getValue())
-          type.addSuperType(getType(p), false);
-      }
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);

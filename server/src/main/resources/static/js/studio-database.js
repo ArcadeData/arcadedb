@@ -502,8 +502,16 @@ function displaySchema(){
       let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+row.name+"' role='tabpanel'>";
 
       panelHtml += "<br>Type: <b>" + row.name + "</b>";
-      if( row.parentTypes != "" )
-        panelHtml += ", Super Types: <b>" + row.parentTypes + "</b>";
+      if( row.parentTypes != "" ){
+        panelHtml += ", Super Types: <b>";
+        for( ptidx in row.parentTypes ) {
+          if( ptidx > 0 )
+            panelHtml += ", ";
+          let pt = row.parentTypes[ptidx];
+          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-"+pt+"')\">" + pt + "</a></b>";
+        }
+        panelHtml += "</b>";
+      }
       if( row.indexes != "" ){
         panelHtml += "<br>Indexes: <b>";
         panelHtml += row.indexes.map(i => " " + i.name );

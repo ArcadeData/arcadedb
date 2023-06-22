@@ -62,6 +62,7 @@ public class ConsoleTest {
     console.close();
     TestServerHelper.checkActiveDatabases();
     Assertions.assertTrue(console.parse("drop database " + DB_NAME + "; close", false));
+    GlobalConfiguration.resetAll();
   }
 
   @Test

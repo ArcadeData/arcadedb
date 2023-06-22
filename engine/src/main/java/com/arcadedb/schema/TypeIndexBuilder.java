@@ -101,22 +101,22 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
     try {
       schema.recordFileChanges(() -> {
-        database.transaction(() -> {
+        for (int idx = 0; idx < buckets.size(); ++idx) {
+          final int finalIdx = idx;
+          database.transaction(() -> {
 
-          for (int idx = 0; idx < buckets.size(); ++idx) {
-            final Bucket bucket = buckets.get(idx);
-            indexes[idx] = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames, null);
-          }
+            final Bucket bucket = buckets.get(finalIdx);
+            indexes[finalIdx] = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames,
+                null);
 
-          schema.saveConfiguration();
-
-        }, false, 1, null, (error) -> {
-          for (int j = 0; j < indexes.length; j++) {
-            final IndexInternal indexToRemove = (IndexInternal) indexes[j];
-            if (indexToRemove != null)
-              indexToRemove.drop();
-          }
-        });
+          }, false, 1, null, (error) -> {
+            for (int j = 0; j < indexes.length; j++) {
+              final IndexInternal indexToRemove = (IndexInternal) indexes[j];
+              if (indexToRemove != null)
+                indexToRemove.drop();
+            }
+          });
+        }
 
         schema.saveConfiguration();
 

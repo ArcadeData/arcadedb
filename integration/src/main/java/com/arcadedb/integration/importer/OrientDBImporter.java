@@ -59,39 +59,40 @@ import static com.google.gson.stream.JsonToken.NULL;
  * @author Luca Garulli
  */
 public class OrientDBImporter {
-  private final File                       file;
-  private final Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
-  private final Map<String, Long>          totalRecordByType               = new HashMap<>();
-  private final Set<String>                excludeClasses                  = new HashSet<>(
+  private static final int                        CONCURRENT_MAX_RETRY            = 3;
+  private final        File                       file;
+  private final        Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
+  private final        Map<String, Long>          totalRecordByType               = new HashMap<>();
+  private final        Set<String>                excludeClasses                  = new HashSet<>(
       Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
-  private final Set<String>                edgeClasses                     = new HashSet<>();
-  private final List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
-  private       CompressedRID2RIDIndex     compressedRecordsRidMap;
-  private final Set<RID>                   documentsWithLinksToUpdate      = new HashSet<>();
-  private final Map<String, AtomicLong>    totalEdgesByVertexType          = new HashMap<>();
-  private final ImporterSettings           settings;
-  private       List<Map<String, Object>>  parsedIndexes;
-  private final ConsoleLogger              logger;
-  private       String                     databasePath;
-  private       String                     inputFile;
-  private       String                     databaseName;
-  private       boolean                    createSecurityFiles             = false;
-  private       boolean                    overwriteDatabase               = false;
-  private       long                       totalAttributesParsed           = 0L;
-  private       long                       errors                          = 0L;
-  private       long                       warnings                        = 0L;
-  private       DatabaseFactory            factory;
-  private       Database                   database;
-  private       int                        batchSize                       = 10_000;
-  private       PHASE                      phase                           = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
-  private       long                       skippedRecordBecauseNullKey     = 0L;
-  private       long                       skippedEdgeBecauseMissingVertex = 0l;
-  private       long                       beginTime;
-  private       long                       beginTimeRecordsCreation;
-  private       long                       beginTimeEdgeCreation;
-  private       JsonReader                 reader;
-  private       boolean                    error                           = false;
-  private       ImporterContext            context                         = new ImporterContext();
+  private final        Set<String>                edgeClasses                     = new HashSet<>();
+  private final        List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
+  private              CompressedRID2RIDIndex     compressedRecordsRidMap;
+  private final        Set<RID>                   documentsWithLinksToUpdate      = new HashSet<>();
+  private final        Map<String, AtomicLong>    totalEdgesByVertexType          = new HashMap<>();
+  private final        ImporterSettings           settings;
+  private              List<Map<String, Object>>  parsedIndexes;
+  private final        ConsoleLogger              logger;
+  private              String                     databasePath;
+  private              String                     inputFile;
+  private              String                     databaseName;
+  private              boolean                    createSecurityFiles             = false;
+  private              boolean                    overwriteDatabase               = false;
+  private              long                       totalAttributesParsed           = 0L;
+  private              long                       errors                          = 0L;
+  private              long                       warnings                        = 0L;
+  private              DatabaseFactory            factory;
+  private              Database                   database;
+  private              int                        batchSize                       = 10_000;
+  private              PHASE                      phase                           = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
+  private              long                       skippedRecordBecauseNullKey     = 0L;
+  private              long                       skippedEdgeBecauseMissingVertex = 0l;
+  private              long                       beginTime;
+  private              long                       beginTimeRecordsCreation;
+  private              long                       beginTimeEdgeCreation;
+  private              JsonReader                 reader;
+  private              boolean                    error                           = false;
+  private              ImporterContext            context                         = new ImporterContext();
 
   private enum PHASE {OFF, ANALYZE, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
@@ -354,41 +355,33 @@ public class OrientDBImporter {
   private void parseRecords() throws IOException {
     reader.beginArray();
 
-    long processedItems = 0L;
+    final AtomicLong processedItems = new AtomicLong();
     context.skippedEdges.set(0);
     context.parsed.set(0);
 
-    database.begin();
+    final List<Map<String, Object>> batch = new ArrayList<>(batchSize);
 
     while (reader.peek() == BEGIN_OBJECT) {
-      final Map<String, Object> attributes = parseRecord(reader, false);
+      for (int i = 0; i < batchSize && reader.peek() == BEGIN_OBJECT; i++) {
+        final Map<String, Object> attributes = parseRecord(reader, false);
+        batch.add(attributes);
+        context.parsed.incrementAndGet();
 
-      context.parsed.incrementAndGet();
-
-      final String className = (String) attributes.get("@class");
-
-      if (phase == PHASE.CREATE_SCHEMA || phase == PHASE.CREATE_RECORDS)
-        createRecords(processedItems, attributes, className);
-      else if (phase == PHASE.CREATE_EDGES)
-        createEdges(processedItems, attributes, className);
-      else if (phase == PHASE.ANALYZE) {
-        if (!edgeClasses.contains(className))
-          context.parsedDocumentAndVertices.incrementAndGet();
+        if (reader.peek() == NULL)
+          // FIX A BUG ON ORIENTDB EXPORTER WHEN GENERATE AN EMPTY RECORD
+          reader.skipValue();
       }
 
-      ++processedItems;
+      database.transaction(() -> {
+        try {
+          executeBatch(processedItems, batch);
+        } catch (IOException e) {
+          throw new ImportException("Error on importing batch of records", e);
+        }
+      }, false, CONCURRENT_MAX_RETRY);
 
-      if (processedItems > 0 && processedItems % batchSize == 0) {
-        database.commit();
-        database.begin();
-      }
-
-      if (reader.peek() == NULL)
-        // FIX A BUG ON ORIENTDB EXPORTER WHEN GENERATE AN EMPTY RECORD
-        reader.skipValue();
+      batch.clear();
     }
-
-    database.commit();
 
     final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
 
@@ -414,6 +407,25 @@ public class OrientDBImporter {
       throw new IllegalArgumentException("Invalid phase " + phase);
     }
     reader.endArray();
+  }
+
+  private void executeBatch(final AtomicLong processedItems, final List<Map<String, Object>> batch) throws IOException {
+    for (int i = 0; i < batch.size(); i++) {
+      final Map<String, Object> attributes = batch.get(i);
+
+      final String className = (String) attributes.get("@class");
+
+      if (phase == PHASE.CREATE_SCHEMA || phase == PHASE.CREATE_RECORDS)
+        createRecords(processedItems, attributes, className);
+      else if (phase == PHASE.CREATE_EDGES)
+        createEdges(processedItems, attributes, className);
+      else if (phase == PHASE.ANALYZE) {
+        if (!edgeClasses.contains(className))
+          context.parsedDocumentAndVertices.incrementAndGet();
+      }
+
+      processedItems.incrementAndGet();
+    }
   }
 
   private void updateDocumentLinks() {
@@ -442,18 +454,22 @@ public class OrientDBImporter {
       database.commit();
       logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());
     }
+  }
 
+  private RID convertRID(final Object value) {
+    final RID rid = value instanceof RID ? (RID) value : new RID(database, value.toString());
+    return compressedRecordsRidMap.get(rid);
   }
 
   private RID convertRIDs(final Object pValue) {
-    if (pValue instanceof RID)
-      return compressedRecordsRidMap.get((RID) pValue);
+    if (RID.is(pValue))
+      return convertRID(pValue);
     else if (pValue instanceof List) {
       final List list = (List) pValue;
       for (int i = 0; i < list.size(); i++) {
         final Object item = list.get(i);
-        if (item instanceof RID)
-          list.set(i, compressedRecordsRidMap.get((RID) item));
+        if (RID.is(item))
+          list.set(i, convertRID(item));
         else if (item instanceof List)
           convertRIDs(item);
         else if (item instanceof Map)
@@ -466,17 +482,21 @@ public class OrientDBImporter {
       for (int i = 0; i < keys.size(); i++) {
         final Object key = keys.get(i);
         final Object value = map.get(key);
-        if (value instanceof RID)
-          map.put(key, compressedRecordsRidMap.get((RID) value));
+        if (RID.is(value))
+          map.put(key, convertRID(value));
+        else if (value instanceof List)
+          convertRIDs(value);
+        else if (value instanceof Map)
+          convertRIDs(value);
       }
     }
     return null;
   }
 
-  private void createEdges(final long processedItems, final Map<String, Object> attributes, final String className) {
+  private void createEdges(final AtomicLong processedItems, final Map<String, Object> attributes, final String className) {
     if (edgeClasses.contains(className)) {
       createEdges(attributes);
-      if (processedItems > 0 && processedItems % 1_000_000 == 0) {
+      if (processedItems.get() > 0 && processedItems.get() % 1_000_000 == 0) {
         final long elapsed = System.currentTimeMillis() - beginTimeEdgeCreation;
         logger.logLine(2, "- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(), totalEdgesByVertexType,
             (context.createdEdges.get() / elapsed * 1000));
@@ -484,13 +504,13 @@ public class OrientDBImporter {
     }
   }
 
-  private void createRecords(final long processedItems, final Map<String, Object> attributes, final String className) throws IOException {
+  private void createRecords(final AtomicLong processedItems, final Map<String, Object> attributes, final String className) throws IOException {
     if (!edgeClasses.contains(className)) {
       createRecord(attributes);
     } else
       context.skippedEdges.incrementAndGet();
 
-    if (processedItems > 0 && processedItems % 1_000_000 == 0) {
+    if (processedItems.get() > 0 && processedItems.get() % 1_000_000 == 0) {
       final long elapsed = System.currentTimeMillis() - beginTimeRecordsCreation;
       logger.logLine(2, "- Status update: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec)", context.createdVertices.get(),
           context.createdDocuments.get(), context.skippedEdges.get(), ((context.createdDocuments.get() + context.createdVertices.get()) / elapsed * 1000));
@@ -639,7 +659,7 @@ public class OrientDBImporter {
           }
         }
 
-      } else if (RID.is(entry.getValue()))
+      } else if (RID.is(entryValue))
         return true;
     }
     return false;
