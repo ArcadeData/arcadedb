@@ -493,6 +493,23 @@ function displaySchema(){
     let panelEHtml = "";
     let panelDHtml = "";
 
+    // BUILD SUB TYPES
+    let subTypes = {};
+    for( let i in data.result ){
+      let row = data.result[i];
+
+      for( ptidx in row.parentTypes ) {
+        let pt = row.parentTypes[ptidx];
+
+        let array = subTypes[ pt ];
+        if( array == null ) {
+          array = [];
+          subTypes[ pt ] = array;
+        }
+        array.push( row.name );
+      }
+    }
+
     for( let i in data.result ){
       let row = data.result[i];
 
@@ -501,9 +518,9 @@ function displaySchema(){
 
       let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+row.name+"' role='tabpanel'>";
 
-      panelHtml += "<br>Type: <b>" + row.name + "</b>";
+      panelHtml += "<h3>" + row.name + "</h3>";
       if( row.parentTypes != "" ){
-        panelHtml += ", Super Types: <b>";
+        panelHtml += "Super Types: <b>";
         for( ptidx in row.parentTypes ) {
           if( ptidx > 0 )
             panelHtml += ", ";
@@ -512,6 +529,19 @@ function displaySchema(){
         }
         panelHtml += "</b>";
       }
+
+      let typeSubTypes = subTypes[row.name];
+      if( typeSubTypes != null ){
+        panelHtml += "<br>Sub Types: <b>";
+        for( stidx in typeSubTypes ) {
+          if( stidx > 0 )
+            panelHtml += ", ";
+          let st = typeSubTypes[stidx];
+          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-"+st+"')\">" + st + "</a></b>";
+        }
+        panelHtml += "</b>";
+      }
+
       if( row.indexes != "" ){
         panelHtml += "<br>Indexes: <b>";
         panelHtml += row.indexes.map(i => " " + i.name );
@@ -521,23 +551,10 @@ function displaySchema(){
       panelHtml += "<br><br><h6>Properties</h6>";
       //panelHtml += "<button class='btn btn-pill' onclick='createProperty()'><i class='fa fa-plus'></i> Create Property</button>";
       panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th><th scope='col'>Indexed</th><th scope='col'>Actions</th>";
+      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Defined In</th><th scope='col'>Type</th><th scope='col'>Indexed</th><th scope='col'>Actions</th>";
       panelHtml += "<tbody>";
 
-      for( let k in row.properties ) {
-        let property = row.properties[k];
-        panelHtml += "<tr><td>"+property.name+"</td><td>" + property.type + "</td>";
-
-        let actionHtml = "<button class='btn btn-pill' onclick='dropProperty(\""+row.name+"\", \""+property.name+"\")'><i class='fa fa-minus'></i> Drop Property</button>";
-
-        let propIndexes = [];
-        if( row.indexes != null && row.indexes.length > 0 ) {
-          propIndexes.push( row.indexes.filter(i => i.properties.includes( property.name )).map(i => (i.name + " " + i.unique ? "" : "Not ") + "Unique, Type(" + i.type + ")" + ( i.properties.length > 1 ? ", on multi properties " + i.properties : "" )) );
-          actionHtml += row.indexes.filter(i => i.properties.includes( property.name )).map(i => ( "<button class='btn btn-pill' onclick='dropIndex(\"" + i.name + "\")'><i class='fa fa-minus'></i> Drop Index</button>" ) );
-        }
-        panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
-        panelHtml += "<td>" + actionHtml + "</td>";
-      }
+      panelHtml += renderProperties( row, data.result );
 
       panelHtml += "</tbody></table>";
 
@@ -577,6 +594,42 @@ function displaySchema(){
   .always(function(data) {
     $("#executeSpinner").hide();
   });
+}
+
+function findTypeInResult(name, results ){
+  for( i in results )
+    if( results[i].name == name )
+      return results[i];
+  return null;
+}
+
+function renderProperties(row, results ){
+  let panelHtml = "";
+
+  for( let k in row.properties ) {
+    let property = row.properties[k];
+    panelHtml += "<tr><td>"+property.name+"</td><td>" + row.name + "</td><td>" + property.type + "</td>";
+
+    let actionHtml = "<button class='btn btn-pill' onclick='dropProperty(\""+row.name+"\", \""+property.name+"\")'><i class='fa fa-minus'></i> Drop Property</button>";
+
+    let propIndexes = [];
+    if( row.indexes != null && row.indexes.length > 0 ) {
+      propIndexes.push( row.indexes.filter(i => i.properties.includes( property.name )).map(i => (i.name + " " + i.unique ? "" : "Not ") + "Unique, Type(" + i.type + ")" + ( i.properties.length > 1 ? ", on multi properties " + i.properties : "" )) );
+      actionHtml += row.indexes.filter(i => i.properties.includes( property.name )).map(i => ( "<button class='btn btn-pill' onclick='dropIndex(\"" + i.name + "\")'><i class='fa fa-minus'></i> Drop Index</button>" ) );
+    }
+    panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
+    panelHtml += "<td>" + actionHtml + "</td>";
+  }
+
+  if( row.parentTypes != "" ){
+    for( ptidx in row.parentTypes ) {
+      let pt = row.parentTypes[ptidx];
+      let type = findTypeInResult( pt, results );
+      panelHtml += renderProperties( type, results );
+    }
+  }
+
+  return panelHtml;
 }
 
 function displayDatabaseSettings(){
