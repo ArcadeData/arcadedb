@@ -277,7 +277,7 @@ function getQueryHistory(){
 
 function loadQueryHistory(){
   $("#inputHistory").html("");
-  $("#inputHistory").append( "<option value=''></option>" );
+  $("#inputHistory").append( "<option value='-1'>Query History</option>" );
 
   let queryHistory = getQueryHistory();
   if( queryHistory != null && queryHistory.length > 0 ){
@@ -292,6 +292,9 @@ function loadQueryHistory(){
 
 function copyQueryFromHistory(){
   let index = $("#inputHistory").val();
+  if( index == -1 )
+    return;
+
   if( index != "" ){
     let queryHistory = getQueryHistory();
     let q = queryHistory[index];
@@ -301,6 +304,8 @@ function copyQueryFromHistory(){
       editor.setValue( q.c );
     }
   }
+
+  $("#inputHistory").val(-1);
 }
 
 function executeCommand(language, query){
@@ -347,7 +352,7 @@ function executeCommand(language, query){
   }
 
   // REMOVE OLD QUERIES
-  while( queryHistory.length > 20 )
+  while( queryHistory.length > 25 )
     queryHistory.pop();
 
   queryHistory = [ {"d": database, "l": language, "c": query} ].concat(queryHistory);
