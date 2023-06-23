@@ -28,7 +28,6 @@ import java.util.*;
 /**
  * Internal Index interface.
  */
-public interface IndexInternal extends Index {
   long build(int buildIndexBatchSize, BuildIndexCallback callback);
 
   boolean compact() throws IOException, InterruptedException;
