@@ -28,8 +28,10 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.HnswVectorIndexRAM;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.FileUtils;
 import com.github.jelmerk.knn.DistanceFunction;
 
+import java.io.*;
 import java.util.*;
 
 /**
@@ -63,6 +65,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
   public VectorIndexBuilder(final Database database, final HnswVectorIndexRAM origin) {
     super((DatabaseInternal) database, HnswVectorIndex.class);
+    this.indexType = Schema.INDEX_TYPE.HSNW;
     this.origin = origin;
     this.dimensions = origin.getDimensions();
     this.distanceFunction = origin.getDistanceFunction();
@@ -87,6 +90,9 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
       throw new IndexException("Vertex id property type is missing from vector index declaration");
     if (vectorPropertyName == null)
       throw new IndexException("Vertex vector property type is missing from vector index declaration");
+
+    filePath = database.getDatabasePath() + File.separator + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_" + System.nanoTime() + "."
+        + database.getFileManager().newFileId() + ".v" + HnswVectorIndex.CURRENT_VERSION + "." + HnswVectorIndex.FILE_EXT;
 
     final EmbeddedSchema schema = database.getSchema().getEmbedded();
     if (ignoreIfExists) {

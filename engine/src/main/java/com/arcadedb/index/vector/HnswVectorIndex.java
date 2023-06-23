@@ -65,8 +65,8 @@ import java.util.stream.*;
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
 public class HnswVectorIndex<TId, TVector, TDistance> extends Component implements com.arcadedb.index.Index, IndexInternal {
-  public static final  String FILE_EXT        = "hnswidx";
-  private static final int    CURRENT_VERSION = 1;
+  public static final String FILE_EXT        = "hnswidx";
+  public static final int    CURRENT_VERSION = 0;
 
   private final   DistanceFunction<TVector, TDistance> distanceFunction;
   private final   Comparator<TDistance>                distanceComparator;
@@ -110,7 +110,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   protected HnswVectorIndex(final VectorIndexBuilder builder) {
-    super(builder.getDatabase(), builder.getIndexName(), 0, CURRENT_VERSION, builder.getFilePath());
+    super(builder.getDatabase(), builder.getFilePath(), builder.getDatabase().getFileManager().newFileId(), CURRENT_VERSION, builder.getFilePath());
 
     this.dimensions = builder.getDimensions();
     this.maxItemCount = builder.getMaxItemCount();

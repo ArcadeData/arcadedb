@@ -147,7 +147,7 @@ public class FastTextDatabase {
 
     try (BufferedReader reader = new BufferedReader(new InputStreamReader(new GZIPInputStream(Files.newInputStream(path)), StandardCharsets.UTF_8))) {
       return reader.lines().skip(1)//
-          //.limit(10_000)//
+          //.limit(100_000)//
           .map(line -> {
             String[] tokens = line.split(" ");
 
