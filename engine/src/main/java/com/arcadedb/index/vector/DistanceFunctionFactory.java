@@ -42,7 +42,7 @@ public class DistanceFunctionFactory {
     implementations.put("FloatBrayCurtisDistance", DistanceFunctions.FLOAT_BRAY_CURTIS_DISTANCE);
     implementations.put("FloatCorrelationDistance", DistanceFunctions.FLOAT_CORRELATION_DISTANCE);
     implementations.put("FloatManhattanDistance", DistanceFunctions.FLOAT_MANHATTAN_DISTANCE);
-    //implementations.put("FloatChebyshevDistance", DistanceFunctions.FLOAT_CHEBYSHEV_DISTANCE);
+    implementations.put("FloatChebyshevDistance", DistanceFunctions.FLOAT_CHEBYSHEV_DISTANCE);
     implementations.put("DoubleCosineDistance", DistanceFunctions.DOUBLE_COSINE_DISTANCE);
     implementations.put("DoubleInnerProduct", DistanceFunctions.DOUBLE_INNER_PRODUCT);
     implementations.put("DoubleEuclideanDistance", DistanceFunctions.DOUBLE_EUCLIDEAN_DISTANCE);
@@ -50,7 +50,7 @@ public class DistanceFunctionFactory {
     implementations.put("DoubleBrayCurtisDistance", DistanceFunctions.DOUBLE_BRAY_CURTIS_DISTANCE);
     implementations.put("DoubleCorrelationDistance", DistanceFunctions.DOUBLE_CORRELATION_DISTANCE);
     implementations.put("DoubleManhattanDistance", DistanceFunctions.DOUBLE_MANHATTAN_DISTANCE);
-    //implementations.put("DoubleChebyshevDistance", DistanceFunctions.DOUBLE_CHEBYSHEV_DISTANCE);
+    implementations.put("DoubleChebyshevDistance", DistanceFunctions.DOUBLE_CHEBYSHEV_DISTANCE);
     implementations.put("FloatSparseVectorInnerProduct", DistanceFunctions.FLOAT_SPARSE_VECTOR_INNER_PRODUCT);
     implementations.put("DoubleSparseVectorInnerProduct", DistanceFunctions.DOUBLE_SPARSE_VECTOR_INNER_PRODUCT);
   }
