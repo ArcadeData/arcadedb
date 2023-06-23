@@ -31,6 +31,7 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexCursor;
@@ -62,17 +63,18 @@ import java.util.logging.*;
  * LSM-Tree index implementation. It relies on a mutable index and its underlying immutable, compacted index.
  */
 public class LSMTreeIndex implements RangeIndex, IndexInternal {
-  private static final IndexCursor                                             EMPTY_CURSOR       = new EmptyIndexCursor();
-  private final        String                                                  name;
-  private final        RWLockContext                                           lock               = new RWLockContext();
-  private              TypeIndex                                               typeIndex;
-  private              int                                                     associatedBucketId = -1;
-  private              String                                                  typeName;
-  protected            List<String>                                            propertyNames;
-  protected            LSMTreeIndexMutable                                     mutable;
-  protected final      AtomicReference<LSMTreeIndexAbstract.COMPACTING_STATUS> compactingStatus   = new AtomicReference<>(
-      LSMTreeIndexAbstract.COMPACTING_STATUS.NO);
-  private              boolean                                                 valid              = true;
+  public enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
+
+  private static final IndexCursor                   EMPTY_CURSOR       = new EmptyIndexCursor();
+  private final        String                        name;
+  private final        RWLockContext                 lock               = new RWLockContext();
+  private              TypeIndex                     typeIndex;
+  private              int                           associatedBucketId = -1;
+  private              String                        typeName;
+  protected            List<String>                  propertyNames;
+  protected            LSMTreeIndexMutable           mutable;
+  protected final      AtomicReference<INDEX_STATUS> status             = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
+  private              boolean                       valid              = true;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -130,7 +132,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     if (getDatabase().getPageManager().isPageFlushingSuspended())
       return false;
-    return compactingStatus.compareAndSet(LSMTreeIndexAbstract.COMPACTING_STATUS.NO, LSMTreeIndexAbstract.COMPACTING_STATUS.SCHEDULED);
+    return status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.COMPACTION_SCHEDULED);
   }
 
   public void setMetadata(final String typeName, final String[] propertyNames, final int associatedBucketId) {
@@ -223,8 +225,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
       return false;
 
-    if (!compactingStatus.compareAndSet(LSMTreeIndexAbstract.COMPACTING_STATUS.SCHEDULED, LSMTreeIndexAbstract.COMPACTING_STATUS.IN_PROGRESS))
-      // ALREADY COMPACTING
+    if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS))
+      // COMPACTION NOT SCHEDULED
       return false;
 
     try {
@@ -233,7 +235,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // IGNORE IT, WILL RETRY LATER
       return false;
     } finally {
-      compactingStatus.set(LSMTreeIndexAbstract.COMPACTING_STATUS.NO);
+      status.set(INDEX_STATUS.AVAILABLE);
     }
   }
 
@@ -248,20 +250,31 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public boolean isCompacting() {
-    return compactingStatus.get() == LSMTreeIndexAbstract.COMPACTING_STATUS.IN_PROGRESS;
+    return status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS;
+  }
+
+  public boolean setStatus(final INDEX_STATUS expectedStatus, final INDEX_STATUS newStatus) {
+    return this.status.compareAndSet(expectedStatus, newStatus);
   }
 
   @Override
   public void close() {
     checkIsValid();
-    lock.executeInWriteLock(() -> {
-      if (mutable != null)
-        mutable.close();
-      return null;
-    });
+    if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
+      lock.executeInWriteLock(() -> {
+        if (mutable != null)
+          mutable.close();
+        return null;
+      });
+    } else
+      throw new NeedRetryException("Error on closing index '" + name + "' because not available");
   }
 
   public void drop() {
+    if (status.get() != INDEX_STATUS.UNAVAILABLE)
+      if (!status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE))
+        throw new NeedRetryException("Error on dropping index '" + name + "' because not available");
+
     if (mutable == null)
       return;
 
@@ -392,7 +405,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     final Object[] convertedKeys = convertKeys(keys);
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
-      // KEY ADDED AT COMMIT TIME (IN A LOCK)
+// KEY ADDED AT COMMIT TIME (IN A LOCK)
       final TransactionContext tx = getDatabase().getTransaction();
       for (final RID rid : rids)
         tx.addIndexOperation(this, true, convertedKeys, rid);
@@ -493,7 +506,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     try {
       final LSMTreeIndexMutable prevMutable = mutable;
 
-      // COPY MUTABLE PAGES TO THE NEW FILE
+// COPY MUTABLE PAGES TO THE NEW FILE
       final LSMTreeIndexMutable result = lock.executeInWriteLock(() -> {
         final int pageSize = mutable.getPageSize();
 
@@ -510,7 +523,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final MutablePage subIndexMainPage = compactedIndex.setCompactedTotalPages();
         modifiedPages.add(database.getPageManager().updatePageVersion(subIndexMainPage, false));
 
-        // KEEP METADATA AND LEAVE IT EMPTY
+// KEEP METADATA AND LEAVE IT EMPTY
         final MutablePage rootPage = newMutableIndex.createNewPage();
         modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
 
@@ -519,7 +532,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         for (int i = 0; i < mutable.getTotalPages() - startingFromPage; ++i) {
           final BasePage currentPage = database.getTransaction().getPage(new PageId(mutable.getFileId(), i + startingFromPage), pageSize);
 
-          // COPY THE ENTIRE PAGE TO THE NEW INDEX
+// COPY THE ENTIRE PAGE TO THE NEW INDEX
           final MutablePage newPage = newMutableIndex.createNewPage();
 
           final ByteBuffer pageContent = currentPage.getContent();
@@ -556,8 +569,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return result;
 
     } finally {
-      // RELEASE THE DELETED FILE
-      database.getTransactionManager().unlockFile(fileId);
+      if (locked == LockManager.LOCK_STATUS.YES)
+        // RELEASE THE DELETED FILE ONLY IF THE LOCK WAS ACQUIRED HERE
+        database.getTransactionManager().unlockFile(fileId);
     }
   }
 
@@ -570,21 +584,28 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final DatabaseInternal db = getDatabase();
 
-    db.scanBucket(db.getSchema().getBucketById(associatedBucketId).getName(), record -> {
-      db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), (Document) record);
-      total.incrementAndGet();
+    if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
-      if (callback != null)
-        callback.onDocumentIndexed((Document) record, total.get());
+      db.scanBucket(db.getSchema().getBucketById(associatedBucketId).getName(), record -> {
+        db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), (Document) record);
+        total.incrementAndGet();
 
-      if (total.get() % buildIndexBatchSize == 0) {
-        // CHUNK OF 100K
-        db.getWrappedDatabaseInstance().commit();
-        db.getWrappedDatabaseInstance().begin();
-      }
+        if (total.get() % buildIndexBatchSize == 0) {
+          // CHUNK OF 100K
+          db.getWrappedDatabaseInstance().commit();
+          db.getWrappedDatabaseInstance().begin();
+        }
 
-      return true;
-    });
+        if (callback != null)
+          callback.onDocumentIndexed((Document) record, total.get());
+
+        return true;
+      });
+
+      status.set(INDEX_STATUS.AVAILABLE);
+
+    } else
+      throw new NeedRetryException("Error on building index '" + name + "' because not available");
 
     return total.get();
   }

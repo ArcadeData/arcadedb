@@ -30,8 +30,9 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class IndexBuilder<T extends Index> {
-  final DatabaseInternal       database;
-  final Class<? extends Index> indexImplementation;
+  public static final int                    BUILD_BATCH_SIZE = 20_000;
+  final               DatabaseInternal       database;
+  final               Class<? extends Index> indexImplementation;
   Schema.INDEX_TYPE                  indexType;
   boolean                            unique;
   int                                pageSize       = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
@@ -41,6 +42,8 @@ public abstract class IndexBuilder<T extends Index> {
   String                             indexName      = null;
   String                             filePath       = null;
   Type[]                             keyTypes;
+  int                                batchSize      = BUILD_BATCH_SIZE;
+  int                                maxAttempts    = 3;
 
   protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexImplementation) {
     this.database = database;
@@ -131,6 +134,16 @@ public abstract class IndexBuilder<T extends Index> {
 
   public IndexBuilder<T> withKeyTypes(final Type[] keyTypes) {
     this.keyTypes = keyTypes;
+    return this;
+  }
+
+  public IndexBuilder<T> withBatchSize(final int batchSize) {
+    this.batchSize = batchSize;
+    return this;
+  }
+
+  public IndexBuilder<T> withMaxAttempts(final int maxAttempts) {
+    this.maxAttempts = maxAttempts;
     return this;
   }
 }

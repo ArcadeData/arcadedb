@@ -3908,6 +3908,14 @@ RebuildIndexStatement RebuildIndexStatement():
     |
     <STAR> { jjtThis.all = true; }
   )
+  [
+    <WITH>
+    jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }
+    (
+      <COMMA>
+      jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }
+    )*
+  ]
   { return jjtThis; }
 }
 

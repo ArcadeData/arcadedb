@@ -487,6 +487,11 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.executeInWriteLock(callable);
   }
 
+  @Override
+  public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, final Callable<RET> callable) {
+    return wrapped.executeLockingFiles(fileIds, callable);
+  }
+
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
     return wrapped.recordFileChanges(callback);
   }

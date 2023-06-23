@@ -310,6 +310,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public <RET> RET executeLockingFiles(Collection<Integer> fileIds, Callable<RET> callable) {
+        return null;
+      }
+
+      @Override
       public ContextConfiguration getConfiguration() {
         return null;
       }

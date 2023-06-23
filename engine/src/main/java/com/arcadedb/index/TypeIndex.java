@@ -23,6 +23,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.IndexCursorCollection;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
@@ -224,8 +226,20 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     final DocumentType t = type.getSchema().getType(getTypeName());
 
+    final List<LSMTreeIndex> acquired = new ArrayList<>(indexesOnBuckets.size());
+    for (final Index index : new ArrayList<>(indexesOnBuckets))
+      if (((LSMTreeIndex) index).setStatus(LSMTreeIndex.INDEX_STATUS.AVAILABLE, LSMTreeIndex.INDEX_STATUS.UNAVAILABLE))
+        acquired.add((LSMTreeIndex) index);
+      else {
+        // NOT AVAILABLE, RESET ACQUIRED STATUSES
+        for (LSMTreeIndex i : acquired)
+          i.setStatus(LSMTreeIndex.INDEX_STATUS.UNAVAILABLE, LSMTreeIndex.INDEX_STATUS.AVAILABLE);
+        throw new NeedRetryException("Cannot drop index '" + getName() + "' because one or more underlying files are not available");
+      }
+
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
+
     indexesOnBuckets.clear();
 
     valid = false;

@@ -792,7 +792,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     Assertions.assertNotNull(typeIndexBefore);
     Assertions.assertEquals(1, typeIndexBefore.getPropertyNames().size());
 
-    database.command("sql", "rebuild index *");
+    database.command("sql", "rebuild index * with batchSize = 1000");
 
     final Index typeIndexAfter = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
     Assertions.assertNotNull(typeIndexAfter);
@@ -800,12 +800,8 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
     Assertions.assertEquals(typeIndexBefore.getName(), typeIndexAfter.getName());
 
-    try {
-      typeIndexBefore.get(new Object[] { 0 });
-      Assertions.fail("Rebuilt index should be invalid");
-    } catch (final IndexException e) {
-      // EXPECTED
-    }
+    Assertions.assertTrue(typeIndexAfter.get(new Object[] { 0 }).hasNext());
+    Assertions.assertEquals(0, typeIndexAfter.get(new Object[] { 0 }).next().asDocument().getInteger("id"));
   }
 
   @Test

@@ -36,6 +36,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
@@ -436,30 +437,29 @@ public class EmbeddedSchema implements Schema {
         }
       }
 
-      List<Integer> lockedFiles = null;
       try {
-        lockedFiles = database.getTransactionManager().tryLockFiles(index.getFileIds(), 5_000);
+        database.executeLockingFiles(index.getFileIds(), () -> {
+          if (index.getTypeIndex() != null)
+            index.getTypeIndex().removeIndexOnBucket(index);
 
-        if (index.getTypeIndex() != null)
-          index.getTypeIndex().removeIndexOnBucket(index);
+          index.drop();
+          indexMap.remove(indexName);
 
-        indexMap.remove(indexName);
-        index.drop();
+          if (index.getTypeName() != null) {
+            final DocumentType type = getType(index.getTypeName());
+            if (index instanceof TypeIndex)
+              type.removeTypeIndexInternal((TypeIndex) index);
+            else
+              type.removeBucketIndexInternal(index);
+          }
+          return null;
+        });
 
-        if (index.getTypeName() != null) {
-          final DocumentType type = getType(index.getTypeName());
-          if (index instanceof TypeIndex)
-            type.removeTypeIndexInternal((TypeIndex) index);
-          else
-            type.removeBucketIndexInternal(index);
-        }
-
+      } catch (final NeedRetryException e) {
+        throw e;
       } catch (final Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
       } finally {
-        if (lockedFiles != null)
-          database.getTransactionManager().unlockFilesInOrder(lockedFiles);
-
         multipleUpdate = false;
       }
       return null;
@@ -1224,7 +1224,7 @@ public class EmbeddedSchema implements Schema {
 
   protected Index createBucketIndex(final DocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
       final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback,
-      final String[] propertyNames, final TypeIndex propIndex) {
+      final String[] propertyNames, final TypeIndex propIndex, final int batchSize) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)
@@ -1247,10 +1247,13 @@ public class EmbeddedSchema implements Schema {
       indexMap.put(indexName, index);
 
       type.addIndexInternal(index, bucket.getFileId(), propertyNames, propIndex);
-      index.build(BUILD_TX_BATCH_SIZE, callback);
+      index.build(batchSize, callback);
 
       return index;
 
+    } catch (final NeedRetryException e) {
+      dropIndex(indexName);
+      throw e;
     } catch (final Exception e) {
       dropIndex(indexName);
       throw new IndexException("Error on creating index '" + indexName + "'", e);
