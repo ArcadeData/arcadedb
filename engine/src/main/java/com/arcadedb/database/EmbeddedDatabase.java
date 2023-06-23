@@ -1395,6 +1395,26 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, Callable<RET> callable) {
+    List<Integer> lockedFiles = null;
+    try {
+      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000);
+
+      return callable.call();
+
+    } catch (final RuntimeException e) {
+      throw e;
+
+    } catch (final Throwable e) {
+      throw new DatabaseOperationException("Error during write lock", e);
+
+    } finally {
+      if (lockedFiles != null)
+        transactionManager.unlockFilesInOrder(lockedFiles);
+    }
+  }
+
+  @Override
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
     return (RET) executeInWriteLock(callback);
   }

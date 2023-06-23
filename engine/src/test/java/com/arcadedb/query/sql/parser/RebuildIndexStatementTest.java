@@ -29,6 +29,10 @@ public class RebuildIndexStatementTest extends ParserTestAbstract {
     checkRightSyntax("rebuild index Foo");
     checkRightSyntax("REBUILD INDEX `Foo.bar`");
     checkRightSyntax("REBUILD INDEX `Foo.bar.baz`");
+    checkRightSyntax("REBUILD INDEX * with batchSize = 1000");
+    checkRightSyntax("REBUILD INDEX `Foo.bar.baz` with batchSize = 1000");
+
     checkWrongSyntax("REBUILD INDEX `Foo.bar` foo");
+    checkRightSyntax("REBUILD INDEX `Foo.bar.baz` with unknown = 1000");
   }
 }

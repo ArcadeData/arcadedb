@@ -74,8 +74,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected       byte[]           binaryKeyTypes;
   protected       NULL_STRATEGY    nullStrategy = NULL_STRATEGY.SKIP;
 
-  public enum COMPACTING_STATUS {NO, SCHEDULED, IN_PROGRESS}
-
   protected static class LookupResult {
     public final boolean found;
     public final boolean outside;

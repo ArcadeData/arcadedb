@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -50,7 +51,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (database.async().isProcessing())
-      throw new SchemaException("Cannot create a new index while asynchronous tasks are running");
+      throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
 
     final EmbeddedSchema schema = database.getSchema().getEmbedded();
     if (ignoreIfExists) {
@@ -105,9 +106,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
             final Bucket bucket = buckets.get(finalIdx);
             indexes[finalIdx] = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames,
-                null);
+                null, batchSize);
 
-          }, false, 1, null, (error) -> {
+          }, false, maxAttempts, null, (error) -> {
             for (int j = 0; j < indexes.length; j++) {
               final IndexInternal indexToRemove = (IndexInternal) indexes[j];
               if (indexToRemove != null)
@@ -122,6 +123,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       });
 
       return type.getPolymorphicIndexByProperties(propertyNames);
+    } catch (final NeedRetryException e) {
+      schema.dropIndex(typeName + Arrays.toString(propertyNames));
+      throw e;
     } catch (final Throwable e) {
       schema.dropIndex(typeName + Arrays.toString(propertyNames));
       throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames), e);

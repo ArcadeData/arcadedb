@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -51,7 +52,7 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (database.async().isProcessing())
-      throw new SchemaException("Cannot create a new index while asynchronous tasks are running");
+      throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
 
     final EmbeddedSchema schema = database.getSchema().getEmbedded();
 
@@ -85,13 +86,13 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
           }
         }
 
-        final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames,
-            null);
+        final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames, null,
+            batchSize);
         result.set(index);
 
         schema.saveConfiguration();
 
-      }, false, 1, null, (error) -> {
+      }, false, maxAttempts, null, (error) -> {
         final Index indexToRemove = result.get();
         if (indexToRemove != null) {
           ((IndexInternal) indexToRemove).drop();

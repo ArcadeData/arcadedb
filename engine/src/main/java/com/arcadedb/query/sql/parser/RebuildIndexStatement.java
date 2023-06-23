@@ -21,8 +21,13 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -31,15 +36,19 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.IndexBuilder;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class RebuildIndexStatement extends DDLStatement {
-  protected            boolean    all      = false;
-  protected            Identifier name;
-  private static final int        pageSize = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
+  private static final int                         MAX_ATTEMPTS = 5;
+  protected            boolean                     all          = false;
+  protected            Identifier                  name;
+  protected            Expression                  key;
+  protected            Expression                  value;
+  protected final      Map<Expression, Expression> settings     = new HashMap<>();
 
   public RebuildIndexStatement(final int id) {
     super(id);
@@ -50,81 +59,109 @@ public class RebuildIndexStatement extends DDLStatement {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "rebuild index");
 
+    int batchSize = IndexBuilder.BUILD_BATCH_SIZE;
+    int maxAttempts = MAX_ATTEMPTS;
+    if (!settings.isEmpty()) {
+      for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+        if (entry.getKey().toString().equalsIgnoreCase("batchSize"))
+          batchSize = Integer.parseInt(entry.getValue().value.toString());
+        else if (entry.getKey().toString().equalsIgnoreCase("maxAttempts"))
+          maxAttempts = Integer.parseInt(entry.getValue().value.toString());
+        else
+          throw new CommandSQLParsingException("Unrecognized setting '" + entry.getKey() + "' in rebuild index statement");
+      }
+    }
+
     final AtomicLong total = new AtomicLong();
 
     final Database database = context.getDatabase();
-    database.transaction(() -> {
-      final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
-        total.incrementAndGet();
 
-        if (totalIndexed % 100000 == 0) {
-          System.out.print(".");
-          System.out.flush();
-        }
-      };
+    final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
+      total.incrementAndGet();
 
+      if (totalIndexed % 100000 == 0) {
+        System.out.print(".");
+        System.out.flush();
+      }
+    };
+
+    String indexName = null;
+    try {
       final List<String> indexList = new ArrayList<>();
 
       if (all) {
-        final Index[] indexes = database.getSchema().getIndexes();
-
-        for (final Index idx : indexes) {
-          try {
-            if (idx instanceof TypeIndex) {
-              final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
-              final boolean unique = idx.isUnique();
-              final List<String> propNames = idx.getPropertyNames();
-              final String typeName = idx.getTypeName();
-              final int pageSize = ((TypeIndex) idx).getPageSize();
-              final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
-
-              database.getSchema().dropIndex(idx.getName());
-
-              database.getSchema().buildTypeIndex(typeName, propNames.toArray(new String[propNames.size()])).withType(indexType).withUnique(unique)
-                  .withPageSize(pageSize).withNullStrategy(nullStrategy).withCallback(callback).create();
-
-              indexList.add(idx.getName());
-            }
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, idx.getName());
-          }
+        for (final Index idx : database.getSchema().getIndexes()) {
+          indexName = idx.getName();
+          buildIndex(maxAttempts, database, callback, idx, batchSize);
+          indexList.add(idx.getName());
         }
-
       } else {
         final Index idx = database.getSchema().getIndexByName(name.getValue());
-        if (idx == null)
-          throw new CommandExecutionException("Index '" + name + "' not found");
+        indexName = idx.getName();
+        buildIndex(maxAttempts, database, callback, idx, batchSize);
+        indexList.add(idx.getName());
+      }
+      result.setProperty("indexes", indexList);
+      result.setProperty("totalIndexed", total.get());
 
-        if (!idx.isAutomatic())
-          throw new CommandExecutionException("Cannot rebuild index '" + name + "' because it's manual and there aren't indications of what to index");
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, indexName);
+      throw new IndexException("Error on rebuilding index '" + indexName + "'", e);
+    }
+
+    // SUCCESS
+    final InternalResultSet rs = new InternalResultSet();
+    rs.add(result);
+    return rs;
+  }
+
+  private static void buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx, final int batchSize) {
+    if (idx == null)
+      throw new CommandExecutionException("Index '" + idx.getName() + "' not found");
+
+    if (!idx.isAutomatic())
+      throw new CommandExecutionException("Cannot rebuild index '" + idx.getName() + "' because it's manual and there aren't indications of what to index");
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (((IndexInternal) idx).isCompacting())
+          throw new NeedRetryException("Cannot rebuild the index '" + idx.getName() + "' while is compacting");
 
         final EmbeddedSchema.INDEX_TYPE type = idx.getType();
         final String typeName = idx.getTypeName();
         final boolean unique = idx.isUnique();
         final List<String> propertyNames = idx.getPropertyNames();
+        final int pageSize = ((IndexInternal) idx).getPageSize();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
-        database.getSchema().dropIndex(idx.getName());
+        ((DatabaseInternal) database).executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
+          database.getSchema().dropIndex(idx.getName());
 
-        if (typeName != null && idx instanceof TypeIndex) {
-          database.getSchema().getType(typeName)
-              .createTypeIndex(type, unique, propertyNames.toArray(new String[propertyNames.size()]), LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy,
-                  callback);
-        } else {
-          database.getSchema().buildBucketIndex(typeName, database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
-                  propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique).withPageSize(pageSize).withCallback(callback)
-              .withNullStrategy(nullStrategy).create();
+          if (typeName != null && idx instanceof TypeIndex) {
+            database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
+                .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)//
+                .create();
+
+          } else {
+            database.getSchema().buildBucketIndex(typeName, database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
+                    propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique).withPageSize(pageSize).withCallback(callback)
+                .withBatchSize(batchSize).withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)//
+                .create();
+          }
+          return null;
+        });
+
+        // OK
+        return;
+
+      } catch (NeedRetryException e) {
+        try {
+          Thread.sleep(200 + 200 * attempt);
+        } catch (InterruptedException ex) {
+          throw e;
         }
-
-        indexList.add(idx.getName());
       }
-      result.setProperty("indexes", indexList);
-      result.setProperty("totalIndexed", total.get());
-    });
-
-    final InternalResultSet rs = new InternalResultSet();
-    rs.add(result);
-    return rs;
+    }
   }
 
   @Override

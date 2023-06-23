@@ -28,14 +28,17 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class IndexBuilder<T extends Index> {
-  final DatabaseInternal       database;
-  final Class<? extends Index> indexMode;
+  public static final int                    BUILD_BATCH_SIZE = 20_000;
+  final               DatabaseInternal       database;
+  final               Class<? extends Index> indexMode;
   Schema.INDEX_TYPE                  indexType;
   boolean                            unique;
   int                                pageSize       = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
   LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy   = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   Index.BuildIndexCallback           callback;
   boolean                            ignoreIfExists = false;
+  int                                batchSize      = BUILD_BATCH_SIZE;
+  int                                maxAttempts    = 3;
 
   protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexMode) {
     this.database = database;
@@ -71,6 +74,16 @@ public abstract class IndexBuilder<T extends Index> {
 
   public IndexBuilder<T> withCallback(final Index.BuildIndexCallback callback) {
     this.callback = callback;
+    return this;
+  }
+
+  public IndexBuilder<T> withBatchSize(final int batchSize) {
+    this.batchSize = batchSize;
+    return this;
+  }
+
+  public IndexBuilder<T> withMaxAttempts(final int maxAttempts) {
+    this.maxAttempts = maxAttempts;
     return this;
   }
 }
