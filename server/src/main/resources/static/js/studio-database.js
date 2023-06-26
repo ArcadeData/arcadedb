@@ -645,7 +645,7 @@ function renderProperties(row, results ){
 
     if( property.custom != null && Object.keys( property.custom ).length > 0 ) {
       panelHtml += "<td></td>";
-      panelHtml += "<td colspan='9'><b>Custom Properties</b><br>";
+      panelHtml += "<td colspan='10'><b>Custom Properties</b><br>";
       panelHtml += "<div class='table-responsive'>";
       panelHtml += "<table style='width: 100%'>";
       for( c in property.custom )

@@ -170,6 +170,7 @@ function displayServerSummary(){
   var cpuOptions = {
     series: [cpuLoad, 100 - cpuLoad],
     labels: [ 'Used', 'Available' ],
+    fill: { colors: [ "#FFA502", "#48C392" ] },
     chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
@@ -192,6 +193,7 @@ function displayServerSummary(){
   var serverRamOSOptions = {
     series: [ramOsUsed, ramOsTotal - ramOsUsed],
     labels: [ 'Used', 'Available' ],
+    fill: { colors: [ "#FFA502", "#48C392" ] },
     chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
@@ -214,6 +216,7 @@ function displayServerSummary(){
   var serverDiskOSOptions = {
     series: [diskTotalSpace - diskFreeSpace, diskFreeSpace],
     labels: [ 'Used', 'Available' ],
+    fill: { colors: [ "#FFA502", "#48C392" ] },
     chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
@@ -236,6 +239,7 @@ function displayServerSummary(){
   var serverRamOptions = {
     series: [ramHeapUsed, ramHeapMax - ramHeapUsed],
     labels: [ 'Used', 'Available' ],
+    fill: { colors: [ "#FFA502", "#48C392" ] },
     chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
@@ -258,6 +262,7 @@ function displayServerSummary(){
   var serverCacheOptions = {
     series: [readCacheUsed, cacheMax - readCacheUsed],
     labels: [ 'Used', 'Available' ],
+    fill: { colors: [ "#FFA502", "#48C392" ] },
     chart: { type: 'donut', selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
     legend: { show: false },
     tooltip: { enabled: false },
