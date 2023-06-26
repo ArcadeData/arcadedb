@@ -643,7 +643,7 @@ function renderProperties(row, results ){
     panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
     panelHtml += "<td>" + actionHtml + "</td></tr>";
 
-    if( property.custom != null && property.custom.length > 0 ) {
+    if( property.custom != null && Object.keys( property.custom ).length > 0 ) {
       panelHtml += "<td></td>";
       panelHtml += "<td colspan='9'><b>Custom Properties</b><br>";
       panelHtml += "<div class='table-responsive'>";
