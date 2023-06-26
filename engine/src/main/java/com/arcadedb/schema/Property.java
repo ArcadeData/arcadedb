@@ -73,7 +73,7 @@ public class Property {
    * @return The index instance
    */
   public Index getOrCreateIndex(final EmbeddedSchema.INDEX_TYPE type, final boolean unique) {
-    return owner.getOrCreateTypeIndex(type, unique, name);
+    return owner.getSchema().buildTypeIndex(owner.getName(), new String[] { name }).withType(type).withUnique(unique).withIgnoreIfExists(true).create();
   }
 
   public String getName() {

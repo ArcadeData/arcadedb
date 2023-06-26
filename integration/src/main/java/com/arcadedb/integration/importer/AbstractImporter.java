@@ -189,7 +189,7 @@ public abstract class AbstractImporter {
       LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type DOCUMENT", name);
 
       beginTxIfNeeded();
-      final DocumentType type = database.getSchema().createDocumentType(name, settings.parallel);
+      final DocumentType type = database.getSchema().buildDocumentType().withName(name).withTotalBuckets(settings.parallel).create();
       if (settings.typeIdProperty != null) {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
         database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, settings.typeIdProperty);
@@ -205,7 +205,7 @@ public abstract class AbstractImporter {
       LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type VERTEX", name);
 
       beginTxIfNeeded();
-      final VertexType type = database.getSchema().createVertexType(name, settings.parallel);
+      final VertexType type = database.getSchema().buildVertexType().withName(name).withTotalBuckets(settings.parallel).create();
       if (settings.typeIdProperty != null) {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
         database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, settings.typeIdProperty);
@@ -222,7 +222,7 @@ public abstract class AbstractImporter {
       LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type EDGE", name);
 
       beginTxIfNeeded();
-      return database.getSchema().createEdgeType(name, settings.parallel);
+      return database.getSchema().buildEdgeType().withName(name).withTotalBuckets(settings.parallel).create();
     }
 
     return (EdgeType) database.getSchema().getType(name);
@@ -246,6 +246,7 @@ public abstract class AbstractImporter {
         type = getOrCreateEdgeType(entity.getName());
         break;
       case DOCUMENT:
+      case DATABASE:
         type = getOrCreateDocumentType(entity.getName());
         break;
       default:

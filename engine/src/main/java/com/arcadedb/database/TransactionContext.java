@@ -158,8 +158,7 @@ public class TransactionContext implements Transaction {
 
     final long pageNum = pos / bucket.getMaxRecordsInPage();
 
-    // IMMUTABLE RECORD, AVOID IT'S POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
-    // SAME PAGE, REMOVE IT
+    // FOR IMMUTABLE RECORDS AVOID THAT THEY ARE POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
     immutableRecordsCache.values()
         .removeIf(r -> r.getIdentity().getBucketId() == bucketId && r.getIdentity().getPosition() / bucket.getMaxRecordsInPage() == pageNum);
   }
@@ -263,7 +262,7 @@ public class TransactionContext implements Transaction {
 
     if (page == null) {
       // NOT FOUND, DELEGATES TO THE DATABASE
-      page = database.getPageManager().getPage(pageId, size, false, true);
+      page = database.getPageManager().getImmutablePage(pageId, size, false, true);
 
       if (page != null) {
         switch (isolationLevel) {
@@ -297,19 +296,17 @@ public class TransactionContext implements Transaction {
 
       if (page == null) {
         // IF AVAILABLE REMOVE THE PAGE FROM IMMUTABLE PAGES TO KEEP ONLY ONE PAGE IN RAM
-        ImmutablePage loadedPage = immutablePages.remove(pageId);
+        final ImmutablePage loadedPage = immutablePages.remove(pageId);
         if (loadedPage == null)
           // NOT FOUND, DELEGATES TO THE DATABASE
-          loadedPage = database.getPageManager().getPage(pageId, size, isNew, true);
+          page = database.getPageManager().getMutablePage(pageId, size, isNew, true);
+        else
+          page = loadedPage.modify();
 
-        if (loadedPage != null) {
-          final MutablePage mutablePage = loadedPage.modify();
-          if (isNew)
-            newPages.put(pageId, mutablePage);
-          else
-            modifiedPages.put(pageId, mutablePage);
-          page = mutablePage;
-        }
+        if (isNew)
+          newPages.put(pageId, page);
+        else
+          modifiedPages.put(pageId, page);
       }
     }
     return page;
@@ -573,8 +570,6 @@ public class TransactionContext implements Transaction {
 
       status = STATUS.COMMIT_2ND_PHASE;
 
-      final PageManager pageManager = database.getPageManager();
-
       if (changes.result != null)
         // WRITE TO THE WAL FIRST
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
@@ -584,7 +579,7 @@ public class TransactionContext implements Transaction {
       LogManager.instance()
           .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages, Thread.currentThread().getId());
 
-      pageManager.updatePages(newPages, modifiedPages, asyncFlush);
+      database.getPageManager().updatePages(newPages, modifiedPages, asyncFlush);
 
       if (newPages != null) {
         for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {

@@ -54,29 +54,67 @@ public interface Schema {
 
   Index getIndexByName(String indexName);
 
+  TypeIndexBuilder buildTypeIndex(String typeName, String[] propertyNames);
+
+  BucketIndexBuilder buildBucketIndex(String typeName, String bucketName, String[] propertyNames);
+
+  ManualIndexBuilder buildManualIndex(String indexName, Type[] keyTypes);
+
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).create()` instead.
+   */
+  @Deprecated
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).create()` instead.
+   */
+  @Deprecated
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).create()` instead.
+   */
+  @Deprecated
   TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
   TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
+  /**
+   * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
+  /**
+   * @Deprecated. Use `buildBucketIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).create()` instead.
+   */
+  @Deprecated
   Index createBucketIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String bucketName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
+  /**
+   * @Deprecated. Use `buildManualIndex(indexName, keyTypes).withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create()` instead.
+   */
+  @Deprecated
   Index createManualIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String indexName, Type[] keyTypes, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy);
 
@@ -100,52 +138,154 @@ public interface Schema {
 
   void dropIndex(String indexName);
 
+  TypeBuilder<DocumentType> buildDocumentType();
+
+  TypeBuilder<VertexType> buildVertexType();
+
+  TypeBuilder<EdgeType> buildEdgeType();
+
+  /**
+   * Creates a new document type with the default settings of buckets.
+   * This is the same as using `buildDocumentType().withName(typeName).create()`.
+   */
   DocumentType createDocumentType(String typeName);
 
+  /**
+   * @Deprecated. Use `buildDocumentType().withName(typeName).withTotalBuckets(buckets).create()` instead.
+   */
+  @Deprecated
   DocumentType createDocumentType(String typeName, int buckets);
 
+  /**
+   * @Deprecated. Use `buildDocumentType().withName(typeName).withBuckets(buckets).create()` instead.
+   */
+  @Deprecated
   DocumentType createDocumentType(String typeName, List<Bucket> buckets);
 
+  /**
+   * @Deprecated. Use `buildDocumentType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).create()` instead.
+   */
+  @Deprecated
   DocumentType createDocumentType(String typeName, int buckets, int pageSize);
 
+  /**
+   * @Deprecated. Use `buildDocumentType().withName(typeName).withBuckets(buckets).withPageSize(pageSize).create()` instead.
+   */
+  @Deprecated
   DocumentType createDocumentType(String typeName, List<Bucket> buckets, int pageSize);
 
+  /**
+   * Returns a document type if already defined otherwise creates it in the schema.
+   * This is equivalent to `buildDocumentType().withName(typeName).withIgnoreIfExists(true).create()`.
+   */
   DocumentType getOrCreateDocumentType(String typeName);
 
+  /**
+   * @Deprecated. Use `buildDocumentType().withName(typeName).withTotalBuckets(buckets).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   DocumentType getOrCreateDocumentType(String typeName, int buckets);
 
+  /**
+   * @Deprecated. Use `buildDocumentType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   DocumentType getOrCreateDocumentType(String typeName, int buckets, int pageSize);
 
+  /**
+   * Creates a new vertex type with the default settings of buckets.
+   * This is the same as using `buildVertexType().withName(typeName).create()`.
+   */
   VertexType createVertexType(String typeName);
 
+  /**
+   * @Deprecated. Use `buildVertexType().withName(typeName).withTotalBuckets(buckets).create()` instead.
+   */
+  @Deprecated
   VertexType createVertexType(String typeName, int buckets);
 
+  /**
+   * @Deprecated. Use `buildVertexType().withName(typeName).withBuckets(buckets).create()` instead.
+   */
+  @Deprecated
   VertexType createVertexType(String typeName, List<Bucket> buckets);
 
+  /**
+   * @Deprecated. Use `buildVertexType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).create()` instead.
+   */
+  @Deprecated
   VertexType createVertexType(String typeName, int buckets, int pageSize);
 
+  /**
+   * @Deprecated. Use `buildVertexType().withName(typeName).withBuckets(buckets).withPageSize(pageSize).create()` instead.
+   */
+  @Deprecated
   VertexType createVertexType(String typeName, List<Bucket> buckets, final int pageSize);
 
+  /**
+   * Returns a vertex type if already defined otherwise creates it in the schema.
+   * This is equivalent to `buildVertexType().withName(typeName).withIgnoreIfExists(true).create()`.
+   */
   VertexType getOrCreateVertexType(String typeName);
 
+  /**
+   * @Deprecated. Use `buildVertexType().withName(typeName).withTotalBuckets(buckets).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   VertexType getOrCreateVertexType(String typeName, int buckets);
 
+  /**
+   * @Deprecated. Use `buildVertexType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   VertexType getOrCreateVertexType(String typeName, int buckets, int pageSize);
 
+  /**
+   * Creates a new edge type with the default settings of buckets.
+   * This is the same as using `buildEdgeType().withName(typeName).create()`.
+   */
   EdgeType createEdgeType(String typeName);
 
+  /**
+   * @Deprecated. Use `buildEdgeType().withName(typeName).withTotalBuckets(buckets).create()` instead.
+   */
+  @Deprecated
   EdgeType createEdgeType(String typeName, int buckets);
 
+  /**
+   * @Deprecated. Use `buildEdgeType().withName(typeName).withBuckets(buckets).create()` instead.
+   */
+  @Deprecated
   EdgeType createEdgeType(String typeName, List<Bucket> buckets);
 
+  /**
+   * @Deprecated. Use `buildEdgeType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).create()` instead.
+   */
+  @Deprecated
   EdgeType createEdgeType(String typeName, int buckets, int pageSize);
 
+  /**
+   * @Deprecated. Use `buildEdgeType().withName(typeName).withBuckets(buckets).withPageSize(pageSize)` instead.
+   */
+  @Deprecated
   EdgeType createEdgeType(String typeName, List<Bucket> buckets, int pageSize);
 
+  /**
+   * Returns an edge type if already defined otherwise creates it in the schema.
+   * This is equivalent to `buildEdgeType().withName(typeName).withIgnoreIfExists(true).create()`.
+   */
   EdgeType getOrCreateEdgeType(String typeName);
 
+  /**
+   * @Deprecated. Use `buildEdgeType().withName(typeName).withTotalBuckets(buckets).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   EdgeType getOrCreateEdgeType(String typeName, int buckets);
 
+  /**
+   * @Deprecated. Use `buildEdgeType().withName(typeName).withTotalBuckets(buckets).withPageSize(pageSize).withIgnoreIfExists(true).create()` instead.
+   */
+  @Deprecated
   EdgeType getOrCreateEdgeType(String typeName, int buckets, int pageSize);
 
   TimeZone getTimeZone();

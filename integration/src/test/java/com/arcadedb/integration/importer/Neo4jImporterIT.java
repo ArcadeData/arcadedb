@@ -145,7 +145,7 @@ public class Neo4jImporterIT {
           t.set(new Thread(() -> {
             for (Index idx : importer.database.getSchema().getIndexes()) {
               try {
-                idx.scheduleCompaction();
+                ((IndexInternal) idx).scheduleCompaction();
                 ((IndexInternal) idx).compact();
               } catch (Exception e) {
                 LogManager.instance().log(this, Level.SEVERE, "Error during compaction", e);

@@ -4020,12 +4020,30 @@ BeginStatement BeginStatement():
 }
 
 CommitStatement CommitStatement():
-{ }
+{ Statement last;}
 {
   <COMMIT>
   [
-    <RETRY>
-    jjtThis.retry = PInteger()
+    <RETRY> jjtThis.retry = PInteger()
+    [
+      <ELSE>
+      (
+        (
+          { jjtThis.elseStatements = new ArrayList(); }
+          <LBRACE>
+          (
+            last = StatementInternal() { jjtThis.addElse(last); }
+            <SEMICOLON>
+          )+
+          <RBRACE>
+          [
+            <AND> ( ( <CONTINUE> { jjtThis.elseFail = false; } ) | ( <FAIL> { jjtThis.elseFail = true; } ) )
+          ]
+        )
+        |
+        ( ( <CONTINUE> { jjtThis.elseFail = false; } ) | ( <FAIL> { jjtThis.elseFail = true; } ) )
+      )
+    ]
   ]
   {return jjtThis;}
 }
@@ -4072,7 +4090,7 @@ IfStatement IfStatement():
 SleepStatement SleepStatement():
 { }
 {
-  <SLEEP> jjtThis.millis = PInteger()
+  <SLEEP> jjtThis.expression = Expression()
   { return jjtThis; }
 }
 
@@ -4161,7 +4179,7 @@ ExportDatabaseStatement ExportDatabaseStatement():
 { }
 {
   <EXPORT> <DATABASE>
-  jjtThis.url = Url()
+  [ jjtThis.url = Url() ]
   [ <FORMAT> jjtThis.format = Identifier() ]
   [ <OVERWRITE> ( <TRUE> { jjtThis.overwrite = BooleanExpression.TRUE;} | <FALSE> { jjtThis.overwrite = BooleanExpression.FALSE;} ) ]
   [

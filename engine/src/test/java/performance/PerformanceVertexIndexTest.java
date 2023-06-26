@@ -84,7 +84,7 @@ public class PerformanceVertexIndexTest {
       if (!database.getSchema().existsType(TYPE_NAME)) {
         database.begin();
 
-        final DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, parallel);
+        final DocumentType v = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(parallel).create();
 
         v.createProperty("id", String.class);
         v.createProperty("number", String.class);

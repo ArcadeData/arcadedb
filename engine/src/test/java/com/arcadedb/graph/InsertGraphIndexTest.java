@@ -171,13 +171,13 @@ public class InsertGraphIndexTest extends TestHelper {
   }
 
   private void createSchema() {
-    final VertexType vertex = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
+    final VertexType vertex = database.getSchema().buildVertexType().withName(VERTEX_TYPE_NAME).withTotalBuckets(PARALLEL).create();
     vertex.createProperty("id", Integer.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
 
     Assertions.assertEquals("round-robin", vertex.getBucketSelectionStrategy().getName());
 
-    database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
+    database.getSchema().buildEdgeType().withName(EDGE_TYPE_NAME).withTotalBuckets(PARALLEL).create();
 
     final VertexType vertexNotInUse = database.getSchema().createVertexType("NotInUse");
     vertexNotInUse.createProperty("id", Integer.class);

@@ -201,6 +201,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
+  public String getMostRecentFileName() {
+    return underlyingIndex.getMostRecentFileName();
+  }
+
+  @Override
   public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
     underlyingIndex.setMetadata(name, propertyNames, associatedBucketId);
   }

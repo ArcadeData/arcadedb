@@ -38,13 +38,13 @@ public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
   protected DocumentType createType(final Schema schema) {
     final DocumentType type;
     if (totalBucketNo != null)
-      type = schema.createDocumentType(name.getStringValue(), totalBucketNo.getValue().intValue());
+      type = schema.buildDocumentType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue()).create();
     else {
       if (buckets == null || buckets.isEmpty())
         type = schema.createDocumentType(name.getStringValue());
       else {
         // CHECK THE BUCKETS FIRST
-        type = schema.createDocumentType(name.getStringValue(), getBuckets(schema));
+        type = schema.buildDocumentType().withName(name.getStringValue()).withBuckets(getBuckets(schema)).create();
       }
     }
     return type;

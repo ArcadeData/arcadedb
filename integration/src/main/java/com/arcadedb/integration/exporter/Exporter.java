@@ -91,11 +91,15 @@ public class Exporter {
 
       // RETURN STATISTICS
       final Map<String, Object> result = new LinkedHashMap<>();
-      result.put("totalRecords", totalRecords);
+      if (totalRecords > 0)
+        result.put("totalRecords", totalRecords);
       result.put("elapsedInSecs", totalRecords);
-      result.put("documents", context.documents.get());
-      result.put("vertices", context.vertices.get());
-      result.put("edges", context.edges.get());
+      if (context.documents.get() > 0)
+        result.put("documents", context.documents.get());
+      if (context.vertices.get() > 0)
+        result.put("vertices", context.vertices.get());
+      if (context.edges.get() > 0)
+        result.put("edges", context.edges.get());
 
       return result;
 

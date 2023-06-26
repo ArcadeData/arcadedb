@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.message;
 
 import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
@@ -42,21 +43,24 @@ import java.util.logging.*;
  * needed to assure the index unique constraint.
  */
 public class TxForwardRequest extends TxRequestAbstract {
+  private int    isolationLevelIndex;
   private int    uniqueKeysUncompressedLength;
   private Binary uniqueKeysBuffer;
 
   public TxForwardRequest() {
   }
 
-  public TxForwardRequest(final DatabaseInternal database, final Binary bufferChanges,
+  public TxForwardRequest(final DatabaseInternal database, Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel, final Binary bufferChanges,
       final Map<String, TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>>> keysTx) {
     super(database.getName(), bufferChanges);
+    this.isolationLevelIndex = transactionIsolationLevel.ordinal();
     writeIndexKeysToBuffer(database, keysTx);
   }
 
   @Override
   public void toStream(final Binary stream) {
     super.toStream(stream);
+    stream.putByte((byte) isolationLevelIndex);
     stream.putInt(uniqueKeysUncompressedLength);
     stream.putBytes(uniqueKeysBuffer.getContent(), uniqueKeysBuffer.size());
   }
@@ -64,6 +68,7 @@ public class TxForwardRequest extends TxRequestAbstract {
   @Override
   public void fromStream(final ArcadeDBServer server, final Binary stream) {
     super.fromStream(server, stream);
+    isolationLevelIndex = stream.getByte();
     uniqueKeysUncompressedLength = stream.getInt();
     uniqueKeysBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), uniqueKeysUncompressedLength);
   }
@@ -83,7 +88,7 @@ public class TxForwardRequest extends TxRequestAbstract {
           db);
 
       // FORWARDED FROM A REPLICA
-      db.begin();
+      db.begin(Database.TRANSACTION_ISOLATION_LEVEL.values()[isolationLevelIndex]);
       final TransactionContext tx = db.getTransaction();
 
       tx.commitFromReplica(walTx, keysTx);

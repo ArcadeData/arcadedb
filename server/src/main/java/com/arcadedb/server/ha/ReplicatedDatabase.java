@@ -117,7 +117,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
               replicateTx(tx, phase1, bufferChanges);
             else {
               // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-              final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, bufferChanges, tx.getIndexChanges().toMap());
+              final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, getTransactionIsolationLevel(), bufferChanges,
+                  tx.getIndexChanges().toMap());
               server.getHA().forwardCommandToLeader(command, timeout * 2);
               tx.reset();
             }
@@ -575,30 +576,35 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet command(final String language, final String query, final Object... args) {
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Object... args) {
     if (!isLeader()) {
-      final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
-      if (analyzed.isDDL()) {
+      final QueryEngine queryEngine = proxied.getQueryEngineManager().getInstance(language, this);
+      if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
         // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
         final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
         return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
       }
-      return proxied.command(language, query, args);
+      return proxied.command(language, query, configuration, args);
     }
 
-    return proxied.command(language, query, args);
+    return proxied.command(language, query, configuration, args);
+  }
+
+  @Override
+  public ResultSet command(final String language, final String query, final Object... args) {
+    return command(language, query, server.getConfiguration(), args);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> args) {
-    return command(language, query, null, args);
+    return command(language, query, server.getConfiguration(), args);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Map<String, Object> args) {
     if (!isLeader()) {
-      final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
-      if (analyzed.isDDL()) {
+      final QueryEngine queryEngine = proxied.getQueryEngineManager().getInstance(language, this);
+      if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
         // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
         final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
         return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
@@ -627,7 +633,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> args) {
-    return proxied.execute(language, script, args);
+    return proxied.execute(language, script, server.getConfiguration(), args);
   }
 
   @Override
@@ -699,7 +705,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public String toString() {
-    return proxied.toString();
+    return proxied.toString() + "[" + server.getServerName() + "]";
   }
 
   public <RET> RET recordFileChanges(final Callable<Object> callback) {

@@ -412,39 +412,42 @@ public class DocumentType {
   }
 
   public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
-    return schema.createTypeIndex(indexType, unique, name, propertyNames, LSMTreeIndexAbstract.DEF_PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).create();
   }
 
   public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize) {
-    return schema.createTypeIndex(indexType, unique, name, propertyNames, pageSize);
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).create();
   }
 
   public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
       final Index.BuildIndexCallback callback) {
-    return schema.createTypeIndex(indexType, unique, name, propertyNames, pageSize, callback);
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withCallback(callback).create();
   }
 
   public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
-    return schema.createTypeIndex(indexType, unique, name, propertyNames, pageSize, nullStrategy, callback);
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
+        .withCallback(callback).create();
   }
 
   public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
-    return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames);
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withIgnoreIfExists(true).create();
   }
 
   public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize) {
-    return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames, pageSize);
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withIgnoreIfExists(true).create();
   }
 
   public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
       final Index.BuildIndexCallback callback) {
-    return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames, pageSize, callback);
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withCallback(callback)
+        .withIgnoreIfExists(true).create();
   }
 
   public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
-    return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames, pageSize, nullStrategy, callback);
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
+        .withCallback(callback).withIgnoreIfExists(true).create();
   }
 
   public List<Bucket> getBuckets(final boolean polymorphic) {
@@ -969,8 +972,8 @@ public class DocumentType {
       type.put("bucketSelectionStrategy", strategy.toJSON());
 
     for (final TypeIndex i : getAllIndexes(false)) {
-      for (final Index entry : i.getIndexesOnBuckets())
-        indexes.put(entry.getName(), entry.toJSON());
+      for (final IndexInternal entry : i.getIndexesOnBuckets())
+        indexes.put(entry.getMostRecentFileName(), entry.toJSON());
     }
 
     type.put("custom", new JSONObject(custom));

@@ -48,6 +48,30 @@ public class UpsertStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (applied)
       return getPrev().syncPull(context, nRecords);
+//
+//    boolean fetchFromIndexFound = false;
+//    ExecutionStepInternal p = prev;
+//
+//    if (p instanceof SubQueryStep) {
+//      for (ExecutionPlan ep : ((SubQueryStep) p).getSubExecutionPlans()) {
+//        for (ExecutionStep s : ep.getSteps()) {
+//          if (s instanceof FetchFromIndexStep) {
+//            fetchFromIndexFound = true;
+//            break;
+//          }
+//        }
+//      }
+//    } else {
+//      for (ExecutionStep step : p.getSubSteps()) {
+//        if (step instanceof FetchFromIndexStep) {
+//          fetchFromIndexFound = true;
+//          break;
+//        }
+//      }
+//    }
+//
+//    if (!fetchFromIndexFound)
+//      throw new CommandSQLParsingException("Upsert must involve an index to retrieve the records. Check the where condition is using the index for the upsert");
 
     applied = true;
     final ResultSet upstream = getPrev().syncPull(context, nRecords);

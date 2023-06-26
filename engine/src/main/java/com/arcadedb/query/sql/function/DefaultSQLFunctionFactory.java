@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.function;
 
 // Collections
+
 import com.arcadedb.query.sql.function.coll.SQLFunctionDifference;
 import com.arcadedb.query.sql.function.coll.SQLFunctionFirst;
 import com.arcadedb.query.sql.function.coll.SQLFunctionIntersect;
@@ -28,16 +29,12 @@ import com.arcadedb.query.sql.function.coll.SQLFunctionMap;
 import com.arcadedb.query.sql.function.coll.SQLFunctionSet;
 import com.arcadedb.query.sql.function.coll.SQLFunctionSymmetricDifference;
 import com.arcadedb.query.sql.function.coll.SQLFunctionUnionAll;
-
-// Geo
 import com.arcadedb.query.sql.function.geo.SQLFunctionCircle;
 import com.arcadedb.query.sql.function.geo.SQLFunctionDistance;
 import com.arcadedb.query.sql.function.geo.SQLFunctionLineString;
 import com.arcadedb.query.sql.function.geo.SQLFunctionPoint;
 import com.arcadedb.query.sql.function.geo.SQLFunctionPolygon;
 import com.arcadedb.query.sql.function.geo.SQLFunctionRectangle;
-
-// Graph
 import com.arcadedb.query.sql.function.graph.SQLFunctionAstar;
 import com.arcadedb.query.sql.function.graph.SQLFunctionBoth;
 import com.arcadedb.query.sql.function.graph.SQLFunctionBothE;
@@ -50,8 +47,6 @@ import com.arcadedb.query.sql.function.graph.SQLFunctionOut;
 import com.arcadedb.query.sql.function.graph.SQLFunctionOutE;
 import com.arcadedb.query.sql.function.graph.SQLFunctionOutV;
 import com.arcadedb.query.sql.function.graph.SQLFunctionShortestPath;
-
-// Math
 import com.arcadedb.query.sql.function.math.SQLFunctionAbsoluteValue;
 import com.arcadedb.query.sql.function.math.SQLFunctionAverage;
 import com.arcadedb.query.sql.function.math.SQLFunctionCount;
@@ -61,22 +56,11 @@ import com.arcadedb.query.sql.function.math.SQLFunctionMedian;
 import com.arcadedb.query.sql.function.math.SQLFunctionMin;
 import com.arcadedb.query.sql.function.math.SQLFunctionMode;
 import com.arcadedb.query.sql.function.math.SQLFunctionPercentile;
+import com.arcadedb.query.sql.function.math.SQLFunctionRandomInt;
 import com.arcadedb.query.sql.function.math.SQLFunctionSquareRoot;
 import com.arcadedb.query.sql.function.math.SQLFunctionStandardDeviation;
 import com.arcadedb.query.sql.function.math.SQLFunctionSum;
 import com.arcadedb.query.sql.function.math.SQLFunctionVariance;
-
-// Time
-import com.arcadedb.query.sql.function.time.SQLFunctionDate;
-import com.arcadedb.query.sql.function.time.SQLFunctionDuration;
-import com.arcadedb.query.sql.function.time.SQLFunctionSysdate;
-
-// Text
-import com.arcadedb.query.sql.function.text.SQLFunctionConcat;
-import com.arcadedb.query.sql.function.text.SQLFunctionFormat;
-import com.arcadedb.query.sql.function.text.SQLFunctionStrcmpci;
-
-// Misc
 import com.arcadedb.query.sql.function.misc.SQLFunctionBoolAnd;
 import com.arcadedb.query.sql.function.misc.SQLFunctionBoolOr;
 import com.arcadedb.query.sql.function.misc.SQLFunctionCoalesce;
@@ -85,8 +69,12 @@ import com.arcadedb.query.sql.function.misc.SQLFunctionEncode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIf;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIfNull;
 import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
-
-
+import com.arcadedb.query.sql.function.text.SQLFunctionConcat;
+import com.arcadedb.query.sql.function.text.SQLFunctionFormat;
+import com.arcadedb.query.sql.function.text.SQLFunctionStrcmpci;
+import com.arcadedb.query.sql.function.time.SQLFunctionDate;
+import com.arcadedb.query.sql.function.time.SQLFunctionDuration;
+import com.arcadedb.query.sql.function.time.SQLFunctionSysdate;
 
 /**
  * Default set of SQL function.
@@ -138,6 +126,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionMin.NAME, SQLFunctionMin.class);
     register(SQLFunctionMode.NAME, SQLFunctionMode.class);
     register(SQLFunctionPercentile.NAME, SQLFunctionPercentile.class);
+    register(SQLFunctionRandomInt.NAME, SQLFunctionRandomInt.class);
     register(SQLFunctionSquareRoot.NAME, SQLFunctionSquareRoot.class);
     register(SQLFunctionStandardDeviation.NAME, SQLFunctionStandardDeviation.class);
     register(SQLFunctionSum.NAME, SQLFunctionSum.class);

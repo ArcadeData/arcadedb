@@ -29,6 +29,11 @@ public class Url extends SimpleNode {
     super(id);
   }
 
+  public Url(final String url) {
+    super(-1);
+    this.urlString = url;
+  }
+
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(urlString);

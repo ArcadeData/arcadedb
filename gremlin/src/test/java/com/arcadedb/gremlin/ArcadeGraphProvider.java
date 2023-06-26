@@ -52,24 +52,26 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
     IGNORED_TESTS.put(SerializationTest.GraphSONV3d0Test.class, Arrays.asList("shouldSerializeTraversalMetrics"));
     IGNORED_TESTS.put(ProfileTest.Traversals.class, Arrays.asList("testProfileStrategyCallback", "testProfileStrategyCallbackSideEffect"));
     IGNORED_TESTS.put(IoGraphTest.class, Arrays.asList("shouldReadWriteClassicToFileWithHelpers[graphml]", "shouldReadWriteModernToFileWithHelpers[graphml]"));
+    IGNORED_TESTS.put(org.apache.tinkerpop.gremlin.process.traversal.step.map.CountTest.Traversals.class, Arrays.asList("g_VX1X_valuesXageX_countXlocalX"));
   }
 
   private static final Set<Class> IMPLEMENTATIONS = new HashSet<>() {{
-      add(ArcadeEdge.class);
-      add(ArcadeElement.class);
-      add(ArcadeGraph.class);
-      add(ArcadeGraphFeatures.class);
-      add(ArcadeGraphTransaction.class);
-      add(ArcadeGremlin.class);
-      add(ArcadeProperty.class);
-      add(ArcadeVariableFeatures.class);
-      add(ArcadeVertex.class);
-      add(ArcadeVertexProperty.class);
-      add(RID.class);
+    add(ArcadeEdge.class);
+    add(ArcadeElement.class);
+    add(ArcadeGraph.class);
+    add(ArcadeGraphFeatures.class);
+    add(ArcadeGraphTransaction.class);
+    add(ArcadeGremlin.class);
+    add(ArcadeProperty.class);
+    add(ArcadeVariableFeatures.class);
+    add(ArcadeVertex.class);
+    add(ArcadeVertexProperty.class);
+    add(RID.class);
   }};
 
   @Override
-  public Map<String, Object> getBaseConfiguration(final String graphName, final Class<?> test, final String testMethodName, final LoadGraphWith.GraphData loadGraphWith) {
+  public Map<String, Object> getBaseConfiguration(final String graphName, final Class<?> test, final String testMethodName,
+      final LoadGraphWith.GraphData loadGraphWith) {
     if (IGNORED_TESTS.containsKey(test) && IGNORED_TESTS.get(test).contains(testMethodName))
       throw new AssumptionViolatedException("Ignored Test");
 

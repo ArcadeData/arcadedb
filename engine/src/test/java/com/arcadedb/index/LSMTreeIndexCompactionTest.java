@@ -122,7 +122,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       for (final Index index : database.getSchema().getIndexes()) {
         if (database.isOpen())
           try {
-            index.scheduleCompaction();
+            ((IndexInternal) index).scheduleCompaction();
             ((IndexInternal) index).compact();
           } catch (final Exception e) {
             Assertions.fail(e);
@@ -133,7 +133,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   private void insertData() {
     database.transaction(() -> {
       if (!database.getSchema().existsType(TYPE_NAME)) {
-        final DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
+        final DocumentType v = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(PARALLEL).create();
 
         v.createProperty("id", String.class);
         v.createProperty("number", Integer.class);
@@ -208,8 +208,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
     database.async().waitCompletion();
   }
 
-  private void checkLookups(final int step, final int expectedItems) {
-    database.transaction(() -> Assertions.assertEquals(TOT * expectedItems, database.countType(TYPE_NAME, false)));
+  private void checkLookups(final int step, final int expectedItemsPerSameKey) {
+    database.transaction(() -> Assertions.assertEquals(TOT * expectedItemsPerSameKey, database.countType(TYPE_NAME, false)));
 
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup all the keys...");
 
@@ -230,10 +230,10 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           ++count;
         }
 
-        if (count != expectedItems)
+        if (count != expectedItemsPerSameKey)
           LogManager.instance().log(this, Level.FINE, "Cannot find key '%s'", null, id);
 
-        Assertions.assertEquals(expectedItems, count, "Wrong result for lookup of key " + id);
+        Assertions.assertEquals(expectedItemsPerSameKey, count, "Wrong result for lookup of key " + id);
 
         checked++;
 
@@ -251,8 +251,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
   }
 
-  private void checkRanges(final int step, final int expectedItems) {
-    database.transaction(() -> Assertions.assertEquals(TOT * expectedItems, database.countType(TYPE_NAME, false)));
+  private void checkRanges(final int step, final int expectedItemsPerSameKey) {
+    database.transaction(() -> Assertions.assertEquals(TOT * expectedItemsPerSameKey, database.countType(TYPE_NAME, false)));
 
     LogManager.instance().log(this, Level.FINE, "TEST: Range pair of keys...");
 
@@ -269,7 +269,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
         int count = 0;
         for (final Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
-          for (int i = 0; i < expectedItems; i++) {
+          for (int i = 0; i < expectedItemsPerSameKey; i++) {
             final Identifiable rid = it.next();
             final Document record = (Document) rid.getRecord();
             Assertions.assertEquals(number + count, record.getLong("number"));

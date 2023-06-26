@@ -77,6 +77,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public final    DatabaseInternal                 database;
     public volatile boolean                          shutdown      = false;
     public volatile boolean                          forceShutdown = false;
+    public volatile boolean                          executingTask = false;
     public          long                             count         = 0;
 
     private AsyncThread(final DatabaseInternal database, final int id) {
@@ -121,6 +122,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             if (message == FORCE_EXIT) {
               break;
             } else {
+              executingTask = true;
+
               try {
                 if (message.requiresActiveTx() && !database.isTransactionActive())
                   database.begin();
@@ -138,6 +141,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                 onError(e);
               } finally {
                 message.completed();
+                executingTask = false;
               }
             }
 
@@ -168,6 +172,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     public void onOk() {
       DatabaseAsyncExecutorImpl.this.onOk();
+    }
+
+    public boolean isExecutingTask() {
+      return executingTask;
     }
   }
 
@@ -291,7 +299,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     for (int i = 0; i < semaphores.length; ++i)
       try {
-        semaphores[i].waitForCompetition(currentTimeout);
+        if (!semaphores[i].waitForCompetition(currentTimeout))
+          return false;
 
         // UPDATE THE TIMEOUT
         currentTimeout = timeout - (System.currentTimeMillis() - beginTime);
@@ -711,5 +720,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   public int getSlot(final int value) {
     return (value & 0x7fffffff) % executorThreads.length;
+  }
+
+  @Override
+  public boolean isProcessing() {
+    if (executorThreads != null)
+      for (int i = 0; i < executorThreads.length; ++i) {
+        if (executorThreads[i].isExecutingTask())
+          return true;
+
+        if (executorThreads[i].queue.size() > 0)
+          return true;
+      }
+    return false;
   }
 }

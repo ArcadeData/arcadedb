@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -86,12 +87,13 @@ public class DatabaseChecker {
         final boolean unique = idx.isUnique();
         final List<String> propNames = idx.getPropertyNames();
         final String typeName = idx.getTypeName();
-        final int pageSize = idx.getPageSize();
+        final int pageSize = ((IndexInternal) idx).getPageSize();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
         database.getSchema().dropIndex(idx.getName());
-        database.getSchema()
-            .createBucketIndex(indexType, unique, typeName, bucketName, propNames.toArray(new String[propNames.size()]), pageSize, nullStrategy, null);
+
+        database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()])).withType(indexType).withUnique(unique)
+            .withPageSize(pageSize).withNullStrategy(nullStrategy).create();
       }
 
     if (verboseLevel > 0)

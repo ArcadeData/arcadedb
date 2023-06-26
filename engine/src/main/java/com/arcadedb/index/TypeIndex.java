@@ -166,7 +166,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isCompacting() {
     checkIsValid();
-    for (final Index index : indexesOnBuckets)
+    for (final IndexInternal index : indexesOnBuckets)
       if (index.isCompacting())
         return true;
     return false;
@@ -175,11 +175,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean scheduleCompaction() {
     checkIsValid();
-    for (final Index index : indexesOnBuckets)
+    for (final IndexInternal index : indexesOnBuckets)
       if (!index.scheduleCompaction())
         return false;
 
     return true;
+  }
+
+  @Override
+  public String getMostRecentFileName() {
+    return indexesOnBuckets.get(0).getMostRecentFileName();
   }
 
   @Override

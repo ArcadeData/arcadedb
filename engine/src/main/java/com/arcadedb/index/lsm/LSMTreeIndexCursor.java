@@ -163,12 +163,13 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
     final Set<RID> removedRIDs = new HashSet<>();
     final Set<RID> validRIDs = new HashSet<>();
+    boolean removedEntry = false;
 
     // CHECK THE VALIDITY OF CURSORS
     for (int i = 0; i < pageCursors.length; ++i) {
-      final LSMTreeIndexUnderlyingAbstractCursor pageCursor = pageCursors[i];
 
-      if (pageCursor != null) {
+      LSMTreeIndexUnderlyingAbstractCursor pageCursor = pageCursors[i];
+      while (pageCursor != null && !removedEntry) {
         if (fromKeys != null && !beginKeysInclusive) {
           if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[i], fromKeys) == 0) {
             // SKIP THIS
@@ -188,9 +189,11 @@ public class LSMTreeIndexCursor implements IndexCursor {
           if ((ascendingOrder && ((endKeysInclusive && compare <= 0) || (!endKeysInclusive && compare < 0))) || //
               (!ascendingOrder && ((endKeysInclusive && compare >= 0) || (!endKeysInclusive && compare > 0))))
             ;
-          else
+          else {
             // INVALID
             pageCursors[i] = null;
+            pageCursor = null;
+          }
         }
 
         if (pageCursors[i] != null) {
@@ -198,6 +201,12 @@ public class LSMTreeIndexCursor implements IndexCursor {
           if (rids != null) {
             for (int j = rids.length - 1; j > -1; --j) {
               final RID r = rids[j];
+
+              if (index.REMOVED_ENTRY_RID.equals(r)) {
+                removedEntry = true;
+                break;
+              }
+
               if (r.getBucketId() < 0) {
                 final RID originalRID = index.getOriginalRID(r);
                 if (!validRIDs.remove(originalRID))
@@ -212,6 +221,17 @@ public class LSMTreeIndexCursor implements IndexCursor {
             }
           }
         }
+
+        if (validIterators == 0 && pageCursor != null) {
+          // CHECK FOR THE NEXT ENTRY
+          if (pageCursor.hasNext())
+            pageCursor.next();
+          else
+            break;
+        } else
+          break;
+
+        pageCursor = pageCursors[i];
       }
     }
 
@@ -263,7 +283,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
     do {
       if (currentValues != null && currentValueIndex < currentValues.length) {
         final RID value = currentValues[currentValueIndex++];
-        if (!index.isDeletedEntry(value))
+        if (value != null && !index.isDeletedEntry(value))
           return value;
 
         continue;

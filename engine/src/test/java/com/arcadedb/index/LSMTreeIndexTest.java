@@ -1133,7 +1133,7 @@ public class LSMTreeIndexTest extends TestHelper {
     database.transaction(() -> {
       Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-      final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
+      final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
       final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 

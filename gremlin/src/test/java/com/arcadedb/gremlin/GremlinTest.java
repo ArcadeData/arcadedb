@@ -74,8 +74,6 @@ public class GremlinTest {
       int lastAge = 0;
       for (; result.hasNext(); ++i) {
         final Result row = result.next();
-        //System.out.println(row);
-
         Assertions.assertEquals("Jay", row.getProperty("p.name"));
         Assertions.assertTrue(row.getProperty("p.age") instanceof Number);
         Assertions.assertTrue((int) row.getProperty("p.age") > lastAge);
@@ -95,8 +93,8 @@ public class GremlinTest {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
-      graph.getDatabase().getSchema().createVertexType("Movie", 2);
-      graph.getDatabase().getSchema().createEdgeType("LinkedTo", 2);
+      graph.getDatabase().getSchema().buildVertexType().withName("Movie").withTotalBuckets(2).create();
+      graph.getDatabase().getSchema().buildEdgeType().withName("LinkedTo").withTotalBuckets(2).create();
 
       graph.getDatabase().transaction(() -> {
         Vertex prev = null;
@@ -140,8 +138,8 @@ public class GremlinTest {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
-      graph.getDatabase().getSchema().createVertexType("Customer", 1);
-      graph.getDatabase().getSchema().createDocumentType("Address", 0);
+      graph.getDatabase().getSchema().buildVertexType().withName("Customer").withTotalBuckets(1).create();
+      graph.getDatabase().getSchema().buildDocumentType().withName("Address").withTotalBuckets(0).create();
 
       graph.getDatabase().transaction(() -> {
         for (int i = 0; i < 10; i++) {
@@ -240,8 +238,6 @@ public class GremlinTest {
       int lastAge = 0;
       for (; result.hasNext(); ++i) {
         final Result row = result.next();
-        //System.out.println(row);
-
         Assertions.assertFalse(row.isElement());
         Assertions.assertEquals("Jay", row.getProperty("p.name"));
         Assertions.assertTrue(row.getProperty("p.age") instanceof Number);

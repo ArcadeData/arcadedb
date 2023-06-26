@@ -19,6 +19,7 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -42,6 +43,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.zip.*;
 
 import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
@@ -63,8 +65,8 @@ public class OrientDBImporter {
   private final Set<String>                edgeClasses                     = new HashSet<>();
   private final List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
   private final Map<RID, RID>              vertexRidMap                    = new HashMap<>();
-  private final Map<String, Long>          totalEdgesByVertexType          = new HashMap<>();
-  private final ImporterSettings           settings                        = new ImporterSettings();
+  private final Map<String, AtomicLong>    totalEdgesByVertexType          = new HashMap<>();
+  private final ImporterSettings           settings;
   private final ConsoleLogger              logger;
   private       String                     databasePath;
   private       String                     inputFile;
@@ -91,12 +93,15 @@ public class OrientDBImporter {
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
   private static class OrientDBClass {
+    String              name;
     List<String>        superClasses = new ArrayList<>();
     List<Integer>       clusterIds   = new ArrayList<>();
     Map<String, String> properties   = new LinkedHashMap<>();
   }
 
   public OrientDBImporter(final String[] args) {
+    this.settings = new ImporterSettings();
+
     String state = null;
     for (final String arg : args) {
       if (arg.equals("-?"))
@@ -135,11 +140,13 @@ public class OrientDBImporter {
     file = new File(inputFile);
   }
 
-  public OrientDBImporter(final DatabaseInternal database) throws IOException {
+  public OrientDBImporter(final DatabaseInternal database, final ImporterSettings settings) throws IOException {
+    this.settings = settings;
     this.database = database;
     this.databasePath = database.getDatabasePath();
+    this.batchSize = settings.commitEvery;
     this.file = null;
-    logger = new ConsoleLogger(settings.verboseLevel);
+    this.logger = new ConsoleLogger(settings.verboseLevel);
   }
 
   public static void main(final String[] args) throws IOException {
@@ -596,8 +603,8 @@ public class OrientDBImporter {
 
     context.createdEdges.incrementAndGet();
 
-    final Long edgesByVertexType = totalEdgesByVertexType.computeIfAbsent(className, k -> 0L);
-    totalEdgesByVertexType.put(className, edgesByVertexType + 1);
+    final AtomicLong edgesByVertexType = totalEdgesByVertexType.computeIfAbsent(className, k -> new AtomicLong());
+    edgesByVertexType.incrementAndGet();
 
     incrementRecordByClass(className);
   }
@@ -700,13 +707,12 @@ public class OrientDBImporter {
         while (reader.peek() != END_ARRAY) {
           reader.beginObject();
 
-          String className = null;
           final OrientDBClass cls = new OrientDBClass();
 
           while (reader.peek() != END_OBJECT) {
             switch (reader.nextName()) {
             case "name":
-              className = reader.nextString();
+              cls.name = reader.nextString();
               break;
 
             case "cluster-ids":
@@ -756,7 +762,7 @@ public class OrientDBImporter {
           }
           reader.endObject();
 
-          classes.put(className, cls);
+          classes.put(cls.name, cls);
         }
         reader.endArray();
         break;
@@ -793,7 +799,7 @@ public class OrientDBImporter {
       boolean nullValuesIgnored = (boolean) indexDefinition.get("nullValuesIgnored");
 
       final DocumentType type = database.getSchema().getType(className);
-      if (!type.existsProperty(fieldName)) {
+      if (!type.existsPolymorphicProperty(fieldName)) {
         if (keyType == null) {
           logger.logLine(2, "- Skipped %s index creation on %s%s because the property is not defined and the key type is unknown",
               unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));
@@ -852,20 +858,27 @@ public class OrientDBImporter {
 
     final DocumentType t;
 
+    int bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
+    if (settings.options.containsKey(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey()))
+      bucketsPerType = Integer.parseInt(settings.options.get(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey()));
+
     switch (type) {
     case 1:
-      t = database.getSchema().createVertexType(className);
+      t = database.getSchema().createVertexType(className, bucketsPerType);
       break;
 
     case 2:
-      t = database.getSchema().createEdgeType(className);
+      t = database.getSchema().createEdgeType(className, bucketsPerType);
       edgeClasses.add(className);
       break;
 
     default:
-      t = database.getSchema().createDocumentType(className);
+      t = database.getSchema().createDocumentType(className, bucketsPerType);
       break;
     }
+
+    for (final String c : classInfo.superClasses)
+      t.addSuperType(c);
 
     // CREATE PROPERTIES
     for (final Map.Entry<String, String> entry : classInfo.properties.entrySet()) {
@@ -892,7 +905,7 @@ public class OrientDBImporter {
       }
     }
 
-    logger.logLine(2, "- Created type '%s' with the following properties %s", className, classInfo.properties);
+    logger.logLine(2, "- Created type '%s' which extends from %s with the following properties %s", className, classInfo.superClasses, classInfo.properties);
   }
 
   private int getClassType(final List<String> list) {

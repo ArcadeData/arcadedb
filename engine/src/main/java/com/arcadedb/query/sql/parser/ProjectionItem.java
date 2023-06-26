@@ -52,9 +52,9 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public boolean isAll() {
-    if (all) {
+    if (all)
       return true;
-    }
+
     return expression != null && "*".equals(expression.toString());
   }
 

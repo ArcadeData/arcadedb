@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
+import java.util.*;
+
 /**
  * Created by luigidellaquila on 22/07/16.
  */
@@ -63,6 +65,11 @@ public class SubQueryStep extends AbstractExecutionStep {
         parentRs.close();
       }
     };
+  }
+
+  @Override
+  public List<ExecutionPlan> getSubExecutionPlans() {
+    return List.of(subExecutionPlan);
   }
 
   @Override

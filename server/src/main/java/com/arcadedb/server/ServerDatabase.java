@@ -427,6 +427,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Object... args) {
+    return wrapped.command(language, query, configuration, args);
+  }
+
+  @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
     return wrapped.command(language, query, parameters);
   }

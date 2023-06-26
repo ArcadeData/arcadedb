@@ -21,12 +21,15 @@ package com.arcadedb.query.sql;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.RetryExecutionPlan;
+import com.arcadedb.query.sql.executor.RetryStep;
 import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
 import com.arcadedb.query.sql.parser.BeginStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
@@ -101,6 +104,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();
+    context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
 
@@ -112,6 +116,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();
+    context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
     return executeInternal(statements, context);
@@ -159,6 +164,12 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     return parserText;
   }
 
+  @Override
+  public boolean isExecutedByTheLeader() {
+    // REPLICATE THE SCRIPT TO THE LEADER
+    return true;
+  }
+
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
 
@@ -180,16 +191,31 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
       } else
         lastRetryBlock.add(stm);
 
-      if (stm instanceof CommitStatement && nestedTxLevel > 0) {
-        nestedTxLevel--;
-        if (nestedTxLevel == 0) {
+      if (stm instanceof CommitStatement) {
+        if (nestedTxLevel > 0) {
+          nestedTxLevel--;
+          if (nestedTxLevel == 0) {
 
-          for (final Statement statement : lastRetryBlock) {
-            final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
-            plan.chain(sub, false);
+            if (((CommitStatement) stm).getRetry() != null) {
+              int nRetries = ((CommitStatement) stm).getRetry().getValue().intValue();
+              if (nRetries <= 0)
+                throw new CommandExecutionException("Invalid retry number " + nRetries);
+
+              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(), ((CommitStatement) stm).getElseFail(),
+                  scriptContext, false);
+              final RetryExecutionPlan retryPlan = new RetryExecutionPlan(scriptContext);
+              retryPlan.chain(step);
+              plan.chain(retryPlan, false);
+              lastRetryBlock = new ArrayList<>();
+            } else {
+              for (final Statement statement : lastRetryBlock) {
+                final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
+                plan.chain(sub, false);
+              }
+            }
           }
-          lastRetryBlock = new ArrayList<>();
-        }
+        } else
+          throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
       }
 
       if (stm instanceof LetStatement)

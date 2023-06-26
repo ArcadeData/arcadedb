@@ -51,7 +51,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
   @Test
   public void rebuildIndex() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
-    final VertexType v = database.getSchema().createVertexType("Person", 3);
+    final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
     v.createProperty("id", Long.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
     v.createProperty("uuid", String.class);
@@ -79,7 +79,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
   @Test
   public void createIndexLater() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
-    final VertexType v = database.getSchema().createVertexType("Person", 3);
+    final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 
     LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
@@ -108,7 +108,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
   @Test
   public void createIndexLaterDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
-    final VertexType v = database.getSchema().createVertexType("Person", 3);
+    final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");
@@ -143,7 +143,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
   @Test
   public void createIndexErrorDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
-    final VertexType v = database.getSchema().createVertexType("Person", 3);
+    final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");

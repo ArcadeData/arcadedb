@@ -170,39 +170,28 @@ public class PageManager extends LockContext {
     return 0;
   }
 
-  public ImmutablePage getPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
-    checkForPageDisposal();
+  public ImmutablePage getImmutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
+    final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
+    if (page != null)
+      // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
+      return page.useAsImmutable();
+    return null;
+  }
 
-    CachedPage page = readCache.get(pageId);
-    if (page == null) {
-      page = loadPage(pageId, pageSize, createIfNotExists, true);
-      if (page == null) {
-        if (isNew)
-          return null;
-      } else
-        return page.use();
-
-      cacheMiss.incrementAndGet();
-
-    } else {
-      cacheHits.incrementAndGet();
-      page.updateLastAccesses();
-    }
-
-    if (page == null)
-      throw new IllegalArgumentException("Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().getId() + ")");
-
-    // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
-    return page.use();
+  public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
+    final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
+    if (page != null)
+      // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
+      return page.useAsMutable();
+    return null;
   }
 
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
     final PageId pageId = page.getPageId();
 
     if (!fileManager.existsFile(pageId.getFileId()))
-      throw new ConcurrentModificationException(
-          "Concurrent modification on page " + pageId + " file with id " + pageId.getFileId() + " does not exist anymore. Please retry the operation (threadId="
-              + Thread.currentThread().getId() + ")");
+      throw new ConcurrentModificationException("Concurrent modification on page " + pageId + ". The file with id " + pageId.getFileId()
+          + " does not exist anymore. Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
 
     final int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
 
@@ -224,10 +213,10 @@ public class PageManager extends LockContext {
 
       if (newPages != null)
         for (final MutablePage p : newPages.values())
-          pagesToWrite.add(updatePage(p, true));
+          pagesToWrite.add(updatePageVersion(p, true));
 
       for (final MutablePage p : modifiedPages.values())
-        pagesToWrite.add(updatePage(p, false));
+        pagesToWrite.add(updatePageVersion(p, false));
 
       writePages(pagesToWrite, asyncFlush);
 
@@ -236,7 +225,7 @@ public class PageManager extends LockContext {
     }
   }
 
-  public MutablePage updatePage(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
+  public MutablePage updatePageVersion(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
     final PageId pageId = page.getPageId();
 
     final int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
@@ -291,35 +280,21 @@ public class PageManager extends LockContext {
       totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
   }
 
-//  public void preloadFile(final int fileId) {
-//    LogManager.instance().log(this, Level.FINE, "Pre-loading file %d (threadId=%d)...", null, fileId, Thread.currentThread().getId());
-//
-//    try {
-//      final PaginatedFile file = fileManager.getFile(fileId);
-//      final int pageSize = file.getPageSize();
-//      final int pages = (int) (file.getSize() / pageSize);
-//
-//      for (int pageNumber = 0; pageNumber < pages; ++pageNumber)
-//        loadPage(new PageId(fileId, pageNumber), pageSize, false, true);
-//
-//    } catch (IOException e) {
-//      throw new DatabaseMetadataException("Cannot load file in RAM", e);
-//    }
-//  }
-
   public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
-    for (final MutablePage page : updatedPages) {
-      // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
-      putPageInReadCache(new CachedPage(page));
-    }
-
     if (asyncFlush) {
+      for (final MutablePage page : updatedPages)
+        // SAVE A COPY OF THE PAGE IN CACHE BECAUSE IT WILL BE FLUSHED ASYNCHRONOUSLY
+        putPageInReadCache(new CachedPage(page, true));
+
       // ASYNCHRONOUS FLUSH: ONLY IF NOT ALREADY IN THE QUEUE, ENQUEUE THE PAGE TO BE FLUSHED BY A SEPARATE THREAD
       flushThread.scheduleFlushOfPages(updatedPages);
     } else {
       // SYNCHRONOUS FLUSH
-      for (final MutablePage page : updatedPages)
+      for (final MutablePage page : updatedPages) {
         flushPage(page);
+        // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
+        putPageInReadCache(new CachedPage(page, false));
+      }
     }
   }
 
@@ -474,5 +449,30 @@ public class PageManager extends LockContext {
       totalReadCacheRAM.addAndGet(page.getPhysicalSize());
 
     checkForPageDisposal();
+  }
+
+  private CachedPage getCachedPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists) throws IOException {
+    checkForPageDisposal();
+
+    CachedPage page = readCache.get(pageId);
+    if (page == null) {
+      page = loadPage(pageId, pageSize, createIfNotExists, true);
+      if (page == null) {
+        if (isNew)
+          return null;
+      } else
+        return page;
+
+      cacheMiss.incrementAndGet();
+
+    } else {
+      cacheHits.incrementAndGet();
+      page.updateLastAccesses();
+    }
+
+    if (page == null)
+      throw new IllegalArgumentException("Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().getId() + ")");
+
+    return page;
   }
 }

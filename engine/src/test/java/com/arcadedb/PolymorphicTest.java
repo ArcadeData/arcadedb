@@ -36,10 +36,10 @@ public class PolymorphicTest extends TestHelper {
       // Vehicle <|---- Motorcycle
       //         <|---- Car <|---- Supercar
       //------------------------------------------------------------------------------------------------------------------------------------
-      final VertexType vehicle = database.getSchema().createVertexType("Vehicle", 3);
+      final VertexType vehicle = database.getSchema().buildVertexType().withName("Vehicle").withTotalBuckets(3).create();
       vehicle.createProperty("brand", String.class);
 
-      final VertexType motorcycle = database.getSchema().createVertexType("Motorcycle", 3);
+      final VertexType motorcycle = database.getSchema().buildVertexType().withName("Motorcycle").withTotalBuckets(3).create();
       motorcycle.addSuperType("Vehicle");
 
       try {
@@ -50,10 +50,10 @@ public class PolymorphicTest extends TestHelper {
 
       Assertions.assertTrue(database.getSchema().getType("Motorcycle").instanceOf("Vehicle"));
 
-      database.getSchema().createVertexType("Car", 3).addSuperType("Vehicle");
+      database.getSchema().buildVertexType().withName("Car").withTotalBuckets(3).create().addSuperType("Vehicle");
       Assertions.assertTrue(database.getSchema().getType("Car").instanceOf("Vehicle"));
 
-      database.getSchema().createVertexType("Supercar", 3).addSuperType("Car");
+      database.getSchema().buildVertexType().withName("Supercar").withTotalBuckets(3).create().addSuperType("Car");
       Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Car"));
       Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Vehicle"));
 

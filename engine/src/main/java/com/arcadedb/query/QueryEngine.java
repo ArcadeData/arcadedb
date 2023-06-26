@@ -57,6 +57,10 @@ public interface QueryEngine {
     return this;
   }
 
+  default boolean isExecutedByTheLeader() {
+    return false;
+  }
+
   default boolean isReusable() {
     return true;
   }

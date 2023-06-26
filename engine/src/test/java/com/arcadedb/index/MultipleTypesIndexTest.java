@@ -79,7 +79,7 @@ public class MultipleTypesIndexTest extends TestHelper {
     database.transaction(() -> {
       Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-      final DocumentType type = database.getSchema().createVertexType(TYPE_NAME, 3);
+      final DocumentType type = database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" });
       type.createProperty("firstName", String.class);

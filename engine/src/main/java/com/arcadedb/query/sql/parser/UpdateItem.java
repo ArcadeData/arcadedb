@@ -125,7 +125,7 @@ public class UpdateItem extends SimpleNode {
   public void applyOperation(final ResultInternal doc, final Identifier attrName, final Object rightValue, final CommandContext context) {
     switch (operator) {
     case OPERATOR_EQ:
-      Object newValue = convertResultToDocument(rightValue);
+      Object newValue = extractFromResult(rightValue);
       newValue = convertToPropertyType(doc, attrName, newValue);
       doc.setProperty(attrName.getStringValue(), newValue);
       break;
@@ -173,19 +173,21 @@ public class UpdateItem extends SimpleNode {
     return newValue;
   }
 
-  private Object convertResultToDocument(final Object value) {
+  private Object extractFromResult(final Object value) {
     if (value instanceof Result) {
-      return ((Result) value).toElement();
-    }
-    if (value instanceof Identifiable) {
+      if (((Result) value).isElement())
+        return ((Result) value).toElement();
+      else if (((Result) value).getPropertyNames().size() == 1)
+        return ((Result) value).getProperty(((Result) value).getPropertyNames().iterator().next());
+      else
+        return ((Result) value).toMap();
+    } else if (value instanceof Identifiable)
       return value;
-    }
-    if (value instanceof List && containsOResult((Collection) value)) {
-      return ((List) value).stream().map(x -> convertResultToDocument(x)).collect(Collectors.toList());
-    }
-    if (value instanceof Set && containsOResult((Collection) value)) {
-      return ((Set) value).stream().map(x -> convertResultToDocument(x)).collect(Collectors.toSet());
-    }
+    else if (value instanceof List && containsOResult((Collection) value))
+      return ((List) value).stream().map(x -> extractFromResult(x)).collect(Collectors.toList());
+    else if (value instanceof Set && containsOResult((Collection) value))
+      return ((Set) value).stream().map(x -> extractFromResult(x)).collect(Collectors.toSet());
+
     return value;
   }
 

@@ -19,13 +19,12 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -87,19 +86,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
           executeScript(database, command, paramMap) :
           executeCommand(database, language, command, paramMap);
 
-      if (qResult == null)
-        throw new CommandExecutionException("Error on executing command");
-
       final JSONObject response = createResult(user, database);
 
       serializeResultSet(database, serializer, limit, response, qResult);
 
-      if (profileExecution != null && qResult.getExecutionPlan().isPresent())
+      if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
         qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
 
-      final String responseAsString = response.toString();
-
-      return new ExecutionResponse(200, responseAsString);
+      return new ExecutionResponse(200, response.toString());
 
     } finally {
       timer.stop();
@@ -113,16 +107,16 @@ public class PostCommandHandler extends AbstractQueryHandler {
       command += ";";
 
     if (params instanceof Object[])
-      return database.command("sqlscript", command, (Object[]) params);
+      return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Object[]) params);
 
-    return database.command("sqlscript", command, (Map<String, Object>) params);
+    return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }
 
   protected ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
     if (params instanceof Object[])
-      return database.command(language, command, (Object[]) params);
+      return database.command(language, command, httpServer.getServer().getConfiguration(), (Object[]) params);
 
     return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }

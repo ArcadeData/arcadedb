@@ -61,7 +61,8 @@ public class PerformanceInsertIndexTest extends TestHelper {
     if (!database.getSchema().existsType(TYPE_NAME)) {
       database.begin();
 
-      final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL, Bucket.DEF_PAGE_SIZE);
+      final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(PARALLEL).withPageSize(Bucket.DEF_PAGE_SIZE)
+          .create();
 
       type.createProperty("id", Long.class);
       type.createProperty("area", String.class);

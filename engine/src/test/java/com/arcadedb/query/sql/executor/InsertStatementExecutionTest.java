@@ -206,6 +206,40 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  public void testInsertFromSelectRawValue() {
+    final String className1 = "testInsertFromSelectRawValue";
+    database.getSchema().createDocumentType(className1);
+
+    ResultSet result = database.command("sql", "insert into " + className1 + " set test = ( select 777 )");
+
+    Assertions.assertTrue(result.hasNext());
+    final Result item = result.next();
+    Assertions.assertNotNull(item);
+    List<Integer> list = item.getProperty("test");
+    Assertions.assertEquals(1, list.size());
+    Assertions.assertEquals(777, list.get(0));
+    Assertions.assertFalse(result.hasNext());
+  }
+
+  @Test
+  public void testInsertFromSelectRawValues() {
+    final String className1 = "testInsertFromSelectRawValues";
+    database.getSchema().createDocumentType(className1);
+
+    ResultSet result = database.command("sql", "insert into " + className1 + " set test = ( select 777, 888 )");
+
+    Assertions.assertTrue(result.hasNext());
+    final Result item = result.next();
+    Assertions.assertNotNull(item);
+    List<Map> list = item.getProperty("test");
+    Assertions.assertEquals(1, list.size());
+    Map<String,Integer> map = list.get(0);
+    Assertions.assertEquals(777, map.get("777"));
+    Assertions.assertEquals(888, map.get("888"));
+    Assertions.assertFalse(result.hasNext());
+  }
+
+  @Test
   public void testContent() {
     final String className = "testContent";
     database.getSchema().createDocumentType(className);

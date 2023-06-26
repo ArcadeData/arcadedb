@@ -198,7 +198,8 @@ public class Neo4jImporter {
         final Pair<String, List<String>> labels = typeNameFromLabels(json);
 
         if (!database.getSchema().existsType(labels.getFirst())) {
-          final VertexType type = database.getSchema().getOrCreateVertexType(labels.getFirst(), bucketsPerType);
+          final VertexType type = database.getSchema().buildVertexType().withName(labels.getFirst()).withTotalBuckets(bucketsPerType).withIgnoreIfExists(true)
+              .create();
           if (labels.getSecond() != null)
             for (final String parent : labels.getSecond())
               type.addSuperType(parent);
@@ -216,7 +217,7 @@ public class Neo4jImporter {
       case "relationship":
         final String edgeLabel = json.has("label") && !json.isNull("label") ? json.getString("label") : null;
         if (edgeLabel != null)
-          database.getSchema().getOrCreateEdgeType(edgeLabel, bucketsPerType);
+          database.getSchema().buildEdgeType().withName(edgeLabel).withTotalBuckets(bucketsPerType).withIgnoreIfExists(true).create();
 
         inferPropertyType(json, edgeLabel);
         break;
@@ -359,7 +360,8 @@ public class Neo4jImporter {
 
         final IndexCursor beginCursor = database.lookupByKey(startType.getFirst(), "id", startId);
         if (!beginCursor.hasNext()) {
-          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), startId);
+          log("- cannot create relationship with id '%s'. Vertex id '%s' not found in type '%s'. Skip it.", json.getString("id"), startId,
+              startType.getFirst());
           context.warnings.incrementAndGet();
           return null;
         }

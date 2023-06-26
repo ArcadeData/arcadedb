@@ -72,7 +72,7 @@ public class Importer extends AbstractImporter {
     return context.toMap();
   }
 
-  protected void loadFromSource(final String url, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema) throws IOException {
+  protected void loadFromSource(final String url, AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema) throws IOException {
     if (url == null)
       // SKIP IT
       return;

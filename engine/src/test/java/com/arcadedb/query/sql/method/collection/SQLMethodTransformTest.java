@@ -53,7 +53,6 @@ import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.query.sql.method.collection.SQLMethodTransform;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
@@ -586,6 +585,11 @@ class SQLMethodTransformTest {
       @Override
       public void deleteRecord(Record record) {
 
+      }
+
+      @Override
+      public ResultSet command(String language, String query, ContextConfiguration configuration, Object... args) {
+        return null;
       }
 
       @Override

@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -53,4 +54,14 @@ public interface IndexInternal extends Index {
   void setTypeIndex(TypeIndex typeIndex);
 
   TypeIndex getTypeIndex();
+
+  int getPageSize();
+
+  boolean isCompacting();
+
+  boolean scheduleCompaction();
+
+  String getMostRecentFileName();
+
+  JSONObject toJSON();
 }

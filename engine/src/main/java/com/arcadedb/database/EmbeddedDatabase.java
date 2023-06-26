@@ -649,7 +649,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       if (loadContent || type == null) {
         final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
-        record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copy(), null);
+        record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
         return record;
       }
 
@@ -886,9 +886,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (originalBuffer == null)
       throw new IllegalStateException("Cannot read original buffer");
     originalBuffer.rewind();
-    final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer,
-        null);
-    return originalRecord;
+    return (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer, null);
   }
 
   @Override
@@ -1275,6 +1273,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Object... parameters) {
+    checkDatabaseIsOpen();
+    stats.commands.incrementAndGet();
+    return getQueryEngine(language).command(query, configuration, parameters);
+  }
+
+  @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> parameters) {
     return command(language, query, null, parameters);
   }
@@ -1297,7 +1302,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
-    if (!language.equalsIgnoreCase("sql"))
+    if (!language.equalsIgnoreCase("sqlscript") && !language.equalsIgnoreCase("sql"))
       throw new CommandExecutionException("Language '" + language + "' does not support script");
     return command("sqlscript", script, args);
   }

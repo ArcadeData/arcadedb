@@ -134,18 +134,21 @@ public class SQLScriptTest extends TestHelper {
     Assertions.assertFalse(result.hasNext());
   }
 
-  //@Test (IT WAS IGNORED ON ORIENTDB)
+  @Test
   public void testIncrementAndLet() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("TestCounter");
+
       StringBuilder script = new StringBuilder();
-      script.append("CREATE DOCUMENT TYPE TestCounter;\n");
       script.append("INSERT INTO TestCounter set weight = 3;\n");
-      script.append("LET counter = SELECT count(*) FROM TestCounter;\n");
-      script.append("UPDATE TestCounter INCREMENT weight = $counter[0].count RETURN AfTER @this;\n");
+      script.append("LET counter = SELECT count(*) as count FROM TestCounter;\n");
+      script.append("UPDATE TestCounter SET weight += $counter[0].count RETURN AfTER @this;\n");
       ResultSet qResult = database.command("SQLScript", script.toString());
 
-      Assertions.assertEquals(4L, qResult.next().toElement().getLong("weight"));
+      Assertions.assertTrue(qResult.hasNext());
+      final Result result = qResult.next();
+
+      Assertions.assertEquals(4L, (Long) result.getProperty("weight"));
     });
   }
 

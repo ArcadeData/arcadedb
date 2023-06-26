@@ -81,9 +81,8 @@ public class RandomTestMultiThreadsTest extends TestHelper {
               try {
                 final int op = getRandom(100);
                 if (i % 5000 == 0)
-                  LogManager.instance()
-                      .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i, CYCLES,
-                          totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
+                  LogManager.instance().log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i, CYCLES,
+                      totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
 
                 LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", op, i, CYCLES, threadId);
 
@@ -283,7 +282,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
         } catch (final RecordNotFoundException e) {
           // OK
         }
-        LogManager.instance().log(this, Level.FINE, "Updated record %s (threadId=%d)",  next.getIdentity(), threadId);
+        LogManager.instance().log(this, Level.FINE, "Updated record %s (threadId=%d)", next.getIdentity(), threadId);
       }
     }
 
@@ -355,7 +354,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
     if (!database.getSchema().existsType("Account")) {
       database.begin();
 
-      final VertexType accountType = database.getSchema().createVertexType("Account", BUCKETS);
+      final VertexType accountType = database.getSchema().buildVertexType().withName("Account").withTotalBuckets(BUCKETS).create();
       accountType.createProperty("id", Long.class);
       accountType.createProperty("name", String.class);
       accountType.createProperty("surname", String.class);
@@ -363,7 +362,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Account", new String[] { "id" }, 500000);
 
-      final VertexType txType = database.getSchema().createVertexType("Transaction", BUCKETS);
+      final VertexType txType = database.getSchema().buildVertexType().withName("Transaction").withTotalBuckets(BUCKETS).create();
       txType.createProperty("uuid", Long.class);
       txType.createProperty("date", Date.class);
       txType.createProperty("amount", BigDecimal.class);
@@ -372,7 +371,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Transaction", new String[] { "uuid" }, 500000);
 
-      final EdgeType edgeType = database.getSchema().createEdgeType("PurchasedBy", BUCKETS);
+      final EdgeType edgeType = database.getSchema().buildEdgeType().withName("PurchasedBy").withTotalBuckets(BUCKETS).create();
       edgeType.createProperty("date", Date.class);
 
       database.commit();

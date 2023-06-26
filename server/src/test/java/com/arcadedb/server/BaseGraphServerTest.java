@@ -105,13 +105,13 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       final Schema schema = database.getSchema();
       Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
 
-      final VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
+      final VertexType v = schema.buildVertexType().withName(VERTEX1_TYPE_NAME).withTotalBuckets(3).create();
       v.createProperty("id", Long.class);
 
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
 
       Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
-      schema.createVertexType(VERTEX2_TYPE_NAME, 3);
+      schema.buildVertexType().withName(VERTEX2_TYPE_NAME).withTotalBuckets(3).create();
 
       schema.createEdgeType(EDGE1_TYPE_NAME);
       schema.createEdgeType(EDGE2_TYPE_NAME);
@@ -535,6 +535,34 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       throw e;
     } finally {
       initialConnection.disconnect();
+    }
+  }
+
+  protected JSONObject executeCommand(final int serverIndex, final String language, final String payloadCommand) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    formatPayload(connection, language, payloadCommand, "studio", Collections.emptyMap());
+    connection.connect();
+
+    try {
+      final String response = readResponse(connection);
+      LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+      Assertions.assertEquals(200, connection.getResponseCode());
+      Assertions.assertEquals("OK", connection.getResponseMessage());
+
+      return new JSONObject(response);
+
+    } catch (Exception e) {
+      if (connection.getErrorStream() != null) {
+        String responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), "UTF8");
+        LogManager.instance().log(this, Level.SEVERE, "Error: " + responsePayload);
+      }
+      return null;
+    } finally {
+      connection.disconnect();
     }
   }
 }

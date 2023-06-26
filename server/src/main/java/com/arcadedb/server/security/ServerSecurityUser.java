@@ -90,14 +90,15 @@ public class ServerSecurityUser implements SecurityUser {
         dbu = registerDatabaseUser(server, database, SecurityManager.ANY);
     }
 
-    if (dbu == null) {
+    if (dbu == null)
       // USER HAS NO ACCESS TO THE DATABASE, RETURN A USER WITH NO AX
       dbu = new ServerSecurityDatabaseUser(databaseName, name, new String[0]);
-      final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(databaseName, dbu);
-      if (prev != null)
-        // USE THE EXISTENT ONE
-        dbu = prev;
-    }
+
+    final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(databaseName, dbu);
+    if (prev != null)
+      // USE THE EXISTENT ONE
+      dbu = prev;
+
     return dbu;
   }
 

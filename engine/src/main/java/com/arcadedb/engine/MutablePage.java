@@ -82,7 +82,6 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   public void incrementVersion() {
-    updateModifiedRange(0, Binary.LONG_SERIALIZED_SIZE);
     version++;
   }
 

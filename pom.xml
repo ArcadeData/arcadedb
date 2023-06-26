@@ -25,7 +25,7 @@
     <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-parent</artifactId>
     <packaging>pom</packaging>
-    <version>23.5.1-SNAPSHOT</version>
+    <version>23.6.1-SNAPSHOT</version>
 
     <name>ArcadeDB</name>
     <url>https://arcadedata.com/</url>
@@ -53,14 +53,14 @@
         <dockerfile-maven-version>1.4.13</dockerfile-maven-version>
         <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
         <jacoco-maven-plugin.version>0.8.10</jacoco-maven-plugin.version>
-        <maven-surefire-plugin.version>3.0.0</maven-surefire-plugin.version>
-        <maven-failsafe-plugin.version>3.0.0</maven-failsafe-plugin.version>
-        <maven-assembly-plugin.version>3.5.0</maven-assembly-plugin.version>
+        <maven-surefire-plugin.version>3.1.2</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.1.2</maven-failsafe-plugin.version>
+        <maven-assembly-plugin.version>3.6.0</maven-assembly-plugin.version>
         <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
         <maven-javadoc-plugin.version>3.5.0</maven-javadoc-plugin.version>
-        <maven-source-plugin.version>3.2.1</maven-source-plugin.version>
-        <maven-gpg-plugin.version>3.0.1</maven-gpg-plugin.version>
-        <maven-versions-plugin.version>2.15.0</maven-versions-plugin.version>
+        <maven-source-plugin.version>3.3.0</maven-source-plugin.version>
+        <maven-gpg-plugin.version>3.1.0</maven-gpg-plugin.version>
+        <maven-versions-plugin.version>2.16.0</maven-versions-plugin.version>
         <maven-jar-plugin.version>3.3.0</maven-jar-plugin.version>
         <maven-shade-plugin.version>3.4.1</maven-shade-plugin.version>
         <maven-deploy-plugin.version>3.1.1</maven-deploy-plugin.version>

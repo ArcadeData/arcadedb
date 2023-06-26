@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
 import java.io.*;
 import java.util.*;
 
-public class JSONImporterTest {
+public class JSONImporterIT {
   @Test
   public void importSingleObject() throws IOException {
     final String databasePath = "target/databases/test-import-graph";

@@ -38,7 +38,6 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -393,6 +392,11 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
     command("SQL", "delete from " + record.getIdentity());
+  }
+
+  @Override
+  public ResultSet command(final String language, final String command, final ContextConfiguration configuration, final Object... args) {
+    return command(language, command, args);
   }
 
   @Override

@@ -98,7 +98,7 @@ public class BinarySerializer {
       serializeProperties = true;
     } else {
       // COPY THE CONTENT (THE BUFFER IS IMMUTABLE)
-      header = header.copy();
+      header = header.copyOfContent();
       header.position(Binary.BYTE_SERIALIZED_SIZE);
       serializeProperties = false;
     }
@@ -121,7 +121,7 @@ public class BinarySerializer {
       serializeProperties = true;
     } else {
       // COPY THE CONTENT (THE BUFFER IS IMMUTABLE)
-      header = header.copy();
+      header = header.copyOfContent();
       header.position(Binary.BYTE_SERIALIZED_SIZE);
       serializeProperties = false;
     }
@@ -163,7 +163,7 @@ public class BinarySerializer {
       serializeProperties = true;
     } else {
       // COPY THE CONTENT (THE BUFFER IS IMMUTABLE)
-      header = header.copy();
+      header = header.copyOfContent();
       header.position(Binary.BYTE_SERIALIZED_SIZE);
       serializeProperties = false;
     }
