@@ -641,7 +641,7 @@ function renderProperties(row, results ){
     panelHtml += "<td>" + ( property.mandatory ? true : false ) + "</td>";
     panelHtml += "<td>" + ( property.notNull ? true : false ) + "</td>";
     panelHtml += "<td>" + ( property.readOnly ? true : false ) + "</td>";
-    panelHtml += "<td>" + ( property.defaultValue != null ? property.defaultValue : "" ) + "</td>";
+    panelHtml += "<td>" + ( property["default"] != null ? property["default"] : "" ) + "</td>";
     panelHtml += "<td>" + ( property.min != null ? property.min : "" ) + "</td>";
     panelHtml += "<td>" + ( property.max != null ? property.max : "" ) + "</td>";
     panelHtml += "<td>" + ( property.regexp != null ? property.regexp : "" ) + "</td>";
