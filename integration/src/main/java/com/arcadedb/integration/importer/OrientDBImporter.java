@@ -882,7 +882,8 @@ public class OrientDBImporter {
           final OrientDBClass cls = new OrientDBClass();
 
           while (reader.peek() != END_OBJECT) {
-            switch (reader.nextName()) {
+            final String attrName = reader.nextName();
+            switch (attrName) {
             case "name":
               cls.name = reader.nextString();
               break;
@@ -926,10 +927,10 @@ public class OrientDBImporter {
                   case "mandatory":
                     propertyType.mandatory = reader.nextBoolean();
                     break;
-                  case "readOnly":
+                  case "readonly":
                     propertyType.readOnly = reader.nextBoolean();
                     break;
-                  case "notNull":
+                  case "not-null":
                     propertyType.notNull = reader.nextBoolean();
                     break;
                   case "min":
@@ -941,7 +942,7 @@ public class OrientDBImporter {
                   case "regexp":
                     propertyType.regexp = reader.nextString();
                     break;
-                  case "defaultValue":
+                  case "default-value":
                     propertyType.defaultValue = parseAttributeValue(reader, propertyName + ".defaultValue", false);
                     break;
                   default:
