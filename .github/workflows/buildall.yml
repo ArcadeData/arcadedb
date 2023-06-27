@@ -54,7 +54,7 @@ jobs:
           password: ${{ secrets.CR_PAT }}
 
       - name: Maven build
-        run: mvn package -DskipTests
+        run: mvn install -DskipTests
 
       - name: List Files
         run: ls
