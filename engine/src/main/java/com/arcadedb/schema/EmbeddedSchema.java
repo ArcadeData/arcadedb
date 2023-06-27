@@ -36,6 +36,7 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
@@ -427,30 +428,29 @@ public class EmbeddedSchema implements Schema {
         }
       }
 
-      List<Integer> lockedFiles = null;
       try {
-        lockedFiles = database.getTransactionManager().tryLockFiles(index.getFileIds(), 5_000);
+        database.executeLockingFiles(index.getFileIds(), () -> {
+          if (index.getTypeIndex() != null)
+            index.getTypeIndex().removeIndexOnBucket(index);
 
-        if (index.getTypeIndex() != null)
-          index.getTypeIndex().removeIndexOnBucket(index);
+          index.drop();
+          indexMap.remove(indexName);
 
-        indexMap.remove(indexName);
-        index.drop();
+          if (index.getTypeName() != null) {
+            final DocumentType type = getType(index.getTypeName());
+            if (index instanceof TypeIndex)
+              type.removeTypeIndexInternal((TypeIndex) index);
+            else
+              type.removeBucketIndexInternal(index);
+          }
+          return null;
+        });
 
-        if (index.getTypeName() != null) {
-          final DocumentType type = getType(index.getTypeName());
-          if (index instanceof TypeIndex)
-            type.removeTypeIndexInternal((TypeIndex) index);
-          else
-            type.removeBucketIndexInternal(index);
-        }
-
+      } catch (final NeedRetryException e) {
+        throw e;
       } catch (final Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
       } finally {
-        if (lockedFiles != null)
-          database.getTransactionManager().unlockFilesInOrder(lockedFiles);
-
         multipleUpdate = false;
       }
       return null;
@@ -622,15 +622,16 @@ public class EmbeddedSchema implements Schema {
         for (final Index m : type.getAllIndexes(true))
           dropIndex(m.getName());
 
+        if (type instanceof VertexType)
+          // DELETE IN/OUT EDGE FILES
+          database.getGraphEngine().dropVertexType((VertexType) type);
+
         // DELETE ALL ASSOCIATED BUCKETS
         final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
         for (final Bucket b : buckets) {
           type.removeBucket(b);
           dropBucket(b.getName());
         }
-
-        if (type instanceof VertexType)
-          database.getGraphEngine().dropVertexType((VertexType) type);
 
         if (types.remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");
@@ -912,17 +913,30 @@ public class EmbeddedSchema implements Schema {
           }
         }
 
+        type.custom.clear();
+        if (schemaType.has("custom"))
+          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
+      }
+
+      // RESTORE THE INHERITANCE
+      for (final Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
+        final DocumentType type = getType(entry.getKey());
+        for (final String p : entry.getValue())
+          type.addSuperType(getType(p), false);
+      }
+
+      // PARSE INDEXES
+      for (final String typeName : types.keySet()) {
+        final JSONObject schemaType = types.getJSONObject(typeName);
         final JSONObject typeIndexesJSON = schemaType.getJSONObject("indexes");
         if (typeIndexesJSON != null) {
+          final DocumentType type = getType(typeName);
 
           final List<String> orderedIndexes = new ArrayList<>(typeIndexesJSON.keySet());
           orderedIndexes.sort(Comparator.naturalOrder());
 
           for (final String indexName : orderedIndexes) {
             final JSONObject indexJSON = typeIndexesJSON.getJSONObject(indexName);
-
-            if (!indexName.startsWith(typeName))
-              continue;
 
             final JSONArray schemaIndexProperties = indexJSON.getJSONArray("properties");
             final String[] properties = new String[schemaIndexProperties.length()];
@@ -943,8 +957,9 @@ public class EmbeddedSchema implements Schema {
                 orphanIndexes.put(indexName, indexJSON);
                 indexJSON.put("type", typeName);
                 LogManager.instance().log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName, index.getName());
-              } else
+              } else {
                 type.addIndexInternal(index, bucket.getId(), properties, null);
+              }
 
             } else {
               orphanIndexes.put(indexName, indexJSON);
@@ -953,20 +968,6 @@ public class EmbeddedSchema implements Schema {
             }
           }
         }
-
-        if (schemaType.has("bucketSelectionStrategy")) {
-          final JSONObject bucketSelectionStrategy = schemaType.getJSONObject("bucketSelectionStrategy");
-
-          final Object[] properties = bucketSelectionStrategy.has("properties") ?
-              bucketSelectionStrategy.getJSONArray("properties").toList().toArray() :
-              new Object[0];
-
-          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
-        }
-
-        type.custom.clear();
-        if (schemaType.has("custom"))
-          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
       }
 
       // ASSOCIATE ORPHAN INDEXES
@@ -1015,15 +1016,23 @@ public class EmbeddedSchema implements Schema {
         }
       }
 
+      // SET THE BUCKET STRATEGY AFTER THE INDEXES BECAUSE SOME OF THEM REQUIRE INDEXES (LIKE THE PARTITIONED)
+      for (final String typeName : types.keySet()) {
+        final JSONObject schemaType = types.getJSONObject(typeName);
+        if (schemaType.has("bucketSelectionStrategy")) {
+          final JSONObject bucketSelectionStrategy = schemaType.getJSONObject("bucketSelectionStrategy");
+
+          final Object[] properties = bucketSelectionStrategy.has("properties") ?
+              bucketSelectionStrategy.getJSONArray("properties").toList().toArray() :
+              new Object[0];
+
+          final DocumentType type = getType(typeName);
+          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
+        }
+      }
+
       if (saveConfiguration)
         saveConfiguration();
-
-      // RESTORE THE INHERITANCE
-      for (final Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
-        final DocumentType type = getType(entry.getKey());
-        for (final String p : entry.getValue())
-          type.addSuperType(getType(p), false);
-      }
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
@@ -1202,7 +1211,7 @@ public class EmbeddedSchema implements Schema {
 
   protected Index createBucketIndex(final DocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
       final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback,
-      final String[] propertyNames, final TypeIndex propIndex) {
+      final String[] propertyNames, final TypeIndex propIndex, final int batchSize) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)
@@ -1222,10 +1231,13 @@ public class EmbeddedSchema implements Schema {
       indexMap.put(indexName, index);
 
       type.addIndexInternal(index, bucket.getId(), propertyNames, propIndex);
-      index.build(callback);
+      index.build(batchSize, callback);
 
       return index;
 
+    } catch (final NeedRetryException e) {
+      dropIndex(indexName);
+      throw e;
     } catch (final Exception e) {
       dropIndex(indexName);
       throw new IndexException("Error on creating index '" + indexName + "'", e);

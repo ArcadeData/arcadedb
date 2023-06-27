@@ -1714,7 +1714,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     Assertions.assertEquals("bbb", a.getProperty("name"));
     Assertions.assertEquals("ccc", a.getProperty("surname"));
     Assertions.assertNotNull(a.getProperty("@rid"));
-    Assertions.assertEquals(3, a.getPropertyNames().size());
+    Assertions.assertEquals(4, a.getPropertyNames().size());
     Assertions.assertFalse(result.hasNext());
     result.close();
   }

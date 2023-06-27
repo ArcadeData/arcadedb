@@ -312,8 +312,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public long build(final BuildIndexCallback callback) {
-    return underlyingIndex.build(callback);
+  public long build(final int batchSize, final BuildIndexCallback callback) {
+    return underlyingIndex.build(batchSize, callback);
   }
 
   @Override

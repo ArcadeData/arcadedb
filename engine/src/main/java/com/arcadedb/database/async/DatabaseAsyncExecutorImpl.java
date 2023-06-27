@@ -81,7 +81,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public          long                             count         = 0;
 
     private AsyncThread(final DatabaseInternal database, final int id) {
-      super("AsyncExecutor-" + id);
+      super("AsyncExecutor-" + database.getName() + "-" + id);
       this.database = database;
 
       final int queueSize = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE) / parallelLevel;
@@ -139,6 +139,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
               } catch (final Throwable e) {
                 onError(e);
+                if (database.isTransactionActive())
+                  database.rollback();
               } finally {
                 message.completed();
                 executingTask = false;
@@ -158,7 +160,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       }
 
       try {
-        if (database.isTransactionActive())
+        if (database.isOpen() && database.isTransactionActive())
           database.commit();
         onOk();
       } catch (final Exception e) {
@@ -376,7 +378,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok, final ErrorCallback error) {
-    scheduleTask(getSlot((int) transactionCounter.getAndIncrement()), new DatabaseAsyncTransaction(txBlock, retries, ok, error), true, backPressurePercentage);
+    transaction(txBlock, retries, ok, error, getSlot((int) transactionCounter.getAndIncrement()));
+  }
+
+  @Override
+  public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok, final ErrorCallback error, final int slot) {
+    scheduleTask(slot, new DatabaseAsyncTransaction(txBlock, retries, ok, error), true, backPressurePercentage);
   }
 
   @Override
@@ -623,9 +630,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private void shutdownThreads() {
     if (executorThreads != null) {
       try {
-        // WAIT FOR SHUTDOWN, MAX 1S EACH
-        for (int i = 0; i < executorThreads.length; ++i) {
+        // SET SHUTDOWN STATUS TO ALL THE THREADS
+        for (int i = 0; i < executorThreads.length; ++i)
           executorThreads[i].shutdown = true;
+
+        // WAIT FOR SHUTDOWN, MAX 10S EACH
+        for (int i = 0; i < executorThreads.length; ++i) {
           executorThreads[i].queue.put(FORCE_EXIT);
           executorThreads[i].join(10000);
         }

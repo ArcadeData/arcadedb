@@ -111,4 +111,9 @@ public interface DatabaseInternal extends Database {
   void saveConfiguration() throws IOException;
 
   Map<String, Object> alignToReplicas();
+
+  /**
+   * Executes an operation after having locked files.
+   */
+  <RET> RET executeLockingFiles(Collection<Integer> fileIds, Callable<RET> callable);
 }

@@ -88,10 +88,12 @@ public class PostServerCommandHandler extends AbstractHandler {
       setDatabaseSetting(command);
     else if (command.startsWith("set server setting "))
       setServerSetting(command);
+    else if (command.startsWith("get server events"))
+      return getServerEvents(command);
     else if (command.startsWith("align database "))
       alignDatabase(command);
     else {
-      httpServer.getServer().getServerMetrics().meter("http.server-command.invalid").mark();
+      httpServer.getServer().getServerMetrics().meter("http.server-command.invalid").hit();
       return new ExecutionResponse(400, "{ \"error\" : \"Server command not valid\"}");
     }
 
@@ -119,7 +121,7 @@ public class PostServerCommandHandler extends AbstractHandler {
   }
 
   private void shutdownServer(final String command) throws IOException {
-    httpServer.getServer().getServerMetrics().meter("http.server-shutdown").mark();
+    httpServer.getServer().getServerMetrics().meter("http.server-shutdown").hit();
 
     if (command.equals("shutdown")) {
       // SHUTDOWN CURRENT SERVER
@@ -138,7 +140,7 @@ public class PostServerCommandHandler extends AbstractHandler {
   }
 
   private void disconnectCluster() {
-    httpServer.getServer().getServerMetrics().meter("http.server-disconnect").mark();
+    httpServer.getServer().getServerMetrics().meter("http.server-disconnect").hit();
     final HAServer ha = getHA();
 
     final Replica2LeaderNetworkExecutor leader = ha.getLeader();
@@ -151,7 +153,7 @@ public class PostServerCommandHandler extends AbstractHandler {
   private boolean connectCluster(final String command, final HttpServerExchange exchange) {
     final HAServer ha = getHA();
 
-    httpServer.getServer().getServerMetrics().meter("http.connect-cluster").mark();
+    httpServer.getServer().getServerMetrics().meter("http.connect-cluster").hit();
 
     final String serverAddress = command.substring("connect cluster ".length());
     return ha.connectToLeader(serverAddress, exception -> {
@@ -169,7 +171,7 @@ public class PostServerCommandHandler extends AbstractHandler {
     checkServerIsLeaderIfInHA();
 
     final ArcadeDBServer server = httpServer.getServer();
-    server.getServerMetrics().meter("http.create-database").mark();
+    server.getServerMetrics().meter("http.create-database").hit();
 
     final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
 
@@ -177,9 +179,21 @@ public class PostServerCommandHandler extends AbstractHandler {
       ((ReplicatedDatabase) db).createInReplicas();
   }
 
+  private ExecutionResponse getServerEvents(final String command) {
+    final String fileName = command.substring("get server events".length()).trim();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    server.getServerMetrics().meter("http.get-server-events").hit();
+
+    final JSONArray events = fileName.isEmpty() ? server.getEventLog().getCurrentEvents() : server.getEventLog().getEvents(fileName);
+    final JSONArray files = server.getEventLog().getFiles();
+
+    return new ExecutionResponse(200, "{ \"result\" : { \"events\": " + events + ", \"files\": " + files + " } }");
+  }
+
   private ExecutionResponse listDatabases(final ServerSecurityUser user) {
     final ArcadeDBServer server = httpServer.getServer();
-    server.getServerMetrics().meter("http.list-databases").mark();
+    server.getServerMetrics().meter("http.list-databases").hit();
 
     final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
     final Set<String> allowedDatabases = user.getAuthorizedDatabases();
@@ -197,7 +211,7 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     final Database database = httpServer.getServer().getDatabase(databaseName);
 
-    httpServer.getServer().getServerMetrics().meter("http.align-database").mark();
+    httpServer.getServer().getServerMetrics().meter("http.align-database").hit();
 
     database.command("sql", "align database");
   }
@@ -209,7 +223,7 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     final Database database = httpServer.getServer().getDatabase(databaseName);
 
-    httpServer.getServer().getServerMetrics().meter("http.drop-database").mark();
+    httpServer.getServer().getServerMetrics().meter("http.drop-database").hit();
 
     ((DatabaseInternal) database).getEmbedded().drop();
     httpServer.getServer().removeDatabase(database.getName());
@@ -223,7 +237,7 @@ public class PostServerCommandHandler extends AbstractHandler {
     final Database database = httpServer.getServer().getDatabase(databaseName);
     ((DatabaseInternal) database).getEmbedded().close();
 
-    httpServer.getServer().getServerMetrics().meter("http.close-database").mark();
+    httpServer.getServer().getServerMetrics().meter("http.close-database").hit();
     httpServer.getServer().removeDatabase(database.getName());
   }
 
@@ -234,7 +248,7 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     httpServer.getServer().getDatabase(databaseName);
 
-    httpServer.getServer().getServerMetrics().meter("http.open-database").mark();
+    httpServer.getServer().getServerMetrics().meter("http.open-database").hit();
   }
 
   private void createUser(final String command) {
@@ -252,7 +266,7 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     json.put("password", httpServer.getServer().getSecurity().encodePassword(userPassword));
 
-    httpServer.getServer().getServerMetrics().meter("http.create-user").mark();
+    httpServer.getServer().getServerMetrics().meter("http.create-user").hit();
 
     httpServer.getServer().getSecurity().createUser(json);
   }
@@ -262,7 +276,7 @@ public class PostServerCommandHandler extends AbstractHandler {
     if (userName.isEmpty())
       throw new IllegalArgumentException("User name was missing");
 
-    httpServer.getServer().getServerMetrics().meter("http.drop-user").mark();
+    httpServer.getServer().getServerMetrics().meter("http.drop-user").hit();
 
     final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
     if (!result)

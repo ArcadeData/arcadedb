@@ -219,7 +219,6 @@ function dropProperty(type, property){
   });
 }
 
-
 function dropIndex(indexName){
   let database = getCurrentDatabase();
   if( database == "" ){
@@ -281,7 +280,7 @@ function getQueryHistory(){
 
 function loadQueryHistory(){
   $("#inputHistory").html("");
-  $("#inputHistory").append( "<option value=''></option>" );
+  $("#inputHistory").append( "<option value='-1'>Query History</option>" );
 
   let queryHistory = getQueryHistory();
   if( queryHistory != null && queryHistory.length > 0 ){
@@ -296,6 +295,9 @@ function loadQueryHistory(){
 
 function copyQueryFromHistory(){
   let index = $("#inputHistory").val();
+  if( index == -1 )
+    return;
+
   if( index != "" ){
     let queryHistory = getQueryHistory();
     let q = queryHistory[index];
@@ -305,6 +307,8 @@ function copyQueryFromHistory(){
       editor.setValue( q.c );
     }
   }
+
+  $("#inputHistory").val(-1);
 }
 
 function executeCommand(language, query){
@@ -351,7 +355,7 @@ function executeCommand(language, query){
   }
 
   // REMOVE OLD QUERIES
-  while( queryHistory.length > 20 )
+  while( queryHistory.length > 25 )
     queryHistory.pop();
 
   queryHistory = [ {"d": database, "l": language, "c": query} ].concat(queryHistory);
@@ -359,7 +363,6 @@ function executeCommand(language, query){
 
   loadQueryHistory();
 }
-
 
 function executeCommandTable(){
   let database = getCurrentDatabase();
@@ -394,7 +397,7 @@ function executeCommandTable(){
 
     $("#result-num").html( data.result.records.length );
     $("#resultJson").val( JSON.stringify(data, null, 2) );
-    $("#resultExplain").val( data.explain != null ? data.explain : "'" );
+    $("#resultExplain").val( data.explain != null ? data.explain : "No profiler data found" );
 
     globalResultset = data.result;
     globalCy = null;
@@ -498,17 +501,55 @@ function displaySchema(){
     let panelEHtml = "";
     let panelDHtml = "";
 
+    // BUILD SUB TYPES
+    let subTypes = {};
     for( let i in data.result ){
       let row = data.result[i];
 
-      let tabHtml = "<li class='nav-item'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
+      for( ptidx in row.parentTypes ) {
+        let pt = row.parentTypes[ptidx];
+
+        let array = subTypes[ pt ];
+        if( array == null ) {
+          array = [];
+          subTypes[ pt ] = array;
+        }
+        array.push( row.name );
+      }
+    }
+
+    for( let i in data.result ){
+      let row = data.result[i];
+
+      let tabHtml = "<li class='nav-item' style='height: 32px'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
       tabHtml += "' id='tab-" + row.name + "-sel'>" + row.name + "</a></li>";
 
       let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+row.name+"' role='tabpanel'>";
 
-      panelHtml += "<br>Type: <b>" + row.name + "</b>";
-      if( row.parentTypes != "" )
-        panelHtml += ", Super Types: <b>" + row.parentTypes + "</b>";
+      panelHtml += "<h3>" + row.name + "</h3>";
+      if( row.parentTypes != "" ){
+        panelHtml += "Super Types: <b>";
+        for( ptidx in row.parentTypes ) {
+          if( ptidx > 0 )
+            panelHtml += ", ";
+          let pt = row.parentTypes[ptidx];
+          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-"+pt+"')\">" + pt + "</a></b>";
+        }
+        panelHtml += "</b>";
+      }
+
+      let typeSubTypes = subTypes[row.name];
+      if( typeSubTypes != null ){
+        panelHtml += "<br>Sub Types: <b>";
+        for( stidx in typeSubTypes ) {
+          if( stidx > 0 )
+            panelHtml += ", ";
+          let st = typeSubTypes[stidx];
+          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-"+st+"')\">" + st + "</a></b>";
+        }
+        panelHtml += "</b>";
+      }
+
       if( row.indexes != "" ){
         panelHtml += "<br>Indexes: <b>";
         panelHtml += row.indexes.map(i => " " + i.name );
@@ -517,26 +558,24 @@ function displaySchema(){
 
       panelHtml += "<br><br><h6>Properties</h6>";
       //panelHtml += "<button class='btn btn-pill' onclick='createProperty()'><i class='fa fa-plus'></i> Create Property</button>";
-      panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th><th scope='col'>Indexed</th><th scope='col'>Actions</th>";
+      panelHtml += "<div class='table-responsive'>";
+      panelHtml += "<table class='table table-striped table-sm table-responsive' style='border: 0px; width: 100%'>";
+      panelHtml += "<thead><tr><th scope='col'>Name</th>";
+      panelHtml += "<th scope='col'>Defined In</th>";
+      panelHtml += "<th scope='col'>Type</th>";
+      panelHtml += "<th scope='col'>Mandatory</th>";
+      panelHtml += "<th scope='col'>Not Null</th>";
+      panelHtml += "<th scope='col'>Read Only</th>";
+      panelHtml += "<th scope='col'>Default Value</th>";
+      panelHtml += "<th scope='col'>Min</th>";
+      panelHtml += "<th scope='col'>Max</th>";
+      panelHtml += "<th scope='col'>Regexp</th>";
+      panelHtml += "<th scope='col'>Indexed</th><th scope='col'>Actions</th>";
       panelHtml += "<tbody>";
 
-      for( let k in row.properties ) {
-        let property = row.properties[k];
-        panelHtml += "<tr><td>"+property.name+"</td><td>" + property.type + "</td>";
+      panelHtml += renderProperties( row, data.result );
 
-        let actionHtml = "<button class='btn btn-pill' onclick='dropProperty(\""+row.name+"\", \""+property.name+"\")'><i class='fa fa-minus'></i> Drop Property</button>";
-
-        let propIndexes = [];
-        if( row.indexes != null && row.indexes.length > 0 ) {
-          propIndexes.push( row.indexes.filter(i => i.properties.includes( property.name )).map(i => (i.name + " " + i.unique ? "" : "Not ") + "Unique, Type(" + i.type + ")" + ( i.properties.length > 1 ? ", on multi properties " + i.properties : "" )) );
-          actionHtml += row.indexes.filter(i => i.properties.includes( property.name )).map(i => ( "<button class='btn btn-pill' onclick='dropIndex(\"" + i.name + "\")'><i class='fa fa-minus'></i> Drop Index</button>" ) );
-        }
-        panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
-        panelHtml += "<td>" + actionHtml + "</td>";
-      }
-
-      panelHtml += "</tbody></table>";
+      panelHtml += "</tbody></table></div>";
 
       panelHtml += "<br><h6>Actions</h6>";
       panelHtml += "<ul>";
@@ -574,6 +613,60 @@ function displaySchema(){
   .always(function(data) {
     $("#executeSpinner").hide();
   });
+}
+
+function findTypeInResult(name, results ){
+  for( i in results )
+    if( results[i].name == name )
+      return results[i];
+  return null;
+}
+
+function renderProperties(row, results ){
+  let panelHtml = "";
+
+  for( let k in row.properties ) {
+    let property = row.properties[k];
+    panelHtml += "<tr><td>"+property.name+"</td><td>" + row.name + "</td><td>" + property.type + "</td>";
+
+    panelHtml += "<td>" + ( property.mandatory ? true : false ) + "</td>";
+    panelHtml += "<td>" + ( property.notNull ? true : false ) + "</td>";
+    panelHtml += "<td>" + ( property.readOnly ? true : false ) + "</td>";
+    panelHtml += "<td>" + ( property.defaultValue != null ? property.defaultValue : "" ) + "</td>";
+    panelHtml += "<td>" + ( property.min != null ? property.min : "" ) + "</td>";
+    panelHtml += "<td>" + ( property.max != null ? property.max : "" ) + "</td>";
+    panelHtml += "<td>" + ( property.regexp != null ? property.regexp : "" ) + "</td>";
+
+    let actionHtml = "<button class='btn btn-pill' onclick='dropProperty(\""+row.name+"\", \""+property.name+"\")'><i class='fa fa-minus'></i> Drop Property</button>";
+
+    let propIndexes = [];
+    if( row.indexes != null && row.indexes.length > 0 ) {
+      propIndexes.push( row.indexes.filter(i => i.properties.includes( property.name )).map(i => (i.name + " " + i.unique ? "" : "Not ") + "Unique, Type(" + i.type + ")" + ( i.properties.length > 1 ? ", on multi properties " + i.properties : "" )) );
+      actionHtml += row.indexes.filter(i => i.properties.includes( property.name )).map(i => ( "<button class='btn btn-pill' onclick='dropIndex(\"" + i.name + "\")'><i class='fa fa-minus'></i> Drop Index</button>" ) );
+    }
+    panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
+    panelHtml += "<td>" + actionHtml + "</td></tr>";
+
+    if( property.custom != null && Object.keys( property.custom ).length > 0 ) {
+      panelHtml += "<td></td>";
+      panelHtml += "<td colspan='10'><b>Custom Properties</b><br>";
+      panelHtml += "<div class='table-responsive'>";
+      panelHtml += "<table style='width: 100%'>";
+      for( c in property.custom )
+        panelHtml += "<tr><td width='30%'>" + c + "</td><td width='70%'>" + property.custom[c] + "</td></tr>";
+      panelHtml += "</table></div></td>";
+    }
+  }
+
+  if( row.parentTypes != "" ){
+    for( ptidx in row.parentTypes ) {
+      let pt = row.parentTypes[ptidx];
+      let type = findTypeInResult( pt, results );
+      panelHtml += renderProperties( type, results );
+    }
+  }
+
+  return panelHtml;
 }
 
 function displayDatabaseSettings(){

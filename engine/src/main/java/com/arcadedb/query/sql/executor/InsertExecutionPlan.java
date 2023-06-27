@@ -26,6 +26,8 @@ import com.arcadedb.exception.CommandExecutionException;
 
 import java.util.*;
 
+import static com.arcadedb.query.sql.executor.AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL;
+
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
@@ -57,7 +59,7 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
 
   public void executeInternal() throws CommandExecutionException {
     while (true) {
-      final ResultSet nextBlock = super.fetchNext(100);
+      final ResultSet nextBlock = super.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!nextBlock.hasNext())
         return;
 

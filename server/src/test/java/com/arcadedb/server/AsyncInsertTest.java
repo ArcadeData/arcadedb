@@ -52,11 +52,14 @@ public class AsyncInsertTest {
 
   @Test
   public void testBulkAsyncInsertConflict() {
+    final int CONCURRENCY_LEVEL = 24;
     ContextConfiguration configuration = new ContextConfiguration();
-    GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(12);
+    GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(CONCURRENCY_LEVEL);
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
+
     Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    database.async().setParallelLevel(CONCURRENCY_LEVEL);
 
     database.transaction(() -> {
       DocumentType dtProducts = database.getSchema().buildDocumentType().withName("Product").withTotalBuckets(8).create();
@@ -122,6 +125,7 @@ public class AsyncInsertTest {
       dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
     });
 
+    database.async().setParallelLevel(4);
     database.async().onError(exception -> errCount.incrementAndGet());
 
     Assertions.assertEquals(database.async().getParallelLevel(), database.getSchema().getType("Product").getBuckets(false).size());

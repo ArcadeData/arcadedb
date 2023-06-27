@@ -22,9 +22,11 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
@@ -40,7 +42,7 @@ import java.util.logging.*;
 
 public class MVCCTest extends TestHelper {
   private static final int CYCLES      = 3;
-  private static final int TOT_ACCOUNT = 100;
+  private static final int TOT_ACCOUNT = 10000;
   private static final int TOT_TX      = 100;
   private static final int PARALLEL    = 4;
 
@@ -57,6 +59,8 @@ public class MVCCTest extends TestHelper {
 
       final AtomicLong otherErrors = new AtomicLong();
       final AtomicLong mvccErrors = new AtomicLong();
+      final AtomicLong txErrors = new AtomicLong();
+
       database.async().onError((exception) -> {
         if (exception instanceof ConcurrentModificationException) {
           mvccErrors.incrementAndGet();
@@ -65,8 +69,6 @@ public class MVCCTest extends TestHelper {
           LogManager.instance().log(this, Level.SEVERE, "UNEXPECTED ERROR: " + exception, exception);
         }
       });
-
-      final long begin = System.currentTimeMillis();
 
       try {
         final Random rnd = new Random();
@@ -91,7 +93,7 @@ public class MVCCTest extends TestHelper {
             final Identifiable account = accounts.next();
 
             ((MutableVertex) doc).newEdge("PurchasedBy", account, true, "date", new Date());
-          }, 0);
+          }, 0, null, (err) -> txErrors.incrementAndGet());
         }
 
         database.async().waitCompletion();
@@ -101,32 +103,83 @@ public class MVCCTest extends TestHelper {
 
         Assertions.assertTrue(mvccErrors.get() > 0);
         Assertions.assertEquals(0, otherErrors.get());
-
-        //System.out.println("Insertion finished in " + (System.currentTimeMillis() - begin) + "ms, managed mvcc exceptions " + mvccErrors.get());
+        Assertions.assertEquals(0, txErrors.get());
 
         database.drop();
         database = factory.create();
       }
+    }
+  }
 
-      //LogManager.instance().flush();
-      //System.out.flush();
-      //System.out.println("----------------");
+  @Test
+  public void testNoConflictOnUpdateTx() {
+    for (int i = 0; i < CYCLES; ++i) {
+      createSchema();
+
+      populateDatabase();
+
+      LogManager.instance().log(this, Level.FINE, "Executing " + TOT_TX + " transactions between " + TOT_ACCOUNT + " accounts");
+
+      database.async().setParallelLevel(PARALLEL);
+
+      final AtomicLong otherErrors = new AtomicLong();
+      final AtomicLong mvccErrors = new AtomicLong();
+      database.async().onError((exception) -> {
+        if (exception instanceof ConcurrentModificationException) {
+          mvccErrors.incrementAndGet();
+        } else {
+          otherErrors.incrementAndGet();
+          LogManager.instance().log(this, Level.SEVERE, "UNEXPECTED ERROR: " + exception, exception);
+        }
+      });
+
+      try {
+        for (long accountId = 0; accountId < TOT_ACCOUNT; ++accountId) {
+          final long finalAccountId = accountId;
+
+          final IndexCursor accounts = database.lookupByKey("Account", new String[] { "id" }, new Object[] { finalAccountId });
+          Assertions.assertTrue(accounts.hasNext());
+          final Vertex account = accounts.next().asVertex();
+
+          final int slot = ((DatabaseAsyncExecutorImpl) database.async()).getSlot(account.getIdentity().getBucketId());
+
+          database.async().transaction(() -> {
+            final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+            Assertions.assertTrue(tx.getModifiedPages() == 0);
+
+            account.modify().set("updated", true).save();
+          }, 0, null, null, slot);
+        }
+
+        database.async().waitCompletion();
+
+        Assertions.assertEquals(TOT_ACCOUNT,
+            (long) database.query("sql", "select count(*) as count from Account where updated = true").nextIfAvailable().getProperty("count"));
+
+      } finally {
+        new DatabaseChecker(database).setVerboseLevel(0).check();
+
+        Assertions.assertEquals(0, mvccErrors.get());
+        Assertions.assertEquals(0, otherErrors.get());
+
+        database.drop();
+        database = factory.create();
+      }
     }
   }
 
   private void populateDatabase() {
-
     final long begin = System.currentTimeMillis();
 
     try {
       database.transaction(() -> {
         for (long row = 0; row < TOT_ACCOUNT; ++row) {
-          final MutableDocument record = database.newVertex("Account");
-          record.set("id", row);
-          record.set("name", "Luca" + row);
-          record.set("surname", "Skywalker" + row);
-          record.set("registered", new Date());
-          record.save();
+          final MutableVertex vertex = database.newVertex("Account");
+          vertex.set("id", row);
+          vertex.set("name", "Luca" + row);
+          vertex.set("surname", "Skywalker" + row);
+          vertex.set("registered", new Date());
+          vertex.save();
         }
       });
 

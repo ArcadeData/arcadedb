@@ -68,6 +68,8 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
 
     exchange.getResponseHeaders().put(new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID), session.id);
 
+    httpServer.getServer().getServerMetrics().meter("http.begin").hit();
+
     return new ExecutionResponse(204, "");
   }
 

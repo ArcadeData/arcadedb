@@ -42,7 +42,7 @@ public class PostDropDatabaseHandler extends DatabaseAbstractHandler {
 
     ((DatabaseInternal) database).getEmbedded().drop();
 
-    httpServer.getServer().getServerMetrics().meter("http.drop-database").mark();
+    httpServer.getServer().getServerMetrics().meter("http.drop-database").hit();
 
     httpServer.getServer().removeDatabase(database.getName());
 

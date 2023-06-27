@@ -647,6 +647,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, final Callable<RET> callable) {
+    return proxied.executeLockingFiles(fileIds, callable);
+  }
+
+  @Override
   public boolean isReadYourWrites() {
     return proxied.isReadYourWrites();
   }

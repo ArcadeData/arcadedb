@@ -36,6 +36,7 @@ public class PostRollbackHandler extends DatabaseAbstractHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     database.rollback();
     exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
+    httpServer.getServer().getServerMetrics().meter("http.rollback").hit();
     return new ExecutionResponse(204, "");
   }
 

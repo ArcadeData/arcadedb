@@ -111,7 +111,7 @@ public class DocumentType {
       superType.subTypes.add(this);
 
       // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE
-      superType.updatePolymorphicBucketsCache(true, buckets, bucketIds);
+      superType.updatePolymorphicBucketsCache(true, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
 
       // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
       final Collection<TypeIndex> indexes = new ArrayList<>(getAllIndexes(true));
@@ -128,7 +128,8 @@ public class DocumentType {
                 for (int i = 0; i < buckets.size(); i++) {
                   final Bucket bucket = buckets.get(i);
                   schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(), LSMTreeIndexAbstract.DEF_PAGE_SIZE,
-                      index.getNullStrategy(), null, index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index);
+                      index.getNullStrategy(), null, index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
+                      IndexBuilder.BUILD_BATCH_SIZE);
                 }
               }
             }
@@ -850,7 +851,7 @@ public class DocumentType {
       schema.getDatabase().transaction(() -> {
         for (TypeIndex idx : existentIndexes) {
           schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSize(), idx.getNullStrategy(), null,
-              idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx);
+              idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx, IndexBuilder.BUILD_BATCH_SIZE);
         }
       });
     }
@@ -994,6 +995,6 @@ public class DocumentType {
     }
 
     for (DocumentType s : superTypes)
-      s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
+      s.updatePolymorphicBucketsCache(add, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
   }
 }

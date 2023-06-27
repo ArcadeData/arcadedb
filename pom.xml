@@ -62,7 +62,7 @@
         <maven-gpg-plugin.version>3.1.0</maven-gpg-plugin.version>
         <maven-versions-plugin.version>2.16.0</maven-versions-plugin.version>
         <maven-jar-plugin.version>3.3.0</maven-jar-plugin.version>
-        <maven-shade-plugin.version>3.4.1</maven-shade-plugin.version>
+        <maven-shade-plugin.version>3.5.0</maven-shade-plugin.version>
         <maven-deploy-plugin.version>3.1.1</maven-deploy-plugin.version>
         <nexus-staging-maven-plugin.version>1.6.13</nexus-staging-maven-plugin.version>
         <maven-assembly-plugin.version>3.3.0</maven-assembly-plugin.version>
@@ -74,7 +74,7 @@
 
         <itCoverageAgent></itCoverageAgent>
         <license-maven-plugin.version>4.2</license-maven-plugin.version>
-        <mockito-core.version>5.3.1</mockito-core.version>
+        <mockito-core.version>5.4.0</mockito-core.version>
         <maven-install-plugin.version>3.1.1</maven-install-plugin.version>
     </properties>
 
@@ -148,6 +148,10 @@
                 <configuration>
                     <source>11</source>
                     <target>11</target>
+                    <compilerArgs>
+                        <arg>--add-exports</arg>
+                        <arg>java.management/sun.management=ALL-UNNAMED</arg>
+                    </compilerArgs>
                     <!--                    <compilerArgs>-->
                     <!--                        <arg>&#45;&#45;add-modules</arg>-->
                     <!--                        <arg>jdk.hotspot.agent</arg>-->

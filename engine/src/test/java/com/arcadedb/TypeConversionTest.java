@@ -37,7 +37,7 @@ import java.time.temporal.*;
 import java.util.*;
 import java.util.concurrent.*;
 
-public class DateTest extends TestHelper {
+public class TypeConversionTest extends TestHelper {
   @Override
   public void beginTest() {
     database.transaction(() -> {
@@ -115,6 +115,15 @@ public class DateTest extends TestHelper {
 
       doc.set("decimal", 33.33d);
       Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
+
+      doc.save();
+
+      Assertions.assertEquals(String.format("%.1f", 33.3F),
+          database.query("sql", "select decimal.format('%.1f') as d from " + doc.getIdentity()).nextIfAvailable().getProperty("d"));
+      Assertions.assertEquals(String.format("%.2f", 33.33F),
+          database.query("sql", "select decimal.format('%.2f') as d from " + doc.getIdentity()).nextIfAvailable().getProperty("d"));
+
+      doc.delete();
     });
   }
 

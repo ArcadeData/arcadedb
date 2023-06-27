@@ -40,12 +40,12 @@ public class WhileMatchStep extends AbstractUnrollStep {
   protected Collection<Result> unroll(final Result doc, final CommandContext iContext) {
     body.reset(iContext);
     final List<Result> result = new ArrayList<>();
-    ResultSet block = body.fetchNext(100);
+    ResultSet block = body.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
     while (block.hasNext()) {
       while (block.hasNext()) {
         result.add(block.next());
       }
-      block = body.fetchNext(100);
+      block = body.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
     }
     return result;
   }

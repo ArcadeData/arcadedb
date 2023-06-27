@@ -680,7 +680,7 @@ public class Bucket extends PaginatedComponent {
           lastRecordSize[1] = 1L;
         } else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
           // CONSIDER THE CHUNK SIZE
-          lastRecordSize[0] = page.readInt((int) (lastRecordPositionInPage + recordSize[1]));
+          lastRecordSize[0] = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
           lastRecordSize[1] = INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
         } else if (lastRecordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
           lastRecordSize[0] *= -1L;

@@ -29,12 +29,12 @@ import java.util.*;
  */
 public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
-  public static final Object            ORDER_ASC  = "ASC";
-  public static final Object            ORDER_DESC = "DESC";
+  public static final Object            ORDER_ASC    = "ASC";
+  public static final Object            ORDER_DESC   = "DESC";
   private final       QueryPlanningInfo queryPlanning;
-
-  private final int    bucketId;
-  private       Object order;
+  private final       int               bucketId;
+  private             Object            order;
+  private             long              totalFetched = 0L;
 
   private Iterator<Record> iterator;
 
@@ -67,16 +67,15 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //        }
       }
       return new ResultSet() {
-
         int nFetched = 0;
 
         @Override
         public boolean hasNext() {
           final long begin1 = profilingEnabled ? System.nanoTime() : 0;
           try {
-            if (nFetched >= nRecords) {
+            if (nFetched >= nRecords)
               return false;
-            }
+
             //TODO
 //            if (ORDER_DESC == order) {
 //              return iterator.hasPrevious();
@@ -94,9 +93,9 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
         public Result next() {
           final long begin1 = profilingEnabled ? System.nanoTime() : 0;
           try {
-            if (nFetched >= nRecords) {
+            if (nFetched >= nRecords)
               throw new NoSuchElementException();
-            }
+
 //            if (ORDER_DESC == order && !iterator.hasPrevious()) {
 //              throw new NoSuchElementException();
 //            } else
@@ -110,11 +109,15 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //            } else {
             record = iterator.next();
 //            }
-            nFetched++;
+            ++nFetched;
+            ++totalFetched;
+
             final ResultInternal result = new ResultInternal();
             result.element = (Document) record;
             context.setVariable("current", result);
+
             return result;
+
           } finally {
             if (profilingEnabled) {
               cost += (System.nanoTime() - begin1);
@@ -193,7 +196,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + context.getDatabase().getSchema().getBucketById(bucketId)
-            .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC");
+            .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC" + " = " + totalFetched + " RECORDS");
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }

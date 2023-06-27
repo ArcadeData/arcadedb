@@ -97,17 +97,5 @@
             <artifactId>slf4j-jdk14</artifactId>
             <version>${slf4j.version}</version>
         </dependency>
-
-        <dependency>
-            <groupId>io.dropwizard.metrics</groupId>
-            <artifactId>metrics-core</artifactId>
-            <version>${metrics.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>io.dropwizard.metrics</groupId>
-            <artifactId>metrics-jmx</artifactId>
-            <version>${metrics.version}</version>
-        </dependency>
     </dependencies>
-
 </project>

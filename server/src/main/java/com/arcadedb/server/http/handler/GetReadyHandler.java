@@ -29,6 +29,7 @@ public class GetReadyHandler extends AbstractHandler {
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+    httpServer.getServer().getServerMetrics().meter("http.ready").hit();
     return new ExecutionResponse(204, "");
   }
 

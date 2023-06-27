@@ -280,6 +280,12 @@ public class FileUtils {
     return dump.toString();
   }
 
+  public static String readFileAsString(final File file) throws IOException {
+    try (final FileInputStream is = new FileInputStream(file)) {
+      return readStreamAsString(is, "UTF8", 0);
+    }
+  }
+
   public static String readFileAsString(final File file, final String iCharset) throws IOException {
     try (final FileInputStream is = new FileInputStream(file)) {
       return readStreamAsString(is, iCharset, 0);
@@ -339,6 +345,12 @@ public class FileUtils {
   public static void writeContentToStream(final File file, final byte[] content) throws IOException {
     try (final FileOutputStream fos = new FileOutputStream(file)) {
       fos.write(content);
+    }
+  }
+
+  public static void appendContentToFile(final File file, final String content) throws IOException {
+    try (final FileOutputStream fos = new FileOutputStream(file, true)) {
+      fos.write(content.getBytes());
     }
   }
 

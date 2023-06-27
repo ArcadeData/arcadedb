@@ -21,7 +21,6 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -63,41 +62,36 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if (paramMap == null)
       paramMap = new HashMap<>();
 
-    final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.command");
-
-    try {
-      if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
-        final String commandLC = command.toLowerCase().trim();
-        if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
-          if (!commandLC.contains(" limit ")) {
+    if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
+      final String commandLC = command.toLowerCase().trim();
+      if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
+        if (!commandLC.contains(" limit ")) {
+          command += " limit " + limit;
+        } else {
+          final String[] words = commandLC.split(" ");
+          if (!"limit".equals(words[words.length - 2]))
             command += " limit " + limit;
-          } else {
-            final String[] words = commandLC.split(" ");
-            if (!"limit".equals(words[words.length - 2]))
-              command += " limit " + limit;
-          }
         }
-
-        if ("detailed".equalsIgnoreCase(profileExecution))
-          paramMap.put("$profileExecution", true);
       }
-
-      final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
-          executeScript(database, command, paramMap) :
-          executeCommand(database, language, command, paramMap);
-
-      final JSONObject response = createResult(user, database);
-
-      serializeResultSet(database, serializer, limit, response, qResult);
-
-      if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
-        qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
-
-      return new ExecutionResponse(200, response.toString());
-
-    } finally {
-      timer.stop();
     }
+
+    if ("detailed".equalsIgnoreCase(profileExecution))
+      paramMap.put("$profileExecution", true);
+
+    final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
+        executeScript(database, command, paramMap) :
+        executeCommand(database, language, command, paramMap);
+
+    final JSONObject response = createResult(user, database);
+
+    serializeResultSet(database, serializer, limit, response, qResult);
+
+    if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
+      qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
+
+    httpServer.getServer().getServerMetrics().meter("http.command").hit();
+
+    return new ExecutionResponse(200, response.toString());
   }
 
   private ResultSet executeScript(final Database database, String command, final Map<String, Object> paramMap) {

@@ -48,7 +48,7 @@ public class GraphSONExporterIT {
   private final static File file                      = new File(FILE);
 
   @Test
-  public void testExportOK() throws IOException {
+  public void testExportOK() throws Exception {
     final var inputFile = GraphSONExporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
     final var importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));

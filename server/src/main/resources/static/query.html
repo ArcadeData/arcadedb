@@ -14,12 +14,17 @@
 
     <div class="col-11">
       <textarea id="inputCommand" name="inputCommand"></textarea>
-      <button class="btn btn-primary" onclick="executeCommand()" style="z-index: 100; position: absolute; top: 10px; right: 80px;">
+      <button class="btn btn-primary" onclick="executeCommand()" style="z-index: 100; position: absolute; top: 10px; right: 20px;">
         <i class="fa fa-play"></i>
         <img id="executeSpinner" class="ui-loading" src="/api/v1/arcadedb/studio/images/color-spin-small.svg" style="display: none;">
       </button>
-      <select id="inputHistory" class="btn btn-secondary" style="z-index: 100; position: absolute; top: 10px; right: 30px; width: 40px">
-        <option selected></option>
+    </div>
+
+    <div class="col-1">
+    </div>
+    <div class="col-11">
+      <select id="inputHistory" class="btn btn-secondary" style="width: 100%">
+        <option selected>Query History</option>
       </select>
     </div>
 
@@ -246,12 +251,12 @@
                   <input id="profileCommand" class="form-check-input" type="checkbox">
                   <label for="profileCommand" class="form-label">Profile Execution</label>
                   <i class="fa fa-question-circle" data-toggle="tooltip" data-html="true"
-                     title="If enabled, the command is profiled (only SQL applies) and statistics are returned. Executing a command with profiling is more expensive, use it only when needed."></i>
+                     title="If enabled, the command is profiled (only SQL and Gremlin apply) and statistics are returned. Executing a command with profiling is more expensive, use it only when needed."></i>
                 </div>
               </li>
             </ul>
           </nav>
-          <textarea id="resultExplain" style="width: 100%; height: 600px;" readonly></textarea>
+          <textarea id="resultExplain" style="width: 100%; height: 600px; font-family: courier;" readonly></textarea>
         </div>
       </div>
 

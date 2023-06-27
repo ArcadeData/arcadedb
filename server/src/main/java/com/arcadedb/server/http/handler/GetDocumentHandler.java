@@ -44,7 +44,7 @@ public class GetDocumentHandler extends DatabaseAbstractHandler {
     if (rid == null || rid.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Record id is null\"}");
 
-    httpServer.getServer().getServerMetrics().meter("http.get-record").mark();
+    httpServer.getServer().getServerMetrics().meter("http.get-record").hit();
 
     final String[] ridParts = rid.getFirst().split(":");
 

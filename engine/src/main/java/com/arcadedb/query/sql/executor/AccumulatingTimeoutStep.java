@@ -86,11 +86,6 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
       public Optional<ExecutionPlan> getExecutionPlan() {
         return internal.getExecutionPlan();
       }
-
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return internal.getQueryStats();
-      }
     };
   }
 
