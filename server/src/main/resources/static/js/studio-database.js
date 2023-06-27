@@ -317,8 +317,11 @@ function executeCommand(language, query){
 
   if( query != null )
     editor.setValue( query );
-  else
-    query = editor.getValue();
+  else {
+    query = editor.getSelection();
+    if( query == null || query == "" )
+      query = editor.getValue();
+  }
 
   let database = getCurrentDatabase();
 
@@ -326,7 +329,7 @@ function executeCommand(language, query){
     return;
   if( escapeHtml( $("#inputLanguage").val() ) == "" )
     return;
-  if( escapeHtml( editor.getValue() ) == "" )
+  if( escapeHtml( query ) == "" )
     return;
 
   globalActivateTab("tab-query");
@@ -363,7 +366,12 @@ function executeCommand(language, query){
 function executeCommandTable(){
   let database = getCurrentDatabase();
   let language = escapeHtml( $("#inputLanguage").val() );
-  let command = escapeHtml( editor.getValue() );
+
+  let command = editor.getSelection();
+  if( command == null || command == "" )
+    command = editor.getValue();
+  command = escapeHtml( command );
+
   let limit = parseInt( $("#inputLimit").val() );
   let profileExecution = $('#profileCommand').prop('checked') ? "detailed" : "basic";
 
@@ -410,7 +418,12 @@ function executeCommandTable(){
 function executeCommandGraph(){
   let database = getCurrentDatabase();
   let language = escapeHtml( $("#inputLanguage").val() );
-  let command = escapeHtml( editor.getValue() );
+
+  let command = editor.getSelection();
+  if( command == null || command == "" )
+    command = editor.getValue();
+  command = escapeHtml( command );
+
   let limit = parseInt( $("#inputLimit").val() );
   let profileExecution = $('#profileCommand').prop('checked') ? "detailed" : "basic";
 
