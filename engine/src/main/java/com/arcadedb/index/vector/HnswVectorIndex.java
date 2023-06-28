@@ -34,6 +34,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.IndexBuilder;
@@ -210,7 +211,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     final ArrayList<RID>[] connections = new ArrayList[randomLevel + 1];
 
     for (int level = 0; level <= randomLevel; level++) {
-      final int levelM = randomLevel == 0 ? maxM0 : maxM;
+      final int levelM = level == 0 ? maxM0 : maxM;
       connections[level] = new ArrayList<>(levelM);
     }
 
