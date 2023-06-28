@@ -2,7 +2,8 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.Record;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
@@ -16,6 +17,8 @@ import java.net.*;
 import java.nio.charset.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 import java.util.stream.*;
 import java.util.zip.*;
@@ -30,7 +33,8 @@ public class FastTextDatabase {
 
   private static final String WORDS_FILE_URL = "https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.en.300.vec.gz";
 
-  private static final Path TMP_PATH = Paths.get(System.getProperty("java.io.tmpdir"));
+  private static final Path TMP_PATH       = Paths.get(System.getProperty("java.io.tmpdir"));
+  private final static int  PARALLEL_LEVEL = 8;
 
   public static void main(String[] args) throws Exception {
     new FastTextDatabase();
@@ -101,33 +105,56 @@ public class FastTextDatabase {
 
       final Random random = new Random();
 
+      final List<Bucket> buckets = database.getSchema().getType("Word").getBuckets(false);
+
+      final ExecutorService executor = new ThreadPoolExecutor(PARALLEL_LEVEL, PARALLEL_LEVEL, 5, TimeUnit.SECONDS, new SynchronousQueue(),
+          new ThreadPoolExecutor.CallerRunsPolicy());
+
+      final AtomicLong totalSearchTime = new AtomicLong();
+      final AtomicInteger totalHits = new AtomicInteger();
+      final long begin = System.currentTimeMillis();
+
       for (int cycle = 0; ; ++cycle) {
-        LogManager.instance().log(this, Level.SEVERE, "%d Selecting a random word from the database...", cycle);
+        final int currentCycle = cycle;
 
-        String input = "";
-        final int wordNum = random.nextInt(2_000_000 - 1);
-        final Iterator<Record> it = database.iterateType("Word", false);
-        for (int i = 0; it.hasNext(); ++i) {
-          final Record w = it.next();
-          if (i == wordNum) {
-            input = w.asVertex().getString("name");
-            break;
+        executor.submit(() -> {
+          try {
+            String input = "";
+
+            final int randomBucket = random.nextInt(buckets.size());
+            final Bucket bucket = buckets.get(randomBucket);
+
+            final int randomPageInBucket = random.nextInt(bucket.getTotalPages());
+            final int randomRecordInPage = random.nextInt(38); // 38 AVERAGE RECORDS IN DEFAULT PAGE
+
+            input = new RID(database, bucket.getFileId(), randomPageInBucket * bucket.getMaxRecordsInPage() + randomRecordInPage).asVertex().getString("name");
+
+            final long startWord = System.currentTimeMillis();
+
+            List<SearchResult<Vertex, Float>> approximateResults = persistentIndex.findNeighbors(input, k);
+
+            final long delta = System.currentTimeMillis() - startWord;
+
+            totalHits.incrementAndGet();
+            totalSearchTime.addAndGet(delta);
+
+            final Map<String, Float> results = new LinkedHashMap<>();
+            for (SearchResult<Vertex, Float> result : approximateResults)
+              results.put(result.item().getString("name"), result.distance());
+
+            LogManager.instance().log(this, Level.SEVERE, "%d Found similar words for '%s' in %dms: %s", currentCycle, input, delta, results);
+
+            final float throughput = totalHits.get() / ((System.currentTimeMillis() - begin) / 1000F);
+
+            LogManager.instance()
+                .log(this, Level.SEVERE, "STATS: %d searched words, avg %dms per single word, total throughput %.2f words/sec", totalSearchTime.get(),
+                    totalSearchTime.get() / totalHits.get(), throughput);
+
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Not Found");
           }
-        }
+        });
 
-        LogManager.instance().log(this, Level.SEVERE, "Searching for words similar to '%s'...", input);
-
-        final long startWord = System.currentTimeMillis();
-
-        List<SearchResult<Vertex, Float>> approximateResults = persistentIndex.findNeighbors(input, k);
-
-        LogManager.instance().log(this, Level.SEVERE, "Found similar words for '%s' in %dms", input, System.currentTimeMillis() - startWord);
-
-        for (SearchResult<Vertex, Float> result : approximateResults) {
-          LogManager.instance().log(this, Level.SEVERE, "- %s %.4f", result.item().getString("name"), result.distance());
-        }
-
-        //Thread.sleep(1000);
       }
     } finally {
       database.close();
