@@ -48,7 +48,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.time.*;
-import java.time.format.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
@@ -58,14 +57,13 @@ import static com.arcadedb.server.StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TEST
  * From Discussion https://github.com/ArcadeData/arcadedb/discussions/1129#discussioncomment-6226545
  */
 public class ConsoleAsyncInsertTest {
-  static final String            DATABASE_NAME              = "ConsoleAsyncInsertTest";
-  static final int               PARALLEL_LEVEL             = 6;
-  static final String            RECORD_TIME_FORMAT_PATTERN = "yyyyMMdd'_'HHmmss.SSSSSS";
-  static final DateTimeFormatter RECORD_TIME_FORMAT         = DateTimeFormatter.ofPattern(RECORD_TIME_FORMAT_PATTERN);
+  static final String DATABASE_NAME              = "ConsoleAsyncInsertTest";
+  static final int    PARALLEL_LEVEL             = 6;
+  static final String RECORD_TIME_FORMAT_PATTERN = "yyyyMMdd'_'HHmmss.SSSSSS";
+  final        String userName                   = "root";
+  final        String password                   = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
   AtomicInteger autoIncrementOrderId = new AtomicInteger(0);
-  String        userName             = "testUser";
-  String        password             = "testPassword";
 
   private static class Product {
     private final String        fileName;
@@ -187,8 +185,6 @@ public class ConsoleAsyncInsertTest {
 
     try {
       ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
-      final String userName = "root";
-      final String password = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
       if (serverSecurity.getUser(userName) == null) {
         serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
             .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
@@ -218,7 +214,7 @@ public class ConsoleAsyncInsertTest {
         inventoryProductAsyncWithSQL(database, product, okCount, errCount);
       }
 
-      checkResults(txErrorCounter, userName, password, database, okCount, errCount, N, begin);
+      checkResults(txErrorCounter, database, okCount, errCount, N, begin);
     } finally {
       arcadeDBServer.stop();
       FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
@@ -268,8 +264,6 @@ public class ConsoleAsyncInsertTest {
 
     try {
       ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
-      final String userName = "root";
-      final String password = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
       if (serverSecurity.getUser(userName) == null) {
         serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
             .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
@@ -299,7 +293,7 @@ public class ConsoleAsyncInsertTest {
         inventoryProductAsyncWithAPI(database, product, okCount, errCount);
       }
 
-      checkResults(txErrorCounter, userName, password, database, okCount, errCount, N, begin);
+      checkResults(txErrorCounter, database, okCount, errCount, N, begin);
     } finally {
       arcadeDBServer.stop();
       FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
@@ -406,8 +400,7 @@ public class ConsoleAsyncInsertTest {
     }
   }
 
-  private static void checkResults(AtomicLong txErrorCounter, String userName, String password, Database database, AtomicLong okCount, AtomicLong errCount,
-      long N, long begin) {
+  private void checkResults(AtomicLong txErrorCounter, Database database, AtomicLong okCount, AtomicLong errCount, long N, long begin) {
     Assertions.assertTrue(database.async().waitCompletion(30_000));
 
     System.out.println("Total async insertion of " + N + " elements in " + (System.currentTimeMillis() - begin));
