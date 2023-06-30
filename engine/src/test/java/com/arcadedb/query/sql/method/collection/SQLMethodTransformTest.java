@@ -130,7 +130,7 @@ class SQLMethodTransformTest {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(new DatabaseInternal() {
       @Override
-      public TransactionContext getTransaction() {
+      public TransactionContext getTransactionIfExists() {
         return null;
       }
 

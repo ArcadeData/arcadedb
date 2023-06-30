@@ -114,8 +114,8 @@ public class ServerDatabase implements DatabaseInternal {
     throw new UnsupportedOperationException("Align Database not supported");
   }
 
-  public TransactionContext getTransaction() {
-    return wrapped.getTransaction();
+  public TransactionContext getTransactionIfExists() {
+    return wrapped.getTransactionIfExists();
   }
 
   @Override

@@ -20,10 +20,12 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import com.arcadedb.integration.importer.format.FormatImporter;
+import com.arcadedb.integration.importer.format.GloVeImporterFormat;
 import com.arcadedb.integration.importer.format.JSONImporterFormat;
 import com.arcadedb.integration.importer.format.Neo4jImporterFormat;
 import com.arcadedb.integration.importer.format.OrientDBImporterFormat;
 import com.arcadedb.integration.importer.format.RDFImporterFormat;
+import com.arcadedb.integration.importer.format.Word2VecImporterFormat;
 import com.arcadedb.integration.importer.format.XMLImporterFormat;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
@@ -49,15 +51,15 @@ public class SourceDiscovery {
     this.url = url;
   }
 
-  public SourceSchema getSchema(final ImporterSettings settings, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema)
-      throws IOException {
+  public SourceSchema getSchema(final ImporterSettings settings, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema,
+      final ConsoleLogger logger) throws IOException {
     LogManager.instance().log(this, Level.INFO, "Analyzing url: %s...", url);
 
     final Source source = getSource();
 
     final Parser parser = new Parser(source, 0);
 
-    final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings);
+    final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings, logger);
     parser.reset();
 
     SourceSchema sourceSchema = null;
@@ -168,8 +170,8 @@ public class SourceDiscovery {
     });
   }
 
-  private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.ENTITY_TYPE entityType, final ImporterSettings settings)
-      throws IOException {
+  private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.ENTITY_TYPE entityType, final ImporterSettings settings,
+      final ConsoleLogger logger) throws IOException {
 
     String knownFileType = null;
     String knownDelimiter = null;
@@ -249,49 +251,77 @@ public class SourceDiscovery {
     // SKIP COMMENTS '//' IF ANY
     parser.reset();
 
-    while (parser.getCurrentChar() == '/' && parser.nextChar() == '/') {
-      skipLine(parser);
-      format = analyzeChar(parser, settings);
-      if (format != null)
-        return format;
-    }
-
-    // CHECK FOR CSV-LIKE FILES
-    final Map<Character, AtomicInteger> candidateSeparators = new HashMap<>();
-
-    while (parser.isAvailable() && parser.nextChar() != '\n') {
-      final char c = parser.getCurrentChar();
-      if (!Character.isLetterOrDigit(c)) {
-        final AtomicInteger sep = candidateSeparators.get(c);
-        if (sep == null) {
-          candidateSeparators.put(c, new AtomicInteger(1));
-        } else
-          sep.incrementAndGet();
+    try {
+      while (parser.getCurrentChar() == '/' && parser.nextChar() == '/') {
+        skipLine(parser);
+        format = analyzeChar(parser, settings);
+        if (format != null)
+          return format;
       }
+
+      // CHECK FOR CSV-LIKE FILES
+      final Map<Character, AtomicInteger> candidateSeparators = new HashMap<>();
+
+      final StringBuilder line = new StringBuilder();
+      while (parser.isAvailable() && parser.nextChar() != '\n') {
+        final char c = parser.getCurrentChar();
+        line.append(c);
+
+        if (isSeparator(c)) {
+          final AtomicInteger sep = candidateSeparators.get(c);
+          if (sep == null) {
+            candidateSeparators.put(c, new AtomicInteger(1));
+          } else
+            sep.incrementAndGet();
+        }
+      }
+
+      if (!candidateSeparators.isEmpty()) {
+        final ArrayList<Map.Entry<Character, AtomicInteger>> list = new ArrayList(candidateSeparators.entrySet());
+        list.sort((o1, o2) -> {
+          if (o1.getValue().get() == o2.getValue().get())
+            return 0;
+          return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
+        });
+
+        final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
+
+        if (bestSeparator.getKey() == ' ') {
+          // CHECK IF IS A VECTOR EMBEDDING TEXT FILE
+          final StringBuilder line2 = new StringBuilder();
+          while (parser.isAvailable() && parser.nextChar() != '\n')
+            line2.append(parser.getCurrentChar());
+
+          final String[] fields1 = line.toString().split(" ");
+          final String[] fields2 = line2.toString().split(" ");
+
+          if (fields1.length == 2 && fields2.length > 2)
+            format = new Word2VecImporterFormat();
+          else if (fields1.length == fields2.length)
+            format = new GloVeImporterFormat();
+        }
+
+        if (format == null) {
+          LogManager.instance().log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", bestSeparator.getKey(), list);
+          settings.options.put("delimiter", "" + bestSeparator.getKey());
+          format = new CSVImporterFormat();
+        }
+      }
+
+    } finally {
+      if (format != null)
+        logger.logLine(1, "Recognized format %s", format.getFormat());
     }
 
-    if (!candidateSeparators.isEmpty()) {
-      // EXCLUDE SPACE IF OTHER DELIMITERS ARE PRESENT
-      if (candidateSeparators.size() > 1)
-        candidateSeparators.remove(' ');
-
-      final ArrayList<Map.Entry<Character, AtomicInteger>> list = new ArrayList(candidateSeparators.entrySet());
-      list.sort((o1, o2) -> {
-        if (o1.getValue().get() == o2.getValue().get())
-          return 0;
-        return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
-      });
-
-      final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
-
-      LogManager.instance().log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", bestSeparator.getKey(), list);
-
-      settings.options.put("delimiter", "" + bestSeparator.getKey());
-      return new CSVImporterFormat();
-    }
+    if (format != null)
+      return format;
 
     // UNKNOWN
     throw new ImportException("Cannot determine the file type. If it is a CSV file, please specify the header via settings");
+  }
+
+  private boolean isSeparator(final char c) {
+    return c == ' ' || c == '\t' || c == ',' || c == '|' || c == '-' || c == '_';
   }
 
   private String getFileTypeByExtension(final String fileName) {
@@ -354,7 +384,9 @@ public class SourceDiscovery {
         }
       }
 
-      return new XMLImporterFormat();
+      if (delimiters.size() <= 1)
+        return new XMLImporterFormat();
+
     } else if (currentChar == '{') {
 
       final StringBuilder buffer = new StringBuilder();

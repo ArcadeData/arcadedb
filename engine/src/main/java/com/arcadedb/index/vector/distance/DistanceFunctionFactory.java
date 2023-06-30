@@ -32,30 +32,40 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DistanceFunctionFactory {
-  private static final Map<String, DistanceFunction> implementations = new HashMap<>();
+  private static final Map<String, DistanceFunction> implementationsByName      = new HashMap<>();
+  private static final Map<String, DistanceFunction> implementationsByClassName = new HashMap<>();
 
   static {
-    implementations.put("FloatCosineDistance", DistanceFunctions.FLOAT_COSINE_DISTANCE);
-    implementations.put("FloatInnerProduct", DistanceFunctions.FLOAT_INNER_PRODUCT);
-    implementations.put("FloatEuclideanDistance", DistanceFunctions.FLOAT_EUCLIDEAN_DISTANCE);
-    implementations.put("FloatCanberraDistance", DistanceFunctions.FLOAT_CANBERRA_DISTANCE);
-    implementations.put("FloatBrayCurtisDistance", DistanceFunctions.FLOAT_BRAY_CURTIS_DISTANCE);
-    implementations.put("FloatCorrelationDistance", DistanceFunctions.FLOAT_CORRELATION_DISTANCE);
-    implementations.put("FloatManhattanDistance", DistanceFunctions.FLOAT_MANHATTAN_DISTANCE);
-    implementations.put("FloatChebyshevDistance", new ChebyshevDistance.FloatChebyshevDistance());
-    implementations.put("DoubleCosineDistance", DistanceFunctions.DOUBLE_COSINE_DISTANCE);
-    implementations.put("DoubleInnerProduct", DistanceFunctions.DOUBLE_INNER_PRODUCT);
-    implementations.put("DoubleEuclideanDistance", DistanceFunctions.DOUBLE_EUCLIDEAN_DISTANCE);
-    implementations.put("DoubleCanberraDistance", DistanceFunctions.DOUBLE_CANBERRA_DISTANCE);
-    implementations.put("DoubleBrayCurtisDistance", DistanceFunctions.DOUBLE_BRAY_CURTIS_DISTANCE);
-    implementations.put("DoubleCorrelationDistance", DistanceFunctions.DOUBLE_CORRELATION_DISTANCE);
-    implementations.put("DoubleManhattanDistance", DistanceFunctions.DOUBLE_MANHATTAN_DISTANCE);
-    implementations.put("DoubleChebyshevDistance", new ChebyshevDistance.DoubleChebyshevDistance());
-    implementations.put("FloatSparseVectorInnerProduct", DistanceFunctions.FLOAT_SPARSE_VECTOR_INNER_PRODUCT);
-    implementations.put("DoubleSparseVectorInnerProduct", DistanceFunctions.DOUBLE_SPARSE_VECTOR_INNER_PRODUCT);
+    registerImplementation("FloatCosine", DistanceFunctions.FLOAT_COSINE_DISTANCE);
+    registerImplementation("FloatInnerProduct", DistanceFunctions.FLOAT_INNER_PRODUCT);
+    registerImplementation("FloatEuclidean", DistanceFunctions.FLOAT_EUCLIDEAN_DISTANCE);
+    registerImplementation("FloatCanberra", DistanceFunctions.FLOAT_CANBERRA_DISTANCE);
+    registerImplementation("FloatBrayCurtis", DistanceFunctions.FLOAT_BRAY_CURTIS_DISTANCE);
+    registerImplementation("FloatCorrelation", DistanceFunctions.FLOAT_CORRELATION_DISTANCE);
+    registerImplementation("FloatManhattan", DistanceFunctions.FLOAT_MANHATTAN_DISTANCE);
+    registerImplementation("FloatChebyshev", new ChebyshevDistance.FloatChebyshevDistance());
+    registerImplementation("DoubleCosine", DistanceFunctions.DOUBLE_COSINE_DISTANCE);
+    registerImplementation("DoubleInnerProduct", DistanceFunctions.DOUBLE_INNER_PRODUCT);
+    registerImplementation("DoubleEuclidean", DistanceFunctions.DOUBLE_EUCLIDEAN_DISTANCE);
+    registerImplementation("DoubleCanberra", DistanceFunctions.DOUBLE_CANBERRA_DISTANCE);
+    registerImplementation("DoubleBrayCurtis", DistanceFunctions.DOUBLE_BRAY_CURTIS_DISTANCE);
+    registerImplementation("DoubleCorrelation", DistanceFunctions.DOUBLE_CORRELATION_DISTANCE);
+    registerImplementation("DoubleManhattan", DistanceFunctions.DOUBLE_MANHATTAN_DISTANCE);
+    registerImplementation("DoubleChebyshev", new ChebyshevDistance.DoubleChebyshevDistance());
+    registerImplementation("FloatSparseVectorInnerProduct", DistanceFunctions.FLOAT_SPARSE_VECTOR_INNER_PRODUCT);
+    registerImplementation("DoubleSparseVectorInnerProduct", DistanceFunctions.DOUBLE_SPARSE_VECTOR_INNER_PRODUCT);
   }
 
-  public static DistanceFunction getImplementation(final String name) {
-    return implementations.get(name);
+  public static DistanceFunction getImplementationByName(final String name) {
+    return implementationsByName.get(name);
+  }
+
+  public static DistanceFunction getImplementationByClassName(final String name) {
+    return implementationsByClassName.get(name);
+  }
+
+  public static void registerImplementation(final String name, final DistanceFunction impl) {
+    implementationsByName.put(name, impl);
+    implementationsByClassName.put(impl.getClass().getSimpleName(), impl);
   }
 }

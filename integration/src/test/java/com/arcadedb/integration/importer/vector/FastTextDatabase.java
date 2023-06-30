@@ -1,27 +1,45 @@
-package com.arcadedb.index.vector;
+/*
+ * Copyright 2023 Arcade Data Ltd
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package com.arcadedb.integration.importer.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
-import com.github.jelmerk.knn.DistanceFunctions;
 import com.github.jelmerk.knn.SearchResult;
 
 import java.io.*;
 import java.net.*;
-import java.nio.charset.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
-import java.util.stream.*;
-import java.util.zip.*;
 
 import static java.util.concurrent.TimeUnit.*;
 
@@ -44,7 +62,6 @@ public class FastTextDatabase {
     final long start = System.currentTimeMillis();
 
     final Database database;
-    final HnswVectorIndex persistentIndex;
 
     final DatabaseFactory factory = new DatabaseFactory("textdb");
 
@@ -56,8 +73,6 @@ public class FastTextDatabase {
       database = factory.open();
       //LogManager.instance().log(this, Level.SEVERE, "Found existent database with %d words", database.countType("Word", false));
 
-      persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
-
     } else {
       database = factory.create();
       LogManager.instance().log(this, Level.SEVERE, "Creating new database");
@@ -68,39 +83,21 @@ public class FastTextDatabase {
       if (!Files.exists(file)) {
         downloadFile(WORDS_FILE_URL, file);
       } else {
-        LogManager.instance().log(this, Level.SEVERE, "Input file already downloaded. Using %s", file);
+        LogManager.instance().log(this, Level.SEVERE, "Input file already downloaded. Using %s\n", file);
       }
 
-      List<Word> words = loadWordVectors(file);
+      database.command("sql", "import database file://" + file.toAbsolutePath() + " "//
+          + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128," //
+          + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
+      );
 
-      final HnswVectorIndexRAM<String, float[], Word, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(300, DistanceFunctions.FLOAT_INNER_PRODUCT, words.size())
-          .withM(16).withEf(200).withEfConstruction(200).build();
-
-      hnswIndex.addAll(words, (workDone, max) -> LogManager.instance()
-          .log(null, Level.SEVERE, "Added %d out of %d words to the index (elapsed %ds).", workDone, max, (System.currentTimeMillis() - start) / 1000));
-
-      long end = System.currentTimeMillis();
-      long duration = end - start;
-
-      LogManager.instance().log(null, Level.SEVERE, "Creating index with %d words took %d millis which is %d minutes.", hnswIndex.size(), duration,
-          MILLISECONDS.toMinutes(duration));
-
-      LogManager.instance().log(null, Level.SEVERE, "Saving index into the database...");
-
-      persistentIndex = hnswIndex.createPersistentIndex(database)//
-          .withVertexType("Word").withEdgeType("Proximity").withVectorPropertyName("vector").withIdProperty("name").create();
-
-      persistentIndex.save();
-
-      LogManager.instance().log(null, Level.SEVERE, "Index saved in %ds.", System.currentTimeMillis() - end);
+      LogManager.instance().log(this, Level.SEVERE, "Creating index with took %d millis which is %d minutes.%n", System.currentTimeMillis() - start,
+          MILLISECONDS.toMinutes(System.currentTimeMillis() - start));
     }
 
+    final HnswVectorIndex persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+
     try {
-      long end = System.currentTimeMillis();
-      long duration = end - start;
-
-      LogManager.instance().log(this, Level.SEVERE, "Creating index with took %d millis which is %d minutes.%n", duration, MILLISECONDS.toMinutes(duration));
-
       int k = 10;
 
       final Random random = new Random();
@@ -113,23 +110,23 @@ public class FastTextDatabase {
       final AtomicLong totalSearchTime = new AtomicLong();
       final AtomicInteger totalHits = new AtomicInteger();
       final long begin = System.currentTimeMillis();
+      final AtomicLong lastStats = new AtomicLong();
+
+      final List<String> words = new ArrayList<>();
+      for (Iterator<Record> it = database.iterateType("Word", true); it.hasNext(); )
+        words.add(it.next().asVertex().getString("name"));
 
       for (int cycle = 0; ; ++cycle) {
         final int currentCycle = cycle;
 
         executor.submit(() -> {
           try {
-            String input = "";
-
-            final int randomBucket = random.nextInt(buckets.size());
-            final Bucket bucket = buckets.get(randomBucket);
-
-            final int randomPageInBucket = random.nextInt(bucket.getTotalPages());
-            final int randomRecordInPage = random.nextInt(38); // 38 AVERAGE RECORDS IN DEFAULT PAGE
-
-            input = new RID(database, bucket.getFileId(), randomPageInBucket * bucket.getMaxRecordsInPage() + randomRecordInPage).asVertex().getString("name");
+            final int randomWord = random.nextInt(words.size());
+            String input = words.get(randomWord);
 
             final long startWord = System.currentTimeMillis();
+
+            database.begin();
 
             List<SearchResult<Vertex, Float>> approximateResults = persistentIndex.findNeighbors(input, k);
 
@@ -142,13 +139,19 @@ public class FastTextDatabase {
             for (SearchResult<Vertex, Float> result : approximateResults)
               results.put(result.item().getString("name"), result.distance());
 
-            LogManager.instance().log(this, Level.SEVERE, "%d Found similar words for '%s' in %dms: %s", currentCycle, input, delta, results);
+            //LogManager.instance().log(this, Level.SEVERE, "%d Found similar words for '%s' in %dms: %s", currentCycle, input, delta, results);
 
-            final float throughput = totalHits.get() / ((System.currentTimeMillis() - begin) / 1000F);
+            final long now = System.currentTimeMillis();
+            final float throughput = totalHits.get() / ((now - begin) / 1000F);
 
-            LogManager.instance()
-                .log(this, Level.SEVERE, "STATS: %d searched words, avg %dms per single word, total throughput %.2f words/sec", totalSearchTime.get(),
-                    totalSearchTime.get() / totalHits.get(), throughput);
+            if (now - lastStats.get() >= 1000) {
+              LogManager.instance()
+                  .log(this, Level.SEVERE, "STATS: %d searched words, avg %dms per single word, total throughput %.2f words/sec", totalSearchTime.get(),
+                      totalSearchTime.get() / totalHits.get(), throughput);
+              lastStats.set(now);
+            }
+
+            database.rollback();
 
           } catch (Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "Not Found");
@@ -167,26 +170,5 @@ public class FastTextDatabase {
       Files.copy(in, path);
     }
     LogManager.instance().log(this, Level.SEVERE, "Downloaded %s", FileUtils.getSizeAsString(path.toFile().length()));
-  }
-
-  private static List<Word> loadWordVectors(Path path) throws IOException {
-    LogManager.instance().log(null, Level.SEVERE, "Loading words from %s", path);
-
-    try (BufferedReader reader = new BufferedReader(new InputStreamReader(new GZIPInputStream(Files.newInputStream(path)), StandardCharsets.UTF_8))) {
-      return reader.lines().skip(1)//
-          //.limit(100_000)//
-          .map(line -> {
-            String[] tokens = line.split(" ");
-
-            String word = tokens[0];
-
-            float[] vector = new float[tokens.length - 1];
-            for (int i = 1; i < tokens.length - 1; i++) {
-              vector[i] = Float.parseFloat(tokens[i]);
-            }
-
-            return new Word(word, VectorUtils.normalize(vector)); // normalize the vector so we can do inner product search
-          }).collect(Collectors.toList());
-    }
   }
 }

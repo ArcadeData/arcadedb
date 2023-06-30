@@ -363,8 +363,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public TransactionContext getTransaction() {
-    return proxied.getTransaction();
+  public TransactionContext getTransactionIfExists() {
+    return proxied.getTransactionIfExists();
   }
 
   @Override

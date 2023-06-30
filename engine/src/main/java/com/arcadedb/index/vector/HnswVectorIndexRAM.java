@@ -5,8 +5,6 @@ import com.arcadedb.schema.VectorIndexBuilder;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
 import com.github.jelmerk.knn.Item;
-import com.github.jelmerk.knn.JavaObjectSerializer;
-import com.github.jelmerk.knn.ObjectSerializer;
 import com.github.jelmerk.knn.SearchResult;
 import com.github.jelmerk.knn.hnsw.SizeLimitExceededException;
 import com.github.jelmerk.knn.util.ArrayBitSet;
@@ -16,8 +14,6 @@ import com.github.jelmerk.knn.util.Murmur3;
 import org.eclipse.collections.api.list.primitive.MutableIntList;
 import org.eclipse.collections.api.map.primitive.MutableObjectIntMap;
 import org.eclipse.collections.api.map.primitive.MutableObjectLongMap;
-import org.eclipse.collections.api.tuple.primitive.ObjectIntPair;
-import org.eclipse.collections.api.tuple.primitive.ObjectLongPair;
 import org.eclipse.collections.impl.list.mutable.primitive.IntArrayList;
 import org.eclipse.collections.impl.map.mutable.primitive.ObjectIntHashMap;
 import org.eclipse.collections.impl.map.mutable.primitive.ObjectLongHashMap;
@@ -72,17 +68,13 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
   private MutableObjectLongMap<TId>         deletedItemVersions;
   private Map<TId, Object>                  locks;
 
-  private ObjectSerializer<TId>   itemIdSerializer;
-  private ObjectSerializer<TItem> itemSerializer;
-
   private ReentrantLock globalLock;
 
   private GenericObjectPool<ArrayBitSet> visitedBitSetPool;
 
   private ArrayBitSet excludedCandidates;
 
-  private HnswVectorIndexRAM(RefinedBuilder<TId, TVector, TItem, TDistance> builder) {
-
+  private HnswVectorIndexRAM(final Builder<TId, TVector, TItem, TDistance> builder) {
     this.dimensions = builder.dimensions;
     this.maxItemCount = builder.maxItemCount;
     this.distanceFunction = builder.distanceFunction;
@@ -101,9 +93,6 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     this.lookup = new ObjectIntHashMap<>();
     this.deletedItemVersions = new ObjectLongHashMap<>();
     this.locks = new HashMap<>();
-
-    this.itemIdSerializer = builder.itemIdSerializer;
-    this.itemSerializer = builder.itemSerializer;
 
     this.globalLock = new ReentrantLock();
 
@@ -202,11 +191,10 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    */
   @Override
   public boolean add(TItem item) {
-    if (item.dimensions() != dimensions) {
-      throw new IllegalArgumentException("Item does not have dimensionality of : " + dimensions);
-    }
+    if (item.dimensions() != dimensions)
+      throw new IllegalArgumentException("Item has dimensionality of " + item.dimensions() + " instead of " + dimensions);
 
-    int randomLevel = assignLevel(item.id(), this.levelLambda);
+    final int randomLevel = assignLevel(item.id(), this.levelLambda);
 
     IntArrayList[] connections = new IntArrayList[randomLevel + 1];
 
@@ -678,126 +666,12 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
   }
 
   /**
-   * Returns the serializer used to serialize item id's when saving the index.
-   *
-   * @return the serializer used to serialize item id's when saving the index
-   */
-  public ObjectSerializer<TId> getItemIdSerializer() {
-    return itemIdSerializer;
-  }
-
-  /**
-   * Returns the serializer used to serialize items when saving the index.
-   *
-   * @return the serializer used to serialize items when saving the index
-   */
-  public ObjectSerializer<TItem> getItemSerializer() {
-    return itemSerializer;
-  }
-
-  /**
    * {@inheritDoc}
    */
   @Override
   public void save(OutputStream out) throws IOException {
     try (ObjectOutputStream oos = new ObjectOutputStream(out)) {
       oos.writeObject(this);
-    }
-  }
-
-  private void writeObject(ObjectOutputStream oos) throws IOException {
-    oos.writeByte(VERSION_1);
-    oos.writeInt(dimensions);
-    oos.writeObject(distanceFunction);
-    oos.writeObject(distanceComparator);
-    oos.writeObject(itemIdSerializer);
-    oos.writeObject(itemSerializer);
-    oos.writeInt(maxItemCount);
-    oos.writeInt(m);
-    oos.writeInt(maxM);
-    oos.writeInt(maxM0);
-    oos.writeDouble(levelLambda);
-    oos.writeInt(ef);
-    oos.writeInt(efConstruction);
-    oos.writeInt(nodeCount);
-    writeMutableObjectIntMap(oos, lookup);
-    writeMutableObjectLongMap(oos, deletedItemVersions);
-    writeNodesArray(oos, nodes);
-    oos.writeInt(entryPoint == null ? -1 : entryPoint.id);
-  }
-
-  @SuppressWarnings("unchecked")
-  private void readObject(ObjectInputStream ois) throws IOException, ClassNotFoundException {
-    @SuppressWarnings("unused")
-    byte version = ois.readByte(); // for coping with future incompatible serialization
-    this.dimensions = ois.readInt();
-    this.distanceFunction = (DistanceFunction<TVector, TDistance>) ois.readObject();
-    this.distanceComparator = (Comparator<TDistance>) ois.readObject();
-    this.maxValueDistanceComparator = new MaxValueComparator<>(distanceComparator);
-    this.itemIdSerializer = (ObjectSerializer<TId>) ois.readObject();
-    this.itemSerializer = (ObjectSerializer<TItem>) ois.readObject();
-
-    this.maxItemCount = ois.readInt();
-    this.m = ois.readInt();
-    this.maxM = ois.readInt();
-    this.maxM0 = ois.readInt();
-    this.levelLambda = ois.readDouble();
-    this.ef = ois.readInt();
-    this.efConstruction = ois.readInt();
-    this.nodeCount = ois.readInt();
-    this.lookup = readMutableObjectIntMap(ois, itemIdSerializer);
-    this.deletedItemVersions = readMutableObjectLongMap(ois, itemIdSerializer);
-    this.nodes = readNodesArray(ois, itemSerializer, maxM0, maxM);
-
-    int entrypointNodeId = ois.readInt();
-    this.entryPoint = entrypointNodeId == -1 ? null : nodes.get(entrypointNodeId);
-
-    this.globalLock = new ReentrantLock();
-    this.visitedBitSetPool = new GenericObjectPool<>(() -> new ArrayBitSet(this.maxItemCount), Runtime.getRuntime().availableProcessors());
-    this.excludedCandidates = new ArrayBitSet(this.maxItemCount);
-    this.locks = new HashMap<>();
-  }
-
-  private void writeMutableObjectIntMap(ObjectOutputStream oos, MutableObjectIntMap<TId> map) throws IOException {
-    oos.writeInt(map.size());
-
-    for (ObjectIntPair<TId> pair : map.keyValuesView()) {
-      itemIdSerializer.write(pair.getOne(), oos);
-      oos.writeInt(pair.getTwo());
-    }
-  }
-
-  private void writeMutableObjectLongMap(ObjectOutputStream oos, MutableObjectLongMap<TId> map) throws IOException {
-    oos.writeInt(map.size());
-
-    for (ObjectLongPair<TId> pair : map.keyValuesView()) {
-      itemIdSerializer.write(pair.getOne(), oos);
-      oos.writeLong(pair.getTwo());
-    }
-  }
-
-  private void writeNodesArray(ObjectOutputStream oos, AtomicReferenceArray<Node<TItem>> nodes) throws IOException {
-    oos.writeInt(nodes.length());
-    for (int i = 0; i < nodes.length(); i++) {
-      writeNode(oos, nodes.get(i));
-    }
-  }
-
-  private void writeNode(ObjectOutputStream oos, Node<TItem> node) throws IOException {
-    if (node == null) {
-      oos.writeInt(-1);
-    } else {
-      oos.writeInt(node.id);
-      oos.writeInt(node.connections.length);
-
-      for (MutableIntList connections : node.connections) {
-        oos.writeInt(connections.size());
-        for (int j = 0; j < connections.size(); j++) {
-          oos.writeInt(connections.get(j));
-        }
-      }
-      itemSerializer.write(node.item, oos);
-      oos.writeBoolean(node.deleted);
     }
   }
 
@@ -920,88 +794,6 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     }
   }
 
-  private static IntArrayList readIntArrayList(ObjectInputStream ois, int initialSize) throws IOException {
-    int size = ois.readInt();
-
-    IntArrayList list = new IntArrayList(initialSize);
-
-    for (int j = 0; j < size; j++) {
-      list.add(ois.readInt());
-    }
-
-    return list;
-  }
-
-  private static <TItem extends Item> Node<TItem> readNode(ObjectInputStream ois, ObjectSerializer<TItem> itemSerializer, int maxM0, int maxM)
-      throws IOException, ClassNotFoundException {
-
-    int id = ois.readInt();
-
-    if (id == -1) {
-      return null;
-    } else {
-      int connectionsSize = ois.readInt();
-
-      MutableIntList[] connections = new MutableIntList[connectionsSize];
-
-      for (int i = 0; i < connectionsSize; i++) {
-        int levelM = i == 0 ? maxM0 : maxM;
-        connections[i] = readIntArrayList(ois, levelM);
-      }
-
-      TItem item = itemSerializer.read(ois);
-
-      boolean deleted = ois.readBoolean();
-
-      return new Node<>(id, connections, item, deleted);
-    }
-  }
-
-  private static <TItem extends Item> AtomicReferenceArray<Node<TItem>> readNodesArray(ObjectInputStream ois, ObjectSerializer<TItem> itemSerializer, int maxM0,
-      int maxM) throws IOException, ClassNotFoundException {
-
-    int size = ois.readInt();
-    AtomicReferenceArray<Node<TItem>> nodes = new AtomicReferenceArray<>(size);
-
-    for (int i = 0; i < nodes.length(); i++) {
-      nodes.set(i, readNode(ois, itemSerializer, maxM0, maxM));
-    }
-
-    return nodes;
-  }
-
-  private static <TId> MutableObjectIntMap<TId> readMutableObjectIntMap(ObjectInputStream ois, ObjectSerializer<TId> itemIdSerializer)
-      throws IOException, ClassNotFoundException {
-
-    int size = ois.readInt();
-
-    MutableObjectIntMap<TId> map = new ObjectIntHashMap<>(size);
-
-    for (int i = 0; i < size; i++) {
-      TId key = itemIdSerializer.read(ois);
-      int value = ois.readInt();
-
-      map.put(key, value);
-    }
-    return map;
-  }
-
-  private static <TId> MutableObjectLongMap<TId> readMutableObjectLongMap(ObjectInputStream ois, ObjectSerializer<TId> itemIdSerializer)
-      throws IOException, ClassNotFoundException {
-
-    int size = ois.readInt();
-
-    MutableObjectLongMap<TId> map = new ObjectLongHashMap<>(size);
-
-    for (int i = 0; i < size; i++) {
-      TId key = itemIdSerializer.read(ois);
-      long value = ois.readLong();
-
-      map.put(key, value);
-    }
-    return map;
-  }
-
   /**
    * Start the process of building a new HNSW index.
    *
@@ -1013,8 +805,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @return a builder
    */
-  public static <TVector, TDistance extends Comparable<TDistance>> Builder<TVector, TDistance> newBuilder(int dimensions,
-      DistanceFunction<TVector, TDistance> distanceFunction, int maxItemCount) {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance extends Comparable<TDistance>> Builder<TId, TVector, TItem, TDistance> newBuilder(
+      int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, int maxItemCount) {
 
     Comparator<TDistance> distanceComparator = Comparator.naturalOrder();
 
@@ -1033,17 +825,15 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @return a builder
    */
-  public static <TVector, TDistance> Builder<TVector, TDistance> newBuilder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction,
-      Comparator<TDistance> distanceComparator, int maxItemCount) {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> Builder<TId, TVector, TItem, TDistance> newBuilder(final int dimensions,
+      final DistanceFunction<TVector, TDistance> distanceFunction, final Comparator<TDistance> distanceComparator, final int maxItemCount) {
 
     return new Builder<>(dimensions, distanceFunction, distanceComparator, maxItemCount);
   }
 
-  private int assignLevel(TId value, double lambda) {
-
+  private int assignLevel(final TId value, final double lambda) {
     // by relying on the external id to come up with the level, the graph construction should be a lot mor stable
     // see : https://github.com/nmslib/hnswlib/issues/28
-
     int hashCode = value.hashCode();
 
     byte[] bytes = new byte[] { (byte) (hashCode >> 24), (byte) (hashCode >> 16), (byte) (hashCode >> 8), (byte) hashCode };
@@ -1161,13 +951,12 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
   }
 
   /**
-   * Base class for HNSW index builders.
+   * Builder for initializing an {@link HnswVectorIndexRAM} instance.
    *
-   * @param <TBuilder>  Concrete class that extends from this builder
    * @param <TVector>   Type of the vector to perform distance calculation on
-   * @param <TDistance> Type of items stored in the index
+   * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
    */
-  public static abstract class BuilderBase<TBuilder extends BuilderBase<TBuilder, TVector, TDistance>, TVector, TDistance> {
+  public static class Builder<TId, TVector, TItem extends Item<TId, TVector>, TDistance> {
 
     public static final int     DEFAULT_M               = 10;
     public static final int     DEFAULT_EF              = 10;
@@ -1177,22 +966,24 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     int                                  dimensions;
     DistanceFunction<TVector, TDistance> distanceFunction;
     Comparator<TDistance>                distanceComparator;
+    int                                  maxItemCount;
+    int                                  m              = DEFAULT_M;
+    int                                  ef             = DEFAULT_EF;
+    int                                  efConstruction = DEFAULT_EF_CONSTRUCTION;
 
-    int maxItemCount;
-
-    int m              = DEFAULT_M;
-    int ef             = DEFAULT_EF;
-    int efConstruction = DEFAULT_EF_CONSTRUCTION;
-
-    BuilderBase(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, Comparator<TDistance> distanceComparator, int maxItemCount) {
-
+    /**
+     * Constructs a new {@link Builder} instance.
+     *
+     * @param dimensions       the dimensionality of the vectors stored in the index
+     * @param distanceFunction the distance function
+     * @param maxItemCount     the maximum number of elements in the index
+     */
+    Builder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, Comparator<TDistance> distanceComparator, int maxItemCount) {
       this.dimensions = dimensions;
       this.distanceFunction = distanceFunction;
       this.distanceComparator = distanceComparator;
       this.maxItemCount = maxItemCount;
     }
-
-    abstract TBuilder self();
 
     /**
      * Sets the number of bi-directional links created for every new element during construction. Reasonable range
@@ -1209,9 +1000,9 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
      *
      * @return the builder.
      */
-    public TBuilder withM(int m) {
+    public Builder<TId, TVector, TItem, TDistance> withM(int m) {
       this.m = m;
-      return self();
+      return this;
     }
 
     /**
@@ -1226,9 +1017,9 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
      *
      * @return the builder
      */
-    public TBuilder withEfConstruction(int efConstruction) {
+    public Builder<TId, TVector, TItem, TDistance> withEfConstruction(int efConstruction) {
       this.efConstruction = efConstruction;
-      return self();
+      return this;
     }
 
     /**
@@ -1239,115 +1030,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
      *
      * @return the builder
      */
-    public TBuilder withEf(int ef) {
+    public Builder<TId, TVector, TItem, TDistance> withEf(int ef) {
       this.ef = ef;
-      return self();
-    }
-  }
-
-  /**
-   * Builder for initializing an {@link HnswVectorIndexRAM} instance.
-   *
-   * @param <TVector>   Type of the vector to perform distance calculation on
-   * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
-   */
-  public static class Builder<TVector, TDistance> extends BuilderBase<Builder<TVector, TDistance>, TVector, TDistance> {
-
-    /**
-     * Constructs a new {@link Builder} instance.
-     *
-     * @param dimensions       the dimensionality of the vectors stored in the index
-     * @param distanceFunction the distance function
-     * @param maxItemCount     the maximum number of elements in the index
-     */
-    Builder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, Comparator<TDistance> distanceComparator, int maxItemCount) {
-
-      super(dimensions, distanceFunction, distanceComparator, maxItemCount);
-    }
-
-    @Override
-    Builder<TVector, TDistance> self() {
-      return this;
-    }
-
-    /**
-     * Register the serializers used when saving the index.
-     *
-     * @param itemIdSerializer serializes the key of the item
-     * @param itemSerializer   serializes the
-     * @param <TId>            Type of the external identifier of an item
-     * @param <TItem>          implementation of the Item interface
-     *
-     * @return the builder
-     */
-    public <TId, TItem extends Item<TId, TVector>> RefinedBuilder<TId, TVector, TItem, TDistance> withCustomSerializers(ObjectSerializer<TId> itemIdSerializer,
-        ObjectSerializer<TItem> itemSerializer) {
-      return new RefinedBuilder<>(dimensions, distanceFunction, distanceComparator, maxItemCount, m, ef, efConstruction, itemIdSerializer, itemSerializer);
-    }
-
-    /**
-     * Build the index that uses java object serializers to store the items when reading and writing the index.
-     *
-     * @param <TId>   Type of the external identifier of an item
-     * @param <TItem> implementation of the Item interface
-     *
-     * @return the hnsw index instance
-     */
-    public <TId, TItem extends Item<TId, TVector>> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> build() {
-      ObjectSerializer<TId> itemIdSerializer = new JavaObjectSerializer<>();
-      ObjectSerializer<TItem> itemSerializer = new JavaObjectSerializer<>();
-
-      return withCustomSerializers(itemIdSerializer, itemSerializer).build();
-    }
-
-  }
-
-  /**
-   * Extension of {@link Builder} that has knows what type of item is going to be stored in the index.
-   *
-   * @param <TId>       Type of the external identifier of an item
-   * @param <TVector>   Type of the vector to perform distance calculation on
-   * @param <TItem>     Type of items stored in the index
-   * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
-   */
-  public static class RefinedBuilder<TId, TVector, TItem extends Item<TId, TVector>, TDistance>
-      extends BuilderBase<RefinedBuilder<TId, TVector, TItem, TDistance>, TVector, TDistance> {
-
-    private ObjectSerializer<TId>   itemIdSerializer;
-    private ObjectSerializer<TItem> itemSerializer;
-
-    RefinedBuilder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, Comparator<TDistance> distanceComparator, int maxItemCount, int m,
-        int ef, int efConstruction, ObjectSerializer<TId> itemIdSerializer, ObjectSerializer<TItem> itemSerializer) {
-
-      super(dimensions, distanceFunction, distanceComparator, maxItemCount);
-
-      this.m = m;
-      this.ef = ef;
-      this.efConstruction = efConstruction;
-
-      this.itemIdSerializer = itemIdSerializer;
-      this.itemSerializer = itemSerializer;
-    }
-
-    @Override
-    RefinedBuilder<TId, TVector, TItem, TDistance> self() {
-      return this;
-    }
-
-    /**
-     * Register the serializers used when saving the index.
-     *
-     * @param itemIdSerializer serializes the key of the item
-     * @param itemSerializer   serializes the
-     *
-     * @return the builder
-     */
-    public RefinedBuilder<TId, TVector, TItem, TDistance> withCustomSerializers(ObjectSerializer<TId> itemIdSerializer,
-        ObjectSerializer<TItem> itemSerializer) {
-
-      this.itemIdSerializer = itemIdSerializer;
-      this.itemSerializer = itemSerializer;
-
       return this;
     }
 

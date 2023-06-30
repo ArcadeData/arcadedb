@@ -78,7 +78,7 @@ public class Importer extends AbstractImporter {
       return;
 
     final SourceDiscovery sourceDiscovery = new SourceDiscovery(url);
-    final SourceSchema sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema);
+    final SourceSchema sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema, logger);
     if (sourceSchema == null) {
       //LogManager.instance().log(this, Level.WARNING, "XML importing aborted because unable to determine the schema");
       return;
@@ -90,7 +90,9 @@ public class Importer extends AbstractImporter {
     parser = new Parser(source, 0);
     parser.reset();
 
-    sourceSchema.getContentImporter().load(sourceSchema, entityType, parser, database, context, settings);
+    format = sourceSchema.getContentImporter();
+
+    format.load(sourceSchema, entityType, parser, database, context, settings);
   }
 
   protected void closeDatabase() {

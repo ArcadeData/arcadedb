@@ -35,7 +35,6 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
@@ -53,7 +52,6 @@ import java.io.*;
 import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.locks.*;
-import java.util.logging.*;
 import java.util.stream.*;
 
 /**
@@ -151,8 +149,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     final JSONObject json = new JSONObject(fileContent);
 
+    this.distanceFunction = DistanceFunctionFactory.getImplementationByClassName(json.getString("distanceFunction"));
+    if (distanceFunction == null)
+      throw new IllegalArgumentException("distance function '" + json.getString("distanceFunction") + "' not supported");
+
     this.dimensions = json.getInt("dimensions");
-    this.distanceFunction = DistanceFunctionFactory.getImplementation(json.getString("distanceFunction"));
     this.distanceComparator = (Comparator<TDistance>) Comparator.naturalOrder();
     this.maxValueDistanceComparator = new MaxValueComparator<>(this.distanceComparator);
     this.maxItemCount = json.getInt("maxItemCount");
@@ -747,19 +748,18 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return underlyingIndex.build(buildIndexBatchSize, callback);
   }
 
-  public long build(final HnswVectorIndexRAM origin, final int buildIndexBatchSize, final BuildIndexCallback callback) {
+  public long build(final HnswVectorIndexRAM origin, final int buildIndexBatchSize, final BuildIndexCallback vertexCreationCallback,
+      final BuildIndexCallback edgeCallback) {
     if (origin != null) {
       // IMPORT FROM RAM Index
       final RID[] pointersToRIDMapping = new RID[origin.size()];
-
-      LogManager.instance().log(this, Level.SEVERE, "Saving all the items as vertices at batch of %d items...", buildIndexBatchSize);
 
       database.begin();
 
       // SAVE ALL THE NODES AS VERTICES AND KEEP AN ARRAY OF RIDS TO BUILD EDGES LATER
       int maxLevel = 0;
       HnswVectorIndexRAM.ItemIterator iter = origin.iterateNodes();
-      for (int txCounter = 0; iter.hasNext(); ++txCounter) {
+      for (int totalVertices = 0; iter.hasNext(); ++totalVertices) {
         final HnswVectorIndexRAM.Node node = iter.next();
 
         final int nodeMaxLevel = node.maxLevel();
@@ -773,11 +773,13 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
         vertex.save();
 
+        if (vertexCreationCallback != null)
+          vertexCreationCallback.onDocumentIndexed(vertex, totalVertices);
+
         pointersToRIDMapping[node.id] = vertex.getIdentity();
 
-        if (txCounter % buildIndexBatchSize == 0) {
+        if (totalVertices % buildIndexBatchSize == 0) {
           database.commit();
-          LogManager.instance().log(this, Level.SEVERE, "- Saved %d items as vertices", txCounter);
           database.begin();
         }
       }
@@ -788,15 +790,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       if (entryPoint != null)
         this.entryPoint = pointersToRIDMapping[entryPoint].asVertex();
 
-      LogManager.instance().log(this, Level.SEVERE, "All items are saved. Maximum level is %d", maxLevel);
-
       // BUILD ALL EDGE TYPES (ONE PER LEVEL)
       for (int level = 0; level <= maxLevel; level++) {
         // ASSURE THE EDGE TYPE IS CREATED IN THE DATABASE
         database.getSchema().getOrCreateEdgeType(getEdgeType(level));
       }
-
-      LogManager.instance().log(this, Level.SEVERE, "Connecting the items with edges at batch of %d items...", buildIndexBatchSize);
 
       database.begin();
 
@@ -808,6 +806,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         final HnswVectorIndexRAM.Node node = iter.next();
 
         final Vertex source = pointersToRIDMapping[node.id].asVertex();
+        ++totalVertices;
 
         final MutableIntList[] connections = node.connections();
         for (int level = 0; level < connections.length; level++) {
@@ -825,9 +824,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
         if (txCounter % buildIndexBatchSize == 0) {
           database.commit();
-          LogManager.instance().log(this, Level.SEVERE, "- Connected %d items for a total of %d edges", txCounter, totalEdges);
           database.begin();
         }
+
+        if (edgeCallback != null)
+          edgeCallback.onDocumentIndexed(source, totalEdges);
       }
 
       database.commit();
@@ -856,7 +857,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public String toString() {
-    return underlyingIndex.toString();
+    final String baseIndex = underlyingIndex.toString();
+    return baseIndex.substring(0, baseIndex.length() - 1) + "," + vectorPropertyName + "]";
   }
 
   @Override

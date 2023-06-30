@@ -291,15 +291,15 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public String getCurrentUserName() {
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return null;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
     return user != null ? user.getName() : null;
   }
 
-  public TransactionContext getTransaction() {
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+  public TransactionContext getTransactionIfExists() {
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext != null) {
       final TransactionContext tx = dbContext.getLastTransaction();
       if (tx != null) {
@@ -319,6 +319,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         return tx;
       }
     }
+
     return null;
   }
 
@@ -542,7 +543,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (security == null)
       return;
 
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
@@ -560,7 +561,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (security == null)
       return;
 
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
@@ -583,7 +584,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (security == null)
       return -1L;
 
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return -1L;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
@@ -598,7 +599,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (security == null)
       return -1L;
 
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return -1L;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
@@ -982,7 +983,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public boolean isTransactionActive() {
-    final Transaction tx = getTransaction();
+    final Transaction tx = getTransactionIfExists();
     return tx != null && tx.isActive();
   }
 
@@ -1731,7 +1732,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected void checkDatabaseIsOpen() {
     if (!open)
       throw new DatabaseIsClosedException(name);
-    if (DatabaseContext.INSTANCE.getContext(databasePath) == null)
+    if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
   }
 

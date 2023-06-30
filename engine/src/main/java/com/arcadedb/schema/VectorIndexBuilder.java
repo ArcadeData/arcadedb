@@ -45,19 +45,20 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   public static final  int DEFAULT_EF_CONSTRUCTION = 200;
   private static final int CURRENT_VERSION         = 1;
 
-  int              dimensions;
-  DistanceFunction distanceFunction;
-  Comparator       distanceComparator;
-  int              maxItemCount;
-  int              m              = DEFAULT_M;
-  int              ef             = DEFAULT_EF;
-  int              efConstruction = DEFAULT_EF_CONSTRUCTION;
-  String           vertexType;
-  String           edgeType;
-  String           vectorPropertyName;
-  String           idPropertyName;
-  Map<RID, Vertex> cache;
-  private HnswVectorIndexRAM origin;
+  int                      dimensions;
+  DistanceFunction         distanceFunction;
+  Comparator               distanceComparator;
+  int                      maxItemCount;
+  int                      m              = DEFAULT_M;
+  int                      ef             = DEFAULT_EF;
+  int                      efConstruction = DEFAULT_EF_CONSTRUCTION;
+  String                   vertexType;
+  String                   edgeType;
+  String                   vectorPropertyName;
+  String                   idPropertyName;
+  Map<RID, Vertex>         cache;
+  HnswVectorIndexRAM       origin;
+  Index.BuildIndexCallback vertexCreationCallback;
 
   VectorIndexBuilder(final DatabaseInternal database) {
     super(database, HnswVectorIndex.class);
@@ -108,7 +109,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
     schema.registerFile(index.getComponent());
 
-    index.build(origin, EmbeddedSchema.BUILD_TX_BATCH_SIZE, callback);
+    index.build(origin, EmbeddedSchema.BUILD_TX_BATCH_SIZE, vertexCreationCallback, callback);
 
     return index;
   }
@@ -193,7 +194,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     return this;
   }
 
-  public VectorIndexBuilder withVectorPropertyName(final String vectorPropertyName) {
+  public VectorIndexBuilder withVectorProperty(final String vectorPropertyName) {
     this.vectorPropertyName = vectorPropertyName;
     return this;
   }
@@ -205,6 +206,11 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
   public VectorIndexBuilder withCache(final Map<RID, Vertex> cache) {
     this.cache = cache;
+    return this;
+  }
+
+  public VectorIndexBuilder withVertexCreationCallback(final Index.BuildIndexCallback callback) {
+    this.vertexCreationCallback = callback;
     return this;
   }
 

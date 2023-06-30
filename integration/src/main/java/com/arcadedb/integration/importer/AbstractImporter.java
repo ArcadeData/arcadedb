@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.integration.importer.format.FormatImporter;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -44,6 +45,7 @@ public abstract class AbstractImporter {
   protected Timer            timer;
   protected boolean          databaseCreatedDuringImporting = true;
   protected ConsoleLogger    logger;
+  protected FormatImporter   format;
 
   public AbstractImporter(final String[] args) {
     settings.parseParameters(args);
@@ -61,51 +63,8 @@ public abstract class AbstractImporter {
   }
 
   protected void printProgress() {
-    if (settings.verboseLevel < 2)
-      return;
-
-    try {
-      long deltaInSecs = (System.currentTimeMillis() - context.lastLapOn) / 1000;
-      if (deltaInSecs == 0)
-        deltaInSecs = 1;
-
-      if (source == null || source.compressed || source.totalSize < 0) {
-        logger.logLine(2,//
-            "- Parsed %,d (%,d/sec) %,d documents (%,d/sec) %,d vertices (%,d/sec) %,d edges (%,d/sec %,d skipped) %,d linked edges (%,d/sec %,d%%) updated documents %,d (%,d%%)",
-//
-            context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), context.createdDocuments.get(),
-            (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
-            (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
-            (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),
-            (context.linkedEdges.get() - context.lastLinkedEdges) / deltaInSecs,
-            context.createdEdges.get() > 0 ? (int) (context.linkedEdges.get() * 100 / context.createdEdges.get()) : 0,//
-            context.updatedDocuments.get(),
-            context.documentsWithLinksToUpdate.get() > 0 ? (int) (context.updatedDocuments.get() * 100 / context.documentsWithLinksToUpdate.get()) : 0);
-      } else {
-        final int progressPerc = (int) (parser.getPosition() * 100 / source.totalSize);
-        logger.logLine(2,//
-            "Parsed %,d (%,d/sec %,d%%) %,d records (%,d/sec) %,d vertices (%,d/sec) %,d edges (%,d/sec %,d skipped) %,d linked edges (%,d/sec %,d%%) updated documents %,d (%,d%%)",
-            context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), progressPerc, context.createdDocuments.get(),
-            (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
-            (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
-            (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),
-            (context.linkedEdges.get() - context.lastLinkedEdges) / deltaInSecs,
-            context.createdEdges.get() > 0 ? (int) (context.linkedEdges.get() * 100 / context.createdEdges.get()) : 0,//
-            context.updatedDocuments.get(),
-            context.documentsWithLinksToUpdate.get() > 0 ? (int) (context.updatedDocuments.get() * 100 / context.documentsWithLinksToUpdate.get()) : 0);
-
-      }
-      context.lastLapOn = System.currentTimeMillis();
-      context.lastParsed = context.parsed.get();
-
-      context.lastDocuments = context.createdDocuments.get();
-      context.lastVertices = context.createdVertices.get();
-      context.lastEdges = context.createdEdges.get();
-      context.lastLinkedEdges = context.linkedEdges.get();
-
-    } catch (final Exception e) {
-      logger.errorLine("Error on print statistics: " + e.getMessage());
-    }
+    if (format != null)
+      format.printProgress(settings, context, source, parser, logger);
   }
 
   protected void startImporting() {
