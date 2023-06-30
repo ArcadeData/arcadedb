@@ -215,7 +215,6 @@ function dropProperty(type, property){
   });
 }
 
-
 function dropIndex(indexName){
   let database = getCurrentDatabase();
   if( database == "" ){
@@ -318,8 +317,11 @@ function executeCommand(language, query){
 
   if( query != null )
     editor.setValue( query );
-  else
-    query = editor.getValue();
+  else {
+    query = editor.getSelection();
+    if( query == null || query == "" )
+      query = editor.getValue();
+  }
 
   let database = getCurrentDatabase();
 
@@ -327,7 +329,7 @@ function executeCommand(language, query){
     return;
   if( escapeHtml( $("#inputLanguage").val() ) == "" )
     return;
-  if( escapeHtml( editor.getValue() ) == "" )
+  if( escapeHtml( query ) == "" )
     return;
 
   globalActivateTab("tab-query");
@@ -364,7 +366,12 @@ function executeCommand(language, query){
 function executeCommandTable(){
   let database = getCurrentDatabase();
   let language = escapeHtml( $("#inputLanguage").val() );
-  let command = escapeHtml( editor.getValue() );
+
+  let command = editor.getSelection();
+  if( command == null || command == "" )
+    command = editor.getValue();
+  command = escapeHtml( command );
+
   let limit = parseInt( $("#inputLimit").val() );
   let profileExecution = $('#profileCommand').prop('checked') ? "detailed" : "basic";
 
@@ -411,7 +418,12 @@ function executeCommandTable(){
 function executeCommandGraph(){
   let database = getCurrentDatabase();
   let language = escapeHtml( $("#inputLanguage").val() );
-  let command = escapeHtml( editor.getValue() );
+
+  let command = editor.getSelection();
+  if( command == null || command == "" )
+    command = editor.getValue();
+  command = escapeHtml( command );
+
   let limit = parseInt( $("#inputLimit").val() );
   let profileExecution = $('#profileCommand').prop('checked') ? "detailed" : "basic";
 
@@ -518,7 +530,7 @@ function displaySchema(){
     for( let i in data.result ){
       let row = data.result[i];
 
-      let tabHtml = "<li class='nav-item'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
+      let tabHtml = "<li class='nav-item' style='height: 32px'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
       tabHtml += "' id='tab-" + row.name + "-sel'>" + row.name + "</a></li>";
 
       let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+row.name+"' role='tabpanel'>";
@@ -555,13 +567,24 @@ function displaySchema(){
 
       panelHtml += "<br><br><h6>Properties</h6>";
       //panelHtml += "<button class='btn btn-pill' onclick='createProperty()'><i class='fa fa-plus'></i> Create Property</button>";
-      panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Defined In</th><th scope='col'>Type</th><th scope='col'>Indexed</th><th scope='col'>Actions</th>";
+      panelHtml += "<div class='table-responsive'>";
+      panelHtml += "<table class='table table-striped table-sm table-responsive' style='border: 0px; width: 100%'>";
+      panelHtml += "<thead><tr><th scope='col'>Name</th>";
+      panelHtml += "<th scope='col'>Defined In</th>";
+      panelHtml += "<th scope='col'>Type</th>";
+      panelHtml += "<th scope='col'>Mandatory</th>";
+      panelHtml += "<th scope='col'>Not Null</th>";
+      panelHtml += "<th scope='col'>Read Only</th>";
+      panelHtml += "<th scope='col'>Default Value</th>";
+      panelHtml += "<th scope='col'>Min</th>";
+      panelHtml += "<th scope='col'>Max</th>";
+      panelHtml += "<th scope='col'>Regexp</th>";
+      panelHtml += "<th scope='col'>Indexed</th><th scope='col'>Actions</th>";
       panelHtml += "<tbody>";
 
       panelHtml += renderProperties( row, data.result );
 
-      panelHtml += "</tbody></table>";
+      panelHtml += "</tbody></table></div>";
 
       panelHtml += "<br><h6>Actions</h6>";
       panelHtml += "<ul>";
@@ -615,6 +638,14 @@ function renderProperties(row, results ){
     let property = row.properties[k];
     panelHtml += "<tr><td>"+property.name+"</td><td>" + row.name + "</td><td>" + property.type + "</td>";
 
+    panelHtml += "<td>" + ( property.mandatory ? true : false ) + "</td>";
+    panelHtml += "<td>" + ( property.notNull ? true : false ) + "</td>";
+    panelHtml += "<td>" + ( property.readOnly ? true : false ) + "</td>";
+    panelHtml += "<td>" + ( property["default"] != null ? property["default"] : "" ) + "</td>";
+    panelHtml += "<td>" + ( property.min != null ? property.min : "" ) + "</td>";
+    panelHtml += "<td>" + ( property.max != null ? property.max : "" ) + "</td>";
+    panelHtml += "<td>" + ( property.regexp != null ? property.regexp : "" ) + "</td>";
+
     let actionHtml = "<button class='btn btn-pill' onclick='dropProperty(\""+row.name+"\", \""+property.name+"\")'><i class='fa fa-minus'></i> Drop Property</button>";
 
     let propIndexes = [];
@@ -623,7 +654,17 @@ function renderProperties(row, results ){
       actionHtml += row.indexes.filter(i => i.properties.includes( property.name )).map(i => ( "<button class='btn btn-pill' onclick='dropIndex(\"" + i.name + "\")'><i class='fa fa-minus'></i> Drop Index</button>" ) );
     }
     panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
-    panelHtml += "<td>" + actionHtml + "</td>";
+    panelHtml += "<td>" + actionHtml + "</td></tr>";
+
+    if( property.custom != null && Object.keys( property.custom ).length > 0 ) {
+      panelHtml += "<td></td>";
+      panelHtml += "<td colspan='10'><b>Custom Properties</b><br>";
+      panelHtml += "<div class='table-responsive'>";
+      panelHtml += "<table style='width: 100%'>";
+      for( c in property.custom )
+        panelHtml += "<tr><td width='30%'>" + c + "</td><td width='70%'>" + property.custom[c] + "</td></tr>";
+      panelHtml += "</table></div></td>";
+    }
   }
 
   if( row.parentTypes != "" ){

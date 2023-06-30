@@ -34,6 +34,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -96,11 +97,23 @@ public class OrientDBImporter {
 
   private enum PHASE {OFF, ANALYZE, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
+  private static class OrientDBProperty {
+    String              type;
+    Boolean             readOnly;
+    Boolean             mandatory;
+    Boolean             notNull;
+    Object              defaultValue;
+    Object              min;
+    Object              max;
+    String              regexp;
+    Map<String, Object> customFields;
+  }
+
   private static class OrientDBClass {
-    String              name;
-    List<String>        superClasses = new ArrayList<>();
-    List<Integer>       clusterIds   = new ArrayList<>();
-    Map<String, String> properties   = new LinkedHashMap<>();
+    String                        name;
+    List<String>                  superClasses = new ArrayList<>();
+    List<Integer>                 clusterIds   = new ArrayList<>();
+    Map<String, OrientDBProperty> properties   = new LinkedHashMap<>();
   }
 
   public OrientDBImporter(final String[] args) {
@@ -769,34 +782,8 @@ public class OrientDBImporter {
     reader.beginObject();
     while (reader.peek() != END_OBJECT) {
       final String attributeName = reader.nextName();
-      final Object attributeValue;
 
-      final JsonToken propertyType = reader.peek();
-      switch (propertyType) {
-      case STRING:
-        attributeValue = reader.nextString();
-        break;
-      case NUMBER:
-        attributeValue = reader.nextDouble();
-        break;
-      case BOOLEAN:
-        attributeValue = reader.nextBoolean();
-        break;
-      case NULL:
-        reader.nextNull();
-        attributeValue = null;
-        break;
-      case BEGIN_OBJECT:
-        attributeValue = parseRecord(reader, ignore);
-        break;
-      case BEGIN_ARRAY:
-        attributeValue = parseArray(reader, ignore);
-        break;
-      default:
-        logger.logLine(2, "Skipping property '%s' of type '%s'", attributeName, propertyType);
-        ++errors;
-        continue;
-      }
+      final Object attributeValue = parseAttributeValue(reader, attributeName, ignore);
 
       if (!ignore) {
         attributes.put(attributeName, attributeValue);
@@ -806,6 +793,37 @@ public class OrientDBImporter {
 
     reader.endObject();
     return attributes;
+  }
+
+  private Object parseAttributeValue(final JsonReader reader, final String attributeName, final boolean ignore) throws IOException {
+    Object attributeValue = null;
+
+    final JsonToken propertyType = reader.peek();
+    switch (propertyType) {
+    case STRING:
+      attributeValue = reader.nextString();
+      break;
+    case NUMBER:
+      attributeValue = reader.nextDouble();
+      break;
+    case BOOLEAN:
+      attributeValue = reader.nextBoolean();
+      break;
+    case NULL:
+      reader.nextNull();
+      attributeValue = null;
+      break;
+    case BEGIN_OBJECT:
+      attributeValue = parseRecord(reader, ignore);
+      break;
+    case BEGIN_ARRAY:
+      attributeValue = parseArray(reader, ignore);
+      break;
+    default:
+      logger.logLine(2, "Skipping property '%s' of type '%s'", attributeName, propertyType);
+      ++errors;
+    }
+    return attributeValue;
   }
 
   private List<Object> parseArray(final JsonReader reader, final boolean ignore) throws IOException {
@@ -864,7 +882,8 @@ public class OrientDBImporter {
           final OrientDBClass cls = new OrientDBClass();
 
           while (reader.peek() != END_OBJECT) {
-            switch (reader.nextName()) {
+            final String attrName = reader.nextName();
+            switch (attrName) {
             case "name":
               cls.name = reader.nextString();
               break;
@@ -885,19 +904,46 @@ public class OrientDBImporter {
 
             case "properties":
               String propertyName = null;
-              String propertyType = null;
-
               reader.beginArray();
               while (reader.peek() != END_ARRAY) {
                 reader.beginObject();
 
+                final OrientDBProperty propertyType = new OrientDBProperty();
+
                 while (reader.peek() != END_OBJECT) {
-                  switch (reader.nextName()) {
+                  final String pName = reader.nextName();
+                  switch (pName) {
                   case "name":
                     propertyName = reader.nextString();
                     break;
                   case "type":
-                    propertyType = reader.nextString();
+                    propertyType.type = reader.nextString();
+                    break;
+                  case "customFields":
+                    propertyType.customFields = parseRecord(reader, false);
+                    if (propertyType.customFields.isEmpty())
+                      propertyType.customFields = null;
+                    break;
+                  case "mandatory":
+                    propertyType.mandatory = reader.nextBoolean();
+                    break;
+                  case "readonly":
+                    propertyType.readOnly = reader.nextBoolean();
+                    break;
+                  case "not-null":
+                    propertyType.notNull = reader.nextBoolean();
+                    break;
+                  case "min":
+                    propertyType.min = parseAttributeValue(reader, propertyName + ".max", false);
+                    break;
+                  case "max":
+                    propertyType.max = parseAttributeValue(reader, propertyName + ".max", false);
+                    break;
+                  case "regexp":
+                    propertyType.regexp = reader.nextString();
+                    break;
+                  case "default-value":
+                    propertyType.defaultValue = parseAttributeValue(reader, propertyName + ".defaultValue", false);
                     break;
                   default:
                     reader.skipValue();
@@ -929,7 +975,9 @@ public class OrientDBImporter {
     reader.endObject();
 
     for (final String className : classes.keySet())
+
       createType(className);
+
   }
 
   private void createIndexes() {
@@ -1028,9 +1076,10 @@ public class OrientDBImporter {
       t.addSuperType(c);
 
     // CREATE PROPERTIES
-    for (final Map.Entry<String, String> entry : classInfo.properties.entrySet()) {
-      String orientdbType = entry.getValue();
+    for (final Map.Entry<String, OrientDBProperty> entry : classInfo.properties.entrySet()) {
+      final OrientDBProperty orientdbProperty = entry.getValue();
 
+      String orientdbType = orientdbProperty.type;
       switch (orientdbType) {
       case "EMBEDDEDLIST":
       case "EMBEDDEDSET":
@@ -1045,7 +1094,33 @@ public class OrientDBImporter {
       }
 
       try {
-        t.createProperty(entry.getKey(), Type.valueOf(orientdbType));
+        final Property property = t.createProperty(entry.getKey(), Type.valueOf(orientdbType));
+
+        if (orientdbProperty.customFields != null)
+          for (Map.Entry<String, Object> customEntry : orientdbProperty.customFields.entrySet())
+            property.setCustomValue(customEntry.getKey(), customEntry.getValue());
+
+        if (orientdbProperty.mandatory != null)
+          property.setMandatory(orientdbProperty.mandatory);
+
+        if (orientdbProperty.readOnly != null)
+          property.setReadonly(orientdbProperty.readOnly);
+
+        if (orientdbProperty.notNull != null)
+          property.setNotNull(orientdbProperty.notNull);
+
+        if (orientdbProperty.min != null)
+          property.setMin(orientdbProperty.min.toString());
+
+        if (orientdbProperty.max != null)
+          property.setMax(orientdbProperty.max.toString());
+
+        if (orientdbProperty.regexp != null)
+          property.setRegexp(orientdbProperty.regexp);
+
+        if (orientdbProperty.defaultValue != null)
+          property.setDefaultValue(orientdbProperty.defaultValue);
+
       } catch (final Exception e) {
         logger.logLine(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'", orientdbType, t.getName(), entry.getKey());
         ++warnings;
