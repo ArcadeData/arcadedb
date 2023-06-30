@@ -181,9 +181,7 @@ public class FullBackupIT {
 
     } finally {
       importedDatabase.close();
-
       TestHelper.checkActiveDatabases();
-      ;
 
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
         new File(FILE + "_" + i).delete();
