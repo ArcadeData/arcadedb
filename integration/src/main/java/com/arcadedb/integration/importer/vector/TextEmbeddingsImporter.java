@@ -23,7 +23,6 @@ package com.arcadedb.integration.importer.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.HnswVectorIndexRAM;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
@@ -161,13 +160,11 @@ public class TextEmbeddingsImporter {
 
       hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
 
-      final HnswVectorIndex persistentIndex = hnswIndex.createPersistentIndex(database)//
+      hnswIndex.createPersistentIndex(database)//
           .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName).withVectorProperty(vectorPropertyName).withIdProperty(idPropertyName)
           .withVertexCreationCallback((record, total) -> ++verticesCreated)//
           .withCallback((record, total) -> ++verticesConnected)//
           .create();
-
-      persistentIndex.save();
     }
 
     logger.logLine(1, "***************************************************************************************************");
