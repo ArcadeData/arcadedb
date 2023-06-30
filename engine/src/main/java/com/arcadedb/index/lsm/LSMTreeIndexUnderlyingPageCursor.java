@@ -119,6 +119,7 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
         getKeys();
       buffer.position(valuePosition);
       nextValue = index.readEntryValues(buffer);
+      valuePosition = -1;
     }
     return nextValue;
   }
