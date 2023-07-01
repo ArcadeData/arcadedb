@@ -91,12 +91,22 @@ public enum Type {
 
   DATETIME_SECOND("Datetime_second", 18, BinaryTypes.TYPE_DATETIME_SECOND, LocalDateTime.class,
       new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
+
+  ARRAY_OF_SHORTS("Short[]", 19, BinaryTypes.TYPE_ARRAY_OF_SHORTS, short[].class, new Class<?>[] { short[].class, Short[].class }),
+
+  ARRAY_OF_INTEGERS("Integer[]", 20, BinaryTypes.TYPE_ARRAY_OF_INTEGERS, int[].class, new Class<?>[] { int[].class, Integer[].class }),
+
+  ARRAY_OF_LONGS("Long[]", 21, BinaryTypes.TYPE_ARRAY_OF_LONGS, long[].class, new Class<?>[] { long[].class, Long[].class }),
+
+  ARRAY_OF_FLOATS("Float[]", 22, BinaryTypes.TYPE_ARRAY_OF_FLOATS, float[].class, new Class<?>[] { float[].class, Float[].class }),
+
+  ARRAY_OF_DOUBLES("Double[]", 23, BinaryTypes.TYPE_ARRAY_OF_DOUBLES, double[].class, new Class<?>[] { double[].class, Double[].class }),
   ;
 
   // Don't change the order, the type discover get broken if you change the order.
   private static final Type[] TYPES = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
 
-  private static final Type[]              TYPES_BY_ID       = new Type[19];
+  private static final Type[]              TYPES_BY_ID       = new Type[24];
   // Values previously stored in javaTypes
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
 
@@ -136,6 +146,11 @@ public enum Type {
     TYPES_BY_USERTYPE.put(EmbeddedDocument.class, EMBEDDED);
     TYPES_BY_USERTYPE.put(ImmutableEmbeddedDocument.class, EMBEDDED);
     TYPES_BY_USERTYPE.put(MutableEmbeddedDocument.class, EMBEDDED);
+    TYPES_BY_USERTYPE.put(short[].class, ARRAY_OF_SHORTS);
+    TYPES_BY_USERTYPE.put(int[].class, ARRAY_OF_INTEGERS);
+    TYPES_BY_USERTYPE.put(long[].class, ARRAY_OF_LONGS);
+    TYPES_BY_USERTYPE.put(float[].class, ARRAY_OF_FLOATS);
+    TYPES_BY_USERTYPE.put(double[].class, ARRAY_OF_DOUBLES);
 
     BYTE.castable.add(BOOLEAN);
     SHORT.castable.addAll(Arrays.asList(BOOLEAN, BYTE));
@@ -260,17 +275,6 @@ public enum Type {
 
   public static Type getTypeByName(final String name) {
     return valueOf(name.toUpperCase());
-  }
-
-  private static boolean checkLinkCollection(final Collection<?> toCheck) {
-    boolean empty = true;
-    for (final Object object : toCheck) {
-      if (object != null && !(object instanceof Identifiable))
-        return false;
-      else if (object != null)
-        empty = false;
-    }
-    return !empty;
   }
 
   public static boolean isSimpleType(final Object iObject) {

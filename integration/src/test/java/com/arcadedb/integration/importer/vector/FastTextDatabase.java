@@ -28,8 +28,6 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.Type;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
@@ -76,8 +74,6 @@ public class FastTextDatabase {
     } else {
       database = factory.create();
       LogManager.instance().log(this, Level.SEVERE, "Creating new database");
-      final VertexType vType = database.getSchema().createVertexType("Word");
-      vType.getOrCreateProperty("name", Type.STRING);
 
       final Path file = TMP_PATH.resolve("cc.en.300.vec.gz");
       if (!Files.exists(file)) {
@@ -88,7 +84,7 @@ public class FastTextDatabase {
 
       database.command("sql", "import database file://" + file.toAbsolutePath() + " "//
           + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128," //
-          + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
+          + "vertexType = Word, edgeType = Proximity, vectorPropertyName = vector, vectorPropertyType = ARRAY_OF_FLOATS, idPropertyName = name" //
       );
 
       LogManager.instance().log(this, Level.SEVERE, "Creating index with took %d millis which is %d minutes.%n", System.currentTimeMillis() - start,

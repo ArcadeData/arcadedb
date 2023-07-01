@@ -49,12 +49,13 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   DistanceFunction         distanceFunction;
   Comparator               distanceComparator;
   int                      maxItemCount;
-  int                      m              = DEFAULT_M;
-  int                      ef             = DEFAULT_EF;
-  int                      efConstruction = DEFAULT_EF_CONSTRUCTION;
+  int                      m                  = DEFAULT_M;
+  int                      ef                 = DEFAULT_EF;
+  int                      efConstruction     = DEFAULT_EF_CONSTRUCTION;
   String                   vertexType;
   String                   edgeType;
   String                   vectorPropertyName;
+  Type                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
   String                   idPropertyName;
   Map<RID, Vertex>         cache;
   HnswVectorIndexRAM       origin;
@@ -88,9 +89,9 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     if (edgeType == null)
       throw new IndexException("Edge type is missing from vector index declaration");
     if (idPropertyName == null)
-      throw new IndexException("Vertex id property type is missing from vector index declaration");
+      throw new IndexException("Vertex id property name is missing from vector index declaration");
     if (vectorPropertyName == null)
-      throw new IndexException("Vertex vector property type is missing from vector index declaration");
+      throw new IndexException("Vertex vector property name is missing from vector index declaration");
 
     filePath = database.getDatabasePath() + File.separator + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_" + System.nanoTime() + "."
         + database.getFileManager().newFileId() + ".v" + HnswVectorIndex.CURRENT_VERSION + "." + HnswVectorIndex.FILE_EXT;
@@ -104,6 +105,10 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
         return (HnswVectorIndex) index;
       }
     }
+
+    final VertexType vType = database.getSchema().getOrCreateVertexType(vertexType);
+    vType.getOrCreateProperty(idPropertyName, Type.STRING);
+    vType.getOrCreateProperty(vectorPropertyName, vectorPropertyType);
 
     final HnswVectorIndex index = (HnswVectorIndex) schema.indexFactory.createIndex(this);
 
@@ -201,8 +206,13 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     return this;
   }
 
-  public VectorIndexBuilder withVectorProperty(final String vectorPropertyName) {
+  public VectorIndexBuilder withVectorProperty(final String vectorPropertyName, final Type vectorPropertyType) {
+    if (vectorPropertyType != Type.ARRAY_OF_SHORTS && vectorPropertyType != Type.ARRAY_OF_INTEGERS && vectorPropertyType != Type.ARRAY_OF_LONGS
+        && vectorPropertyType != Type.ARRAY_OF_FLOATS && vectorPropertyType != Type.ARRAY_OF_DOUBLES)
+      throw new IllegalArgumentException("Vector property type '" + vectorPropertyType + "' not compatible with vectors");
+
     this.vectorPropertyName = vectorPropertyName;
+    this.vectorPropertyType = vectorPropertyType;
     return this;
   }
 

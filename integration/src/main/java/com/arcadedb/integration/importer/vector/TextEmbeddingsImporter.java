@@ -29,6 +29,7 @@ import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Item;
@@ -62,6 +63,7 @@ public class TextEmbeddingsImporter {
   private          String           vectorTypeName       = "Float";
   private          String           distanceFunctionName = "InnerProduct";
   private          String           vectorPropertyName   = "vector";
+  private          Type             vectorPropertyType   = Type.ARRAY_OF_FLOATS;
   private          String           idPropertyName       = "name";
   private volatile long             embeddingsParsed     = 0L;
   private volatile long             indexedEmbedding     = 0L;
@@ -116,11 +118,14 @@ public class TextEmbeddingsImporter {
       this.vectorTypeName = Character.toUpperCase(this.vectorTypeName.charAt(0)) + this.vectorTypeName.substring(1).toLowerCase();
     }
 
-    if (settings.options.containsKey("vectorProperty"))
-      this.vectorPropertyName = settings.options.get("vectorProperty");
+    if (settings.options.containsKey("vectorPropertyName"))
+      this.vectorPropertyName = settings.options.get("vectorPropertyName");
 
-    if (settings.options.containsKey("idProperty"))
-      this.idPropertyName = settings.options.get("idProperty");
+    if (settings.options.containsKey("vectorPropertyType"))
+      this.vectorPropertyType = Type.valueOf(settings.options.get("vectorPropertyType").toUpperCase());
+
+    if (settings.options.containsKey("idPropertyName"))
+      this.idPropertyName = settings.options.get("idPropertyName");
 
     if (settings.options.containsKey("m"))
       this.m = Integer.parseInt(settings.options.get("m"));
@@ -161,8 +166,8 @@ public class TextEmbeddingsImporter {
       hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
 
       hnswIndex.createPersistentIndex(database)//
-          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName).withVectorProperty(vectorPropertyName).withIdProperty(idPropertyName)
-          .withVertexCreationCallback((record, total) -> ++verticesCreated)//
+          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName).withVectorProperty(vectorPropertyName, vectorPropertyType)
+          .withIdProperty(idPropertyName).withVertexCreationCallback((record, total) -> ++verticesCreated)//
           .withCallback((record, total) -> ++verticesConnected)//
           .create();
     }

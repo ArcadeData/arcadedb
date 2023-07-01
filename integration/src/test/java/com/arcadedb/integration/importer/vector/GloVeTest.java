@@ -29,8 +29,6 @@ import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.Type;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 
 import java.io.*;
@@ -72,8 +70,6 @@ public class GloVeTest {
     } else {
       database = factory.create();
       LogManager.instance().log(this, Level.SEVERE, "Creating new database");
-      final VertexType vType = database.getSchema().createVertexType("Word");
-      vType.getOrCreateProperty("name", Type.STRING);
 
       final File file = new File(FILE_NAME);
       if (!file.exists()) {
@@ -83,7 +79,7 @@ public class GloVeTest {
 
       database.command("sql", "import database file://" + file.getAbsolutePath() + " "//
           + "with distanceFunction = 'cosine', m = 16, ef = 128, efConstruction = 128, " //
-          + "vertexType = 'Word', edgeType = 'Proximity', vectorProperty = 'vector', idProperty = 'name'" //
+          + "vertexType = 'Word', edgeType = 'Proximity', vectorPropertyName = 'vector', vectorPropertyType = ARRAY_OF_FLOATS, idPropertyName = 'name'" //
       );
 
       long end = System.currentTimeMillis();

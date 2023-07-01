@@ -485,35 +485,35 @@ public class BinarySerializer {
       content.append(header);
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_SHORT: {
+    case BinaryTypes.TYPE_ARRAY_OF_SHORTS: {
       final int length = Array.getLength(value);
       content.putUnsignedNumber(length);
       for (int i = 0; i < length; ++i)
         content.putNumber(Array.getShort(value, i));
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_INT: {
+    case BinaryTypes.TYPE_ARRAY_OF_INTEGERS: {
       final int length = Array.getLength(value);
       content.putUnsignedNumber(length);
       for (int i = 0; i < length; ++i)
         content.putNumber(Array.getInt(value, i));
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_LONG: {
+    case BinaryTypes.TYPE_ARRAY_OF_LONGS: {
       final int length = Array.getLength(value);
       content.putUnsignedNumber(length);
       for (int i = 0; i < length; ++i)
         content.putNumber(Array.getLong(value, i));
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_FLOAT: {
+    case BinaryTypes.TYPE_ARRAY_OF_FLOATS: {
       final int length = Array.getLength(value);
       content.putUnsignedNumber(length);
       for (int i = 0; i < length; ++i)
         content.putNumber(Float.floatToIntBits(Array.getFloat(value, i)));
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_DOUBLE: {
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES: {
       final int length = Array.getLength(value);
       content.putUnsignedNumber(length);
       for (int i = 0; i < length; ++i)
@@ -628,7 +628,7 @@ public class BinarySerializer {
       content.position(content.position() + embeddedObjectSize);
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_SHORT: {
+    case BinaryTypes.TYPE_ARRAY_OF_SHORTS: {
       final int count = (int) content.getUnsignedNumber();
       final short[] array = new short[count];
       for (int i = 0; i < count; ++i)
@@ -636,7 +636,7 @@ public class BinarySerializer {
       value = array;
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_INT: {
+    case BinaryTypes.TYPE_ARRAY_OF_INTEGERS: {
       final int count = (int) content.getUnsignedNumber();
       final int[] array = new int[count];
       for (int i = 0; i < count; ++i)
@@ -644,7 +644,7 @@ public class BinarySerializer {
       value = array;
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_LONG: {
+    case BinaryTypes.TYPE_ARRAY_OF_LONGS: {
       final int count = (int) content.getUnsignedNumber();
       final long[] array = new long[count];
       for (int i = 0; i < count; ++i)
@@ -652,7 +652,7 @@ public class BinarySerializer {
       value = array;
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_FLOAT: {
+    case BinaryTypes.TYPE_ARRAY_OF_FLOATS: {
       final int count = (int) content.getUnsignedNumber();
       final float[] array = new float[count];
       for (int i = 0; i < count; ++i)
@@ -660,7 +660,7 @@ public class BinarySerializer {
       value = array;
       break;
     }
-    case BinaryTypes.TYPE_ARRAY_OF_DOUBLE: {
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES: {
       final int count = (int) content.getUnsignedNumber();
       final double[] array = new double[count];
       for (int i = 0; i < count; ++i)
