@@ -30,6 +30,7 @@ import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -56,8 +57,13 @@ import static com.arcadedb.server.StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TEST
  * From Discussion https://github.com/ArcadeData/arcadedb/discussions/1129#discussioncomment-6226545
  */
 public class ConsoleAsyncInsertTest {
-  static final String DATABASE_NAME  = "ConsoleAsyncInsertTest";
-  static final int    PARALLEL_LEVEL = 6;
+  static final String DATABASE_NAME              = "ConsoleAsyncInsertTest";
+  static final int    PARALLEL_LEVEL             = 6;
+  static final String RECORD_TIME_FORMAT_PATTERN = "yyyyMMdd'_'HHmmss.SSSSSS";
+  final        String userName                   = "root";
+  final        String password                   = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+
+  AtomicInteger autoIncrementOrderId = new AtomicInteger(0);
 
   private static class Product {
     private final String        fileName;
@@ -92,6 +98,48 @@ public class ConsoleAsyncInsertTest {
 
     public String getVersion() {
       return version;
+    }
+  }
+
+  private static class CandidateOrder {
+    private final String        processor;
+    private final String        triggerRid;
+    private final LocalDateTime start;
+    private final LocalDateTime stop;
+    private final String        node;
+    private final String        orderStatus;
+
+    private CandidateOrder(String processor, String triggerRid, LocalDateTime start, LocalDateTime stop, String node, String orderStatus) {
+      this.processor = processor;
+      this.triggerRid = triggerRid;
+      this.start = start;
+      this.stop = stop;
+      this.node = node;
+      this.orderStatus = orderStatus;
+    }
+
+    public String getProcessor() {
+      return processor;
+    }
+
+    public LocalDateTime getStart() {
+      return start;
+    }
+
+    public LocalDateTime getStop() {
+      return stop;
+    }
+
+    public String getTriggerRid() {
+      return triggerRid;
+    }
+
+    public String getNode() {
+      return node;
+    }
+
+    public String getOrderStatus() {
+      return orderStatus;
     }
   }
 
@@ -137,8 +185,6 @@ public class ConsoleAsyncInsertTest {
 
     try {
       ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
-      final String userName = "root";
-      final String password = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
       if (serverSecurity.getUser(userName) == null) {
         serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
             .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
@@ -168,7 +214,7 @@ public class ConsoleAsyncInsertTest {
         inventoryProductAsyncWithSQL(database, product, okCount, errCount);
       }
 
-      checkResults(txErrorCounter, userName, password, database, okCount, errCount, N, begin);
+      checkResults(txErrorCounter, database, okCount, errCount, N, begin);
     } finally {
       arcadeDBServer.stop();
       FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
@@ -218,8 +264,6 @@ public class ConsoleAsyncInsertTest {
 
     try {
       ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
-      final String userName = "root";
-      final String password = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
       if (serverSecurity.getUser(userName) == null) {
         serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
             .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
@@ -249,15 +293,114 @@ public class ConsoleAsyncInsertTest {
         inventoryProductAsyncWithAPI(database, product, okCount, errCount);
       }
 
-      checkResults(txErrorCounter, userName, password, database, okCount, errCount, N, begin);
+      checkResults(txErrorCounter, database, okCount, errCount, N, begin);
     } finally {
       arcadeDBServer.stop();
       FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
     }
   }
 
-  private static void checkResults(AtomicLong txErrorCounter, String userName, String password, Database database, AtomicLong okCount, AtomicLong errCount,
-      long N, long begin) {
+  @Test
+  public void testOrderByAfterDeleteInsert() {
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("databases");
+
+    final String DATABASE_NAME = "test";
+    final int PARALLEL_LEVEL = 1;
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
+      if (databaseFactory.exists()) {
+        databaseFactory.open().drop();
+      }
+      try (Database db = databaseFactory.create()) {
+        DocumentType dtOrders = db.getSchema().buildDocumentType().withName("Order").withTotalBuckets(PARALLEL_LEVEL).create();
+        dtOrders.createProperty("id", Type.INTEGER);
+        dtOrders.createProperty("processor", Type.STRING);
+        dtOrders.createProperty("trigger", Type.LINK);
+        dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
+        dtOrders.createProperty("vstop", Type.DATETIME_MICROS);
+        dtOrders.createProperty("status", Type.STRING);
+        dtOrders.createProperty("node", Type.STRING);
+        dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+        dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+        dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
+        DocumentType dtProducts = db.getSchema().buildDocumentType().withName("Product").withTotalBuckets(PARALLEL_LEVEL).create();
+        dtProducts.createProperty("name", Type.STRING);
+        dtProducts.createProperty("type", Type.STRING);
+        dtProducts.createProperty("start", Type.DATETIME_MICROS);
+        dtProducts.createProperty("stop", Type.DATETIME_MICROS);
+        dtProducts.createProperty("v", Type.STRING);
+        dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+        dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "type", "start", "stop");
+        dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
+      }
+    }
+    String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
+    GlobalConfiguration.SERVER_METRICS.setValue(false);
+    GlobalConfiguration.HA_ENABLED.setValue(false);
+    GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(PARALLEL_LEVEL);
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue("CRYO_CSRS");
+    AtomicLong txErrorCounter = new AtomicLong();
+    ContextConfiguration configuration = new ContextConfiguration();
+    ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
+    arcadeDBServer.start();
+    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    database.async().onError(exception -> {
+      System.out.println("database.async() error: " + exception.getMessage());
+      exception.printStackTrace();
+      txErrorCounter.incrementAndGet();
+    });
+    final int TOTAL = 2;
+    database.async().setParallelLevel(PARALLEL_LEVEL);
+    String rid;
+    Product p = new Product("CS_OPER_SIR1LRM_0__20130201T001643_20130201T002230_0001.DBL", "SIR1LRM_0_", LocalDateTime.now().minusMinutes(5),
+        LocalDateTime.now(), "0001");
+    try (ResultSet resultSet = database.command("sql", "insert into Product set name = ?, type = ?, start = ?, stop = ?, v = ? return @rid",
+        arcadeDBServer.getConfiguration(), p.fileName, p.fileType, p.getStartValidity(), p.getStopValidity(), p.getVersion())) {
+      Assertions.assertTrue(resultSet.hasNext());
+      Result result = resultSet.next();
+      rid = result.getProperty("@rid").toString();
+    }
+    List<CandidateOrder> orders = new ArrayList<>(TOTAL);
+    LocalDateTime start, stop, ref;
+    ref = LocalDateTime.now().minusMonths(1);
+    for (int i = 0; i < TOTAL; i++) {
+      start = ref.plusMinutes(i);
+      stop = ref.plusMinutes(i + 1);
+      orders.add(new CandidateOrder("SIR1LRM-7.1", rid, start, stop, "cs2minipds-test", "PENDING"));
+    }
+    JSONObject insertResult = insertOrdersAsync(database, orders);
+    Assertions.assertEquals(insertResult.getInt("totalRows"), TOTAL);
+    int firstOrderId = 1;
+    int lastOrderId = TOTAL;
+    try (ResultSet resultSet = database.query("sql", "select from Order order by id")) {
+      Assertions.assertTrue(resultSet.hasNext());
+    }
+    String DELETE_ORDERS = "DELETE FROM Order WHERE id >= ? AND id <= ?";
+    try (ResultSet resultSet = database.command("sql", DELETE_ORDERS, firstOrderId, lastOrderId)) {
+      Assertions.assertEquals((Long) resultSet.next().getProperty("count"), TOTAL);
+    }
+    try (ResultSet resultSet = database.query("sql", "select from Order order by id")) {
+      Assertions.assertFalse(resultSet.hasNext());
+    }
+    insertResult = insertOrdersAsync(database, orders);
+    Assertions.assertEquals(insertResult.getInt("totalRows"), TOTAL);
+    try (ResultSet resultSet = database.query("sql", "select from Order")) {
+      Assertions.assertTrue(resultSet.hasNext());
+    }
+    try (ResultSet resultSet = database.query("sql", "select from Order order by processor")) {
+      Assertions.assertTrue(resultSet.hasNext());
+    }
+    try (ResultSet resultSet = database.query("sql", "select from Order order by id")) {
+      Assertions.assertTrue(resultSet.hasNext());
+    } finally {
+      arcadeDBServer.stop();
+      FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
+    }
+  }
+
+  private void checkResults(AtomicLong txErrorCounter, Database database, AtomicLong okCount, AtomicLong errCount, long N, long begin) {
     Assertions.assertTrue(database.async().waitCompletion(30_000));
 
     System.out.println("Total async insertion of " + N + " elements in " + (System.currentTimeMillis() - begin));
@@ -328,6 +471,67 @@ public class ConsoleAsyncInsertTest {
     } catch (Exception e) {
       e.printStackTrace();
     }
+  }
+
+  public JSONObject insertOrdersAsync(Database database, List<CandidateOrder> orders) {
+    JSONObject result = new JSONObject();
+    if (orders.size() == 0) {
+      result.put("totalRows", 0);
+      result.put("firstOrderId", 0);
+      result.put("lastOrderId", 0);
+      return result;
+    }
+    IndexCursor indexCursor;
+    MutableDocument record;
+    final AtomicInteger totalRows = new AtomicInteger();
+    final int[] firstOrderId = new int[1];
+    TypeIndex insertOrdersIndex = database.getSchema().getType("Order").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
+    for (CandidateOrder order : orders) {
+      indexCursor = database.lookupByKey("Order", new String[] { "processor", "vstart", "vstop" },
+          new Object[] { order.getProcessor(), order.getStart(), order.getStop() });
+      if (indexCursor.hasNext()) {
+        System.out.println("found existing record");
+        record = indexCursor.next().getRecord().asDocument(true).modify();
+        record.set("processor", order.getProcessor());
+        record.set("trigger", order.getTriggerRid());
+        record.set("vstart", order.getStart());
+        record.set("vstop", order.getStop());
+        record.set("status", order.getOrderStatus());
+        totalRows.incrementAndGet();
+        if (totalRows.get() == 1) {
+          firstOrderId[0] = (int) record.get("id");
+        }
+        database.async().updateRecord(record, newRecord -> {
+        }, exception -> {
+          System.out.println(exception.getMessage());
+        });
+      } else {
+        record = database.newDocument("Order");
+        record.set("id", autoIncrementOrderId.incrementAndGet());
+        totalRows.incrementAndGet();
+        if (totalRows.get() == 1) {
+          firstOrderId[0] = autoIncrementOrderId.get();
+        }
+        record.set("processor", order.getProcessor());
+        record.set("trigger", order.getTriggerRid());
+        record.set("vstart", order.getStart());
+        record.set("vstop", order.getStop());
+        record.set("status", order.getOrderStatus());
+        database.async().createRecord(record, newRecord -> {
+        }, exception -> {
+          System.out.println(exception.getMessage());
+          autoIncrementOrderId.decrementAndGet();
+        });
+      }
+    }
+    if (!database.async().waitCompletion(5000)) {
+      System.out.println("timeout expired before order insertion completed");
+    }
+    database.getSchema().dropIndex(insertOrdersIndex.getName());
+    result.put("totalRows", totalRows.get());
+    result.put("firstOrderId", firstOrderId[0]);
+    result.put("lastOrderId", firstOrderId[0] + totalRows.get() - 1);
+    return result;
   }
 
   @AfterEach

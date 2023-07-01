@@ -185,12 +185,12 @@ public class PostgresNetworkExecutor extends Thread {
 
             if (e instanceof PostgresProtocolException) {
               LogManager.instance().log(this, Level.SEVERE, e.getMessage(), e);
-              LogManager.instance().log(this, Level.SEVERE, "Closing connection with client");
+              LogManager.instance().log(this, Level.SEVERE, "PSQL: Closing connection with client");
               return;
             } else {
-              LogManager.instance().log(this, Level.SEVERE, "Postgres wrapper: Error on reading request: %s", e, e.getMessage());
+              LogManager.instance().log(this, Level.SEVERE, "PSQL: Error on reading request: %s", e, e.getMessage());
               if (++consecutiveErrors > 3) {
-                LogManager.instance().log(this, Level.SEVERE, "Closing connection with client");
+                LogManager.instance().log(this, Level.SEVERE, "PSQL: Closing connection with client");
                 return;
               }
             }
@@ -842,6 +842,8 @@ public class PostgresNetworkExecutor extends Thread {
           channel.writeByte((byte) 'N');
           channel.flush();
 
+          LogManager.instance().log(this, Level.INFO, "PSQL: received not supported SSL connection request. Sending back error message to the client");
+
           // REPEAT
           return readStartupMessage(false);
         }
@@ -852,17 +854,17 @@ public class PostgresNetworkExecutor extends Thread {
         final long pid = channel.readUnsignedInt();
         final long secret = channel.readUnsignedInt();
 
-        LogManager.instance().log(this, Level.INFO, "Received cancel request pid %d", pid);
+        LogManager.instance().log(this, Level.INFO, "PSQL: Received cancel request pid %d", pid);
 
         final Pair<Long, PostgresNetworkExecutor> session = ACTIVE_SESSIONS.get(pid);
         if (session != null) {
           if (session.getFirst() == secret) {
-            LogManager.instance().log(this, Level.INFO, "Canceling session " + pid);
+            LogManager.instance().log(this, Level.INFO, "PSQL: Canceling session " + pid);
             session.getSecond().close();
           } else
-            LogManager.instance().log(this, Level.INFO, "Blocked unauthorized canceling session " + pid);
+            LogManager.instance().log(this, Level.INFO, "PSQL: Blocked unauthorized canceling session " + pid);
         } else
-          LogManager.instance().log(this, Level.INFO, "Session " + pid + " not found");
+          LogManager.instance().log(this, Level.INFO, "PSQL: Session " + pid + " not found");
 
         close();
         return false;
