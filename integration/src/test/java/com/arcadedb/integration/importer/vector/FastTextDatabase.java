@@ -31,7 +31,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
-import com.github.jelmerk.knn.SearchResult;
+import com.arcadedb.utility.Pair;
 
 import java.io.*;
 import java.net.*;
@@ -128,7 +128,7 @@ public class FastTextDatabase {
 
             database.begin();
 
-            List<SearchResult<Vertex, Float>> approximateResults = persistentIndex.findNeighbors(input, k);
+            List<Pair<Vertex, Float>> approximateResults = persistentIndex.findNeighbors(input, k);
 
             final long delta = System.currentTimeMillis() - startWord;
 
@@ -136,8 +136,8 @@ public class FastTextDatabase {
             totalSearchTime.addAndGet(delta);
 
             final Map<String, Float> results = new LinkedHashMap<>();
-            for (SearchResult<Vertex, Float> result : approximateResults)
-              results.put(result.item().getString("name"), result.distance());
+            for (Pair<Vertex, Float> result : approximateResults)
+              results.put(result.getFirst().getString("name"), result.getSecond());
 
             //LogManager.instance().log(this, Level.SEVERE, "%d Found similar words for '%s' in %dms: %s", currentCycle, input, delta, results);
 

@@ -23,13 +23,15 @@ package com.arcadedb.integration.importer.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import com.github.jelmerk.knn.SearchResult;
+import com.arcadedb.utility.Pair;
 
 import java.io.*;
 import java.util.*;
@@ -44,14 +46,15 @@ import static java.util.concurrent.TimeUnit.*;
  * you query them.
  */
 public class GloVeTest {
-  private final static int    PARALLEL_LEVEL = 8;
-  private static final String FILE_NAME      = "/Users/luca/Downloads/glove.twitter.27B.100d.txt";
+  private final static int     PARALLEL_LEVEL = 8;
+  private static final String  FILE_NAME      = "/Users/luca/Downloads/glove.twitter.27B.100d.txt";
+  private              boolean USE_SQL        = false;
 
-  public static void main(String[] args) throws Exception {
+  public static void main(String[] args) {
     new GloVeTest();
   }
 
-  public GloVeTest() throws IOException, InterruptedException, ReflectiveOperationException {
+  public GloVeTest() {
     final long start = System.currentTimeMillis();
 
     final Database database;
@@ -122,9 +125,28 @@ public class GloVeTest {
 
             final long startWord = System.currentTimeMillis();
 
-            database.begin();
+            final List<Pair<Identifiable, Float>> approximateResults;
+            if (USE_SQL) {
+              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", input, k);
+              if (resultSet.hasNext()) {
+                approximateResults = new ArrayList<>();
+                while (resultSet.hasNext()) {
+                  final Result row = resultSet.next();
+                  final List<Map<String, Object>> neighbors = row.getProperty("neighbors");
 
-            List<SearchResult<Vertex, Float>> approximateResults = persistentIndex.findNeighbors(input, k);
+                  for (Map<String, Object> neighbor : neighbors)
+                    approximateResults.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
+                }
+
+              } else {
+                LogManager.instance().log(this, Level.SEVERE, "Not Found %s", input);
+                return;
+              }
+            } else {
+              database.begin();
+              approximateResults = persistentIndex.findNeighbors(input, k);
+              database.rollback();
+            }
 
             final long now = System.currentTimeMillis();
             final long delta = now - startWord;
@@ -133,8 +155,8 @@ public class GloVeTest {
             totalSearchTime.addAndGet(delta);
 
             final Map<String, Float> results = new LinkedHashMap<>();
-            for (SearchResult<Vertex, Float> result : approximateResults)
-              results.put(result.item().getString("name"), result.distance());
+            for (Pair<Identifiable, Float> result : approximateResults)
+              results.put(result.getFirst().asVertex().getString("name"), result.getSecond());
 
 //            LogManager.instance()
 //                .log(this, Level.SEVERE, "%d Found %d similar words for '%s' in %dms: %s", currentCycle, results.size(), input, delta, results);
@@ -147,8 +169,6 @@ public class GloVeTest {
                       totalSearchTime.get() / totalHits.get(), throughput);
               lastStats.set(now);
             }
-
-            database.rollback();
 
           } catch (Exception e) {
             e.printStackTrace();

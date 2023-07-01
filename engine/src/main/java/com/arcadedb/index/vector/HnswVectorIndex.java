@@ -42,6 +42,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.Pair;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
 import com.github.jelmerk.knn.SearchResult;
@@ -190,13 +191,19 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return indexName;
   }
 
-  public List<SearchResult<Vertex, TDistance>> findNeighbors(final TId id, final int k) {
+  public List<Pair<Identifiable, ? extends Number>> findNeighbors(final TId id, final int k) {
     final Vertex start = get(id);
     if (start == null)
       return Collections.emptyList();
 
-    return findNearest(getVectorFromVertex(start), k + 1).stream().filter(result -> !getIdFromVertex(result.item()).equals(id)).limit(k)
-        .collect(Collectors.toList());
+    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(getVectorFromVertex(start), k + 1).stream()
+        .filter(result -> !getIdFromVertex(result.item()).equals(id)).limit(k).collect(Collectors.toList());
+
+    final List<Pair<Identifiable, ? extends Number>> result = new ArrayList<>(neighbors.size());
+    for (SearchResult<Vertex, TDistance> neighbor : neighbors)
+      result.add(new Pair(neighbor.item(), neighbor.distance()));
+    return result;
+
   }
 
   public boolean add(Vertex vertex) {

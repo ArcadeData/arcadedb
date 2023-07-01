@@ -20,8 +20,12 @@ package com.arcadedb.query.sql.function.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.utility.Pair;
 
 import java.util.*;
 
@@ -42,15 +46,30 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
 
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
-    if (iParams == null || iParams.length < 1)
-      throw new CommandSQLParsingException("Expected maximum value in function");
+    if (iParams == null || iParams.length != 3)
+      throw new CommandSQLParsingException(getSyntax());
 
-    int bound = iParams[0] instanceof Number ? ((Number) iParams[0]).intValue() : Integer.parseInt(iParams[0].toString());
+    final Index index = iContext.getDatabase().getSchema().getIndexByName(iParams[0].toString());
+    if (!(index instanceof HnswVectorIndex))
+      throw new CommandSQLParsingException("Index '" + index.getName() + "' is not a vector index (found: " + index.getClass().getSimpleName() + ")");
 
-    return new Random().nextInt(bound);
+    final HnswVectorIndex vIndex = (HnswVectorIndex) index;
+
+    final Object key = iParams[1];
+    if (key == null)
+      throw new CommandSQLParsingException("key is null");
+
+    final int limit = iParams[2] instanceof Number ? ((Number) iParams[2]).intValue() : Integer.parseInt(iParams[2].toString());
+
+    final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighbors(key, limit);
+
+    final ArrayList<Object> result = new ArrayList<>(neighbors.size());
+    for (Pair<Vertex, ? extends Number> n : neighbors)
+      result.add(Map.of("vertex", n.getFirst(), "distance", n.getSecond()));
+    return result;
   }
 
   public String getSyntax() {
-    return "vectorNeighbors(<key>, <k>)";
+    return "vectorNeighbors(<index-name>, <key>, <k>)";
   }
 }
