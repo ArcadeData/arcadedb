@@ -85,7 +85,7 @@ public class GloVeTest {
       long end = System.currentTimeMillis();
       long duration = end - start;
 
-      LogManager.instance().log(this, Level.SEVERE, "Creating index with took %d millis which is %d minutes.%n", duration, MILLISECONDS.toMinutes(duration));
+      LogManager.instance().log(this, Level.SEVERE, "Creating index took %d millis which is %d minutes.%n", duration, MILLISECONDS.toMinutes(duration));
 
       database.close();
       System.exit(1);

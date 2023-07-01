@@ -87,7 +87,7 @@ public class FastTextDatabase {
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, vectorType = Float, idProperty = name" //
       );
 
-      LogManager.instance().log(this, Level.SEVERE, "Creating index with took %d millis which is %d minutes.%n", System.currentTimeMillis() - start,
+      LogManager.instance().log(this, Level.SEVERE, "Creating index took %d millis which is %d minutes.%n", System.currentTimeMillis() - start,
           MILLISECONDS.toMinutes(System.currentTimeMillis() - start));
     }
 
