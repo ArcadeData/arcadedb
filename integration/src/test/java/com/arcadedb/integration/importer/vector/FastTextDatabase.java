@@ -84,7 +84,7 @@ public class FastTextDatabase {
 
       database.command("sql", "import database file://" + file.toAbsolutePath() + " "//
           + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128," //
-          + "vertexType = Word, edgeType = Proximity, vectorPropertyName = vector, vectorPropertyType = ARRAY_OF_FLOATS, idPropertyName = name" //
+          + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, vectorType = Float, idProperty = name" //
       );
 
       LogManager.instance().log(this, Level.SEVERE, "Creating index with took %d millis which is %d minutes.%n", System.currentTimeMillis() - start,

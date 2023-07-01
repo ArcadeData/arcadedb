@@ -79,7 +79,7 @@ public class GloVeTest {
 
       database.command("sql", "import database file://" + file.getAbsolutePath() + " "//
           + "with distanceFunction = 'cosine', m = 16, ef = 128, efConstruction = 128, " //
-          + "vertexType = 'Word', edgeType = 'Proximity', vectorPropertyName = 'vector', vectorPropertyType = ARRAY_OF_FLOATS, idPropertyName = 'name'" //
+          + "vertexType = 'Word', edgeType = 'Proximity', vectorProperty = 'vector', vectorType = Float, idProperty = 'name'" //
       );
 
       long end = System.currentTimeMillis();

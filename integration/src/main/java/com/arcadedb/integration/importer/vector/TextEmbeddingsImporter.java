@@ -63,7 +63,6 @@ public class TextEmbeddingsImporter {
   private          String           vectorTypeName       = "Float";
   private          String           distanceFunctionName = "InnerProduct";
   private          String           vectorPropertyName   = "vector";
-  private          Type             vectorPropertyType   = Type.ARRAY_OF_FLOATS;
   private          String           idPropertyName       = "name";
   private volatile long             embeddingsParsed     = 0L;
   private volatile long             indexedEmbedding     = 0L;
@@ -118,14 +117,11 @@ public class TextEmbeddingsImporter {
       this.vectorTypeName = Character.toUpperCase(this.vectorTypeName.charAt(0)) + this.vectorTypeName.substring(1).toLowerCase();
     }
 
-    if (settings.options.containsKey("vectorPropertyName"))
-      this.vectorPropertyName = settings.options.get("vectorPropertyName");
+    if (settings.options.containsKey("vectorProperty"))
+      this.vectorPropertyName = settings.options.get("vectorProperty");
 
-    if (settings.options.containsKey("vectorPropertyType"))
-      this.vectorPropertyType = Type.valueOf(settings.options.get("vectorPropertyType").toUpperCase());
-
-    if (settings.options.containsKey("idPropertyName"))
-      this.idPropertyName = settings.options.get("idPropertyName");
+    if (settings.options.containsKey("idProperty"))
+      this.idPropertyName = settings.options.get("idProperty");
 
     if (settings.options.containsKey("m"))
       this.m = Integer.parseInt(settings.options.get("m"));
@@ -164,6 +160,21 @@ public class TextEmbeddingsImporter {
           .withM(m).withEf(ef).withEfConstruction(efConstruction).build();
 
       hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
+
+      Type vectorPropertyType;
+
+      if (vectorTypeName.equals("Short"))
+        vectorPropertyType = Type.ARRAY_OF_SHORTS;
+      else if (vectorTypeName.equals("Integer"))
+        vectorPropertyType = Type.ARRAY_OF_INTEGERS;
+      else if (vectorTypeName.equals("Long"))
+        vectorPropertyType = Type.ARRAY_OF_LONGS;
+      else if (vectorTypeName.equals("Float"))
+        vectorPropertyType = Type.ARRAY_OF_FLOATS;
+      else if (vectorTypeName.equals("Double"))
+        vectorPropertyType = Type.ARRAY_OF_DOUBLES;
+      else
+        throw new IllegalArgumentException("Type '" + vectorTypeName + "' not supported");
 
       hnswIndex.createPersistentIndex(database)//
           .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName).withVectorProperty(vectorPropertyName, vectorPropertyType)
