@@ -21,13 +21,18 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.io.*;
 
 public class GloVeImporterIT {
   @Test
   public void importDocuments() {
     final String databasePath = "target/databases/test-glove";
+
+    FileUtils.deleteRecursively(new File(databasePath));
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
     if (databaseFactory.exists())
@@ -36,14 +41,15 @@ public class GloVeImporterIT {
     final Database db = databaseFactory.create();
     try {
       db.command("sql", "import database file://src/test/resources/importer-glove.txt "//
-          + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128" //
-          + "vertexTypeName = Word, edgeTypeName = Proximity, vectorProperty = vector, idProperty = name" //
+          + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
+          + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );
 
       Assertions.assertEquals(10, db.countType("Word", true));
     } finally {
       db.drop();
+      TestHelper.checkActiveDatabases();
+      FileUtils.deleteRecursively(new File(databasePath));
     }
-    TestHelper.checkActiveDatabases();
   }
 }
