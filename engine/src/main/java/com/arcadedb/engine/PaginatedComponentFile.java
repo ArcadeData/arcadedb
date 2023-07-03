@@ -29,7 +29,6 @@ import java.util.zip.*;
 public class PaginatedComponentFile extends ComponentFile {
 
   private RandomAccessFile file;
-  private File             osFile;
   private FileChannel      channel;
   private int              pageSize;
 
