@@ -45,7 +45,7 @@ public class DropBucketStatement extends DDLStatement {
     if (id != null) {
       bucketId = id.getValue().intValue();
     } else {
-      bucketId = database.getSchema().getBucketByName(name.getStringValue()).getId();
+      bucketId = database.getSchema().getBucketByName(name.getStringValue()).getFileId();
       if (bucketId < 0) {
         if (ifExists) {
           return new InternalResultSet();

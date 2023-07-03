@@ -22,7 +22,7 @@ package com.arcadedb.gremlin.integration.exporter;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.integration.exporter.Exporter;
 import com.arcadedb.integration.importer.OrientDBImporter;
@@ -69,7 +69,7 @@ public class GraphSONExporterIT {
 
       Assertions.assertTrue(importedDatabaseDirectory.exists());
 
-      try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
+      try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY)) {
         Assertions.assertEquals(//
             originalDatabase.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()),//
             graph.getDatabase().getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));

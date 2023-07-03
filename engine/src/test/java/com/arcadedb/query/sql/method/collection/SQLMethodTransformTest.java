@@ -36,10 +36,10 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -130,7 +130,7 @@ class SQLMethodTransformTest {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(new DatabaseInternal() {
       @Override
-      public TransactionContext getTransaction() {
+      public TransactionContext getTransactionIfExists() {
         return null;
       }
 
@@ -320,7 +320,7 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public PaginatedFile.MODE getMode() {
+      public ComponentFile.MODE getMode() {
         return null;
       }
 

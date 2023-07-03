@@ -20,12 +20,10 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.security.SecurityDatabaseUser;
-import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.concurrent.atomic.*;
@@ -36,9 +34,6 @@ import java.util.concurrent.atomic.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ManualIndexBuilder extends IndexBuilder<Index> {
-  final String indexName;
-  final Type[] keyTypes;
-
   protected ManualIndexBuilder(final DatabaseInternal database, final String indexName, final Type[] keyTypes) {
     super(database, Index.class);
     this.indexName = indexName;
@@ -70,8 +65,9 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
       final AtomicReference<IndexInternal> result = new AtomicReference<>();
       database.transaction(() -> {
 
-        final IndexInternal index = schema.indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, schema.getEncoding()), unique,
-            database.getDatabasePath() + File.separator + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
+        filePath = database.getDatabasePath() + File.separator + indexName;
+
+        final IndexInternal index = schema.indexFactory.createIndex(this);
 
         result.set(index);
 

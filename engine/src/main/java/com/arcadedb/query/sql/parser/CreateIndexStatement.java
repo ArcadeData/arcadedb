@@ -41,11 +41,11 @@ public class CreateIndexStatement extends DDLStatement {
   protected Identifier                         typeName;
   protected List<Property>                     propertyList = new ArrayList<Property>();
   protected Identifier                         type;
+  protected boolean                            ifNotExists  = false;
   protected Identifier                         engine;
+  protected Json                               metadata;
   protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   protected List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
-  protected Json                               schema;
-  protected boolean                            ifNotExists  = false;
 
   public CreateIndexStatement(final int id) {
     super(id);
@@ -93,7 +93,9 @@ public class CreateIndexStatement extends DDLStatement {
       unique = true;
     } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
-      unique = false;
+    } else if (typeAsString.equalsIgnoreCase("HSNW")) {
+      indexType = Schema.INDEX_TYPE.HSNW;
+      unique = true;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
 
@@ -168,10 +170,16 @@ public class CreateIndexStatement extends DDLStatement {
     }
     builder.append(" ");
     type.toString(params, builder);
+
     if (engine != null) {
       builder.append(" ENGINE ");
       engine.toString(params, builder);
     }
+    if (metadata != null) {
+      builder.append(" METADATA ");
+      metadata.toString(params, builder);
+    }
+
     if (nullStrategy != null) {
       builder.append(" NULL_STRATEGY ");
       builder.append(nullStrategy);
@@ -187,10 +195,6 @@ public class CreateIndexStatement extends DDLStatement {
         first = false;
       }
     }
-    if (schema != null) {
-      builder.append(" METADATA ");
-      schema.toString(params, builder);
-    }
   }
 
   @Override
@@ -200,16 +204,16 @@ public class CreateIndexStatement extends DDLStatement {
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyList = propertyList == null ? null : propertyList.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.type = type == null ? null : type.copy();
-    result.engine = engine == null ? null : engine.copy();
     result.nullStrategy = nullStrategy == null ? null : nullStrategy;
     result.keyTypes = keyTypes == null ? null : keyTypes.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.schema = schema == null ? null : schema.copy();
+    result.engine = engine == null ? null : engine.copy();
+    result.metadata = metadata == null ? null : metadata.copy();
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { name, typeName, propertyList, type, engine, nullStrategy, keyTypes, schema };
+    return new Object[] { name, typeName, propertyList, type, nullStrategy, keyTypes, engine, metadata };
   }
 
   public static class Property {

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.index;
 
-import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.Component;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -29,7 +29,7 @@ import java.util.*;
  * Internal Index interface.
  */
 public interface IndexInternal extends Index {
-  long build(int batchSize, BuildIndexCallback callback);
+  long build(int buildIndexBatchSize, BuildIndexCallback callback);
 
   boolean compact() throws IOException, InterruptedException;
 
@@ -43,7 +43,7 @@ public interface IndexInternal extends Index {
 
   int getFileId();
 
-  PaginatedComponent getPaginatedComponent();
+  Component getComponent();
 
   Type[] getKeyTypes();
 

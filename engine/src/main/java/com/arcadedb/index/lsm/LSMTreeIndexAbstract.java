@@ -23,9 +23,9 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
@@ -92,7 +92,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Called at creation time.
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final String ext, final PaginatedFile.MODE mode, final Type[] keyTypes, final int pageSize, final int version, final NULL_STRATEGY nullStrategy)
+      final String ext, final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize, final int version, final NULL_STRATEGY nullStrategy)
       throws IOException {
     super(database, name, filePath, ext, mode, pageSize, version);
 
@@ -118,7 +118,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final String ext, final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize, final int version) throws IOException {
-    super(database, name, filePath, TEMP_EXT + ext, PaginatedFile.MODE.READ_WRITE, pageSize, version);
+    super(database, name, filePath, TEMP_EXT + ext, ComponentFile.MODE.READ_WRITE, pageSize, version);
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
@@ -132,7 +132,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
@@ -165,7 +165,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   @Override
   public String toString() {
-    return name + "(" + getFileId() + ")";
+    return componentName + "(" + getFileId() + ")";
   }
 
   public Type[] getKeyTypes() {

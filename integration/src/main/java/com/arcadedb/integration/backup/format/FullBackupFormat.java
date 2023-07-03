@@ -21,7 +21,7 @@ package com.arcadedb.integration.backup.format;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
@@ -79,11 +79,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
           databaseOrigSize += compressFile(zipFile, ((EmbeddedDatabase) database.getEmbedded()).getConfigurationFile());
           databaseOrigSize += compressFile(zipFile, ((EmbeddedSchema) database.getSchema()).getConfigurationFile());
 
-          final Collection<PaginatedFile> files = database.getFileManager().getFiles();
+          final Collection<ComponentFile> files = database.getFileManager().getFiles();
 
-          for (final PaginatedFile paginatedFile : files)
-            if (paginatedFile != null)
-              databaseOrigSize += compressFile(zipFile, paginatedFile.getOSFile());
+          for (final ComponentFile file : files)
+            if (file != null)
+              databaseOrigSize += compressFile(zipFile, file.getOSFile());
 
           zipFile.close();
 

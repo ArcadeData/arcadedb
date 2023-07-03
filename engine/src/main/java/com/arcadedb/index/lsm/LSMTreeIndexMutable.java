@@ -26,9 +26,9 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursor;
@@ -59,7 +59,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at creation time.
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final PaginatedFile.MODE mode, final Type[] keyTypes, final int pageSize, final NULL_STRATEGY nullStrategy) throws IOException {
+      final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize, final NULL_STRATEGY nullStrategy) throws IOException {
     super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, mode, keyTypes, pageSize, CURRENT_VERSION,
         nullStrategy);
     database.checkTransactionIsActive(database.isAutoTransaction());
@@ -81,7 +81,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
     onAfterLoad();
   }
@@ -127,9 +127,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. Please recreate the index from scratch (error=%s)",
-          null, name, e.getMessage());
+          null, componentName, e.getMessage());
 
-      database.getSchema().dropIndex(name);
+      database.getSchema().dropIndex(componentName);
     }
   }
 
@@ -137,7 +137,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public void onAfterCommit() {
     if (minPagesToScheduleACompaction > 0 && currentMutablePages >= minPagesToScheduleACompaction) {
       LogManager.instance()
-          .log(this, Level.FINE, "Scheduled compaction of index '%s' (currentMutablePages=%d totalPages=%d)", null, name, currentMutablePages, getTotalPages());
+          .log(this, Level.FINE, "Scheduled compaction of index '%s' (currentMutablePages=%d totalPages=%d)", null, componentName, currentMutablePages, getTotalPages());
       ((DatabaseAsyncExecutorImpl) database.async()).compact(mainIndex);
     }
   }
@@ -158,8 +158,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   public LSMTreeIndexCompacted createNewForCompaction() throws IOException {
-    final int last_ = name.lastIndexOf('_');
-    final String newName = name.substring(0, last_) + "_" + System.nanoTime();
+    final int last_ = componentName.lastIndexOf('_');
+    final String newName = componentName.substring(0, last_) + "_" + System.nanoTime();
 
     return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + File.separator + newName, keyTypes, binaryKeyTypes,
         pageSize);
@@ -371,7 +371,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     pos += INT_SERIALIZED_SIZE;
 
     if (txPageCounter == 0) {
-      currentPage.writeInt(pos, subIndex != null ? subIndex.getId() : -1); // SUB-INDEX FILE ID
+      currentPage.writeInt(pos, subIndex != null ? subIndex.getFileId() : -1); // SUB-INDEX FILE ID
       pos += INT_SERIALIZED_SIZE;
 
       currentPage.writeByte(pos++, (byte) binaryKeyTypes.length);
@@ -410,8 +410,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
 
-    if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
-      throw new DatabaseIsReadOnlyException("Cannot update the index '" + name + "'");
+    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+      throw new DatabaseIsReadOnlyException("Cannot update the index '" + componentName + "'");
 
     if (keys.length != binaryKeyTypes.length)
       throw new IllegalArgumentException("Cannot put an entry in the index with a partial key");
@@ -427,7 +427,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
     final int txPageCounter = getTotalPages();
     if (txPageCounter < 1)
-      throw new IllegalArgumentException("Cannot update the index '" + name + "' because the file is invalid");
+      throw new IllegalArgumentException("Cannot update the index '" + componentName + "' because the file is invalid");
 
     int pageNum = txPageCounter - 1;
 
@@ -489,11 +489,11 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       if (LogManager.instance().isDebugEnabled())
         LogManager.instance()
             .log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)", Arrays.toString(keys), Arrays.toString(rids),
-                name, currentPage.getPageId(), count + 1, newPage, Thread.currentThread().getId());
+                componentName, currentPage.getPageId(), count + 1, newPage, Thread.currentThread().getId());
 
     } catch (final IOException e) {
       throw new DatabaseOperationException(
-          "Cannot index key '" + Arrays.toString(keys) + "' with value '" + Arrays.toString(rids) + "' in index '" + name + "'", e);
+          "Cannot index key '" + Arrays.toString(keys) + "' with value '" + Arrays.toString(rids) + "' in index '" + componentName + "'", e);
     }
   }
 
@@ -501,8 +501,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
 
-    if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
-      throw new DatabaseIsReadOnlyException("Cannot update the index '" + name + "'");
+    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+      throw new DatabaseIsReadOnlyException("Cannot update the index '" + componentName + "'");
 
     if (keys.length != binaryKeyTypes.length)
       throw new IllegalArgumentException("Cannot remove an entry in the index with a partial key");
@@ -518,7 +518,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final int txPageCounter = getTotalPages();
 
     if (txPageCounter < 1)
-      throw new IllegalArgumentException("Cannot update the index '" + name + "' because the file is invalid");
+      throw new IllegalArgumentException("Cannot update the index '" + componentName + "' because the file is invalid");
 
     int pageNum = txPageCounter - 1;
 
@@ -610,10 +610,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       if (LogManager.instance().isDebugEnabled())
         LogManager.instance()
             .log(this, Level.FINE, "Put removed entry %s=%s (original=%s) in index '%s' (page=%s countInPage=%d newPage=%s)", null, Arrays.toString(keys),
-                removedRID, rid, name, currentPage.getPageId(), count + 1, newPage);
+                removedRID, rid, componentName, currentPage.getPageId(), count + 1, newPage);
 
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Cannot index key '" + Arrays.toString(keys) + "' with value '" + rid + "' in index '" + name + "'", e);
+      throw new DatabaseOperationException("Cannot index key '" + Arrays.toString(keys) + "' with value '" + rid + "' in index '" + componentName + "'", e);
     }
   }
 

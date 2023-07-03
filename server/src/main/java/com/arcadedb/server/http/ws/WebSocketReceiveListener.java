@@ -21,14 +21,14 @@ package com.arcadedb.server.http.ws;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.websockets.core.AbstractReceiveListener;
 import io.undertow.websockets.core.BufferedTextMessage;
 import io.undertow.websockets.core.StreamSourceFrameChannel;
 import io.undertow.websockets.core.WebSocketChannel;
 import io.undertow.websockets.core.WebSockets;
-import com.arcadedb.serializer.json.JSONException;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

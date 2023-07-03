@@ -355,4 +355,31 @@ public class DateUtils {
     }
     return date;
   }
+
+  public static String formatElapsed(final long ms) {
+    if (ms < 1000)
+      return ms + " ms";
+
+    final long seconds = ms / 1000;
+    if (seconds < 60)
+      return seconds + " seconds";
+
+    final float minutes = seconds / 60F;
+    if (minutes < 60F)
+      return String.format("%.1f minutes", minutes);
+
+    final float hours = minutes / 60F;
+    if (hours < 24F)
+      return String.format("%.1f hours", hours);
+
+    final float days = hours / 24F;
+    if (days < 30F)
+      return String.format("%.1f days", days);
+
+    final float months = days / 30F;
+    if (months < 12F)
+      return String.format("%.1f months", months);
+
+    return String.format("%.1f years", months / 12F);
+  }
 }

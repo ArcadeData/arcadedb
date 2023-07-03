@@ -24,7 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.async.ErrorCallback;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -186,7 +186,7 @@ public class PerformanceVertexIndexTest {
   }
 
   private void checkLookups(final int step) {
-    final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY);
+    final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY);
     long begin = System.currentTimeMillis();
 
     try {

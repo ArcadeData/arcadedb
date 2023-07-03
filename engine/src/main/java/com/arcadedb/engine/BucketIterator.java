@@ -47,13 +47,13 @@ public class BucketIterator implements Iterator<Record> {
   final long limit;
 
   BucketIterator(final Bucket bucket, final Database db) {
-    ((DatabaseInternal) db).checkPermissionsOnFile(bucket.id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    ((DatabaseInternal) db).checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     this.database = (DatabaseInternal) db;
     this.bucket = bucket;
     this.totalPages = bucket.pageCount.get();
 
-    final Integer txPageCounter = database.getTransaction().getPageCounter(bucket.id);
+    final Integer txPageCounter = database.getTransaction().getPageCounter(bucket.fileId);
     if (txPageCounter != null && txPageCounter > totalPages)
       this.totalPages = txPageCounter;
 
@@ -91,7 +91,7 @@ public class BucketIterator implements Iterator<Record> {
             final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
             if (recordSize[0] > 0 || recordSize[0] == Bucket.FIRST_CHUNK) {
               // NOT DELETED
-              final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
+              final RID rid = new RID(database, bucket.fileId, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
               if (!bucket.existsRecord(rid))
                 continue;
@@ -101,9 +101,9 @@ public class BucketIterator implements Iterator<Record> {
 
             } else if (recordSize[0] == Bucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
-              final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
+              final RID rid = new RID(database, bucket.fileId, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
-              final Binary view = bucket.getRecordInternal(new RID(database, bucket.id, currentPage.readLong((int) (recordPositionInPage + recordSize[1]))),
+              final Binary view = bucket.getRecordInternal(new RID(database, bucket.fileId, currentPage.readLong((int) (recordPositionInPage + recordSize[1]))),
                   true);
 
               if (view == null)
@@ -151,7 +151,7 @@ public class BucketIterator implements Iterator<Record> {
       try {
         fetchNext();
       } catch (final Exception e) {
-        throw new DatabaseOperationException("Cannot scan bucket '" + bucket.name + "'", e);
+        throw new DatabaseOperationException("Cannot scan bucket '" + bucket.componentName + "'", e);
       }
     }
   }

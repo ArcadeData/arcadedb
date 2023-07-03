@@ -20,7 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -87,7 +87,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
   @Override
   protected void handleCorruption(final Exception e, final RID edge, final RID vertex) {
     if ((e instanceof RecordNotFoundException || e instanceof SchemaException) &&//
-        database.getMode() == PaginatedFile.MODE.READ_WRITE) {
+        database.getMode() == ComponentFile.MODE.READ_WRITE) {
 
       LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it...", e, edge, vertex != null ? "vertex " + vertex : "");
 

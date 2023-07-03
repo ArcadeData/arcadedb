@@ -24,10 +24,10 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 

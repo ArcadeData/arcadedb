@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
@@ -27,14 +28,14 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class FileManager {
-  private final        PaginatedFile.MODE                        mode;
-  private final        List<PaginatedFile>                       files           = new ArrayList<>();
-  private final        ConcurrentHashMap<String, PaginatedFile>  fileNameMap     = new ConcurrentHashMap<>();
-  private final        ConcurrentHashMap<Integer, PaginatedFile> fileIdMap       = new ConcurrentHashMap<>();
+  private final        ComponentFile.MODE                        mode;
+  private final        List<ComponentFile>                       files           = new ArrayList<>();
+  private final        ConcurrentHashMap<String, ComponentFile>  fileNameMap     = new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<Integer, ComponentFile> fileIdMap       = new ConcurrentHashMap<>();
   private final        ConcurrentHashMap<Integer, Long>          fileVirtualSize = new ConcurrentHashMap<>();
   private final        AtomicLong                                maxFilesOpened  = new AtomicLong();
   private              List<FileChange>                          recordedChanges = null;
-  private final static PaginatedFile                             RESERVED_SLOT   = new PaginatedFile();
+  private final static PaginatedComponentFile                    RESERVED_SLOT   = new PaginatedComponentFile();
 
   public static class FileChange {
     public final boolean create;
@@ -68,7 +69,7 @@ public class FileManager {
     public long totalOpenFiles;
   }
 
-  public FileManager(final String path, final PaginatedFile.MODE mode, final Set<String> supportedFileExt) {
+  public FileManager(final String path, final ComponentFile.MODE mode, final Set<String> supportedFileExt) {
     this.mode = mode;
 
     final File dbDirectory = new File(path);
@@ -81,7 +82,12 @@ public class FileManager {
 
         if (supportedFileExt.contains(fileExt))
           try {
-            final PaginatedFile file = new PaginatedFile(f.getAbsolutePath(), mode);
+            final ComponentFile file;
+            // TODO: MAKE THIS GENERIC
+            if (fileExt.equals(HnswVectorIndex.FILE_EXT))
+              file = new ComponentFile(f.getAbsolutePath(), mode);
+            else
+              file = new PaginatedComponentFile(f.getAbsolutePath(), mode);
             registerFile(file);
 
           } catch (final FileNotFoundException e) {
@@ -113,7 +119,7 @@ public class FileManager {
   }
 
   public void close() {
-    for (final PaginatedFile f : fileNameMap.values())
+    for (final ComponentFile f : fileNameMap.values())
       f.close();
 
     files.clear();
@@ -123,7 +129,7 @@ public class FileManager {
   }
 
   public void dropFile(final int fileId) throws IOException {
-    final PaginatedFile file = fileIdMap.remove(fileId);
+    final ComponentFile file = fileIdMap.remove(fileId);
     if (file != null) {
       fileNameMap.remove(file.getComponentName());
       files.set(fileId, null);
@@ -158,7 +164,7 @@ public class FileManager {
     return stats;
   }
 
-  public List<PaginatedFile> getFiles() {
+  public List<ComponentFile> getFiles() {
     return Collections.unmodifiableList(files);
   }
 
@@ -166,20 +172,20 @@ public class FileManager {
     return fileIdMap.containsKey(fileId);
   }
 
-  public PaginatedFile getFile(final int fileId) {
-    final PaginatedFile f = fileIdMap.get(fileId);
+  public ComponentFile getFile(final int fileId) {
+    final ComponentFile f = fileIdMap.get(fileId);
     if (f == null)
       throw new IllegalArgumentException("File with id " + fileId + " was not found");
 
     return f;
   }
 
-  public PaginatedFile getOrCreateFile(final String fileName, final String filePath, final PaginatedFile.MODE mode) throws IOException {
-    PaginatedFile file = fileNameMap.get(fileName);
+  public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode) throws IOException {
+    ComponentFile file = fileNameMap.get(fileName);
     if (file != null)
       return file;
 
-    file = new PaginatedFile(filePath, mode);
+    file = new PaginatedComponentFile(filePath, mode);
     registerFile(file);
 
     if (recordedChanges != null)
@@ -188,10 +194,10 @@ public class FileManager {
     return file;
   }
 
-  public PaginatedFile getOrCreateFile(final int fileId, final String filePath) throws IOException {
-    PaginatedFile file = fileIdMap.get(fileId);
+  public ComponentFile getOrCreateFile(final int fileId, final String filePath) throws IOException {
+    ComponentFile file = fileIdMap.get(fileId);
     if (file == null) {
-      file = new PaginatedFile(filePath, mode);
+      file = new PaginatedComponentFile(filePath, mode);
       registerFile(file);
 
       if (recordedChanges != null)
@@ -214,11 +220,11 @@ public class FileManager {
     return files.size() - 1;
   }
 
-  private void registerFile(final PaginatedFile file) {
+  private void registerFile(final ComponentFile file) {
     final int pos = file.getFileId();
     while (files.size() < pos + 1)
       files.add(null);
-    final PaginatedFile prev = files.get(pos);
+    final ComponentFile prev = files.get(pos);
     if (prev != null && prev != RESERVED_SLOT)
       throw new IllegalArgumentException("Cannot register file '" + file + "' at position " + pos + " because already occupied by file '" + prev + "'");
 

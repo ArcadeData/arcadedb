@@ -113,7 +113,7 @@ public class JVMUtils {
       final File file = File.createTempFile("deepwolf.heapdump.bin", null);
       hotspotMBean.dumpHeap(file.getAbsolutePath(), live);
 
-      final String content = FileUtils.readFileAsString(file, "UTF8");
+      final String content = FileUtils.readFileAsString(file);
 
       file.delete();
 

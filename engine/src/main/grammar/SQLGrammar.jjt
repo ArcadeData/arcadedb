@@ -29,9 +29,8 @@ PARSER_BEGIN(SqlParser)
 
 package com.arcadedb.query.sql.parser;
 
-import java.io.InputStream;
-import java.util.List;
-import java.util.ArrayList;
+import java.io.*;
+import java.util.*;
 import javax.annotation.processing.Generated;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
@@ -43,6 +42,12 @@ public class SqlParser {
 
   private int inputParamCount = 0;
   private Database database;
+  private String command;
+
+  public SqlParser(final Database database, final String command) {
+    this(database, new ByteArrayInputStream(command.getBytes()));
+    this.command = command;
+  }
 
   public SqlParser(final Database database, final InputStream stream) {
     this(new JavaCharStream(stream));
@@ -275,6 +280,8 @@ TOKEN:
   < NULL_STRATEGY: ("n"|"N")("u"|"U")("l"|"L")("l"|"L")("_")("s"|"S")("t"|"T")("r"|"R")("a"|"A")("t"|"T")("e"|"E")("g"|"G")("y"|"Y") >
   |
   < ENGINE: ("E"|"e")("N"|"n")("G"|"g")("I"|"i")("N"|"n")("E"|"e")>
+  |
+  < METADATA: ("M"|"m")("E"|"e")("T"|"t")("A"|"a")("D"|"d")("A"|"a")("T"|"t")("A"|"a")>
   |
   < REBUILD: ("R"|"r")("E"|"e")("B"|"b")("U"|"u")("I"|"i")("L"|"l")("D"|"d")>
   |
@@ -804,11 +811,11 @@ Identifier Identifier():
   |
   token = <FORCE>
   |
-  token = <SCHEMA>
-  |
   token = <INDEX>
   |
   token = <ENGINE>
+  |
+  token = <METADATA>
   |
   token = <REBUILD>
   |
@@ -2856,7 +2863,6 @@ BooleanExpression MatchesCondition():
     |
     ( jjtThis.rightParam = InputParameter() )
   )
-
   {return jjtThis;}
 }
 
@@ -3025,7 +3031,6 @@ java.lang.Number Wait():
   { return val.getValue(); }
 }
 
-
 java.lang.Number Retry():
 { PInteger val; }
 {
@@ -3033,19 +3038,12 @@ java.lang.Number Retry():
   { return val.getValue(); }
 }
 
-
-
-
-
-
-
 PCollection PCollection():
 {
   Expression lastExpression;
 }
 {
   (
-
     <LBRACKET>
     [
       lastExpression = Expression() { jjtThis.expressions.add(lastExpression); }
@@ -3197,45 +3195,43 @@ MatchPathItem MultiMatchPathItemArrows():
   MatchPathItem nextItem = null;
 }
 {
+  <DOT>
+  <LPAREN>
   (
-    <DOT>
-    <LPAREN>
     (
-      (
-        LOOKAHEAD( OutPathItemOpt() )
-        nextItem = OutPathItemOpt()  { jjtThis.items.add(nextItem); }
-        |
-        LOOKAHEAD( InPathItemOpt() )
-        nextItem = InPathItemOpt()  { jjtThis.items.add(nextItem); }
-        |
-        LOOKAHEAD( BothPathItemOpt() )
-        nextItem = BothPathItemOpt()  { jjtThis.items.add(nextItem); }
-      ){
-        if(prevItem !=null && prevItem.filter == null){
-          throw new CommandParsingException("MATCH sub-pattern with no square brackets");
-        }
-        prevItem = nextItem;
+      LOOKAHEAD( OutPathItemOpt() )
+      nextItem = OutPathItemOpt()  { jjtThis.items.add(nextItem); }
+      |
+      LOOKAHEAD( InPathItemOpt() )
+      nextItem = InPathItemOpt()  { jjtThis.items.add(nextItem); }
+      |
+      LOOKAHEAD( BothPathItemOpt() )
+      nextItem = BothPathItemOpt()  { jjtThis.items.add(nextItem); }
+    ){
+      if(prevItem !=null && prevItem.filter == null){
+        throw new CommandParsingException("MATCH sub-pattern with no square brackets");
       }
-    )+
-    <RPAREN>
-    [ jjtThis.filter = MatchFilter() ]
-  ){ return jjtThis; }
+      prevItem = nextItem;
+    }
+  )+
+  <RPAREN>
+  [ jjtThis.filter = MatchFilter() ]
+  { return jjtThis; }
 }
 
 MatchFilter MatchFilter():
 { MatchFilterItem lastItem = null; }
 {
-  (
-    <LBRACE>
-      [
+  <LBRACE>
+    [
+      lastItem = MatchFilterItem() { jjtThis.items.add(lastItem); }
+      (
+        <COMMA>
         lastItem = MatchFilterItem() { jjtThis.items.add(lastItem); }
-        (
-          <COMMA>
-          lastItem = MatchFilterItem() { jjtThis.items.add(lastItem); }
-        )*
-      ]
-    <RBRACE>
-  ) { return jjtThis; }
+      )*
+    ]
+  <RBRACE>
+  { return jjtThis; }
 }
 
 MatchFilterItem MatchFilterItem():
@@ -3534,25 +3530,23 @@ CreateDocumentTypeStatement CreateDocumentTypeStatement():
 }
 {
   <CREATE> <DOCUMENT> <TYPE>
-  (
-    jjtThis.name = Identifier()
-    [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
-    [
-      <EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
-       (
-        <COMMA>
-        lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
-       )*
-    ]
-    [
-      <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
-      (
-        <COMMA>
-        lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
-      )*
-    ]
-    [ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
-  )
+  jjtThis.name = Identifier()
+  [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; } ]
+  [
+    <EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
+     (
+      <COMMA>
+      lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
+     )*
+  ]
+  [
+    <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
+    (
+      <COMMA>
+      lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
+    )*
+  ]
+  [ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
   { return jjtThis; }
 }
 
@@ -3563,25 +3557,23 @@ CreateVertexTypeStatement CreateVertexTypeStatement():
 }
 {
   <CREATE> <VERTEX> <TYPE>
-  (
-    jjtThis.name = Identifier()
-    [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
-    [
-      <EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
-       (
-        <COMMA>
-        lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
-       )*
-    ]
-    [
-      <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
-      (
-        <COMMA>
-        lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
-      )*
-    ]
-    [ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
-  )
+  jjtThis.name = Identifier()
+  [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; } ]
+  [
+    <EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
+     (
+      <COMMA>
+      lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
+     )*
+  ]
+  [
+    <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
+    (
+      <COMMA>
+      lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
+    )*
+  ]
+  [ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
   { return jjtThis; }
 }
 
@@ -3592,25 +3584,23 @@ CreateEdgeTypeStatement CreateEdgeTypeStatement():
 }
 {
   <CREATE> <EDGE> <TYPE>
-  (
-    jjtThis.name = Identifier()
-    [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
-    [
-      <EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
-       (
-        <COMMA>
-        lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
-       )*
-    ]
-    [
-      <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
-      (
-        <COMMA>
-        lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
-      )*
-    ]
-    [ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
-  )
+  jjtThis.name = Identifier()
+  [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; } ]
+  [
+    <EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
+     (
+      <COMMA>
+      lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
+     )*
+  ]
+  [
+    <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
+    (
+      <COMMA>
+      lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
+    )*
+  ]
+  [ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
   { return jjtThis; }
 }
 
@@ -3870,7 +3860,7 @@ CreateIndexStatement CreateIndexStatement():
       [
         LOOKAHEAD(2)
         (
-           <SCHEMA> jjtThis.schema = Json()
+           <METADATA> jjtThis.metadata = Json()
         )
         |
         (
@@ -3878,14 +3868,14 @@ CreateIndexStatement CreateIndexStatement():
           (
             <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
           )*
-          [ <SCHEMA> jjtThis.schema = Json() ]
+          [ <METADATA> jjtThis.metadata = Json() ]
         )
       ]
       |
       [
         LOOKAHEAD(2)
         (
-           <SCHEMA> jjtThis.schema = Json()
+           <METADATA> jjtThis.metadata = Json()
         )
         |
         (
@@ -3893,7 +3883,7 @@ CreateIndexStatement CreateIndexStatement():
           (
             <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
           )*
-          [ <SCHEMA> jjtThis.schema = Json() ]
+          [ <METADATA> jjtThis.metadata = Json() ]
         )
       ]
     )
@@ -3928,6 +3918,14 @@ RebuildIndexStatement RebuildIndexStatement():
       )*
     ]
   )
+  [
+    <WITH>
+    jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }
+    (
+      <COMMA>
+      jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }
+    )*
+  ]
   { return jjtThis; }
 }
 
@@ -4051,7 +4049,7 @@ CommitStatement CommitStatement():
           ]
         )
         |
-        ( ( <CONTINUE> { jjtThis.elseFail = false; } ) | ( <FAIL> { jjtThis.elseFail = true; } ) )
+        ( <CONTINUE> { jjtThis.elseFail = false; } ) | ( <FAIL> { jjtThis.elseFail = true; } )
       )
     ]
   ]
@@ -4223,9 +4221,7 @@ Url Url():
 BackupDatabaseStatement BackupDatabaseStatement():
 { }
 {
-  (
-    <BACKUP> <DATABASE> [ jjtThis.url = Url() ]
-  )
+  <BACKUP> <DATABASE> [ jjtThis.url = Url() ]
   {return jjtThis; }
 }
 
@@ -4236,19 +4232,17 @@ CheckDatabaseStatement CheckDatabaseStatement():
 }
 {
   <CHECK> <DATABASE>
-  (
-    [ <TYPE>
-      lastType = Identifier() { jjtThis.types.add(lastType); }
-      ( <COMMA> lastType = Identifier() { jjtThis.types.add(lastType); } )*
-    ]
-    [ <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
-      (
-        <COMMA>
-        lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
-      )*
-    ]
-    [ <FIX> { jjtThis.fix = true; } ]
-  )
+  [ <TYPE>
+    lastType = Identifier() { jjtThis.types.add(lastType); }
+    ( <COMMA> lastType = Identifier() { jjtThis.types.add(lastType); } )*
+  ]
+  [ <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
+    (
+      <COMMA>
+      lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
+    )*
+  ]
+  [ <FIX> { jjtThis.fix = true; } ]
   {return jjtThis; }
 }
 
@@ -4258,9 +4252,7 @@ AlignDatabaseStatement AlignDatabaseStatement():
   String lastType;
 }
 {
-  (
-    <ALIGN> <DATABASE>
-  )
+  <ALIGN> <DATABASE>
   {return jjtThis; }
 }
 
@@ -4270,33 +4262,31 @@ DefineFunctionStatement DefineFunctionStatement():
   Identifier lastIdentifier;
 }
 {
+  <DEFINE> <FUNCTION>
+  jjtThis.libraryName = Identifier()
+  <DOT>
+  jjtThis.functionName = Identifier()
   (
-    <DEFINE> <FUNCTION>
-    jjtThis.libraryName = Identifier()
-    <DOT>
-    jjtThis.functionName = Identifier()
-    (
-      jjtThis.codeQuoted = PString()
-      { jjtThis.code = jjtThis.codeQuoted.substring(1, jjtThis.codeQuoted.length() -1); }
-    )
-    [
-      <PARAMETERS>
-      <LBRACKET>
-      lastIdentifier = Identifier() {
-        jjtThis.parameters = new ArrayList<Identifier>();
-        jjtThis.parameters.add(lastIdentifier);
-      }
-      (
-        <COMMA>
-        lastIdentifier = Identifier() { jjtThis.parameters.add(lastIdentifier); }
-      )*
-      <RBRACKET>
-    ]
-    [
-      <LANGUAGE>
-      jjtThis.language = Identifier()
-    ]
+    jjtThis.codeQuoted = PString()
+    { jjtThis.code = jjtThis.codeQuoted.substring(1, jjtThis.codeQuoted.length() -1); }
   )
+  [
+    <PARAMETERS>
+    <LBRACKET>
+    lastIdentifier = Identifier() {
+      jjtThis.parameters = new ArrayList<Identifier>();
+      jjtThis.parameters.add(lastIdentifier);
+    }
+    (
+      <COMMA>
+      lastIdentifier = Identifier() { jjtThis.parameters.add(lastIdentifier); }
+    )*
+    <RBRACKET>
+  ]
+  [
+    <LANGUAGE>
+    jjtThis.language = Identifier()
+  ]
   { return jjtThis; }
 }
 
@@ -4306,11 +4296,9 @@ DeleteFunctionStatement DeleteFunctionStatement():
   Identifier lastIdentifier;
 }
 {
-  (
-    <DELETE> <FUNCTION>
-    jjtThis.libraryName = Identifier()
-    <DOT>
-    jjtThis.functionName = Identifier()
-  )
+  <DELETE> <FUNCTION>
+  jjtThis.libraryName = Identifier()
+  <DOT>
+  jjtThis.functionName = Identifier()
   { return jjtThis; }
 }

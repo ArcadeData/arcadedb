@@ -21,7 +21,7 @@ package performance;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
@@ -40,7 +40,7 @@ public class PerformanceIndexCompaction {
   private void run() throws IOException, InterruptedException {
     GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(5);
 
-    final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_WRITE);
+    final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(ComponentFile.MODE.READ_WRITE);
 
     final long begin = System.currentTimeMillis();
     try {

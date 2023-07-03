@@ -70,7 +70,7 @@ public class DropTypeTest extends TestHelper {
       // CHECK ALL THE BUCKETS ARE REMOVED
       for (final Bucket b : buckets) {
         try {
-          database.getSchema().getBucketById(b.getId());
+          database.getSchema().getBucketById(b.getFileId());
           Assertions.fail();
         } catch (final SchemaException e) {
         }
@@ -82,7 +82,7 @@ public class DropTypeTest extends TestHelper {
         }
 
         try {
-          database.getSchema().getFileById(b.getId());
+          database.getSchema().getFileById(b.getFileId());
           Assertions.fail();
         } catch (final SchemaException e) {
         }

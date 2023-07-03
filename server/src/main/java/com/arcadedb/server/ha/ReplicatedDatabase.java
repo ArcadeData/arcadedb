@@ -39,10 +39,10 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -338,7 +338,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public PaginatedFile.MODE getMode() {
+  public ComponentFile.MODE getMode() {
     return proxied.getMode();
   }
 
@@ -363,8 +363,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public TransactionContext getTransaction() {
-    return proxied.getTransaction();
+  public TransactionContext getTransactionIfExists() {
+    return proxied.getTransactionIfExists();
   }
 
   @Override
@@ -792,13 +792,13 @@ public class ReplicatedDatabase implements DatabaseInternal {
     executeInReadLock(() -> {
       // AVOID FLUSHING OF DATA PAGES TO DISK
       proxied.getPageManager().suspendFlushAndExecute(() -> {
-        final List<PaginatedFile> files = proxied.getFileManager().getFiles();
+        final List<ComponentFile> files = proxied.getFileManager().getFiles();
 
-        for (final PaginatedFile paginatedFile : files)
-          if (paginatedFile != null) {
-            final long fileChecksum = paginatedFile.calculateChecksum();
-            fileChecksums.put(paginatedFile.getFileId(), fileChecksum);
-            fileSizes.put(paginatedFile.getFileId(), paginatedFile.getSize());
+        for (final ComponentFile file : files)
+          if (file != null) {
+            final long fileChecksum = file.calculateChecksum();
+            fileChecksums.put(file.getFileId(), fileChecksum);
+            fileSizes.put(file.getFileId(), file.getSize());
           }
 
         final DatabaseAlignRequest request = new DatabaseAlignRequest(getName(), getSchema().getEmbedded().toJSON().toString(), fileChecksums, fileSizes);

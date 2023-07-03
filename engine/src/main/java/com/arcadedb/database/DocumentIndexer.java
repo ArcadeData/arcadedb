@@ -55,7 +55,7 @@ public class DocumentIndexer {
       throw new IllegalArgumentException("Cannot index a non persistent record");
 
     // INDEX THE RECORD
-    final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucket.getId(), null);
+    final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucket.getFileId(), null);
     for (final Index entry : metadata)
       addToIndex(entry, rid, record);
   }

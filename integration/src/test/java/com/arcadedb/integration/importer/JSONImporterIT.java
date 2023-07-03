@@ -45,7 +45,7 @@ public class JSONImporterIT {
       Assertions.assertEquals(1, db.countType("Food", true));
 
       final Document food = db.iterateType("Food", true).next().asDocument(true);
-      JSONObject json = new JSONObject(FileUtils.readFileAsString(new File("src/test/resources/importer-one-object.json"), "utf8"));
+      JSONObject json = new JSONObject(FileUtils.readFileAsString(new File("src/test/resources/importer-one-object.json")));
 
       for (Object name : json.names())
         Assertions.assertTrue(food.has(name.toString()));

@@ -22,7 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
@@ -173,7 +173,7 @@ public class PostServerCommandHandler extends AbstractHandler {
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.create-database").hit();
 
-    final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
+    final DatabaseInternal db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       ((ReplicatedDatabase) db).createInReplicas();

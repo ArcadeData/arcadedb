@@ -6,6 +6,7 @@ import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.SQLQueryEngine;
@@ -242,7 +243,7 @@ public class ScriptExecutionTest extends TestHelper {
     database.async().waitCompletion();
 
     ImmutablePage page = ((EmbeddedDatabase) database).getPageManager()
-        .getImmutablePage(new PageId(2, 0), ((EmbeddedDatabase) database).getFileManager().getFile(2).getPageSize(), false, false);
+        .getImmutablePage(new PageId(2, 0), ((PaginatedComponentFile) ((EmbeddedDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
     Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
   }
@@ -297,7 +298,7 @@ public class ScriptExecutionTest extends TestHelper {
     database.async().waitCompletion();
 
     ImmutablePage page = ((EmbeddedDatabase) database).getPageManager()
-        .getImmutablePage(new PageId(2, 0), ((EmbeddedDatabase) database).getFileManager().getFile(2).getPageSize(), false, false);
+        .getImmutablePage(new PageId(2, 0), ((PaginatedComponentFile) ((EmbeddedDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
     Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
 

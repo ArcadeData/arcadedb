@@ -295,11 +295,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public long build(final int batchSize, final BuildIndexCallback callback) {
+  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
     checkIsValid();
     long total = 0;
     for (final IndexInternal index : indexesOnBuckets)
-      total += index.build(batchSize, callback);
+      total += index.build(buildIndexBatchSize, callback);
     return total;
   }
 
@@ -366,7 +366,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public PaginatedComponent getPaginatedComponent() {
+  public PaginatedComponent getComponent() {
     throw new UnsupportedOperationException("getPaginatedComponent");
   }
 
@@ -436,7 +436,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // USE THE SHARDED INDEX
       final List<String> propNames = getPropertyNames();
 
-      List<Index> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(type.getBuckets(false).get(bucketIndex).getId(), propNames);
+      List<Index> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
 
       final List<DocumentType> subTypes = type.getSubTypes();
       if (!subTypes.isEmpty()) {
@@ -444,7 +444,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         polymorphicIndexesOnKeys = new ArrayList<>(polymorphicIndexesOnKeys);
 
         for (DocumentType s : subTypes) {
-          final List<Index> subIndexes = s.getPolymorphicBucketIndexByBucketId(s.getBuckets(false).get(bucketIndex).getId(), propNames);
+          final List<Index> subIndexes = s.getPolymorphicBucketIndexByBucketId(s.getBuckets(false).get(bucketIndex).getFileId(), propNames);
           polymorphicIndexesOnKeys.addAll(subIndexes);
 
         }

@@ -54,7 +54,7 @@ public class TransactionManager {
 
     this.logContext = LogManager.instance().getContext();
 
-    if (database.getMode() == PaginatedFile.MODE.READ_WRITE) {
+    if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
       createWALFilePool();
 
       task = new Timer("ArcadeDB TransactionManager " + database.getName());
@@ -276,7 +276,7 @@ public class TransactionManager {
     LogManager.instance().log(this, Level.FINE, "- applying changes from txId=%d", null, tx.txId);
 
     for (final WALFile.WALPage txPage : tx.pages) {
-      final PaginatedFile file;
+      final PaginatedComponentFile file;
 
       final PageId pageId = new PageId(txPage.fileId, txPage.pageNumber);
 
@@ -289,7 +289,7 @@ public class TransactionManager {
       }
 
       try {
-        file = database.getFileManager().getFile(txPage.fileId);
+        file = (PaginatedComponentFile) database.getFileManager().getFile(txPage.fileId);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on applying tx changes for page %s", e, txPage);
         throw e;
@@ -339,7 +339,7 @@ public class TransactionManager {
 
         database.getPageManager().removePageFromCache(modifiedPage.pageId);
 
-        final PaginatedComponent component = database.getSchema().getFileById(txPage.fileId);
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(txPage.fileId);
         if (component != null) {
           final int newPageCount = (int) (file.getSize() / file.getPageSize());
           if (newPageCount > component.pageCount.get())

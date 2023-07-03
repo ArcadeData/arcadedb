@@ -24,7 +24,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
@@ -451,7 +451,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     // RELOAD THE SCHEMA
     database.getSchema().getEmbedded().close();
     DatabaseContext.INSTANCE.init(database);
-    database.getSchema().getEmbedded().load(PaginatedFile.MODE.READ_WRITE, true);
+    database.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
 
     LogManager.instance()
         .log(this, Level.INFO, "Database '%s' installed from the cluster (%s - %d files)", null, db, FileUtils.getSizeAsString(databaseSize), list.size());

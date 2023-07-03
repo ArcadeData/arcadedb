@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.DateUtils;
 
+import java.lang.reflect.*;
 import java.math.*;
 import java.time.*;
 import java.util.*;
@@ -52,7 +53,12 @@ public class BinaryTypes {
   public final static byte TYPE_EMBEDDED          = 19;
   public final static byte TYPE_DATETIME_MICROS   = 20; // @SINCE 23.1.1
   public final static byte TYPE_DATETIME_NANOS    = 21; // @SINCE 23.1.1
-  public final static byte TYPE_DATETIME_SECOND   = 22; // @SINCE 23.1.1
+  public final static byte TYPE_DATETIME_SECOND = 22; // @SINCE 23.1.1
+  public final static byte TYPE_ARRAY_OF_SHORTS   = 23; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_INTEGERS = 24; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_LONGS  = 25; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_FLOATS  = 26; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_DOUBLES = 27; // @SINCE 23.6.1
 
   public static byte getTypeFromValue(final Object value) {
     final byte type;
@@ -108,8 +114,25 @@ public class BinaryTypes {
       } else
         // SERIALIZE THE RESULT AS A MAP
         type = TYPE_MAP;
-    } else if (value instanceof Iterable || value.getClass().isArray())
-      // TODO: SUPPORT SET SEMANTIC TOO
+    } else if (value.getClass().isArray()) {
+      if (value.getClass().getComponentType().isPrimitive()) {
+        final Object firstElement = Array.getLength(value) > 0 ? Array.get(value, 0) : null;
+        if (firstElement instanceof Short)
+          type = TYPE_ARRAY_OF_SHORTS;
+        else if (firstElement instanceof Integer)
+          type = TYPE_ARRAY_OF_INTEGERS;
+        else if (firstElement instanceof Long)
+          type = TYPE_ARRAY_OF_LONGS;
+        else if (firstElement instanceof Float)
+          type = TYPE_ARRAY_OF_FLOATS;
+        else if (firstElement instanceof Double)
+          type = TYPE_ARRAY_OF_DOUBLES;
+        else
+          type = TYPE_LIST;
+      } else
+        type = TYPE_LIST;
+
+    } else if (value instanceof Iterable)
       type = TYPE_LIST;
     else if (value instanceof Number) {
       // GENERIC NUMBER IMPLEMENTATION. THIS HAPPENS WITH JSON NUMBERS
@@ -212,6 +235,21 @@ public class BinaryTypes {
 
     case BinaryTypes.TYPE_EMBEDDED:
       return Document.class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_SHORTS:
+      return short[].class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_INTEGERS:
+      return int[].class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_LONGS:
+      return long[].class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_FLOATS:
+      return float[].class;
+
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES:
+      return double[].class;
 
     default:
       // UNKNOWN

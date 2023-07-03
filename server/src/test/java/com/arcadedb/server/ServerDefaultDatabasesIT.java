@@ -18,8 +18,6 @@
  */
 package com.arcadedb.server;
 
-import static com.arcadedb.engine.PaginatedFile.MODE.READ_WRITE;
-
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
@@ -28,6 +26,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 
 public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 

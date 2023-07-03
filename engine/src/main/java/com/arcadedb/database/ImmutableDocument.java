@@ -22,6 +22,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.lang.reflect.*;
 import java.util.*;
 
 /**
@@ -128,7 +129,14 @@ public class ImmutableDocument extends BaseDocument {
 
         output.append(entry.getKey());
         output.append('=');
-        output.append(entry.getValue());
+
+        final Object v = entry.getValue();
+        if (v != null && v.getClass().isArray()) {
+          output.append('[');
+          output.append(Array.getLength(v));
+          output.append(']');
+        } else
+          output.append(v);
         i++;
       }
     }

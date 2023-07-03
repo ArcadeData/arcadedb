@@ -26,43 +26,35 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 
 /**
+ * Extends a FileComponent by supporting pages.
+ * <p>
  * HEADER = [recordCount(int:4)] CONTENT-PAGES = [version(long:8),recordCountInPage(short:2),recordOffsetsInPage(512*ushort=2048)]
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public abstract class PaginatedComponent {
-  protected final DatabaseInternal database;
-  protected final String           name;
-  protected final PaginatedFile    file;
-  protected final int              id;
-  protected final int              pageSize;
-  protected final int              version;
-  protected final AtomicInteger    pageCount = new AtomicInteger();
+public abstract class PaginatedComponent extends Component {
+  protected final PaginatedComponentFile file;
+  protected final int                    pageSize;
+  protected final AtomicInteger          pageCount = new AtomicInteger();
 
-  protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext, final PaginatedFile.MODE mode,
+  protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext, final ComponentFile.MODE mode,
       final int pageSize, final int version) throws IOException {
     this(database, name, filePath, ext, database.getFileManager().newFileId(), mode, pageSize, version);
   }
 
   private PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext, final int id,
-      final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     this(database, name, filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, id, mode, pageSize, version);
   }
 
-  protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode,
+  protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final int id, final ComponentFile.MODE mode,
       final int pageSize, final int version) throws IOException {
+    super(database, name, id, version, filePath);
     if (pageSize <= 0)
       throw new IllegalArgumentException("Invalid page size " + pageSize);
-    if (id < 0)
-      throw new IllegalArgumentException("Invalid file id " + id);
-    if (name == null || name.isEmpty())
-      throw new IllegalArgumentException("Invalid file name " + name);
 
-    this.database = database;
-    this.name = name;
-    this.id = id;
     this.pageSize = pageSize;
-    this.version = version;
-
-    this.file = database.getFileManager().getOrCreateFile(name, filePath, mode);
+    this.file = (PaginatedComponentFile) database.getFileManager().getOrCreateFile(name, filePath, mode);
 
     if (file.getSize() == 0)
       // NEW FILE, CREATE HEADER PAGE
@@ -71,16 +63,12 @@ public abstract class PaginatedComponent {
       pageCount.set((int) (file.getSize() / getPageSize()));
   }
 
+  public PaginatedComponentFile getComponentFile() {
+    return file;
+  }
+
   public File getOSFile() {
     return file.getOSFile();
-  }
-
-  public void onAfterLoad() {
-    // NO ACTIONS
-  }
-
-  public void onAfterCommit() {
-    // NO ACTIONS
   }
 
   public int getPageSize() {
@@ -89,26 +77,11 @@ public abstract class PaginatedComponent {
 
   public void setPageCount(final int value) {
     if (value <= pageCount.get())
-      throw new ConcurrentModificationException("Unable to update page count for component '" + name + "' (" + value + "<=" + pageCount.get() + ")");
+      throw new ConcurrentModificationException("Unable to update page count for component '" + componentName + "' (" + value + "<=" + pageCount.get() + ")");
     pageCount.set(value);
   }
 
-  public String getName() {
-    return name;
-  }
-
-  public int getId() {
-    return id;
-  }
-
-  public int getVersion() {
-    return version;
-  }
-
-  public DatabaseInternal getDatabase() {
-    return database;
-  }
-
+  @Override
   public void close() {
     if (file != null)
       file.close();
@@ -117,14 +90,10 @@ public abstract class PaginatedComponent {
   public int getTotalPages() {
     final TransactionContext tx = database.getTransaction();
     if (tx != null) {
-      final Integer txPageCounter = tx.getPageCounter(id);
+      final Integer txPageCounter = tx.getPageCounter(fileId);
       if (txPageCounter != null)
         return txPageCounter;
     }
     return pageCount.get();
-  }
-
-  public Object getMainComponent() {
-    return this;
   }
 }

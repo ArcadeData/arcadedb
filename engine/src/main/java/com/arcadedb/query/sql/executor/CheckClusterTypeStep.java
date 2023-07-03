@@ -70,13 +70,13 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
         throw new CommandExecutionException("Type not found: " + targetType);
 
       for (final Integer bucketId : typez.getBucketIds(true)) {
-        if (bucketId == bucketObj.getId()) {
+        if (bucketId == bucketObj.getFileId()) {
           found = true;
           break;
         }
       }
       if (!found)
-        throw new CommandExecutionException("Bucket " + bucketObj.getId() + " does not belong to the type " + targetType);
+        throw new CommandExecutionException("Bucket " + bucketObj.getFileId() + " does not belong to the type " + targetType);
 
       return new InternalResultSet();
     } finally {

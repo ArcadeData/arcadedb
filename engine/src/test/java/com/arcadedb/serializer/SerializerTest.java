@@ -298,6 +298,61 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
+  public void testArraysOfPrimitive() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Test");
+      database.commit();
+
+      final int[] arrayOfIntegers = new int[100];
+      for (int i = 0; i < 100; ++i)
+        arrayOfIntegers[i] = i;
+
+      final long[] arrayOfLongs = new long[100];
+      for (int i = 0; i < 100; ++i)
+        arrayOfLongs[i] = (long) i;
+
+      final short[] arrayOfShorts = new short[100];
+      for (int i = 0; i < 100; ++i)
+        arrayOfShorts[i] = (short) i;
+
+      final float[] arrayOfFloats = new float[100];
+      for (int i = 0; i < 100; ++i)
+        arrayOfFloats[i] = (float) i + 0.123f;
+
+      final double[] arrayOfDoubles = new double[100];
+      for (int i = 0; i < 100; ++i)
+        arrayOfDoubles[i] = (double) i + 0.123f;
+
+      database.begin();
+      final MutableDocument v = database.newDocument("Test");
+
+      v.set("arrayOfIntegers", arrayOfIntegers);
+      v.set("arrayOfLongs", arrayOfLongs);
+      v.set("arrayOfShorts", arrayOfShorts);
+      v.set("arrayOfFloats", arrayOfFloats);
+      v.set("arrayOfDoubles", arrayOfDoubles);
+
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
+
+      final ByteBuffer buffer2 = ByteBuffer.allocate(Bucket.DEF_PAGE_SIZE);
+      buffer2.put(buffer.toByteArray());
+      buffer2.flip();
+
+      final Binary buffer3 = new Binary(buffer2);
+      buffer3.getByte(); // SKIP RECORD TYPE
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
+
+      Assertions.assertArrayEquals(arrayOfIntegers, (int[]) record2.get("arrayOfIntegers"));
+      Assertions.assertArrayEquals(arrayOfLongs, (long[]) record2.get("arrayOfLongs"));
+      Assertions.assertArrayEquals(arrayOfShorts, (short[]) record2.get("arrayOfShorts"));
+      Assertions.assertArrayEquals(arrayOfFloats, (float[]) record2.get("arrayOfFloats"));
+      Assertions.assertArrayEquals(arrayOfDoubles, (double[]) record2.get("arrayOfDoubles"));
+    });
+  }
+
+  @Test
   public void testMapPropertiesInDocument() throws ClassNotFoundException {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 

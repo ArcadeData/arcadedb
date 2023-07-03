@@ -43,7 +43,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
 
   private void init(final Database db) {
     if (this.bucketIds == null) {
-      this.bucketIds = clusters.stream().filter(x -> x != null).map(x -> db.getSchema().getBucketByName(x).getId()).collect(Collectors.toSet());
+      this.bucketIds = clusters.stream().filter(x -> x != null).map(x -> db.getSchema().getBucketByName(x).getFileId()).collect(Collectors.toSet());
     }
   }
 

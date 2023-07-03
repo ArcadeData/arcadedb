@@ -56,25 +56,25 @@ public class BucketSQLTest extends TestHelper {
       Assertions.assertTrue(resultset.hasNext());
       final Document enzo = resultset.next().getRecord().get().asDocument();
       Assertions.assertFalse(resultset.hasNext());
-      Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Europe").getId(), enzo.getIdentity().bucketId);
+      Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Europe").getFileId(), enzo.getIdentity().bucketId);
 
       resultset = database.command("sql", "INSERT INTO BUCKET:Customer_Americas CONTENT { firstName: 'Jack', lastName: 'Tramiel' }");
       Assertions.assertTrue(resultset.hasNext());
       final Document jack = resultset.next().getRecord().get().asDocument();
       Assertions.assertFalse(resultset.hasNext());
-      Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Americas").getId(), jack.getIdentity().bucketId);
+      Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Americas").getFileId(), jack.getIdentity().bucketId);
 
       resultset = database.command("sql", "INSERT INTO BUCKET:Customer_Asia CONTENT { firstName: 'Bruce', lastName: 'Lee' }");
       Assertions.assertTrue(resultset.hasNext());
       final Document bruce = resultset.next().getRecord().get().asDocument();
       Assertions.assertFalse(resultset.hasNext());
-      Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Asia").getId(), bruce.getIdentity().bucketId);
+      Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Asia").getFileId(), bruce.getIdentity().bucketId);
 
       resultset = database.command("sql", "INSERT INTO BUCKET:Customer_Other CONTENT { firstName: 'Penguin', lastName: 'Hungry' }");
       Assertions.assertTrue(resultset.hasNext());
       final Document penguin = resultset.next().getRecord().get().asDocument();
       Assertions.assertFalse(resultset.hasNext());
-      Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Other").getId(), penguin.getIdentity().bucketId);
+      Assertions.assertEquals(database.getSchema().getBucketByName("Customer_Other").getFileId(), penguin.getIdentity().bucketId);
     });
   }
 }

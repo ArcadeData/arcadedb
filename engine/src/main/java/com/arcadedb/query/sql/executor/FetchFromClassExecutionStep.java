@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -75,7 +75,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
       throw new CommandExecutionException("Type " + className + " not found");
     }
 
-    final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getId()).distinct().sorted().toArray();
+    final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getFileId()).distinct().sorted().toArray();
     final List<Integer> filteredTypeBuckets = new ArrayList<>();
     for (final int bucketId : typeBuckets) {
       final String bucketName = context.getDatabase().getSchema().getBucketById(bucketId).getName();
@@ -92,7 +92,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     long typeFileSize = 0;
     for (final int fileId : bucketIds) {
       if (fileId > -1) {
-        final PaginatedFile f = context.getDatabase().getFileManager().getFile(fileId);
+        final PaginatedComponentFile f = (PaginatedComponentFile) context.getDatabase().getFileManager().getFile(fileId);
         if (f != null) {
           try {
             typeFileSize += f.getSize();

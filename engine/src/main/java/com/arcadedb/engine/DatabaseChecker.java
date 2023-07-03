@@ -183,11 +183,11 @@ public class DatabaseChecker {
 
     for (final Bucket bucket : database.getSchema().getBuckets()) {
       if (buckets != null && !buckets.isEmpty())
-        if (!buckets.contains(bucket.name))
+        if (!buckets.contains(bucket.componentName))
           continue;
 
       if (types != null && !types.isEmpty()) {
-        final DocumentType type = database.getSchema().getTypeByBucketId(bucket.id);
+        final DocumentType type = database.getSchema().getTypeByBucketId(bucket.fileId);
         if (type == null || !types.contains(type.getName()))
           continue;
       }

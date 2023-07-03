@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
@@ -566,7 +567,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     result.close();
 
     // BY BUCKET ID
-    result = database.command("sql", "update bucket:" + buckets.get(0).getId() + " set foo = 'bar' upsert where name = 'name1'");
+    result = database.command("sql", "update bucket:" + buckets.get(0).getFileId() + " set foo = 'bar' upsert where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
     item = result.next();
     Assertions.assertNotNull(item);
@@ -781,7 +782,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     clazz.createProperty("theProperty", Type.EMBEDDED);
 
     final MutableDocument doc = database.newDocument(className);
-    final MutableDocument emb = database.newDocument(className);
+    MutableEmbeddedDocument emb = doc.newEmbeddedDocument(className, "theProperty");
     emb.set("sub", "foo");
     emb.set("aaa", "bar");
     doc.set("theProperty", emb);

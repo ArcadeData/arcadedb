@@ -21,8 +21,8 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.NewEdgeCallback;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -41,7 +41,7 @@ public interface Database extends BasicDatabase {
 
   ContextConfiguration getConfiguration();
 
-  PaginatedFile.MODE getMode();
+  ComponentFile.MODE getMode();
 
   DatabaseAsyncExecutor async();
 

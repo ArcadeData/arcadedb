@@ -26,11 +26,11 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -56,6 +56,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
+import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
@@ -89,10 +90,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(Dictionary.DICT_EXT, Bucket.BUCKET_EXT,
       LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT, LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
-      LSMTreeIndexCompacted.UNIQUE_INDEX_EXT);
+      LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, HnswVectorIndex.FILE_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
-  protected final      PaginatedFile.MODE                        mode;
+  protected final      ComponentFile.MODE                        mode;
   protected final      ContextConfiguration                      configuration;
   protected final      String                                    databasePath;
   protected final      BinarySerializer                          serializer;
@@ -127,7 +128,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
   private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
 
-  protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
+  protected EmbeddedDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
     try {
       this.mode = mode;
@@ -135,7 +136,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       this.security = security;
       this.callbacks = callbacks;
       this.serializer = new BinarySerializer(configuration);
-      this.walFactory = mode == PaginatedFile.MODE.READ_WRITE ? new WALFileFactoryEmbedded() : null;
+      this.walFactory = mode == ComponentFile.MODE.READ_WRITE ? new WALFileFactoryEmbedded() : null;
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
 
@@ -172,7 +173,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     if (configurationFile.exists()) {
       try {
-        final String content = FileUtils.readFileAsString(configurationFile, "UTF8");
+        final String content = FileUtils.readFileAsString(configurationFile);
         configuration.reset();
         configuration.fromJSON(content);
       } catch (final IOException e) {
@@ -209,7 +210,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (isTransactionActive())
       throw new SchemaException("Cannot drop the database in transaction");
 
-    if (mode == PaginatedFile.MODE.READ_ONLY)
+    if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot drop database");
 
     internalClose(true);
@@ -290,15 +291,15 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public String getCurrentUserName() {
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return null;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
     return user != null ? user.getName() : null;
   }
 
-  public TransactionContext getTransaction() {
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+  public TransactionContext getTransactionIfExists() {
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext != null) {
       final TransactionContext tx = dbContext.getLastTransaction();
       if (tx != null) {
@@ -318,6 +319,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         return tx;
       }
     }
+
     return null;
   }
 
@@ -489,7 +491,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       checkDatabaseIsOpen();
 
-      final String typeName = schema.getTypeNameByBucketId(schema.getBucketByName(bucketName).getId());
+      final String typeName = schema.getTypeNameByBucketId(schema.getBucketByName(bucketName).getFileId());
       schema.getBucketByName(bucketName).scan((rid, view) -> {
         final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getType(typeName), rid, view, null);
         return callback.onRecord(record);
@@ -541,7 +543,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (security == null)
       return;
 
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
@@ -559,7 +561,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (security == null)
       return;
 
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
@@ -582,7 +584,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (security == null)
       return -1L;
 
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return -1L;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
@@ -597,7 +599,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (security == null)
       return -1L;
 
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext == null)
       return -1L;
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
@@ -778,7 +780,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (record.getIdentity() != null)
       throw new IllegalArgumentException("Cannot create record " + record.getIdentity() + " because it is already persistent");
 
-    if (mode == PaginatedFile.MODE.READ_ONLY)
+    if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot create a new record");
 
     setDefaultValues(record);
@@ -836,7 +838,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot update the record because it is not persistent");
 
-    if (mode == PaginatedFile.MODE.READ_ONLY)
+    if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
     if (record instanceof MutableDocument)
@@ -936,7 +938,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    if (mode == PaginatedFile.MODE.READ_ONLY)
+    if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
 
     // INVOKE EVENT CALLBACKS
@@ -981,7 +983,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public boolean isTransactionActive() {
-    final Transaction tx = getTransaction();
+    final Transaction tx = getTransactionIfExists();
     return tx != null && tx.isActive();
   }
 
@@ -1226,7 +1228,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public PaginatedFile.MODE getMode() {
+  public ComponentFile.MODE getMode() {
     return mode;
   }
 
@@ -1664,14 +1666,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       // RECOVERY
       LogManager.instance().log(this, Level.WARNING, "Database '%s' was not closed properly last time", null, name);
 
-      if (mode == PaginatedFile.MODE.READ_ONLY)
+      if (mode == ComponentFile.MODE.READ_ONLY)
         throw new DatabaseMetadataException("Database needs recovery but has been open in read only mode");
 
       executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
 
       transactionManager.checkIntegrity();
     } else {
-      if (mode == PaginatedFile.MODE.READ_WRITE) {
+      if (mode == ComponentFile.MODE.READ_WRITE) {
         lockFile.createNewFile();
         lockDatabase();
       } else
@@ -1700,7 +1702,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
         serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
-        if (mode == PaginatedFile.MODE.READ_WRITE)
+        if (mode == ComponentFile.MODE.READ_WRITE)
           checkForRecovery();
 
         if (security != null)
@@ -1730,7 +1732,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected void checkDatabaseIsOpen() {
     if (!open)
       throw new DatabaseIsClosedException(name);
-    if (DatabaseContext.INSTANCE.getContext(databasePath) == null)
+    if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
   }
 

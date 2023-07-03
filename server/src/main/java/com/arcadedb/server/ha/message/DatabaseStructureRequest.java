@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.server.ArcadeDBServer;
@@ -55,7 +55,7 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
         schemaJson = "{}";
 
       final Map<Integer, String> fileNames = new HashMap<>();
-      for (final PaginatedFile f : db.getFileManager().getFiles())
+      for (final ComponentFile f : db.getFileManager().getFiles())
         if (f != null)
           fileNames.put(f.getFileId(), f.getFileName());
 

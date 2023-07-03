@@ -62,7 +62,7 @@ public class CreateEdgeExecutionPlanner {
         throw new CommandSQLParsingException("Missing target");
       } else {
         final Database db = context.getDatabase();
-        final DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getId()));
+        final DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getFileId()));
         if (typez != null) {
           targetClass = new Identifier(typez.getName());
         } else {

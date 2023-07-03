@@ -19,7 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.security.SecurityManager;
@@ -65,10 +65,10 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public Database open() {
-    return open(PaginatedFile.MODE.READ_WRITE);
+    return open(ComponentFile.MODE.READ_WRITE);
   }
 
-  public synchronized Database open(final PaginatedFile.MODE mode) {
+  public synchronized Database open(final ComponentFile.MODE mode) {
     checkForActiveInstance(databasePath);
 
     final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, mode, contextConfiguration, security, callbacks);
@@ -83,7 +83,7 @@ public class DatabaseFactory implements AutoCloseable {
   public synchronized Database create() {
     checkForActiveInstance(databasePath);
 
-    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, PaginatedFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
+    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.create();
 

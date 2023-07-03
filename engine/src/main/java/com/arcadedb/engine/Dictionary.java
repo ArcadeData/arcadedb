@@ -45,10 +45,10 @@ public class Dictionary extends PaginatedComponent {
   // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
   private static final int                            DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
 
-  public static class PaginatedComponentFactoryHandler implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
+  public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int fileId,
-        final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
       return new Dictionary(database, name, filePath, fileId, mode, pageSize, version);
     }
   }
@@ -56,7 +56,7 @@ public class Dictionary extends PaginatedComponent {
   /**
    * Called at creation time.
    */
-  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize)
+  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode, final int pageSize)
       throws IOException {
     super(database, name, filePath, DICT_EXT, mode, pageSize, CURRENT_VERSION);
     if (file.getSize() == 0) {
@@ -69,7 +69,7 @@ public class Dictionary extends PaginatedComponent {
   /**
    * Called at load time.
    */
-  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode, final int pageSize,
+  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final int id, final ComponentFile.MODE mode, final int pageSize,
       final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     reload();

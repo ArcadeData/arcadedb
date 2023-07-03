@@ -2018,40 +2018,40 @@ public class MatchStatementExecutionTest extends TestHelper {
     // CHECK THE SUB-INDEX EXISTS
     Assertions.assertTrue(
         Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_one").getId()));
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_one").getFileId()));
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_one").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     Assertions.assertFalse(
         Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_one").getId()));
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_one").getFileId()));
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
     Assertions.assertTrue(
         Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_two").getId()));
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_two").getFileId()));
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_two").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     Assertions.assertFalse(
         Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_two").getId()));
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_two").getFileId()));
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
     Assertions.assertTrue(
         Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_three").getId()));
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_three").getFileId()));
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_three").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     Assertions.assertFalse(
         Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_three").getId()));
+            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_three").getFileId()));
 
     result.close();
   }

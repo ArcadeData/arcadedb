@@ -36,10 +36,10 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -114,8 +114,8 @@ public class ServerDatabase implements DatabaseInternal {
     throw new UnsupportedOperationException("Align Database not supported");
   }
 
-  public TransactionContext getTransaction() {
-    return wrapped.getTransaction();
+  public TransactionContext getTransactionIfExists() {
+    return wrapped.getTransactionIfExists();
   }
 
   @Override
@@ -413,7 +413,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public PaginatedFile.MODE getMode() {
+  public ComponentFile.MODE getMode() {
     return wrapped.getMode();
   }
 

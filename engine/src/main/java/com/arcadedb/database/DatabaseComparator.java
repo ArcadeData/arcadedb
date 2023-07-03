@@ -81,7 +81,7 @@ public class DatabaseComparator {
       // AT THIS POINT BOTH BUCKETS HAVE THE SAME PAGES
       final int pageSize = bucket1.getPageSize();
       for (int i = 0; i < bucket1.getTotalPages(); ++i) {
-        final PageId pageId = new PageId(bucket1.getId(), i);
+        final PageId pageId = new PageId(bucket1.getFileId(), i);
 
         final ImmutablePage page1;
         final ImmutablePage page2;

@@ -25,7 +25,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -55,8 +55,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
-import static com.arcadedb.engine.PaginatedFile.MODE.READ_ONLY;
-import static com.arcadedb.engine.PaginatedFile.MODE.READ_WRITE;
+import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
+import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
@@ -323,7 +323,7 @@ public class ArcadeDBServer {
     return databases.containsKey(databaseName);
   }
 
-  public synchronized DatabaseInternal createDatabase(final String databaseName, final PaginatedFile.MODE mode) {
+  public synchronized DatabaseInternal createDatabase(final String databaseName, final ComponentFile.MODE mode) {
     DatabaseInternal db = databases.get(databaseName);
     if (db != null)
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
@@ -413,7 +413,7 @@ public class ArcadeDBServer {
 
       factory.setSecurity(getSecurity());
 
-      PaginatedFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, PaginatedFile.MODE.class);
+      ComponentFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, ComponentFile.MODE.class);
       if (defaultDbMode == null)
         defaultDbMode = READ_WRITE;
 
@@ -461,7 +461,7 @@ public class ArcadeDBServer {
   private void loadDefaultDatabases() {
     final String defaultDatabases = configuration.getValueAsString(GlobalConfiguration.SERVER_DEFAULT_DATABASES);
     if (defaultDatabases != null && !defaultDatabases.isEmpty()) {
-      PaginatedFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, PaginatedFile.MODE.class);
+      ComponentFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, ComponentFile.MODE.class);
       if (defaultDbMode == null)
         defaultDbMode = READ_WRITE;
 
@@ -602,7 +602,7 @@ public class ArcadeDBServer {
     final File file = new File(getRootPath() + File.separator + CONFIG_SERVER_CONFIGURATION_FILENAME);
     if (file.exists()) {
       try {
-        final String content = FileUtils.readFileAsString(file, "UTF8");
+        final String content = FileUtils.readFileAsString(file);
         configuration.reset();
         configuration.fromJSON(content);
 
