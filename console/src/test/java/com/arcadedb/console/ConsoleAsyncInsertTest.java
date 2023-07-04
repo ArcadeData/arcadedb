@@ -149,9 +149,6 @@ public class ConsoleAsyncInsertTest {
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("databases");
 
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
-      if (databaseFactory.exists()) {
-        databaseFactory.open().drop();
-      }
       try (Database db = databaseFactory.create()) {
         db.transaction(() -> {
           DocumentType dtProducts = db.getSchema().buildDocumentType().withName("Product").withTotalBuckets(PARALLEL_LEVEL).create();
@@ -227,9 +224,6 @@ public class ConsoleAsyncInsertTest {
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("databases");
 
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
-      if (databaseFactory.exists()) {
-        databaseFactory.open().drop();
-      }
       try (Database db = databaseFactory.create()) {
         db.transaction(() -> {
           DocumentType dtProducts = db.getSchema().buildDocumentType().withName("Product").withTotalBuckets(PARALLEL_LEVEL).create();
@@ -308,9 +302,6 @@ public class ConsoleAsyncInsertTest {
     final String DATABASE_NAME = "test";
     final int PARALLEL_LEVEL = 1;
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
-      if (databaseFactory.exists()) {
-        databaseFactory.open().drop();
-      }
       try (Database db = databaseFactory.create()) {
         DocumentType dtOrders = db.getSchema().buildDocumentType().withName("Order").withTotalBuckets(PARALLEL_LEVEL).create();
         dtOrders.createProperty("id", Type.INTEGER);

@@ -33,9 +33,9 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -134,7 +134,6 @@ public class BatchInsertUpdateTest {
 
       } finally {
         arcadeDBServer.stop();
-        databaseFactory.open().drop();
       }
     }
   }
@@ -205,8 +204,8 @@ public class BatchInsertUpdateTest {
     return result;
   }
 
-  @BeforeAll
-  public static void beginTests() {
+  @BeforeEach
+  public void beginTests() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -218,8 +217,8 @@ public class BatchInsertUpdateTest {
     }
   }
 
-  @AfterAll
-  public static void endTests() {
+  @AfterEach
+  public void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

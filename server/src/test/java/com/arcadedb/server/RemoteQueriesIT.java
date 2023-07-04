@@ -32,8 +32,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -46,6 +47,9 @@ import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS
  */
 public class RemoteQueriesIT {
 
+  private final static String         DATABASE_NAME = "remotequeries";
+  private              ArcadeDBServer arcadeDBServer;
+
   @Test
   public void testWhereEqualsAfterUpdate() {
     // create database
@@ -57,9 +61,7 @@ public class RemoteQueriesIT {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
-    DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotequeries");
-    if (databaseFactory.exists())
-      databaseFactory.open().drop();
+    DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/" + DATABASE_NAME);
 
     try (Database db = databaseFactory.create()) {
       db.transaction(() -> {
@@ -72,69 +74,62 @@ public class RemoteQueriesIT {
     }
 
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
-    ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
+    arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
-    Database database = arcadeDBServer.getDatabase("remotequeries");
-    try {
-      // insert 2 records
-      String processor = "SIR1LRM-7.1";
-      String status = "PENDING";
-      for (int i = 0; i < 2; i++) {
-        int id = i + 1;
-        database.transaction(() -> {
-          String sqlString = "INSERT INTO Order SET id = ?, status = ?, processor = ?";
-          try (ResultSet resultSet1 = database.command("sql", sqlString, id, status, processor)) {
-            Assertions.assertEquals("" + id, resultSet1.next().getProperty("id"));
-          }
-        });
-      }
-      // update first record
+    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+
+    // insert 2 records
+    String processor = "SIR1LRM-7.1";
+    String status = "PENDING";
+    for (int i = 0; i < 2; i++) {
+      int id = i + 1;
       database.transaction(() -> {
-        Object[] parameters2 = { "ERROR", 1 };
-        String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
-        try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
-          Assertions.assertEquals("1", resultSet1.next().getProperty("id"));
-        } catch (Exception e) {
-          System.out.println(e.getMessage());
-          e.printStackTrace();
+        String sqlString = "INSERT INTO Order SET id = ?, status = ?, processor = ?";
+        try (ResultSet resultSet1 = database.command("sql", sqlString, id, status, processor)) {
+          Assertions.assertEquals("" + id, resultSet1.next().getProperty("id"));
         }
       });
-
-      //database.command("sql", "rebuild index `" + typeIndex[0].getName() + "`");
-
-      // select records with status = 'PENDING'
-      database.transaction(() -> {
-        Object[] parameters2 = { "PENDING" };
-        String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
-        try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
-          Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
-        } catch (Exception e) {
-          System.out.println(e.getMessage());
-          e.printStackTrace();
-        }
-      });
-      // drop index
-      database.getSchema().dropIndex(typeIndex[0].getName());
-
-      // repeat select records with status = 'PENDING'
-      database.transaction(() -> {
-        Object[] parameters2 = { "PENDING" };
-        String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
-        try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
-          Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
-        } catch (Exception e) {
-          System.out.println(e.getMessage());
-          e.printStackTrace();
-        }
-      });
-
-    } finally {
-      arcadeDBServer.stop();
-
-      if (databaseFactory.exists())
-        databaseFactory.open().drop();
     }
+    // update first record
+    database.transaction(() -> {
+      Object[] parameters2 = { "ERROR", 1 };
+      String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
+      try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
+        Assertions.assertEquals("1", resultSet1.next().getProperty("id"));
+      } catch (Exception e) {
+        System.out.println(e.getMessage());
+        e.printStackTrace();
+      }
+    });
+
+    //database.command("sql", "rebuild index `" + typeIndex[0].getName() + "`");
+
+    // select records with status = 'PENDING'
+    database.transaction(() -> {
+      Object[] parameters2 = { "PENDING" };
+      String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
+      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+        Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
+      } catch (Exception e) {
+        System.out.println(e.getMessage());
+        e.printStackTrace();
+      }
+    });
+    // drop index
+    database.getSchema().dropIndex(typeIndex[0].getName());
+
+    // repeat select records with status = 'PENDING'
+    database.transaction(() -> {
+      Object[] parameters2 = { "PENDING" };
+      String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
+      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+        Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
+      } catch (Exception e) {
+        System.out.println(e.getMessage());
+        e.printStackTrace();
+      }
+    });
   }
 
   @Test
@@ -162,7 +157,8 @@ public class RemoteQueriesIT {
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
     Assertions.assertTrue(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == java.time.LocalDateTime.class);
-    ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
+
+    arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
     Database database = arcadeDBServer.getDatabase("testLocalDateTimeOrderBy");
     String name, type;
@@ -195,11 +191,33 @@ public class RemoteQueriesIT {
         //Assertions.assertTrue(result.getProperty("start").equals(start), "start value retrieved does not match start value inserted");
       }
     }
-    arcadeDBServer.stop();
   }
 
-  @AfterAll
-  public static void afterAll() {
+  @BeforeEach
+  public void beginTests() {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
+    }
+
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/" + DATABASE_NAME)) {
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
+
+      try (Database db = databaseFactory.create()) {
+      }
+    }
+  }
+
+  @AfterEach
+  public void afterEach() {
+    if (arcadeDBServer != null)
+      arcadeDBServer.stop();
+    TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }
 }

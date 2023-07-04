@@ -137,7 +137,7 @@ public abstract class TestServerHelper {
       LogManager.instance().log(TestServerHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
 
     for (final Database db : activeDatabases)
-      db.close();
+      db.drop();
 
     Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
   }

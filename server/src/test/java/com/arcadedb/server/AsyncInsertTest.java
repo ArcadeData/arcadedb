@@ -157,16 +157,16 @@ public class AsyncInsertTest {
 
   @BeforeEach
   public void beginTests() {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
+    }
+
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
     try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/" + DATABASE_NAME)) {
-      if (databaseFactory.exists())
-        databaseFactory.open().drop();
-    }
-
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
 

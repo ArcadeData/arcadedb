@@ -32,9 +32,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -50,10 +50,10 @@ public class CompositeIndexTest {
 
   @Test
   public void testWhereAfterUpdate() {
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
-      if (databaseFactory.exists()) {
-        databaseFactory.open().drop();
-      }
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/" + DATABASE_NAME)) {
       try (Database db = databaseFactory.create()) {
         db.transaction(() -> {
           DocumentType dtOrders = db.getSchema().createDocumentType("Order");
@@ -131,8 +131,8 @@ public class CompositeIndexTest {
     arcadeDBServer.stop();
   }
 
-  @BeforeAll
-  public static void beginTests() {
+  @BeforeEach
+  public void beginTests() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -144,8 +144,8 @@ public class CompositeIndexTest {
     }
   }
 
-  @AfterAll
-  public static void endTests() {
+  @AfterEach
+  public void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

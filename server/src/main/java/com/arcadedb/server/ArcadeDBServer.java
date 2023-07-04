@@ -324,11 +324,12 @@ public class ArcadeDBServer {
   }
 
   public DatabaseInternal createDatabase(final String databaseName, final ComponentFile.MODE mode) {
-    DatabaseInternal db = databases.get(databaseName);
-    if (db != null)
-      throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
-
+    DatabaseInternal db;
     synchronized (databases) {
+      db = databases.get(databaseName);
+      if (db != null)
+        throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
+
       final DatabaseFactory factory = new DatabaseFactory(
           configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName).setAutoTransaction(true);
 
@@ -405,48 +406,48 @@ public class ArcadeDBServer {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
-    DatabaseInternal db = databases.get(databaseName);
+    DatabaseInternal db;
+    synchronized (databases) {
+      db = databases.get(databaseName);
 
-    if (db == null || !db.isOpen()) {
-      if (!allowLoad)
-        throw new DatabaseOperationException("Database '" + databaseName + "' is not available");
+      if (db == null || !db.isOpen()) {
+        if (!allowLoad)
+          throw new DatabaseOperationException("Database '" + databaseName + "' is not available");
 
-      final String path = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
+        final String path = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
 
-      final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
+        final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 
-      factory.setSecurity(getSecurity());
+        factory.setSecurity(getSecurity());
 
-      ComponentFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, ComponentFile.MODE.class);
-      if (defaultDbMode == null)
-        defaultDbMode = READ_WRITE;
+        ComponentFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, ComponentFile.MODE.class);
+        if (defaultDbMode == null)
+          defaultDbMode = READ_WRITE;
 
-      if (createIfNotExists)
-        db = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
-      else {
-        final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
-        if (!activeDatabases.isEmpty()) {
-          final Database existentDatabase = activeDatabases.iterator().next();
-          if (existentDatabase.getDatabasePath().equals(path))
-            // REUSE THE OPEN DATABASE. THIS TYPICALLY HAPPENS WHEN A SERVER PLUGIN OPENS THE DATABASE AT STARTUP
-            db = (DatabaseInternal) existentDatabase;
-          else
-            // SAME NAME, BUT DIFFERENT PATH< OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
+        if (createIfNotExists)
+          db = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
+        else {
+          final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
+          if (!activeDatabases.isEmpty()) {
+            final Database existentDatabase = activeDatabases.iterator().next();
+            if (existentDatabase.getDatabasePath().equals(path))
+              // REUSE THE OPEN DATABASE. THIS TYPICALLY HAPPENS WHEN A SERVER PLUGIN OPENS THE DATABASE AT STARTUP
+              db = (DatabaseInternal) existentDatabase;
+            else
+              // SAME NAME, BUT DIFFERENT PATH< OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
+              db = (DatabaseInternal) factory.open(defaultDbMode);
+          } else
             db = (DatabaseInternal) factory.open(defaultDbMode);
-        } else
-          db = (DatabaseInternal) factory.open(defaultDbMode);
+        }
+
+        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+          db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
+
+        db = new ServerDatabase(db);
+
+        databases.put(databaseName, (ServerDatabase) db);
       }
-
-      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-        db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
-
-      db = new ServerDatabase(db);
-
-      final ServerDatabase prev = databases.putIfAbsent(databaseName, (ServerDatabase) db);
-      if (prev != null)
-        db = prev;
     }
-
     return db;
   }
 
