@@ -71,8 +71,11 @@ public class PostCommandHandler extends AbstractQueryHandler {
           command += " limit " + limit;
         } else {
           final String[] words = commandLC.split(" ");
-          if (!"limit".equals(words[words.length - 2]))
-            command += " limit " + limit;
+          if (words.length > 2) {
+            if (!"limit".equals(words[words.length - 2]) && //
+                (words.length < 5 || !"limit".equals(words[words.length - 4])))
+              command += " limit " + limit;
+          }
         }
       }
     }
