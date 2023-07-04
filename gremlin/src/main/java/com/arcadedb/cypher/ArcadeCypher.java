@@ -112,7 +112,7 @@ public class ArcadeCypher extends ArcadeGremlin {
     String gremlin = ast.buildTranslation(translator);
 
     // REPLACE '  cypher.null' WITH NULL
-    gremlin = gremlin.replaceAll("'  cypher.null'", "null");
+    gremlin = gremlin.replace("'  cypher.null'", "null");
 
     cacheLastStatement(cypher, gremlin);
 

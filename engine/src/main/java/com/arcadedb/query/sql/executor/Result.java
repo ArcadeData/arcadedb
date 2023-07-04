@@ -192,9 +192,9 @@ public interface Result {
   }
 
   default String encode(final String s) {
-    String result = s.replaceAll("\"", "\\\\\"");
-    result = result.replaceAll("\n", "\\\\n");
-    result = result.replaceAll("\t", "\\\\t");
+    String result = s.replace("\"", "\\\\\"");
+    result = result.replace("\n", "\\\\n");
+    result = result.replace("\t", "\\\\t");
     return result;
   }
 

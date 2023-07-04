@@ -46,7 +46,7 @@ public class DumpCfgApp {
     orderedList.sort(Comparator.comparing(Enum::name));
 
     for (final GlobalConfiguration c : orderedList) {
-      System.out.printf("\n|`%s`|%s|%s|%s", c.getKey().substring("arcadedb".length() + 1), c.getDescription().replaceAll("\\|", "\\\\|"),
+      System.out.printf("\n|`%s`|%s|%s|%s", c.getKey().substring("arcadedb".length() + 1), c.getDescription().replace("\\|", "\\\\|"),
           c.getType().getSimpleName(), c.getDefValue());
     }
     System.out.printf("\n|===");

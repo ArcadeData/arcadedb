@@ -96,7 +96,7 @@ public class NotInCondition extends BooleanExpression {
 
   private String convertToString(final Object o) {
     if (o instanceof String) {
-      return "\"" + ((String) o).replaceAll("\"", "\\\"") + "\"";
+      return "\"" + ((String) o).replace("\"", "\\\"") + "\"";
     }
     return o.toString();
   }

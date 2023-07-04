@@ -80,7 +80,7 @@ public class Identifier extends SimpleNode {
     if (s == null)
       value = null;
     else if (s.contains("`"))
-      value = s.replaceAll("`", "\\\\`");
+      value = s.replace("`", "\\`");
     else
       value = s;
   }

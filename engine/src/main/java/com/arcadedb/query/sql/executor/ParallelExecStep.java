@@ -116,7 +116,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
     result = addArrows(result, blockSizes);
     result += foot(blockSizes);
     result = ind + result;
-    result = result.replaceAll("\n", "\n" + ind);
+    result = result.replace("\n", "\n" + ind);
     result = head(depth, indent, subExecutionPlans.size()) + "\n" + result;
     return result;
   }

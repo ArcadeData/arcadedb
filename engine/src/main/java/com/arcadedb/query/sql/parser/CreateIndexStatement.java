@@ -70,7 +70,7 @@ public class CreateIndexStatement extends DDLStatement {
 
     if (name == null)
       // GENERATE THE NAME AUTOMATICALLY
-      name = new Identifier(typeName.getStringValue() + propertyList.toString().replaceAll(", ", ","));
+      name = new Identifier(typeName.getStringValue() + propertyList.toString().replace(", ", ","));
 
     if (database.getSchema().existsIndex(name.getValue())) {
       if (ifNotExists) {

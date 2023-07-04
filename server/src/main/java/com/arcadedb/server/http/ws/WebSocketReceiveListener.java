@@ -111,7 +111,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   }
 
   private String encodeError(final String message) {
-    return message.replaceAll("\\\\", " ").replaceAll("\n", " ");
+    return message.replace("\\\\", " ").replace("\n", " ");
   }
 
   private Level getErrorLogLevel() {

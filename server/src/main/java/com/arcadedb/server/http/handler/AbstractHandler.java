@@ -216,7 +216,7 @@ public abstract class AbstractHandler implements HttpHandler {
   }
 
   protected String encodeError(final String message) {
-    return message.replaceAll("\\\\", " ").replaceAll("\n", " ");//.replaceAll("\"", "'");
+    return message.replace("\\\\", " ").replace('\n', ' ');
   }
 
   protected String getQueryParameter(final HttpServerExchange exchange, final String name) {

@@ -28,7 +28,7 @@ import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
-import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinary;
@@ -61,22 +61,22 @@ import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
-  public static final String                                  CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
-  private final       ContextConfiguration                    configuration;
-  private final       String                                  serverName;
-  private             String                                  hostAddress;
-  private final       boolean                                 testEnabled;
-  private             FileServerEventLog                      eventLog;
-  private final       Map<String, ServerPlugin>               plugins                              = new LinkedHashMap<>();
-  private             String                                  serverRootPath;
-  private             HAServer                                haServer;
-  private             ServerSecurity                          security;
-  private             HttpServer                              httpServer;
-  private final       ConcurrentMap<String, DatabaseInternal> databases                            = new ConcurrentHashMap<>();
-  private final       List<TestCallback>                      testEventListeners                   = new ArrayList<>();
-  private volatile    STATUS                                  status                               = STATUS.OFFLINE;
-  private             ServerMetrics                           serverMetrics                        = new DefaultServerMetrics();
-  private             ServerMonitor                           serverMonitor;
+  public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
+  private final       ContextConfiguration                  configuration;
+  private final       String                                serverName;
+  private             String                                hostAddress;
+  private final       boolean                               testEnabled;
+  private             FileServerEventLog                    eventLog;
+  private final       Map<String, ServerPlugin>             plugins                              = new LinkedHashMap<>();
+  private             String                                serverRootPath;
+  private             HAServer                              haServer;
+  private             ServerSecurity                        security;
+  private             HttpServer                            httpServer;
+  private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
+  private final       List<TestCallback>                    testEventListeners                   = new ArrayList<>();
+  private volatile    STATUS                                status                               = STATUS.OFFLINE;
+  private             ServerMetrics                         serverMetrics                        = new DefaultServerMetrics();
+  private             ServerMonitor                         serverMonitor;
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
@@ -319,33 +319,37 @@ public class ArcadeDBServer {
     return status;
   }
 
-  public synchronized boolean existsDatabase(final String databaseName) {
+  public boolean existsDatabase(final String databaseName) {
     return databases.containsKey(databaseName);
   }
 
-  public synchronized DatabaseInternal createDatabase(final String databaseName, final ComponentFile.MODE mode) {
+  public DatabaseInternal createDatabase(final String databaseName, final ComponentFile.MODE mode) {
     DatabaseInternal db = databases.get(databaseName);
     if (db != null)
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
-    final DatabaseFactory factory = new DatabaseFactory(
-        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName).setAutoTransaction(true);
+    synchronized (databases) {
+      final DatabaseFactory factory = new DatabaseFactory(
+          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName).setAutoTransaction(true);
 
-    if (factory.exists())
-      throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
+      if (factory.exists())
+        throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
-    db = (DatabaseInternal) factory.create();
+      db = (DatabaseInternal) factory.create();
 
-    if (mode == READ_ONLY) {
-      db.close();
-      db = (DatabaseInternal) factory.open(mode);
+      if (mode == READ_ONLY) {
+        db.close();
+        db = (DatabaseInternal) factory.open(mode);
+      }
+
+      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+        db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
+
+      db = new ServerDatabase(db);
+
+      // FORCE LOADING INTO THE SERVER
+      databases.put(databaseName, (ServerDatabase) db);
     }
-
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-      db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
-
-    // FORCE LOADING INTO THE SERVER
-    databases.put(databaseName, db);
 
     return db;
   }
@@ -354,7 +358,7 @@ public class ArcadeDBServer {
     return Collections.unmodifiableSet(databases.keySet());
   }
 
-  public synchronized void removeDatabase(final String databaseName) {
+  public void removeDatabase(final String databaseName) {
     databases.remove(databaseName);
   }
 
@@ -397,7 +401,7 @@ public class ArcadeDBServer {
     return getServerName();
   }
 
-  public synchronized Database getDatabase(final String databaseName, final boolean createIfNotExists, final boolean allowLoad) {
+  public Database getDatabase(final String databaseName, final boolean createIfNotExists, final boolean allowLoad) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
@@ -405,7 +409,7 @@ public class ArcadeDBServer {
 
     if (db == null || !db.isOpen()) {
       if (!allowLoad)
-        throw new DatabaseIsClosedException("Database '" + databaseName + "' is not available");
+        throw new DatabaseOperationException("Database '" + databaseName + "' is not available");
 
       final String path = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
 
@@ -436,10 +440,14 @@ public class ArcadeDBServer {
       if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
         db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
 
-      databases.put(databaseName, db);
+      db = new ServerDatabase(db);
+
+      final ServerDatabase prev = databases.putIfAbsent(databaseName, (ServerDatabase) db);
+      if (prev != null)
+        db = prev;
     }
 
-    return new ServerDatabase(db);
+    return db;
   }
 
   private void loadDatabases() {
