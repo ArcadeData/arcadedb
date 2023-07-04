@@ -28,35 +28,35 @@ import org.junit.jupiter.api.Test;
  */
 public class SelectStatementExecutionTestIT extends TestHelper {
 
-    public SelectStatementExecutionTestIT() {
-        autoStartTx = true;
+  public SelectStatementExecutionTestIT() {
+    autoStartTx = true;
+  }
+
+  @Test
+  public void stressTest() {
+    final String className = "stressTestNew";
+    database.getSchema().createDocumentType(className);
+    for (int i = 0; i < 1000000; i++) {
+      final MutableDocument doc = database.newDocument(className);
+      doc.set("name", "name" + i);
+      doc.set("surname", "surname" + i);
+      doc.save();
     }
 
-    @Test
-    public void stressTest() {
-        final String className = "stressTestNew";
-        database.getSchema().createDocumentType(className);
-        for (int i = 0; i < 1000000; i++) {
-            final MutableDocument doc = database.newDocument(className);
-            doc.set("name", "name" + i);
-            doc.set("surname", "surname" + i);
-            doc.save();
-        }
-
-        for (int run = 0; run < 5; run++) {
-            final long begin = System.nanoTime();
-            final ResultSet result = database.query("sql", "select name from " + className + " where name <> 'name1' ");
-            for (int i = 0; i < 999999; i++) {
-                //        Assertions.assertTrue(result.hasNext());
-                final Result item = result.next();
-                //        Assertions.assertNotNull(item);
-                final Object name = item.getProperty("name");
-                Assertions.assertFalse("name1".equals(name));
-            }
-            Assertions.assertFalse(result.hasNext());
-            result.close();
-            final long end = System.nanoTime();
-        }
+    for (int run = 0; run < 5; run++) {
+      final long begin = System.nanoTime();
+      final ResultSet result = database.query("sql", "select name from " + className + " where name <> 'name1' ");
+      for (int i = 0; i < 999999; i++) {
+        //        Assertions.assertTrue(result.hasNext());
+        final Result item = result.next();
+        //        Assertions.assertNotNull(item);
+        final Object name = item.getProperty("name");
+        Assertions.assertFalse("name1".equals(name));
+      }
+      Assertions.assertFalse(result.hasNext());
+      result.close();
+      final long end = System.nanoTime();
     }
+  }
 
 }

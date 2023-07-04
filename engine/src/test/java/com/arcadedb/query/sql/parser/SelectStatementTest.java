@@ -593,6 +593,13 @@ public class SelectStatementTest {
   }
 
   @Test
+  public void testSkipLimitAnyOrder() {
+    // issue #5589
+    checkRightSyntax("SELECT FROM ContactList SKIP 10 LIMIT 1");
+    checkRightSyntax("SELECT FROM ContactList LIMIT 1 SKIP 10 ");
+  }
+
+  @Test
   public void testQuotedBacktick() {
     checkRightSyntax("SELECT \"\" as `bla\\`bla` from foo");
   }
