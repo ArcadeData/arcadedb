@@ -23,6 +23,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
@@ -131,13 +132,23 @@ public abstract class TestServerHelper {
   }
 
   public static void checkActiveDatabases() {
+    checkActiveDatabases(true);
+  }
+
+  public static void checkActiveDatabases(final boolean drop) {
     final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
 
     if (!activeDatabases.isEmpty())
       LogManager.instance().log(TestServerHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
 
     for (final Database db : activeDatabases)
-      db.drop();
+      if (drop) {
+        if (db.isTransactionActive())
+          db.commit();
+
+        ((DatabaseInternal) db).getEmbedded().drop();
+      } else
+        db.close();
 
     Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
   }

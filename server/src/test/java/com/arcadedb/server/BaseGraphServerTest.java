@@ -204,7 +204,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       }
     }
 
-    super.endTest();
+    TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
+    TestServerHelper.deleteDatabaseFolders(getServerCount());
   }
 
   protected Database getDatabase(final int serverId) {
@@ -433,7 +434,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
             if (getServer(i).existsDatabase(dbName))
               ((DatabaseInternal) getServer(i).getDatabase(dbName)).getEmbedded().drop();
 
-    TestServerHelper.checkActiveDatabases();
+    TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
     TestServerHelper.deleteDatabaseFolders(getServerCount());
   }
 

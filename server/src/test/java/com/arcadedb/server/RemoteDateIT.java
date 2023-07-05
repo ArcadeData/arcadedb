@@ -33,6 +33,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -53,8 +54,6 @@ public class RemoteDateIT {
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
     DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
-    if (databaseFactory.exists())
-      databaseFactory.open().drop();
 
     try (Database db = databaseFactory.create()) {
       db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
@@ -101,9 +100,12 @@ public class RemoteDateIT {
 
     } finally {
       arcadeDBServer.stop();
-
-      if (databaseFactory.exists())
-        databaseFactory.open().drop();
     }
+  }
+
+  @AfterEach
+  public void endTests() {
+    TestServerHelper.checkActiveDatabases();
+    GlobalConfiguration.resetAll();
   }
 }

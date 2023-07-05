@@ -44,7 +44,6 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
@@ -208,7 +207,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     checkDatabaseIsOpen();
 
     if (isTransactionActive())
-      throw new SchemaException("Cannot drop the database in transaction");
+      throw new DatabaseOperationException("Cannot drop the database in transaction");
 
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot drop database");

@@ -38,6 +38,11 @@ public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
   protected void populateDatabase() {
   }
 
+  @Override
+  protected boolean dropDatabasesAtTheEnd() {
+    return false;
+  }
+
   protected void onServerConfiguration(final ContextConfiguration config) {
     config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, "READ_ONLY");
     config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Universe[elon:musk:admin];Amiga[Jay:Miner:admin,Jack:Tramiel:admin,root]");
