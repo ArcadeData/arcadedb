@@ -49,21 +49,18 @@ import java.util.*;
  * Created by luigidellaquila on 23/07/16.
  */
 public class FetchFromIndexStep extends AbstractExecutionStep {
-  protected       RangeIndex        index;
-  protected       BooleanExpression condition;
-  private         BinaryCondition   additionalRangeCondition;
-  private         boolean           orderAsc;
-  protected final String            indexName;
-  private         long              cost        = 0;
-  private         long              count       = 0;
-  private         boolean           inited      = false;
-  private         IndexCursor       cursor;
-  private final   List<IndexCursor> nextCursors = new ArrayList<>();
-
-  private MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
-
-  private Iterator                   nullKeyIterator;
-  private Pair<Object, Identifiable> nextEntry = null;
+  protected final String                                         indexName;
+  private final   List<IndexCursor>                              nextCursors = new ArrayList<>();
+  protected       RangeIndex                                     index;
+  protected       BooleanExpression                              condition;
+  private         BinaryCondition                                additionalRangeCondition;
+  private         boolean                                        orderAsc;
+  private         long                                           count       = 0;
+  private         boolean                                        inited      = false;
+  private         IndexCursor                                    cursor;
+  private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
+  private         Iterator                                       nullKeyIterator;
+  private         Pair<Object, Identifiable>                     nextEntry   = null;
 
   public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
       final CommandContext context, final boolean profilingEnabled) {
@@ -131,12 +128,20 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     while (true) {
       if (cursor == null) {
         if (nextCursors.size() == 0) {
-          if (nextEntry == null && nullKeyIterator != null && nullKeyIterator.hasNext()) {
-            final Identifiable nextValue = (Identifiable) nullKeyIterator.next();
-            nextEntry = new Pair(null, nextValue);
-          } else {
-            updateIndexStats();
+          if (nextEntry == null && customIterator != null && customIterator.hasNext()) {
+            final Map.Entry<Object, Identifiable> entry = customIterator.next();
+            nextEntry = new Pair<>(entry.getKey(), entry.getValue().getIdentity());
           }
+          if (nextEntry == null && nullKeyIterator != null && nullKeyIterator.hasNext()) {
+            Identifiable nextValue = (Identifiable) nullKeyIterator.next();
+            nextEntry = new Pair<>(null, nextValue.getIdentity());
+          }
+
+          if (nextEntry == null)
+            updateIndexStats();
+          else
+            count++;
+
           return;
         }
         cursor = nextCursors.remove(0);
@@ -251,7 +256,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
               @Override
               public Object getValue() {
-
                 return value;
               }
 
@@ -500,7 +504,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private IndexCursor createCursor(final BinaryCompareOperator operator, final Object value, final CommandContext context) {
-    // TODO: WHAT TO DO WITH ASCORDER?
+    // TODO: WHAT TO DO WITH ASC ORDER?
 
     final Object[] values;
     if (!(value instanceof Object[]))
@@ -614,6 +618,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           "" :
           " and " + additionalRangeCondition));
     }
+    if (profilingEnabled)
+      result += " (" + getCostFormatted() + ")";
 
     return result;
   }

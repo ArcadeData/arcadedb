@@ -197,9 +197,8 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + context.getDatabase().getSchema().getBucketById(bucketId)
             .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC" + " = " + totalFetched + " RECORDS");
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
-    }
     return result;
   }
 

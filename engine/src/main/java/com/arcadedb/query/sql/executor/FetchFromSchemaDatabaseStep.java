@@ -32,7 +32,6 @@ import java.util.*;
  */
 public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
   boolean served = false;
-  long    cost   = 0;
 
   public FetchFromSchemaDatabaseStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);

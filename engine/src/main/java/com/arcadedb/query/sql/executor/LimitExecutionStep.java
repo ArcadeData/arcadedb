@@ -56,12 +56,6 @@ public class LimitExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public void close() {
-    if (prev != null)
-      prev.close();
-  }
-
-  @Override
   public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ LIMIT (" + limit.toString() + ")";
   }
