@@ -69,6 +69,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
               return;
             }
           }
+
           nextItem = prevResult.next();
           final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
@@ -89,29 +90,26 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-
-        if (fetched >= nRecords || finished) {
+        if (fetched >= nRecords || finished)
           return false;
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           fetchNextItem();
-        }
 
         return nextItem != null;
-
       }
 
       @Override
       public Result next() {
-        if (fetched >= nRecords || finished) {
+        if (fetched >= nRecords || finished)
           throw new NoSuchElementException();
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           fetchNextItem();
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           throw new NoSuchElementException();
-        }
+
         final Result result = nextItem;
         nextItem = null;
         fetched++;
@@ -123,7 +121,6 @@ public class FilterByClassStep extends AbstractExecutionStep {
         FilterByClassStep.this.close();
       }
     };
-
   }
 
   @Override
@@ -131,9 +128,9 @@ public class FilterByClassStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(ExecutionStepInternal.getIndent(depth, indent));
     result.append("+ FILTER ITEMS BY TYPE");
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result.append(" (").append(getCostFormatted()).append(")");
-    }
+
     result.append(" \n");
     result.append(ExecutionStepInternal.getIndent(depth, indent));
     result.append("  ");

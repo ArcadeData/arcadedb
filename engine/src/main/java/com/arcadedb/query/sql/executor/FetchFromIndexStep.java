@@ -610,16 +610,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX " + indexName;
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
-    }
     if (condition != null) {
       result += ("\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additionalRangeCondition == null ?
           "" :
           " and " + additionalRangeCondition));
     }
-    if (profilingEnabled)
-      result += " (" + getCostFormatted() + ")";
 
     return result;
   }

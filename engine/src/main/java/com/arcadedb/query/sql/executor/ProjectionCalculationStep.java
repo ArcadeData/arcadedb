@@ -75,9 +75,9 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE PROJECTIONS";
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
-    }
+
     result += ("\n" + spaces + "  " + projection.toString() + "");
     return result;
   }
