@@ -429,13 +429,19 @@ public class ArcadeDBServer {
         else {
           final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
           if (!activeDatabases.isEmpty()) {
-            final Database existentDatabase = activeDatabases.iterator().next();
-            if (existentDatabase.getDatabasePath().equals(path))
-              // REUSE THE OPEN DATABASE. THIS TYPICALLY HAPPENS WHEN A SERVER PLUGIN OPENS THE DATABASE AT STARTUP
-              db = (DatabaseInternal) existentDatabase;
-            else
-              // SAME NAME, BUT DIFFERENT PATH< OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
+            db = null;
+            for (Database existentDatabase : activeDatabases) {
+              if (existentDatabase.getDatabasePath().equals(path)) {
+                // REUSE THE OPEN DATABASE. THIS TYPICALLY HAPPENS WHEN A SERVER PLUGIN OPENS THE DATABASE AT STARTUP
+                db = (DatabaseInternal) existentDatabase;
+                break;
+              }
+            }
+
+            if (db == null)
+              // OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
               db = (DatabaseInternal) factory.open(defaultDbMode);
+
           } else
             db = (DatabaseInternal) factory.open(defaultDbMode);
         }

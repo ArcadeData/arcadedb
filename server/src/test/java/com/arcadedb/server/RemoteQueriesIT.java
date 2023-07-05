@@ -204,9 +204,6 @@ public class RemoteQueriesIT {
     try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/" + DATABASE_NAME)) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
-
-      try (Database db = databaseFactory.create()) {
-      }
     }
   }
 
