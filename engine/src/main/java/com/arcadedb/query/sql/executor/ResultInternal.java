@@ -44,10 +44,6 @@ public class ResultInternal implements Result {
     this.content = map;
   }
 
-  public ResultInternal(final Document ident) {
-    this.element = ident;
-  }
-
   public ResultInternal(final Identifiable ident) {
     this.element = (Document) ident.getRecord();
   }
@@ -97,7 +93,8 @@ public class ResultInternal implements Result {
 
   public <T> T getProperty(final String name) {
     T result;
-    if (content != null && content.containsKey(name))
+    if (content != null && !content.isEmpty())
+      // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
       result = (T) wrap(content.get(name));
     else if (element != null)
       result = (T) wrap(element.get(name));

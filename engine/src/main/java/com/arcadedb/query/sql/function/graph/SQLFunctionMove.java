@@ -58,9 +58,11 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
   }
 
   protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
-    final Document rec = (Document) iRecord.getRecord();
-    if (rec instanceof Vertex)
-      return ((Vertex) rec).getVertices(iDirection, iLabels);
+    if (iRecord != null) {
+      final Document rec = (Document) iRecord.getRecord();
+      if (rec instanceof Vertex)
+        return ((Vertex) rec).getVertices(iDirection, iLabels);
+    }
     return null;
   }
 

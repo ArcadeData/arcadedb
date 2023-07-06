@@ -105,6 +105,7 @@ public class Projection extends SimpleNode {
         continue;
 
       if (item.isAll()) {
+        result.setElement(iRecord.toElement());
         for (final String alias : iRecord.getPropertyNames()) {
           if (this.excludes.contains(alias)) {
             continue;

@@ -18,11 +18,20 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Document;
+
 /**
  * Created by luigidellaquila on 02/11/16.
  */
 public class TraverseResult extends ResultInternal {
   protected Integer depth;
+
+  public TraverseResult() {
+  }
+
+  public TraverseResult(final Document element) {
+    super(element);
+  }
 
   @Override
   public <T> T getProperty(final String name) {

@@ -38,9 +38,7 @@ public class ReturnMatchElementsStep extends AbstractUnrollStep {
       if (!s.startsWith(MatchExecutionPlanner.DEFAULT_ALIAS_PREFIX)) {
         Object elem = doc.getProperty(s);
         if (elem instanceof Identifiable) {
-          final ResultInternal newelem = new ResultInternal();
-          newelem.setElement(((Identifiable) elem).asDocument());
-          elem = newelem;
+          elem = new ResultInternal(((Identifiable) elem).asDocument());
         }
         if (elem instanceof Result) {
           result.add((Result) elem);

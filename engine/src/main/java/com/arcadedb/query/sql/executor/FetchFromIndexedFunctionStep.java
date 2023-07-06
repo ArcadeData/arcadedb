@@ -69,8 +69,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
           if (!fullResult.hasNext()) {
             throw new NoSuchElementException();
           }
-          final ResultInternal result = new ResultInternal();
-          result.setElement((Document) fullResult.next().getRecord());
+          final ResultInternal result = new ResultInternal((Document) fullResult.next().getRecord());
           localCount++;
           return result;
         } finally {

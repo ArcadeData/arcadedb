@@ -112,7 +112,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           final MutableEdge edge = edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(targetClass.getStringValue(), currentTo, true);
 
           final UpdatableResult result = new UpdatableResult(edge);
-          result.setElement(edge);
           currentTo = null;
           currentBatch++;
           return result;

@@ -73,25 +73,22 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     if (item instanceof TraverseResult) {
       res = (TraverseResult) item;
     } else if (item.isElement()) {
-      res = new TraverseResult();
-      res.setElement(item.getElement().get());
+      res = new TraverseResult(item.getElement().get());
       res.depth = 0;
     } else if (item.getPropertyNames().size() == 1) {
       final Object val = item.getProperty(item.getPropertyNames().iterator().next());
       if (val instanceof Document) {
-        res = new TraverseResult();
-        res.setElement((Document) val);
+        res = new TraverseResult((Document) val);
         res.depth = 0;
         res.setMetadata("$depth", 0);
       }
     } else {
       res = new TraverseResult();
-      for (final String key : item.getPropertyNames()) {
+      for (final String key : item.getPropertyNames())
         res.setProperty(key, item.getProperty(key));
-      }
-      for (final String md : item.getMetadataKeys()) {
+
+      for (final String md : item.getMetadataKeys())
         res.setMetadata(md, item.getMetadata(md));
-      }
     }
 
     return res;
@@ -137,8 +134,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     if (this.traversed.contains(nextStep.getIdentity())) {
       return;
     }
-    final TraverseResult res = new TraverseResult();
-    res.setElement((Document) nextStep.getRecord());
+    final TraverseResult res = new TraverseResult((Document) nextStep.getRecord());
     res.depth = depth;
     res.setMetadata("$depth", depth);
 
@@ -179,8 +175,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
       tryAddEntryPoint(nextStep, context);
     } else {
-      final TraverseResult res = new TraverseResult();
-      res.setElement(nextStep.getElement().get());
+      final TraverseResult res = new TraverseResult(nextStep.getElement().get());
       res.depth = depth;
       res.setMetadata("$depth", depth);
       final List<Identifiable> newPath = new ArrayList<>(path);

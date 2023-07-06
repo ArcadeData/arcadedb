@@ -92,8 +92,7 @@ public class ExpandStep extends AbstractExecutionStep {
             if (record == null) {
               continue;
             }
-            nextElement = new ResultInternal();
-            ((ResultInternal) nextElement).setElement((Document) record);
+            nextElement = new ResultInternal(record);
           } else if (nextElementObj instanceof Map) {
             nextElement = new ResultInternal((Map) nextElementObj);
           } else {

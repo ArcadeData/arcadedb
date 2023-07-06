@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 
@@ -112,8 +111,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             ++nFetched;
             ++totalFetched;
 
-            final ResultInternal result = new ResultInternal();
-            result.element = (Document) record;
+            final ResultInternal result = new ResultInternal(record);
             context.setVariable("current", result);
 
             return result;

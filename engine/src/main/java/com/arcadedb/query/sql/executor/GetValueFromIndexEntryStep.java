@@ -133,18 +133,14 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
             }
 
             if (finalVal instanceof RID) {
-              final ResultInternal res = new ResultInternal();
               try {
-                res.setElement(((RID) finalVal).asDocument());
-                nextItem = res;
+                nextItem = new ResultInternal(((RID) finalVal).asDocument());
               } catch (final RecordNotFoundException e) {
                 LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, finalVal);
                 continue;
               }
             } else if (finalVal instanceof Document) {
-              final ResultInternal res = new ResultInternal();
-              res.setElement((Document) finalVal);
-              nextItem = res;
+              nextItem = new ResultInternal((Document) finalVal);
             } else if (finalVal instanceof Result) {
               nextItem = (Result) finalVal;
             }
@@ -174,7 +170,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
       result += Arrays.stream(filterClusterIds).boxed().map(x -> "" + x).collect(Collectors.joining(","));
       result += "]";
     }
-
 
     return result;
   }

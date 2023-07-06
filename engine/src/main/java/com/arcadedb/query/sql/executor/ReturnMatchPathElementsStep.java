@@ -36,11 +36,9 @@ public class ReturnMatchPathElementsStep extends AbstractUnrollStep {
     final List<Result> result = new ArrayList<>();
     for (final String s : doc.getPropertyNames()) {
       Object elem = doc.getProperty(s);
-      if (elem instanceof Identifiable) {
-        final ResultInternal newelem = new ResultInternal();
-        newelem.setElement(((Identifiable) elem).asDocument());
-        elem = newelem;
-      }
+      if (elem instanceof Identifiable)
+        elem = new ResultInternal(((Identifiable) elem).asDocument());
+
       if (elem instanceof Result) {
         result.add((Result) elem);
       }

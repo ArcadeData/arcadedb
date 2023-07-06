@@ -73,14 +73,12 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     if (item instanceof TraverseResult)
       res = (TraverseResult) item;
     else if (item.isElement() && item.getElement().get().getIdentity() != null) {
-      res = new TraverseResult();
-      res.setElement(item.getElement().get());
+      res = new TraverseResult(item.getElement().get());
       res.depth = 0;
     } else if (item.getPropertyNames().size() == 1) {
       final Object val = item.getProperty(item.getPropertyNames().iterator().next());
       if (val instanceof Identifiable) {
-        res = new TraverseResult();
-        res.setElement((Document) ((Identifiable) val).getRecord());
+        res = new TraverseResult((Document) ((Identifiable) val).getRecord());
         res.depth = 0;
         res.setMetadata("$depth", 0);
       }
@@ -133,8 +131,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     if (this.traversed.contains(nextStep.getIdentity()))
       return;
 
-    final TraverseResult res = new TraverseResult();
-    res.setElement((Document) nextStep);
+    final TraverseResult res = new TraverseResult((Document) nextStep);
     res.depth = depth;
     res.setMetadata("$depth", depth);
 
@@ -175,8 +172,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
       tryAddEntryPoint(nextStep, context);
     } else {
-      final TraverseResult res = new TraverseResult();
-      res.setElement(nextStep.getElement().get());
+      final TraverseResult res = new TraverseResult(nextStep.getElement().get());
       res.depth = depth;
       res.setMetadata("$depth", depth);
       final List<Identifiable> newPath = new ArrayList<>(path);

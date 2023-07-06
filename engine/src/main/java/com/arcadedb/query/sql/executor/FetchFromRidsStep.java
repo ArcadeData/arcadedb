@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -70,8 +69,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           if (nextDoc == null)
             continue;
 
-          nextResult = new ResultInternal();
-          ((ResultInternal) nextResult).setElement((Document) nextDoc);
+          nextResult = new ResultInternal(nextDoc);
           break;
         }
       }
