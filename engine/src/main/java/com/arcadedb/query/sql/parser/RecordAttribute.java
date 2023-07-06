@@ -20,6 +20,9 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -72,6 +75,19 @@ public class RecordAttribute extends SimpleNode {
       return iCurrentRecord.getIdentity().orElse(null);
     } else if (name.equalsIgnoreCase("@type")) {
       return iCurrentRecord.getElement().map(r -> r.getTypeName()).orElse(null);
+    } else if (name.equalsIgnoreCase("@cat") && iCurrentRecord.getElement().isPresent()) {
+      final Document record = iCurrentRecord.getElement().get();
+      if (record instanceof Vertex)
+        return "v";
+      else if (record instanceof Edge)
+        return "e";
+      else
+        return "d";
+
+    } else if (name.equalsIgnoreCase("@in") && iCurrentRecord.getElement().get() instanceof Edge) {
+      return iCurrentRecord.getElement().get().asEdge().getIn();
+    } else if (name.equalsIgnoreCase("@out") && iCurrentRecord.getElement().get() instanceof Edge) {
+      return iCurrentRecord.getElement().get().asEdge().getOut();
     }
     return null;
   }
