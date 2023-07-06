@@ -84,9 +84,11 @@ public class RecordAttribute extends SimpleNode {
       else
         return "d";
 
-    } else if (name.equalsIgnoreCase("@in") && iCurrentRecord.getElement().get() instanceof Edge) {
+    } else if (name.equalsIgnoreCase("@in") && //
+        iCurrentRecord.getElement().isPresent() && iCurrentRecord.getElement().get() instanceof Edge) {
       return iCurrentRecord.getElement().get().asEdge().getIn();
-    } else if (name.equalsIgnoreCase("@out") && iCurrentRecord.getElement().get() instanceof Edge) {
+    } else if (name.equalsIgnoreCase("@out") && //
+        iCurrentRecord.getElement().isPresent() && iCurrentRecord.getElement().get() instanceof Edge) {
       return iCurrentRecord.getElement().get().asEdge().getOut();
     }
     return null;
