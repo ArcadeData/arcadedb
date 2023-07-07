@@ -74,7 +74,7 @@ public class RecordAttribute extends SimpleNode {
     if (name.equalsIgnoreCase("@rid")) {
       return iCurrentRecord.getIdentity().orElse(null);
     } else if (name.equalsIgnoreCase("@type")) {
-      return iCurrentRecord.getElement().map(r -> r.getTypeName()).orElse(null);
+      return iCurrentRecord.getElement().map(Document::getTypeName).orElse(null);
     } else if (name.equalsIgnoreCase("@cat") && iCurrentRecord.getElement().isPresent()) {
       final Document record = iCurrentRecord.getElement().get();
       if (record instanceof Vertex)

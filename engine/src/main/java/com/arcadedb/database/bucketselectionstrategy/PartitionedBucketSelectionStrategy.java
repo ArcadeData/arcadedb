@@ -65,7 +65,7 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
 
     final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
     if (index == null || !index.isAutomatic() || !index.isUnique())
-      throw new IllegalArgumentException("Cannot find an index on properties " + propertyNames);
+      throw new IllegalArgumentException("Cannot find a unique index on properties " + propertyNames);
   }
 
   @Override
