@@ -22,6 +22,8 @@ package com.arcadedb.exception;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CommandSQLParsingException extends CommandParsingException {
+  private String command;
+
   public CommandSQLParsingException(final String message) {
     super(message);
   }
@@ -30,8 +32,24 @@ public class CommandSQLParsingException extends CommandParsingException {
     super(message, cause);
   }
 
+  public CommandSQLParsingException setCommand(final String command) {
+    this.command = command;
+    return this;
+  }
+
   public CommandSQLParsingException(final Throwable cause) {
     super(cause);
   }
 
+  @Override
+  public String toString() {
+    final StringBuilder buffer = new StringBuilder();
+    if (command != null) {
+      buffer.append("Exception on parsing the following SQL command: ");
+      buffer.append(command);
+      buffer.append("\n");
+    }
+    buffer.append(super.toString());
+    return buffer.toString();
+  }
 }

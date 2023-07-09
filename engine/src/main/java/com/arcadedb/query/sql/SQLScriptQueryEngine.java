@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -40,7 +39,6 @@ import com.arcadedb.query.sql.parser.ParseException;
 import com.arcadedb.query.sql.parser.SqlParser;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.io.*;
 import java.util.*;
 
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
@@ -145,16 +143,11 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
-    final InputStream is = new ByteArrayInputStream(addSemicolon(script).getBytes(DatabaseFactory.getDefaultCharset()));
-    return parseScript(is, database);
-  }
-
-  public static List<Statement> parseScript(final InputStream script, final DatabaseInternal database) {
     try {
-      final SqlParser parser = new SqlParser(database, script);
+      final SqlParser parser = new SqlParser(database, addSemicolon(script));
       return parser.ParseScript();
     } catch (final ParseException e) {
-      throw new CommandSQLParsingException(e);
+      throw new CommandSQLParsingException(e).setCommand(script);
     }
   }
 
