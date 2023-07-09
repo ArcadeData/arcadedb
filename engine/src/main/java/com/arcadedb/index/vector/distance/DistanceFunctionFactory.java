@@ -37,23 +37,21 @@ public class DistanceFunctionFactory {
 
   static {
     registerImplementation("FloatCosine", DistanceFunctions.FLOAT_COSINE_DISTANCE);
-    registerImplementation("FloatInnerProduct", DistanceFunctions.FLOAT_INNER_PRODUCT);
+    registerImplementation("FloatInnerproduct", DistanceFunctions.FLOAT_INNER_PRODUCT);
     registerImplementation("FloatEuclidean", DistanceFunctions.FLOAT_EUCLIDEAN_DISTANCE);
     registerImplementation("FloatCanberra", DistanceFunctions.FLOAT_CANBERRA_DISTANCE);
-    registerImplementation("FloatBrayCurtis", DistanceFunctions.FLOAT_BRAY_CURTIS_DISTANCE);
+    registerImplementation("FloatBraycurtis", DistanceFunctions.FLOAT_BRAY_CURTIS_DISTANCE);
     registerImplementation("FloatCorrelation", DistanceFunctions.FLOAT_CORRELATION_DISTANCE);
     registerImplementation("FloatManhattan", DistanceFunctions.FLOAT_MANHATTAN_DISTANCE);
     registerImplementation("FloatChebyshev", new ChebyshevDistance.FloatChebyshevDistance());
     registerImplementation("DoubleCosine", DistanceFunctions.DOUBLE_COSINE_DISTANCE);
-    registerImplementation("DoubleInnerProduct", DistanceFunctions.DOUBLE_INNER_PRODUCT);
+    registerImplementation("DoubleInnerproduct", DistanceFunctions.DOUBLE_INNER_PRODUCT);
     registerImplementation("DoubleEuclidean", DistanceFunctions.DOUBLE_EUCLIDEAN_DISTANCE);
     registerImplementation("DoubleCanberra", DistanceFunctions.DOUBLE_CANBERRA_DISTANCE);
-    registerImplementation("DoubleBrayCurtis", DistanceFunctions.DOUBLE_BRAY_CURTIS_DISTANCE);
+    registerImplementation("DoubleBraycurtis", DistanceFunctions.DOUBLE_BRAY_CURTIS_DISTANCE);
     registerImplementation("DoubleCorrelation", DistanceFunctions.DOUBLE_CORRELATION_DISTANCE);
     registerImplementation("DoubleManhattan", DistanceFunctions.DOUBLE_MANHATTAN_DISTANCE);
     registerImplementation("DoubleChebyshev", new ChebyshevDistance.DoubleChebyshevDistance());
-    registerImplementation("FloatSparseVectorInnerProduct", DistanceFunctions.FLOAT_SPARSE_VECTOR_INNER_PRODUCT);
-    registerImplementation("DoubleSparseVectorInnerProduct", DistanceFunctions.DOUBLE_SPARSE_VECTOR_INNER_PRODUCT);
   }
 
   public static DistanceFunction getImplementationByName(final String name) {
