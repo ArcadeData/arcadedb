@@ -212,7 +212,7 @@ public class Profiler {
       json.put("jvmSafePointCount", new JSONObject().put("count", hotSpotRunTime.getSafepointCount()));
       json.put("jvmAvgSafePointTime", new JSONObject().put("value", hotSpotRunTime.getTotalSafepointTime() / (float) hotSpotRunTime.getSafepointCount()));
 
-    } catch (final Exception e) {
+    } catch (final Throwable e) {
       // JMX NOT AVAILABLE, AVOID OS DATA
     }
 
