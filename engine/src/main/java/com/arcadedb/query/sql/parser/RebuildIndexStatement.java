@@ -106,7 +106,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, indexName);
-      throw new IndexException("Error on rebuilding index '" + indexName + "'", e);
+      throw new IndexException("Error on rebuilding index '" + name.getValue() + "'", e);
     }
 
     // SUCCESS

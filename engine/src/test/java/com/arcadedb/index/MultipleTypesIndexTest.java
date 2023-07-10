@@ -75,6 +75,47 @@ public class MultipleTypesIndexTest extends TestHelper {
     });
   }
 
+  @Test
+  public void testNullItemInCollection() {
+    database.transaction(() -> {
+      final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[keywords]");
+
+      MutableVertex v = database.newVertex(TYPE_NAME);
+      v.set("id", TOT+1);
+      v.set("firstName", "Mark");
+      v.set("lastName", "Zuck");
+
+      final List<Object> list = new ArrayList<>();
+      list.add(null);
+      v.set("keywords", list);
+
+      v.save();
+
+      IndexCursor cursor = index.get(new Object[] { list });
+      Assertions.assertTrue(cursor.hasNext());
+      Assertions.assertEquals("Zuck", cursor.next().asVertex().getString("lastName"));
+      Assertions.assertFalse(cursor.hasNext());
+    });
+  }
+
+  // Issue https://github.com/ArcadeData/arcadedb/issues/812
+  @Test
+  public void testUpdateCompositeKeyIndex() {
+    VertexType type = database.getSchema().createVertexType("IndexedVertex");
+    type.createProperty("counter", Type.INTEGER);
+    type.createProperty("status", Type.STRING);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "counter");
+
+    database.transaction(() -> {
+      database.newVertex("IndexedVertex").set("id", "test1").set("status", "on").set("counter", 1).save();
+      database.newVertex("IndexedVertex").set("id", "test2").set("status", "on").set("counter", 2).save();
+      database.newVertex("IndexedVertex").set("id", "test3").set("status", "on").set("counter", 3).save();
+
+      database.command("SQL", "update IndexedVertex set status = 'off' where counter = 2");
+      database.command("SQL", "update IndexedVertex set status = 'off' where counter = 3");
+    });
+  }
+
   protected void beginTest() {
     database.transaction(() -> {
       Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
@@ -113,24 +154,6 @@ public class MultipleTypesIndexTest extends TestHelper {
 
       database.commit();
       database.begin();
-    });
-  }
-
-  // Issue https://github.com/ArcadeData/arcadedb/issues/812
-  @Test
-  public void testUpdateCompositeKeyIndex() {
-    VertexType type = database.getSchema().createVertexType("IndexedVertex");
-    type.createProperty("counter", Type.INTEGER);
-    type.createProperty("status", Type.STRING);
-    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "counter");
-
-    database.transaction(() -> {
-      database.newVertex("IndexedVertex").set("id", "test1").set("status", "on").set("counter", 1).save();
-      database.newVertex("IndexedVertex").set("id", "test2").set("status", "on").set("counter", 2).save();
-      database.newVertex("IndexedVertex").set("id", "test3").set("status", "on").set("counter", 3).save();
-
-      database.command("SQL", "update IndexedVertex set status = 'off' where counter = 2");
-      database.command("SQL", "update IndexedVertex set status = 'off' where counter = 3");
     });
   }
 }

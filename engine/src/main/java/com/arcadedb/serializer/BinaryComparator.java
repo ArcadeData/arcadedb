@@ -409,9 +409,13 @@ public class BinaryComparator {
   public static int compareTo(final Object a, final Object b) {
     if (a == null && b == null)
       return 0;
-    if (a instanceof String && b instanceof String)
+    else if (a != null && b == null)
+      return 1;
+    else if (a == null && b != null)
+      return -1;
+    else if (a instanceof String && b instanceof String)
       return compareBytes(((String) a).getBytes(), ((String) b).getBytes(DatabaseFactory.getDefaultCharset()));
-    if (a instanceof byte[] && b instanceof byte[])
+    else if (a instanceof byte[] && b instanceof byte[])
       return compareBytes((byte[]) a, (byte[]) b);
     return ((Comparable<Object>) a).compareTo(b);
   }
