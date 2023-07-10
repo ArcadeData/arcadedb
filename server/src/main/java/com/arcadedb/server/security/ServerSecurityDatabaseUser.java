@@ -34,7 +34,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private final        String      databaseName;
   private final        String      userName;
   private              String[]    groups;
-  private              boolean[][] fileAccessMap     = null;
+  private volatile     boolean[][] fileAccessMap     = null;
   private              long        resultSetLimit    = -1;
   private              long        readTimeout       = -1;
   private final        boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
@@ -151,7 +151,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
     final List<ComponentFile> files = database.getFileManager().getFiles();
 
-    fileAccessMap = new boolean[files.size()][];
+    // WORK ON A COPY AND SWAP IT AT THE END
+    final boolean[][] newFileAccessMap = new boolean[files.size()][];
 
     final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY) ? configuredGroups.getJSONObject(SecurityManager.ANY) : NO_ACCESS_GROUP;
 
@@ -184,17 +185,17 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         if (groupType == null)
           continue;
 
-        if (fileAccessMap[i] == null)
+        if (newFileAccessMap[i] == null)
           // FIRST DEFINITION ENCOUNTERED: START FROM ALL REVOKED
-          fileAccessMap[i] = new boolean[] { false, false, false, false };
+          newFileAccessMap[i] = new boolean[] { false, false, false, false };
 
         // APPLY THE FOUND TYPE FROM THE FOUND GROUP
-        updateAccessArray(fileAccessMap[i], groupType.getJSONArray("access"));
+        updateAccessArray(newFileAccessMap[i], groupType.getJSONArray("access"));
       }
 
-      if (fileAccessMap[i] == null) {
+      if (newFileAccessMap[i] == null) {
         // NO GROUP+TYPE FOUND, APPLY SETTINGS FROM DEFAULT GROUP/TYPE
-        fileAccessMap[i] = new boolean[] { false, false, false, false };
+        newFileAccessMap[i] = new boolean[] { false, false, false, false };
 
         final JSONObject t;
         if (defaultGroup.has(typeName)) {
@@ -204,9 +205,12 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
           // APPLY DEFAULT TYPE FROM DEFAULT GROUP
           t = defaultType;
 
-        updateAccessArray(fileAccessMap[i], t.getJSONArray("access"));
+        updateAccessArray(newFileAccessMap[i], t.getJSONArray("access"));
       }
     }
+
+    // SWAP WITH THE NEW MAP (VOLATILE PROPERTY)
+    fileAccessMap = newFileAccessMap;
   }
 
   public static boolean[] updateAccessArray(final boolean[] array, final JSONArray access) {
