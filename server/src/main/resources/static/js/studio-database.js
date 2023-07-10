@@ -153,6 +153,45 @@ function dropDatabase(){
   });
 }
 
+function resetDatabase(){
+  let database = escapeHtml( getCurrentDatabase() );
+  if( database == "" ){
+    globalNotify( "Error", "Database not selected", "danger");
+    return;
+  }
+
+  globalConfirm("Reset database", "Are you sure you want to reset the database '"+database+"' (All data will be deleted)?<br>WARNING: The operation cannot be undone.", "warning", function(){
+    jQuery.ajax({
+      type: "POST",
+      url: "/api/v1/server",
+      data: "{ 'command': 'drop database " + database + "' }",
+      beforeSend: function (xhr){
+        xhr.setRequestHeader('Authorization', globalCredentials);
+      }
+    })
+    .done(function(data){
+      jQuery.ajax({
+        type: "POST",
+        url: "/api/v1/server",
+        data: "{ 'command': 'create database " + database + "' }",
+        beforeSend: function (xhr){
+          xhr.setRequestHeader('Authorization', globalCredentials);
+        }
+      })
+      .done(function(data){
+        $("#inputDatabase").val(database);
+        updateDatabases();
+      })
+      .fail(function( jqXHR, textStatus, errorThrown ){
+        globalNotifyError( jqXHR.responseText );
+      });
+    })
+    .fail(function( jqXHR, textStatus, errorThrown ){
+      globalNotifyError( jqXHR.responseText );
+    });
+  });
+}
+
 function backupDatabase(){
   let database = getCurrentDatabase();
   if( database == "" ){
