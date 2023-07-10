@@ -109,11 +109,14 @@ public enum Type {
   private static final Type[]              TYPES_BY_ID       = new Type[24];
   // Values previously stored in javaTypes
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
+  private static final Map<String, Type>   TYPES_BY_NAME     = new HashMap<String, Type>();
 
   static {
     for (final Type type : values()) {
       TYPES_BY_ID[type.id] = type;
+      TYPES_BY_NAME.put(type.name.toLowerCase(), type);
     }
+
     // This is made by hand because not all types should be add.
     TYPES_BY_USERTYPE.put(Boolean.class, BOOLEAN);
     TYPES_BY_USERTYPE.put(Boolean.TYPE, BOOLEAN);
@@ -274,7 +277,7 @@ public enum Type {
   }
 
   public static Type getTypeByName(final String name) {
-    return valueOf(name.toUpperCase());
+    return TYPES_BY_NAME.get(name.toLowerCase());
   }
 
   public static boolean isSimpleType(final Object iObject) {

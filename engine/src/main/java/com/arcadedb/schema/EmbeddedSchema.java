@@ -184,7 +184,7 @@ public class EmbeddedSchema implements Schema {
 
     readConfiguration();
 
-    for (final Component f : files)
+    for (final Component f : new ArrayList<>(files))
       if (f != null)
         f.onAfterSchemaLoad();
 
@@ -761,7 +761,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
-    return (VertexType) buildVertexType().withName(typeName).withIgnoreIfExists(true).create();
+    return buildVertexType().withName(typeName).withIgnoreIfExists(true).create();
   }
 
   @Override
@@ -806,7 +806,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName) {
-    return (EdgeType) buildEdgeType().withName(typeName).withIgnoreIfExists(true).create();
+    return buildEdgeType().withName(typeName).withIgnoreIfExists(true).create();
   }
 
   @Override

@@ -79,6 +79,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   private final   double                               levelLambda;
   private         int                                  ef;
   private final   int                                  efConstruction;
+  public volatile RID                                  entryPointRIDToLoad;
   public volatile Vertex                               entryPoint;
 
   private       TypeIndex        underlyingIndex;
@@ -166,9 +167,9 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     this.efConstruction = json.getInt("efConstruction");
 
     if (json.getString("entryPoint").length() > 0) {
-      this.entryPoint = new RID(database, json.getString("entryPoint")).asVertex();
+      this.entryPointRIDToLoad = new RID(database, json.getString("entryPoint"));
     } else
-      this.entryPoint = null;
+      this.entryPointRIDToLoad = null;
 
     this.vertexType = json.getString("vertexType");
     this.edgeType = json.getString("edgeType");
@@ -182,6 +183,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public void onAfterSchemaLoad() {
+    // AFTER THE WHOLE SCHEMA IS LOADED< INITIALIZE THE INDEX
+    if (this.entryPointRIDToLoad != null)
+      this.entryPoint = this.entryPointRIDToLoad.asVertex();
+
     this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withIgnoreIfExists(true).withUnique(true)
         .withType(Schema.INDEX_TYPE.LSM_TREE).create();
   }
@@ -800,7 +805,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       // BUILD ALL EDGE TYPES (ONE PER LEVEL)
       for (int level = 0; level <= maxLevel; level++) {
         // ASSURE THE EDGE TYPE IS CREATED IN THE DATABASE
-        database.getSchema().getOrCreateEdgeType(getEdgeType(level));
+        database.getSchema().getOrCreateEdgeType(getEdgeType(level), 1);
       }
 
       database.begin();
