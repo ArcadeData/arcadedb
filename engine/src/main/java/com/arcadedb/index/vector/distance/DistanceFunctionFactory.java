@@ -52,8 +52,6 @@ public class DistanceFunctionFactory {
     registerImplementation("DoubleCorrelation", DistanceFunctions.DOUBLE_CORRELATION_DISTANCE);
     registerImplementation("DoubleManhattan", DistanceFunctions.DOUBLE_MANHATTAN_DISTANCE);
     registerImplementation("DoubleChebyshev", new ChebyshevDistance.DoubleChebyshevDistance());
-    registerImplementation("FloatSparseVectorInnerProduct", DistanceFunctions.FLOAT_SPARSE_VECTOR_INNER_PRODUCT);
-    registerImplementation("DoubleSparseVectorInnerProduct", DistanceFunctions.DOUBLE_SPARSE_VECTOR_INNER_PRODUCT);
   }
 
   public static DistanceFunction getImplementationByName(final String name) {
