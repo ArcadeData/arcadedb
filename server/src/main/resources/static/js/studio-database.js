@@ -568,11 +568,12 @@ function displaySchema(){
 
     for( let i in data.result ){
       let row = data.result[i];
+      let tabName = row.name.replaceAll(":", "-");
 
-      let tabHtml = "<li class='nav-item' style='height: 32px'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
-      tabHtml += "' id='tab-" + row.name + "-sel'>" + row.name + "</a></li>";
+      let tabHtml = "<li class='nav-item' style='height: 32px'><a data-toggle='tab' href='#tab-" + tabName + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
+      tabHtml += "' id='tab-" + tabName + "-sel'>" + row.name + "</a></li>";
 
-      let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+row.name+"' role='tabpanel'>";
+      let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+tabName+"' role='tabpanel'>";
 
       panelHtml += "<h3>" + row.name + "</h3>";
       if( row.parentTypes != "" ){
@@ -581,7 +582,9 @@ function displaySchema(){
           if( ptidx > 0 )
             panelHtml += ", ";
           let pt = row.parentTypes[ptidx];
-          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-"+pt+"')\">" + pt + "</a></b>";
+          let ptName = pt.replaceAll(":", "-");
+
+          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-"+ptName+"')\">" + pt + "</a></b>";
         }
         panelHtml += "</b>";
       }
@@ -593,7 +596,9 @@ function displaySchema(){
           if( stidx > 0 )
             panelHtml += ", ";
           let st = typeSubTypes[stidx];
-          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-"+st+"')\">" + st + "</a></b>";
+          let stName = st.replaceAll(":", "-");
+
+          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-"+stName+"')\">" + st + "</a></b>";
         }
         panelHtml += "</b>";
       }
