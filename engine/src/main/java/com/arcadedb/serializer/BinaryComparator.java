@@ -322,7 +322,7 @@ public class BinaryComparator {
       switch (type2) {
       case BinaryTypes.TYPE_COMPRESSED_RID:
       case BinaryTypes.TYPE_RID:
-        return ((Identifiable) value1).getIdentity().compareTo((Identifiable) value2);
+        return ((Identifiable) value1).getIdentity().compareTo(value2);
       }
     }
 

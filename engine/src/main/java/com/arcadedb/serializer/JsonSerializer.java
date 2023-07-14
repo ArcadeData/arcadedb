@@ -53,33 +53,9 @@ public class JsonSerializer {
       else if (value instanceof Document)
         value = serializeDocument((Document) value);
       else if (value instanceof Collection) {
-        if (useCollectionSize) {
-          value = ((Collection) value).size();
-        } else {
-          final List<Object> list = new ArrayList<>();
-          for (Object o : (Collection) value) {
-            if (o instanceof Document)
-              o = serializeDocument((Document) o);
-            list.add(o);
-          }
-          value = list;
-        }
-      } else if (value instanceof Map) {
-        if (useCollectionSize) {
-          value = ((Map) value).size();
-        } else {
-          final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
-          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
-            Object o = entry.getValue();
-            if (entry.getValue() instanceof Document)
-              o = serializeDocument((Document) o);
-            else if (entry.getValue() instanceof Result)
-              o = serializeResult((Result) o, database);
-            map.put(entry.getKey().toString(), o);
-          }
-          value = map;
-        }
-      }
+        serializeCollection(database, (Collection<?>) value);
+      } else if (value instanceof Map)
+        value = serializeMap(database, (Map<Object, Object>) value);
 
       value = convertNonNumbers(value);
 
@@ -91,7 +67,7 @@ public class JsonSerializer {
     return object;
   }
 
-  public JSONObject serializeResult(final Result result, final Database database) {
+  public JSONObject serializeResult(final Database database, final Result result) {
     final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
 
     if (result.isElement()) {
@@ -111,51 +87,11 @@ public class JsonSerializer {
       else if (value instanceof Document)
         value = serializeDocument((Document) value);
       else if (value instanceof Result)
-        value = serializeResult((Result) value, database);
-      else if (value instanceof Collection) {
-        if (!((Collection<?>) value).isEmpty()) {
-          if (useCollectionSizeForEdges && ((Collection<?>) value).iterator().next() instanceof Edge)
-            value = ((Collection) value).size();
-          else if (useCollectionSize) {
-            value = ((Collection) value).size();
-          } else {
-            final JSONArray list = new JSONArray();
-            for (Object o : (Collection) value) {
-              if (o instanceof Document)
-                o = serializeDocument((Document) o);
-              else if (o instanceof Result)
-                o = serializeResult((Result) o, database);
-              else if (o instanceof ResultSet) {
-                final ResultSet resultSet = (ResultSet) o;
-                final JSONArray array = new JSONArray();
-                while (resultSet.hasNext()) {
-                  final Result row = resultSet.next();
-                  array.put(serializeResult(row, database));
-                }
-                o = array;
-              }
-
-              list.put(o);
-            }
-            value = list;
-          }
-        }
-      } else if (value instanceof Map) {
-        if (useCollectionSize) {
-          value = ((Map) value).size();
-        } else {
-          final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
-          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
-            Object o = entry.getValue();
-            if (entry.getValue() instanceof Document)
-              o = serializeDocument((Document) o);
-            else if (entry.getValue() instanceof Result)
-              o = serializeResult((Result) o, database);
-            map.put(entry.getKey().toString(), o);
-          }
-          value = map;
-        }
-      }
+        value = serializeResult(database, (Result) value);
+      else if (value instanceof Collection)
+        value = serializeCollection(database, (Collection<?>) value);
+      else if (value instanceof Map)
+        value = serializeMap(database, (Map<Object, Object>) value);
 
       value = convertNonNumbers(value);
 
@@ -163,6 +99,69 @@ public class JsonSerializer {
     }
 
     return object;
+  }
+
+  private Object serializeCollection(final Database database, final Collection<?> value) {
+    Object result = value;
+    if (!value.isEmpty()) {
+      if (useCollectionSizeForEdges && value.iterator().next() instanceof Edge)
+        result = value.size();
+      else if (useCollectionSize) {
+        result = value.size();
+      } else {
+        final JSONArray list = new JSONArray();
+        for (Object o : value) {
+          if (o instanceof Document)
+            o = serializeDocument((Document) o);
+          else if (o instanceof Result)
+            o = serializeResult(database, (Result) o);
+          else if (o instanceof ResultSet)
+            o = serializeResultSet(database, (ResultSet) o);
+          else if (o instanceof Collection)
+            o = serializeCollection(database, (Collection<?>) o);
+          else if (o instanceof Map)
+            o = serializeMap(database, (Map<Object, Object>) o);
+
+          list.put(o);
+        }
+        result = list;
+      }
+    }
+    return result;
+  }
+
+  private Object serializeResultSet(final Database database, final ResultSet resultSet) {
+    final JSONArray array = new JSONArray();
+    while (resultSet.hasNext()) {
+      final Result row = resultSet.next();
+      array.put(serializeResult(database, row));
+    }
+    return array;
+  }
+
+  private Object serializeMap(final Database database, final Map<Object, Object> value) {
+    final Object result;
+    if (useCollectionSize) {
+      result = value.size();
+    } else {
+      final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
+      for (final Map.Entry<Object, Object> entry : value.entrySet()) {
+        Object o = entry.getValue();
+        if (o instanceof Document)
+          o = serializeDocument((Document) o);
+        else if (o instanceof ResultSet)
+          o = serializeResultSet(database, (ResultSet) o);
+        else if (o instanceof Result)
+          o = serializeResult(database, (Result) o);
+        else if (o instanceof Collection)
+          o = serializeCollection(database, (Collection<?>) o);
+        else if (o instanceof Map)
+          o = serializeMap(database, (Map<Object, Object>) o);
+        map.put(entry.getKey().toString(), o);
+      }
+      result = map;
+    }
+    return result;
   }
 
   public boolean isUseVertexEdgeSize() {

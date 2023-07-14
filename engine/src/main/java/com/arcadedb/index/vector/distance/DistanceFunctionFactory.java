@@ -37,7 +37,7 @@ public class DistanceFunctionFactory {
 
   static {
     registerImplementation("FloatCosine", DistanceFunctions.FLOAT_COSINE_DISTANCE);
-    registerImplementation("FloatInnerProduct", DistanceFunctions.FLOAT_INNER_PRODUCT);
+    registerImplementation("FloatInnerProduct", DistanceFunctions.FLOAT_INNER_PRODUCT); // EXPECTED NORMALIZATION OF VECTORS
     registerImplementation("FloatEuclidean", DistanceFunctions.FLOAT_EUCLIDEAN_DISTANCE);
     registerImplementation("FloatCanberra", DistanceFunctions.FLOAT_CANBERRA_DISTANCE);
     registerImplementation("FloatBrayCurtis", DistanceFunctions.FLOAT_BRAY_CURTIS_DISTANCE);
@@ -45,7 +45,7 @@ public class DistanceFunctionFactory {
     registerImplementation("FloatManhattan", DistanceFunctions.FLOAT_MANHATTAN_DISTANCE);
     registerImplementation("FloatChebyshev", new ChebyshevDistance.FloatChebyshevDistance());
     registerImplementation("DoubleCosine", DistanceFunctions.DOUBLE_COSINE_DISTANCE);
-    registerImplementation("DoubleInnerProduct", DistanceFunctions.DOUBLE_INNER_PRODUCT);
+    registerImplementation("DoubleInnerProduct", DistanceFunctions.DOUBLE_INNER_PRODUCT); // EXPECTED NORMALIZATION OF VECTORS
     registerImplementation("DoubleEuclidean", DistanceFunctions.DOUBLE_EUCLIDEAN_DISTANCE);
     registerImplementation("DoubleCanberra", DistanceFunctions.DOUBLE_CANBERRA_DISTANCE);
     registerImplementation("DoubleBrayCurtis", DistanceFunctions.DOUBLE_BRAY_CURTIS_DISTANCE);
