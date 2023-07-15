@@ -64,17 +64,19 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if (paramMap == null)
       paramMap = new HashMap<>();
 
-    if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
-      final String commandLC = command.toLowerCase().trim();
-      if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
-        if (!commandLC.contains(" limit ")) {
-          command += " limit " + limit;
-        } else {
-          final String[] words = commandLC.split(" ");
-          if (words.length > 2) {
-            if (!"limit".equals(words[words.length - 2]) && //
-                (words.length < 5 || !"limit".equals(words[words.length - 4])))
-              command += " limit " + limit;
+    if (limit != -1) {
+      if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
+        final String commandLC = command.toLowerCase().trim();
+        if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
+          if (!commandLC.contains(" limit ") && !commandLC.contains("\nlimit ")) {
+            command += " limit " + limit;
+          } else {
+            final String[] words = commandLC.split(" ");
+            if (words.length > 2) {
+              if (!"limit".equals(words[words.length - 2]) && //
+                  (words.length < 5 || !"limit".equals(words[words.length - 4])))
+                command += " limit " + limit;
+            }
           }
         }
       }
