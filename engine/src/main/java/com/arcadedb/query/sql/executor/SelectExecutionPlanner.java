@@ -744,6 +744,16 @@ public class SelectExecutionPlanner {
 
     if (target == null) {
       handleNoTarget(info.fetchExecutionPlan, context, profilingEnabled);
+    } else if (target.getIdentifier() != null && target.getModifier() != null) {
+
+      final List<RID> rids = new ArrayList<>();
+      final Collection<Identifiable> records = (Collection<Identifiable>) context.getVariablePath(target.toString());
+      if (records != null && !records.isEmpty()) {
+        for (Identifiable i : records)
+          rids.add(i.getIdentity());
+        info.fetchExecutionPlan.chain(new FetchFromRidsStep(rids, context, profilingEnabled));
+      } else
+        result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
     } else if (target.getIdentifier() != null) {
       Set<String> filterClusters = info.buckets;
 
@@ -1102,9 +1112,9 @@ public class SelectExecutionPlanner {
 
   private void handleRidsAsTarget(final SelectExecutionPlan plan, final List<Rid> rids, final CommandContext context, final boolean profilingEnabled) {
     final List<RID> actualRids = new ArrayList<>();
-    for (final Rid rid : rids) {
+    for (final Rid rid : rids)
       actualRids.add(rid.toRecordId((Result) null, context));
-    }
+
     plan.chain(new FetchFromRidsStep(actualRids, context, profilingEnabled));
   }
 
@@ -1425,7 +1435,8 @@ public class SelectExecutionPlanner {
         plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, orderType.equals(OrderByItem.ASC), context, profilingEnabled));
         int[] filterClusterIds = null;
         if (filterClusters != null) {
-          filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).toArray();
+          filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i)
+              .toArray();
         }
         plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds, profilingEnabled));
         info.orderApplied = true;
@@ -2317,7 +2328,7 @@ public class SelectExecutionPlanner {
     if (item.getIdentifier() != null) {
       if (item.getIdentifier().getStringValue().startsWith("$")) {
         // RESOLVE VARIABLE
-        final Object value = context.getVariable(item.getIdentifier().getStringValue());
+        final Object value = context.getVariable(item.toString());
         if (value != null) {
           item.setValue(value);
           item.setIdentifier(null);

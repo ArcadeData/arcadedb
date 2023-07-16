@@ -29,6 +29,10 @@ import java.util.*;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public interface CommandContext {
+  Object getVariablePath(String name);
+
+  Object getVariablePath(String name, Object iDefault);
+
   Object getVariable(String iName);
 
   Object getVariable(String iName, Object iDefaultValue);

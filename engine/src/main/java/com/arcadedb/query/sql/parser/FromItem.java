@@ -298,6 +298,9 @@ public class FromItem extends SimpleNode {
   }
 
   public boolean refersToParent() {
+    if (identifier != null && identifier.refersToParent())
+      return true;
+
     if (modifier != null && modifier.refersToParent())
       return true;
 

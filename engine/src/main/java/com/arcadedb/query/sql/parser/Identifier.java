@@ -113,6 +113,11 @@ public class Identifier extends SimpleNode {
   }
 
   @Override
+  public boolean refersToParent() {
+    return "$parent".equals(value);
+  }
+
+  @Override
   public boolean equals(final Object o) {
     if (this == o)
       return true;

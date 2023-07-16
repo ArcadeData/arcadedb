@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
@@ -61,7 +62,11 @@ public class ParenthesisExpression extends MathExpression {
       return expression.execute(iCurrentRecord, context);
     }
     if (statement != null) {
-      final InternalExecutionPlan execPlan = statement.createExecutionPlan(context, false);
+      final BasicCommandContext subCtx = new BasicCommandContext();
+      subCtx.setDatabase(context.getDatabase());
+      subCtx.setParent(context);
+
+      final InternalExecutionPlan execPlan = statement.createExecutionPlan(subCtx, false);
 
       if (execPlan instanceof InsertExecutionPlan) {
         ((InsertExecutionPlan) execPlan).executeInternal();

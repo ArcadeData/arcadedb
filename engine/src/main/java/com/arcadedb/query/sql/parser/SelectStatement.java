@@ -241,7 +241,6 @@ public class SelectStatement extends Statement {
   @Override
   public boolean refersToParent() {
     //no FROM, if a sub-query refers to parent it does not make sense, so that reference will be just ignored
-
     if (projection != null && projection.refersToParent())
       return true;
 
