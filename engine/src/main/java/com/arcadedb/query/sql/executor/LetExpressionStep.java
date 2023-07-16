@@ -39,6 +39,8 @@ public class LetExpressionStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("Cannot execute a local LET on a query without a target");
 
+    cost = 0L;
+
     return new ResultSet() {
       final ResultSet source = getPrev().syncPull(context, nRecords);
 
@@ -49,10 +51,12 @@ public class LetExpressionStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
+        final long beginTime = System.nanoTime();
         final ResultInternal result = (ResultInternal) source.next();
         final Object value = expression.execute(result, context);
         result.setMetadata(varName.getStringValue(), value);
         context.setVariable(varName.getStringValue(), value);
+        cost += System.nanoTime() - beginTime;
         return result;
       }
 
@@ -66,6 +70,11 @@ public class LetExpressionStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (for each record)\n" + spaces + "  " + varName + " = " + expression;
+
+    final StringBuilder result = new StringBuilder();
+    result.append(spaces).append("+ LET (for each record)\n").append(spaces).append("  ").append(varName).append(" = (").append(expression).append(")");
+    if (profilingEnabled)
+      result.append(" (").append(getCostFormatted()).append(")");
+    return result.toString();
   }
 }

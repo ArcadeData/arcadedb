@@ -69,9 +69,9 @@ public class DeleteStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ DELETE");
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result.append(" (").append(getCostFormatted()).append(")");
-    }
+
     return result.toString();
   }
 

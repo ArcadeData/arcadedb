@@ -60,6 +60,8 @@ public class LetQueryStep extends AbstractExecutionStep {
       }
 
       private void calculate(final ResultInternal result, final CommandContext context) {
+        final long beginTime = System.nanoTime();
+
         final BasicCommandContext subCtx = new BasicCommandContext();
         subCtx.setDatabase(context.getDatabase());
         subCtx.setParentWithoutOverridingChild(context);
@@ -67,6 +69,8 @@ public class LetQueryStep extends AbstractExecutionStep {
         final List<Result> value = toList(new LocalResultSet(subExecutionPlan));
         result.setMetadata(varName.getStringValue(), value);
         context.setVariable(varName.getStringValue(), value);
+
+        cost = System.nanoTime() - beginTime;
       }
 
       private List<Result> toList(final LocalResultSet oLocalResultSet) {
@@ -82,13 +86,17 @@ public class LetQueryStep extends AbstractExecutionStep {
       public void close() {
         source.close();
       }
-
     };
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (for each record)\n" + spaces + "  " + varName + " = (" + query + ")";
+
+    final StringBuilder result = new StringBuilder();
+    result.append(spaces).append("+ LET (for each record)\n").append(spaces).append("  ").append(varName).append(" = (").append(query).append(")");
+    if (profilingEnabled)
+      result.append(" (").append(getCostFormatted()).append(")");
+    return result.toString();
   }
 }
