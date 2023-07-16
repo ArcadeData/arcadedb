@@ -71,8 +71,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
           if (!commandLC.contains(" limit ") && !commandLC.contains("\nlimit ")) {
             command += " limit " + limit;
           } else {
-            final String[] words = commandLC.split(" ");
-            if (words.length > 2) {
+            final String[] lines = commandLC.split("\\R");
+            final String[] words = lines[lines.length - 1].split(" ");
+            if (words.length > 1) {
               if (!"limit".equals(words[words.length - 2]) && //
                   (words.length < 5 || !"limit".equals(words[words.length - 4])))
                 command += " limit " + limit;
