@@ -46,6 +46,7 @@
     </licenses>
 
     <properties>
+        <maven-compiler-plugin.release>11</maven-compiler-plugin.release>
         <exclude.tests></exclude.tests>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
@@ -146,8 +147,8 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
                 <configuration>
-                    <source>11</source>
-                    <target>11</target>
+                    <source>${maven-compiler-plugin.release}</source>
+                    <target>${maven-compiler-plugin.release}</target>
                     <compilerArgs>
                         <arg>--add-exports</arg>
                         <arg>java.management/sun.management=ALL-UNNAMED</arg>
