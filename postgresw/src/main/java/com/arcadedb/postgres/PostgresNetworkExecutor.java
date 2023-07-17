@@ -18,27 +18,18 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.Constants;
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.*;
+import com.arcadedb.database.*;
+import com.arcadedb.exception.*;
+import com.arcadedb.graph.*;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.network.binary.ChannelBinaryServer;
-import com.arcadedb.query.sql.SQLQueryEngine;
-import com.arcadedb.query.sql.executor.IteratorResultSet;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.security.ServerSecurityException;
-import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.FileUtils;
-import com.arcadedb.utility.Pair;
+import com.arcadedb.network.binary.*;
+import com.arcadedb.query.sql.*;
+import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.schema.*;
+import com.arcadedb.server.*;
+import com.arcadedb.server.security.*;
+import com.arcadedb.utility.*;
 
 import java.io.*;
 import java.net.*;
@@ -407,7 +398,11 @@ public class PostgresNetworkExecutor extends Thread {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
 
     if (resultSet != null) {
+      boolean atLeastOneElement = false;
       for (final Result row : resultSet) {
+        if (row.isElement())
+          atLeastOneElement = true;
+
         final Set<String> propertyNames = row.getPropertyNames();
         for (final String p : propertyNames) {
           final Object value = row.getProperty(p);
@@ -432,6 +427,12 @@ public class PostgresNetworkExecutor extends Thread {
             }
           }
         }
+      }
+
+      if (atLeastOneElement) {
+        columns.put("@rid", PostgresType.VARCHAR);
+        columns.put("@type", PostgresType.VARCHAR);
+        columns.put("@cat", PostgresType.CHAR);
       }
     }
 
@@ -482,7 +483,40 @@ public class PostgresNetworkExecutor extends Thread {
 
       for (final Map.Entry<String, PostgresType> entry : columns.entrySet()) {
         final String propertyName = entry.getKey();
-        final Object value = row.getProperty(propertyName);
+
+        Object value = null;
+        if (propertyName.equals("@rid"))
+          value = row.isElement() ? row.getElement().get().getIdentity() : null;
+        else if (propertyName.equals("@type"))
+          value = row.isElement() ? row.getElement().get().getTypeName() : null;
+        else if (propertyName.equals("@out")) {
+          if (row.isElement()) {
+            final Document record = row.getElement().get();
+            if (record instanceof Vertex)
+              value = ((Vertex) record).countEdges(Vertex.DIRECTION.OUT, null);
+            else if (record instanceof Edge)
+              value = ((Edge) record).getOut();
+          }
+        } else if (propertyName.equals("@in")) {
+          if (row.isElement()) {
+            final Document record = row.getElement().get();
+            if (record instanceof Vertex)
+              value = ((Vertex) record).countEdges(Vertex.DIRECTION.IN, null);
+            else if (record instanceof Edge)
+              value = ((Edge) record).getIn();
+          }
+        } else if (propertyName.equals("@cat")) {
+          if (row.isElement()) {
+            final Document record = row.getElement().get();
+            if (record instanceof Vertex)
+              value = "v";
+            else if (record instanceof Edge)
+              value = "e";
+            else
+              value = "d";
+          }
+        } else
+          value = row.getProperty(propertyName);
 
         entry.getValue().serializeAsText(entry.getValue().code, bufferValues, value);
       }

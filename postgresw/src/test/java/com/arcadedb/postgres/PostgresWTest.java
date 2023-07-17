@@ -109,7 +109,7 @@ public class PostgresWTest extends BaseGraphServerTest {
         pst.execute();
         pst.close();
 
-        final ResultSet rs = st.executeQuery("SELECT name, lastName, short, int, long, float, double, boolean FROM V order by id");
+        ResultSet rs = st.executeQuery("SELECT name, lastName, short, int, long, float, double, boolean FROM V order by id");
 
         Assertions.assertTrue(!rs.isAfterLast());
 
@@ -135,6 +135,26 @@ public class PostgresWTest extends BaseGraphServerTest {
         Assertions.assertEquals(TOTAL + 1, i);
 
         rs.close();
+
+        rs = st.executeQuery("SELECT FROM V order by id");
+
+        Assertions.assertTrue(!rs.isAfterLast());
+
+        i = 0;
+        while (rs.next()) {
+          Assertions.assertTrue(rs.findColumn("@rid") > -1);
+          Assertions.assertTrue(rs.findColumn("@type") > -1);
+          Assertions.assertTrue(rs.findColumn("@cat") > -1);
+
+          Assertions.assertTrue(rs.getString(rs.findColumn("@rid")).startsWith("#"));
+          Assertions.assertEquals("V", rs.getString(rs.findColumn("@type")));
+          Assertions.assertEquals("v", rs.getString(rs.findColumn("@cat")));
+
+          ++i;
+        }
+
+        Assertions.assertEquals(TOTAL + 1, i);
+
       }
     }
   }
