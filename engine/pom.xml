@@ -40,6 +40,8 @@
         <lucene.version>8.11.2</lucene.version>
         <graalvm.version>22.3.2</graalvm.version>
         <hnswlib.version>1.1.0</hnswlib.version>
+        <spatial4j.version>0.8</spatial4j.version>
+        <jts-core.version>1.19.0</jts-core.version>
     </properties>
 
     <build>
@@ -115,12 +117,12 @@
         <dependency>
             <groupId>org.locationtech.spatial4j</groupId>
             <artifactId>spatial4j</artifactId>
-            <version>0.8</version>
+            <version>${spatial4j.version}</version>
         </dependency>
         <dependency>
             <groupId>org.locationtech.jts</groupId>
             <artifactId>jts-core</artifactId>
-            <version>1.19.0</version>
+            <version>${jts-core.version}</version>
             <exclusions>
                 <exclusion>
                     <groupId>xerces</groupId>
