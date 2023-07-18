@@ -18,7 +18,7 @@
  */
 package com.arcadedb.event;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Record;
 
 /**
  * Listener to receive events after a record (documents, vertices and edges) is read from the page.

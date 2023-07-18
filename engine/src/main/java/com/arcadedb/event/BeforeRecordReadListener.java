@@ -18,7 +18,7 @@
  */
 package com.arcadedb.event;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.RID;
 
 /**
  * Listener to receive events before reading records (documents, vertices and edges).
