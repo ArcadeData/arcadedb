@@ -23,6 +23,9 @@ import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 
+/**
+ * The onAfterRead has not been implemented because it could dramatically slow down the entire database.
+ */
 public class WebSocketEventListener implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
 
   private final DatabaseEventWatcherThread watcherThread;

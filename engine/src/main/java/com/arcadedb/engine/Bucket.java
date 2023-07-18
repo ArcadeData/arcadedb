@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.RecordInternal;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -291,7 +292,6 @@ public class Bucket extends PaginatedComponent {
 
             if (recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER || recordSize[0] == FIRST_CHUNK)
               total++;
-
           }
         }
       }
@@ -473,7 +473,18 @@ public class Bucket extends PaginatedComponent {
     return stats;
   }
 
+  /**
+   * The caller should call @{@link DatabaseInternal#invokeAfterReadEvents(Record)} after created the record and manage the result correctly.
+   */
   Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent) {
+    // INVOKE EVENT CALLBACKS
+    if (!((RecordEventsRegistry) database.getEvents()).onBeforeRead(rid))
+      return null;
+    final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+    if (type != null)
+      if (!((RecordEventsRegistry) type.getEvents()).onBeforeRead(rid))
+        return null;
+
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 

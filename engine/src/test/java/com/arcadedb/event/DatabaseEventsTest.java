@@ -98,6 +98,36 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
+  public void testBeforeRead() {
+    final AtomicInteger counter = new AtomicInteger();
+    final BeforeRecordReadListener listener = record -> {
+      counter.incrementAndGet();
+      return counter.get() == 1;
+    };
+
+    database.getEvents().registerListener(listener);
+    try {
+
+      database.transaction(() -> {
+        final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
+        Assertions.assertEquals(0, counter.get());
+        v1.save();
+        Assertions.assertEquals(0, counter.get());
+        Assertions.assertEquals(1, database.countType("Vertex", true));
+      });
+
+      database.transaction(() -> {
+        final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
+        v1.set("modified2", true);
+        Assertions.assertEquals(1, counter.get());
+      });
+
+    } finally {
+      database.getEvents().unregisterListener(listener);
+    }
+  }
+
+  @Test
   public void testBeforeUpdate() {
     final AtomicInteger counter = new AtomicInteger();
     final BeforeRecordUpdateListener listener = record -> {
@@ -132,6 +162,36 @@ public class DatabaseEventsTest extends TestHelper {
       });
 
       Assertions.assertFalse(database.iterateType("Vertex", true).next().asVertex().has("modified2"));
+
+    } finally {
+      database.getEvents().unregisterListener(listener);
+    }
+  }
+
+  @Test
+  public void testAfterRead() {
+    final AtomicInteger counter = new AtomicInteger();
+    final AfterRecordReadListener listener = record -> {
+      counter.incrementAndGet();
+      return counter.get() == 1;
+    };
+
+    database.getEvents().registerListener(listener);
+    try {
+
+      database.transaction(() -> {
+        final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
+        Assertions.assertEquals(0, counter.get());
+        v1.save();
+        Assertions.assertEquals(0, counter.get());
+        Assertions.assertEquals(1, database.countType("Vertex", true));
+      });
+
+      database.transaction(() -> {
+        final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
+        v1.set("modified2", true);
+        Assertions.assertEquals(1, counter.get());
+      });
 
     } finally {
       database.getEvents().unregisterListener(listener);

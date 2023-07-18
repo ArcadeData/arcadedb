@@ -634,7 +634,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     stats.readRecord.incrementAndGet();
 
     if (rid == null)
-      throw new IllegalArgumentException("Record is null");
+      throw new IllegalArgumentException("Record id is null");
 
     return (Record) executeInReadLock((Callable<Object>) () -> {
 
@@ -651,6 +651,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       if (loadContent || type == null) {
         final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
+
+        if (!invokeAfterReadEvents(record))
+          return null;
+
         return record;
       }
 
@@ -1537,6 +1541,16 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   public void saveConfiguration() throws IOException {
     FileUtils.writeFile(configurationFile, configuration.toJSON());
+  }
+
+  @Override
+  public boolean invokeAfterReadEvents(final Record record) {
+    // INVOKE EVENT CALLBACKS
+    if (!events.onAfterRead(record))
+      return false;
+    if (record instanceof Document && !((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterRead(record))
+      return false;
+    return true;
   }
 
   private void lockDatabase() {

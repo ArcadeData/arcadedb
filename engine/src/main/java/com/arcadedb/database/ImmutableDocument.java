@@ -157,6 +157,12 @@ public class ImmutableDocument extends BaseDocument {
 
       buffer = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
       buffer.position(propertiesStartingPosition);
+
+      if (!database.invokeAfterReadEvents(this)) {
+        buffer = null;
+        return false;
+      }
+
       return true;
     }
 
