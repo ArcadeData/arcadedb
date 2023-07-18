@@ -22,8 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.DatabaseChecker;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.*;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -665,6 +664,36 @@ public class BasicGraphTest extends BaseGraphTest {
     }
 
     database.transaction(() -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
+  }
+
+  @Test
+  public void edgeConstraints() {
+    final MutableVertex[] v1 = new MutableVertex[1];
+    final MutableVertex[] v2 = new MutableVertex[1];
+    database.transaction(() -> {
+      database.command("sql", "create edge type EdgeConstraint");
+      database.command("sql", "create property EdgeConstraint.`@out` LINK of " + VERTEX1_TYPE_NAME);
+      database.command("sql", "create property EdgeConstraint.`@in` LINK of " + VERTEX2_TYPE_NAME);
+
+      v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
+      v2[0] = database.newVertex(VERTEX2_TYPE_NAME).set("id", 1002).save();
+      final ResultSet result = database.command("sql", "create edge EdgeConstraint from ? to ?", v1[0], v2[0]);
+      Assertions.assertTrue(result.hasNext());
+    });
+
+    try {
+      database.transaction(() -> v2[0].newEdge("EdgeConstraint", v1[0], true));
+      Assertions.fail();
+    } catch (final ValidationException ex) {
+      // EXPECTED
+    }
+
+    try {
+      database.transaction(() -> database.command("sql", "create edge EdgeConstraint from ? to ?", v2[0], v1[0]));
+      Assertions.fail();
+    } catch (final ValidationException ex) {
+      // EXPECTED
+    }
   }
 
   // https://github.com/ArcadeData/arcadedb/issues/577

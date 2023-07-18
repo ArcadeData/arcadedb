@@ -386,6 +386,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (property != null)
       try {
         final Type propType = property.getType();
+        final String ofType = property.getOfType();
 
         final Class javaImplementation;
         if (propType == Type.DATE)
@@ -400,6 +401,18 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
             if (value instanceof Map) {
               final Map<String, Object> map = (Map<String, Object>) value;
               final String embType = (String) map.get("@type");
+
+              if (ofType != null) {
+                // VALIDATE CONSTRAINT
+                if (!ofType.equals(embType)) {
+                  // CHECK INHERITANCE
+                  final DocumentType schemaType = database.getSchema().getType(embType);
+                  if (!schemaType.instanceOf(ofType))
+                    throw new ValidationException(
+                        "Embedded type '" + embType + "' is not compatible with the type defined in the schema constraint '" + ofType + "'");
+                }
+              }
+
               return newEmbeddedDocument(embType, name);
             }
           }
@@ -415,9 +428,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   private Object setTransformValue(final Object value, final String propertyName) {
-    // SET DIRTY TO FORCE RE-MARSHALL. IF THE RECORD COMES FROM ANOTHER DATABASE WITHOUT A FULL RE-MARSHALL, IT WILL HAVE THE DICTIONARY IDS OF THE OTHER DATABASE
     if (value instanceof EmbeddedDocument) {
       if (!((EmbeddedDocument) value).getDatabase().getName().equals(database.getName())) {
+        // SET DIRTY TO FORCE RE-MARSHALL. IF THE RECORD COMES FROM ANOTHER DATABASE WITHOUT A FULL RE-MARSHALL, IT WILL HAVE THE DICTIONARY IDS OF THE OTHER DATABASE
         ((BaseDocument) value).buffer.rewind();
         final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
             .newMutableRecord(database, ((EmbeddedDocument) value).getType(), null, ((BaseDocument) value).buffer,

@@ -312,6 +312,8 @@ public class DocumentType {
   public Property createProperty(final String propName, final JSONObject prop) {
     final Property p = createProperty(propName, prop.getString("type"));
 
+    if (prop.has("of"))
+      p.setOfType(prop.getString("of"));
     if (prop.has("default"))
       p.setDefaultValue(prop.get("default"));
     if (prop.has("readonly"))
@@ -341,6 +343,17 @@ public class DocumentType {
    * @param propertyType Property type as @{@link Type}
    */
   public Property createProperty(final String propertyName, final Type propertyType) {
+    return createProperty(propertyName, propertyType, null);
+  }
+
+  /**
+   * Creates a new property with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type as @{@link Type}
+   * @param ofType       Linked type. For List the type contained in the list. For RID the schema type name.
+   */
+  public Property createProperty(final String propertyName, final Type propertyType, final String ofType) {
     if (properties.containsKey(propertyName))
       throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
 
@@ -348,6 +361,9 @@ public class DocumentType {
       throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because it was already defined in a super type");
 
     final Property property = new Property(this, propertyName, propertyType);
+
+    if (ofType != null)
+      property.setOfType(ofType);
 
     recordFileChanges(() -> {
       properties.put(propertyName, property);

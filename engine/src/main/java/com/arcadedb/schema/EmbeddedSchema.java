@@ -346,7 +346,7 @@ public class EmbeddedSchema implements Schema {
       // COPY PROPERTIES
       for (final String propName : oldType.getPropertyNames()) {
         final Property prop = oldType.getProperty(propName);
-        newType.createProperty(propName, prop.getType());
+        newType.createProperty(propName, prop.getType(), prop.getOfType());
       }
 
       // COPY ALL THE RECORDS

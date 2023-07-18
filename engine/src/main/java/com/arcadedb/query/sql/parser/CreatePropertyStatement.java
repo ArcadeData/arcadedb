@@ -37,6 +37,7 @@ public class CreatePropertyStatement extends DDLStatement {
   public Identifier                             typeName;
   public Identifier                             propertyName;
   public Identifier                             propertyType;
+  public Identifier                             ofType;
   public List<CreatePropertyAttributeStatement> attributes = new ArrayList<CreatePropertyAttributeStatement>();
   boolean ifNotExists = false;
 
@@ -50,6 +51,8 @@ public class CreatePropertyStatement extends DDLStatement {
     result.setProperty("operation", "create property");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("propertyName", propertyName.getStringValue());
+    if (ofType != null)
+      result.setProperty("of", ofType.getStringValue());
     executeInternal(context, result);
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
@@ -60,19 +63,20 @@ public class CreatePropertyStatement extends DDLStatement {
     final Database db = context.getDatabase();
     final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
     if (typez == null)
-      throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
+      throw new CommandExecutionException("Type '" + typeName.getStringValue() + "' not found");
 
     if (typez.existsProperty(propertyName.getStringValue())) {
       if (ifNotExists)
         return;
 
-      throw new CommandExecutionException("Property " + typeName.getStringValue() + "." + propertyName.getStringValue() + " already exists");
+      throw new CommandExecutionException("Property '" + typeName.getStringValue() + "." + propertyName.getStringValue() + "' already exists");
     }
 
     final Type type = Type.valueOf(propertyType.getStringValue().toUpperCase(Locale.ENGLISH));
 
     // CREATE IT LOCALLY
-    final Property internalProp = typez.createProperty(propertyName.getStringValue(), type);
+    final String ofTypeAsString = ofType != null ? ofType.getStringValue() : null;
+    final Property internalProp = typez.createProperty(propertyName.getStringValue(), type, ofTypeAsString);
     for (final CreatePropertyAttributeStatement attr : attributes) {
       final Object val = attr.setOnProperty(internalProp, context);
       result.setProperty(attr.settingName.getStringValue(), val);
@@ -90,6 +94,11 @@ public class CreatePropertyStatement extends DDLStatement {
     }
     builder.append(" ");
     propertyType.toString(params, builder);
+
+    if (ofType != null) {
+      builder.append(" OF ");
+      ofType.toString(params, builder);
+    }
 
     if (!attributes.isEmpty()) {
       builder.append(" (");
@@ -110,8 +119,9 @@ public class CreatePropertyStatement extends DDLStatement {
     final CreatePropertyStatement result = new CreatePropertyStatement(-1);
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
-    result.propertyType = propertyType == null ? null : propertyType.copy();
     result.ifNotExists = ifNotExists;
+    result.propertyType = propertyType == null ? null : propertyType.copy();
+    result.ofType = ofType == null ? null : ofType.copy();
     result.attributes = attributes == null ? null : attributes.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
@@ -131,6 +141,8 @@ public class CreatePropertyStatement extends DDLStatement {
       return false;
     if (!Objects.equals(propertyType, that.propertyType))
       return false;
+    if (!Objects.equals(ofType, that.ofType))
+      return false;
     if (!Objects.equals(attributes, that.attributes))
       return false;
     return ifNotExists == that.ifNotExists;
@@ -141,6 +153,7 @@ public class CreatePropertyStatement extends DDLStatement {
     int result = typeName != null ? typeName.hashCode() : 0;
     result = 31 * result + (propertyName != null ? propertyName.hashCode() : 0);
     result = 31 * result + (propertyType != null ? propertyType.hashCode() : 0);
+    result = 31 * result + (ofType != null ? ofType.hashCode() : 0);
     result = 31 * result + (attributes != null ? attributes.hashCode() : 0);
     return result;
   }

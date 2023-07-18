@@ -85,6 +85,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                 propRes.setProperty("name", property.getName());
                 propRes.setProperty("type", property.getType());
 
+                if (property.getOfType() != null)
+                  propRes.setProperty("ofType", property.getOfType());
                 if (property.isMandatory())
                   propRes.setProperty("mandatory", property.isMandatory());
                 if (property.isReadonly())

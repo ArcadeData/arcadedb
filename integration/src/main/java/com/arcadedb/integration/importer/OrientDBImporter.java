@@ -99,6 +99,7 @@ public class OrientDBImporter {
 
   private static class OrientDBProperty {
     String              type;
+    String              ofType;
     Boolean             readOnly;
     Boolean             mandatory;
     Boolean             notNull;
@@ -919,6 +920,10 @@ public class OrientDBImporter {
                   case "type":
                     propertyType.type = reader.nextString();
                     break;
+                  case "linkedType":
+                  case "linkedClass":
+                    propertyType.ofType = reader.nextString();
+                    break;
                   case "customFields":
                     propertyType.customFields = parseRecord(reader, false);
                     if (propertyType.customFields.isEmpty())
@@ -1094,7 +1099,7 @@ public class OrientDBImporter {
       }
 
       try {
-        final Property property = t.createProperty(entry.getKey(), Type.valueOf(orientdbType));
+        final Property property = t.createProperty(entry.getKey(), Type.valueOf(orientdbType), orientdbProperty.ofType);
 
         if (orientdbProperty.customFields != null)
           for (Map.Entry<String, Object> customEntry : orientdbProperty.customFields.entrySet())

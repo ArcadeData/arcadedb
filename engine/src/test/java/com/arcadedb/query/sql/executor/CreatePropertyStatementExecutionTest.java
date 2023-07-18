@@ -18,13 +18,13 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
+import com.arcadedb.*;
+import com.arcadedb.database.*;
+import com.arcadedb.exception.*;
+import com.arcadedb.schema.*;
+import org.junit.jupiter.api.*;
+
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -36,7 +36,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   private static final String PROP_ID       = "id";
 
   @Test
-  public void testBasicCreateProperty() throws Exception {
+  public void testBasicCreateProperty() {
     database.command("sql", "create document type testBasicCreateProperty").close();
     database.command("sql", "CREATE property testBasicCreateProperty.name STRING").close();
 
@@ -48,7 +48,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCreateMandatoryPropertyWithEmbeddedType() throws Exception {
+  public void testCreateMandatoryPropertyWithEmbeddedType() {
     database.command("sql", "create document type testCreateMandatoryPropertyWithEmbeddedType").close();
     database.command("sql", "CREATE Property testCreateMandatoryPropertyWithEmbeddedType.officers LIST").close();
 
@@ -60,7 +60,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCreateUnsafePropertyWithEmbeddedType() throws Exception {
+  public void testCreateUnsafePropertyWithEmbeddedType() {
     database.command("sql", "create document type testCreateUnsafePropertyWithEmbeddedType").close();
     database.command("sql", "CREATE Property testCreateUnsafePropertyWithEmbeddedType.officers LIST").close();
 
@@ -72,7 +72,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testExtraSpaces() throws Exception {
+  public void testExtraSpaces() {
     database.command("sql", "create document type testExtraSpaces").close();
     database.command("sql", "CREATE PROPERTY testExtraSpaces.id INTEGER  ").close();
 
@@ -83,32 +83,112 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     Assertions.assertEquals(idProperty.getType(), Type.INTEGER);
   }
 
-  public void testInvalidAttributeName() throws Exception {
+  @Test
+  public void testInvalidAttributeName() {
     try {
       database.command("sql", "create document type CommandExecutionException").close();
       database.command("sql", "CREATE PROPERTY CommandExecutionException.id INTEGER (MANDATORY, INVALID, NOTNULL)  UNSAFE").close();
-      Assertions.fail("Expected CommandExecutionException");
-    } catch (final CommandExecutionException e) {
+      Assertions.fail("Expected CommandSQLParsingException");
+    } catch (final CommandSQLParsingException e) {
       // OK
     }
   }
 
   @Test
-  public void testMandatoryAsLinkedName() throws Exception {
-    database.command("sql", "create document type testMandatoryAsLinkedName").close();
-    database.command("sql", "create document type testMandatoryAsLinkedName_2").close();
-    database.command("sql", "CREATE PROPERTY testMandatoryAsLinkedName.id LIST").close();
+  public void testLinkedTypeConstraint() {
+    database.command("sql", "create document type Invoice").close();
+    database.command("sql", "create document type Product").close();
+    database.command("sql", "CREATE PROPERTY Invoice.products LIST of Product").close();
+    database.command("sql", "CREATE PROPERTY Invoice.tags LIST of String").close();
+    database.command("sql", "CREATE PROPERTY Invoice.settings MAP of String").close();
+    database.command("sql", "CREATE PROPERTY Invoice.mainProduct LINK of Product").close();
+    database.command("sql", "CREATE PROPERTY Invoice.embedded EMBEDDED of Product").close();
 
-    final DocumentType companyClass = database.getSchema().getType("testMandatoryAsLinkedName");
-    final DocumentType mandatoryClass = database.getSchema().getType("testMandatoryAsLinkedName_2");
-    final Property idProperty = companyClass.getProperty(PROP_ID);
+    final DocumentType mandatoryClass = database.getSchema().getType("Product");
 
-    Assertions.assertEquals(idProperty.getName(), PROP_ID);
-    Assertions.assertEquals(idProperty.getType(), Type.LIST);
+    final DocumentType invoiceType = database.getSchema().getType("Invoice");
+    final Property productsProperty = invoiceType.getProperty("products");
+    Assertions.assertEquals(productsProperty.getName(), "products");
+    Assertions.assertEquals(productsProperty.getType(), Type.LIST);
+    Assertions.assertEquals(productsProperty.getOfType(), "Product");
+
+    final Property tagsProperty = invoiceType.getProperty("tags");
+    Assertions.assertEquals(tagsProperty.getName(), "tags");
+    Assertions.assertEquals(tagsProperty.getType(), Type.LIST);
+    Assertions.assertEquals(tagsProperty.getOfType(), "STRING");
+
+    final Property settingsProperty = invoiceType.getProperty("settings");
+    Assertions.assertEquals(settingsProperty.getName(), "settings");
+    Assertions.assertEquals(settingsProperty.getType(), Type.MAP);
+    Assertions.assertEquals(settingsProperty.getOfType(), "STRING");
+
+    final Property mainProductProperty = invoiceType.getProperty("mainProduct");
+    Assertions.assertEquals(mainProductProperty.getName(), "mainProduct");
+    Assertions.assertEquals(mainProductProperty.getType(), Type.LINK);
+    Assertions.assertEquals(mainProductProperty.getOfType(), "Product");
+
+    final Property embeddedProperty = invoiceType.getProperty("embedded");
+    Assertions.assertEquals(embeddedProperty.getName(), "embedded");
+    Assertions.assertEquals(embeddedProperty.getType(), Type.EMBEDDED);
+    Assertions.assertEquals(embeddedProperty.getOfType(), "Product");
+
+    final MutableDocument[] validInvoice = new MutableDocument[1];
+    database.transaction(() -> {
+      final MutableDocument linked = database.newDocument("Product").save();
+
+      validInvoice[0] = database.newDocument("Invoice").set("products", List.of(linked));
+      validInvoice[0].set("tags", List.of("tons of money", "hard to close"));
+      validInvoice[0].set("settings", Map.of("locale", "US"));
+      validInvoice[0].set("mainProduct", linked);
+      validInvoice[0].newEmbeddedDocument("Product", "embedded");
+      validInvoice[0].save();
+    });
+
+    try {
+      database.transaction(() -> {
+        database.newDocument("Invoice").set("products",//
+            List.of(database.newDocument("Invoice").save())).save();
+      });
+      Assertions.fail();
+    } catch (ValidationException e) {
+      // EXPECTED
+    }
+
+    try {
+      validInvoice[0].set("tags", List.of(3, "hard to close")).save();
+      Assertions.fail();
+    } catch (ValidationException e) {
+      // EXPECTED
+    }
+
+    try {
+      validInvoice[0].set("settings", Map.of("test", 10F)).save();
+      Assertions.fail();
+    } catch (ValidationException e) {
+      // EXPECTED
+    }
+
+    try {
+      database.transaction(() -> {
+        validInvoice[0].set("mainProduct", database.newDocument("Invoice").save()).save();
+      });
+      Assertions.fail();
+    } catch (ValidationException e) {
+      // EXPECTED
+    }
+
+    try {
+      database.transaction(() -> {
+        validInvoice[0].newEmbeddedDocument("Invoice", "embedded").save();
+      });
+      Assertions.fail();
+    } catch (ValidationException e) {
+      // EXPECTED
+    }
   }
 
   @Test
-  public void testIfNotExists() throws Exception {
+  public void testIfNotExists() {
     database.command("sql", "create document type testIfNotExists").close();
     database.command("sql", "CREATE property testIfNotExists.name if not exists STRING").close();
 

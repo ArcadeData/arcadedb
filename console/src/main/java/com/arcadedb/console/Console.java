@@ -821,6 +821,7 @@ public class Console {
           final TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
           row.setField("NAME", property.getProperty("name"));
           row.setField("TYPE", property.getProperty("type"));
+          row.setField("OF", property.hasProperty("of") ? property.getProperty("of") : null);
           row.setField("MANDATORY", property.hasProperty("mandatory") ? property.getProperty("mandatory") : "false");
           row.setField("READONLY", property.hasProperty("readOnly") ? property.getProperty("readOnly") : "false");
           row.setField("NOT NULL", property.hasProperty("notNull") ? property.getProperty("notNull") : "false");

@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.*;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.parser.Expression;
@@ -43,6 +44,7 @@ public class Property {
   private              String              max             = null;
   private              String              min             = null;
   private              String              regexp          = null;
+  private              String              ofType          = null;
   private final static Object              DEFAULT_NOT_SET = "<DEFAULT_NOT_SET>";
 
   public Property(final DocumentType owner, final String name, final Type type) {
@@ -124,6 +126,31 @@ public class Property {
         propertiesWithDefaultDefined.add(name);
       owner.propertiesWithDefaultDefined = Collections.unmodifiableSet(propertiesWithDefaultDefined);
 
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  public String getOfType() {
+    return ofType;
+  }
+
+  public Property setOfType(String ofType) {
+    final boolean changed = !Objects.equals(this.ofType, ofType);
+    if (changed) {
+      if (type == Type.LIST || type == Type.MAP) {
+        if (Type.getTypeByName(ofType) != null) {
+          ofType = ofType.toUpperCase();
+        } else {
+          if (!owner.schema.existsType(ofType))
+            throw new SchemaException("Type '" + ofType + "' not defined");
+        }
+      } else if (type == Type.LINK || type == Type.EMBEDDED) {
+        if (!owner.schema.existsType(ofType))
+          throw new SchemaException("Type '" + ofType + "' not defined");
+      }
+
+      this.ofType = ofType;
       owner.getSchema().getEmbedded().saveConfiguration();
     }
     return this;
@@ -256,6 +283,9 @@ public class Property {
 
     json.put("type", type.name);
 
+    if (ofType != null)
+      json.put("of", ofType);
+
     final Object defValue = defaultValue;
     if (defValue != DEFAULT_NOT_SET)
       json.put("default", defValue);
@@ -298,7 +328,7 @@ public class Property {
     if (o == null || getClass() != o.getClass())
       return false;
     final Property property = (Property) o;
-    return id == property.id && Objects.equals(name, property.name) && Objects.equals(type, property.type);
+    return id == property.id && Objects.equals(name, property.name) && Objects.equals(type, property.type) && Objects.equals(ofType, property.ofType);
   }
 
   @Override
