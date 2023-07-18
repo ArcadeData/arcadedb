@@ -1548,8 +1548,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     // INVOKE EVENT CALLBACKS
     if (!events.onAfterRead(record))
       return false;
-    if (record instanceof Document && !((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterRead(record))
-      return false;
+    if (record instanceof Document) {
+      final DocumentType type = ((Document) record).getType();
+      if (type != null && !((RecordEventsRegistry) type.getEvents()).onAfterRead(record))
+        return false;
+    }
     return true;
   }
 
