@@ -130,8 +130,8 @@ class SQLMethodTransformTest {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(new DatabaseInternal() {
       @Override
-      public boolean invokeAfterReadEvents(final Record record) {
-        return true;
+      public Record invokeAfterReadEvents(final Record record) {
+        return record;
       }
 
       @Override

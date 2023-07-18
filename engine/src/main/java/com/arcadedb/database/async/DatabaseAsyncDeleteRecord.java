@@ -40,19 +40,21 @@ public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
-      // INVOKE EVENT CALLBACKS
-      if (!((RecordEventsRegistry) database.getEvents()).onBeforeDelete(record))
-        return;
-      if (record instanceof Document)
-        if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeDelete(record))
+      if (record instanceof Document) {
+        // INVOKE EVENT CALLBACKS
+        if (!((RecordEventsRegistry) database.getEvents()).onBeforeDelete((Document) record))
           return;
+        if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeDelete((Document) record))
+          return;
+      }
 
       database.deleteRecordNoLock(record);
 
-      // INVOKE EVENT CALLBACKS
-      ((RecordEventsRegistry) database.getEvents()).onAfterDelete(record);
-      if (record instanceof Document)
-        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterDelete(record);
+      if (record instanceof Document) {
+        // INVOKE EVENT CALLBACKS
+        ((RecordEventsRegistry) database.getEvents()).onAfterDelete((Document) record);
+        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterDelete((Document) record);
+      }
 
       if (onOkCallback != null)
         onOkCallback.call(record);

@@ -652,10 +652,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
 
-        if (!invokeAfterReadEvents(record))
-          return null;
-
-        return record;
+        return invokeAfterReadEvents(record);
       }
 
       record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
@@ -1544,16 +1541,17 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public boolean invokeAfterReadEvents(final Record record) {
+  public Record invokeAfterReadEvents(Record record) {
     // INVOKE EVENT CALLBACKS
-    if (!events.onAfterRead(record))
-      return false;
+    record = events.onAfterRead(record);
+    if (record == null)
+      return null;
     if (record instanceof Document) {
       final DocumentType type = ((Document) record).getType();
-      if (type != null && !((RecordEventsRegistry) type.getEvents()).onAfterRead(record))
-        return false;
+      if (type != null)
+        return ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
     }
-    return true;
+    return record;
   }
 
   private void lockDatabase() {

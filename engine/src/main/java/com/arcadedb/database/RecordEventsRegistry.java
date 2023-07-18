@@ -229,14 +229,16 @@ public class RecordEventsRegistry implements RecordEvents {
       listener.onAfterCreate(record);
   }
 
-  public boolean onAfterRead(final Record record) {
+  public Record onAfterRead(Record record) {
     if (afterReadListeners.isEmpty())
-      return true;
+      return record;
 
-    for (AfterRecordReadListener listener : afterReadListeners)
-      if (!listener.onAfterRead(record))
-        return false;
-    return true;
+    for (AfterRecordReadListener listener : afterReadListeners) {
+      record = listener.onAfterRead(record);
+      if (record == null)
+        return null;
+    }
+    return record;
   }
 
   public void onAfterUpdate(final Record record) {

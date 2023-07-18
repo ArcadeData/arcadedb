@@ -37,8 +37,6 @@ import java.util.concurrent.*;
  * Internal API, do not use as an end user.
  */
 public interface DatabaseInternal extends Database {
-  boolean invokeAfterReadEvents(Record record);
-
   enum CALLBACK_EVENT {
     TX_AFTER_WAL_WRITE, DB_NOT_CLOSED
   }
@@ -103,6 +101,8 @@ public interface DatabaseInternal extends Database {
   void updateRecordNoLock(Record record, boolean discardRecordAfter);
 
   void deleteRecordNoLock(Record record);
+
+  Record invokeAfterReadEvents(Record record);
 
   void kill();
 

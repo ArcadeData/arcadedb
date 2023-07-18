@@ -173,7 +173,7 @@ public class DatabaseEventsTest extends TestHelper {
     final AtomicInteger counter = new AtomicInteger();
     final AfterRecordReadListener listener = record -> {
       counter.incrementAndGet();
-      return counter.get() == 1;
+      return record;
     };
 
     database.getEvents().registerListener(listener);

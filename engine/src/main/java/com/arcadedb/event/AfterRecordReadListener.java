@@ -32,7 +32,7 @@ public interface AfterRecordReadListener {
   /**
    * Callback invoked right after a record (documents, vertices and edges) is read from the page. You can use this callback to enrich the record with additional properties.
    *
-   * @return false to hide the record to the caller, otherwise true
+   * @return the enhanced record if needed, otherwise the same record instance received as parameter.
    */
-  boolean onAfterRead(Record record);
+  Record onAfterRead(Record record);
 }
