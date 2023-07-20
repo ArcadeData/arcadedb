@@ -52,6 +52,7 @@ public class ServerLogManager extends LogManager {
   }
 
   public static void resetFinally() {
-    instance.reset0();
+    if (instance != null)
+      instance.reset0();
   }
 }
