@@ -641,6 +641,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   void requestClusterConfiguration() {
+    final JSONObject response;
     try {
       final HttpURLConnection connection = createConnection("GET", getUrl("server?mode=cluster"));
       connection.connect();
@@ -651,10 +652,17 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
         throw new SecurityException("Error on requesting cluster configuration: " + connection.getResponseMessage(), detail);
       }
 
-      final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
+      response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
 
       LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
 
+    } catch (final SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error on connecting to the server", e);
+    }
+
+    try {
       if (!response.has("ha")) {
         leaderServer = new Pair<>(originalServer, originalPort);
         replicaServerList.clear();
