@@ -78,6 +78,13 @@ public class ArcadeDBServer {
   private             ServerMetrics                         serverMetrics                        = new DefaultServerMetrics();
   private             ServerMonitor                         serverMonitor;
 
+  static {
+    // must be called before any Logger method is used.
+    System.setProperty("java.util.logging.manager", ServerLogManager.class.getName());
+    LogManager.instance();
+    ServerLogManager.enableReset(false);
+  }
+
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
     serverRootPath = IntegrationUtils.setRootPath(configuration);
@@ -240,6 +247,8 @@ public class ArcadeDBServer {
     if (status == STATUS.OFFLINE || status == STATUS.SHUTTING_DOWN)
       return;
 
+    LogManager.instance().log(this, Level.INFO, "Shutting down ArcadeDB Server...");
+
     if (serverMonitor != null)
       serverMonitor.stop();
 
@@ -248,8 +257,6 @@ public class ArcadeDBServer {
     } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
-
-    LogManager.instance().log(this, Level.INFO, "Shutting down ArcadeDB Server...");
 
     status = STATUS.SHUTTING_DOWN;
 
@@ -267,8 +274,8 @@ public class ArcadeDBServer {
     if (security != null)
       CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service", false);
 
-    for (final Database db : databases.values())
-      CodeUtils.executeIgnoringExceptions(db::close, "Error closing database '" + db.getName() + "'", false);
+    for (final ServerDatabase db : databases.values())
+      CodeUtils.executeIgnoringExceptions(db.getEmbedded()::close, "Error closing database '" + db.getName() + "'", false);
     databases.clear();
 
     CodeUtils.executeIgnoringExceptions(() -> {
@@ -289,6 +296,8 @@ public class ArcadeDBServer {
     status = STATUS.OFFLINE;
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, "Server shutdown correctly");
+
+    ServerLogManager.resetFinally();
   }
 
   public Collection<ServerPlugin> getPlugins() {
@@ -634,6 +643,7 @@ public class ArcadeDBServer {
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(1);
 
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      LogManager.instance().log(this, Level.SEVERE, "Received shutdown signal. The server will be halted");
       stop();
     }));
 
