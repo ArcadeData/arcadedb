@@ -41,11 +41,11 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 
 /**
- * Implements encryption at rest by using the database events.
+ * Implements record encryption by using the database events.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class EncryptionAtRestTest extends TestHelper implements BeforeRecordCreateListener, AfterRecordReadListener, BeforeRecordUpdateListener {
+public class RecordEncryptionTest extends TestHelper implements BeforeRecordCreateListener, AfterRecordReadListener, BeforeRecordUpdateListener {
   private final static String          password           = "JustAPassword";
   private final static String          PASSWORD_ALGORITHM = "PBKDF2WithHmacSHA256";
   private final static String          ALGORITHM          = "AES/CBC/PKCS5Padding";
