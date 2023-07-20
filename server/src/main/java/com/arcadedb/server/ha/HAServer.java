@@ -290,7 +290,9 @@ public class HAServer implements ServerPlugin {
 
         try {
 
-          final String[] parts = serverAddressCopy.split(":");
+          String[] parts = serverAddressCopy.split(":");
+          if (parts.length == 1)
+            parts = new String[] { parts[0], DEFAULT_PORT };
 
           final ChannelBinaryClient channel = createNetworkConnection(parts[0], Integer.parseInt(parts[1]), ReplicationProtocol.COMMAND_VOTE_FOR_ME);
           channel.writeLong(electionTurn);
@@ -331,7 +333,7 @@ public class HAServer implements ServerPlugin {
 
           channel.close();
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.INFO, "Error contacting server %s for election", serverAddressCopy);
+          LogManager.instance().log(this, Level.INFO, "Error contacting server %s for election", e, serverAddressCopy);
         }
       }
 
