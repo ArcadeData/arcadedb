@@ -30,6 +30,8 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
+import com.arcadedb.gremlin.service.ArcadeServiceRegistry;
+import com.arcadedb.gremlin.service.VectorNeighborsFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -49,6 +51,7 @@ import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.io.Io;
+import org.apache.tinkerpop.gremlin.structure.service.ServiceRegistry;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.opencypher.gremlin.traversal.CustomFunctions;
@@ -81,6 +84,7 @@ public class ArcadeGraph implements Graph, Closeable {
   protected            Features                  features       = new ArcadeGraphFeatures();
   private              GremlinLangScriptEngine   gremlinJavaEngine;
   private              GremlinGroovyScriptEngine gremlinGroovyEngine;
+  private              ServiceRegistry           serviceRegistry;
 
   static {
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class, TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
@@ -436,6 +440,11 @@ public class ArcadeGraph implements Graph, Closeable {
     return gremlinGroovyEngine;
   }
 
+  @Override
+  public ServiceRegistry getServiceRegistry() {
+    return serviceRegistry;
+  }
+
   private void init() {
     // INITIALIZE CYPHER
     final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
@@ -449,5 +458,8 @@ public class ArcadeGraph implements Graph, Closeable {
     // INITIALIZE GROOVY ENGINE
     gremlinGroovyEngine = new GremlinGroovyScriptEngine(importPlugin.create().getCustomizers().get());
     gremlinGroovyEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
+
+    serviceRegistry = new ArcadeServiceRegistry(this);
+    serviceRegistry.registerService(new VectorNeighborsFactory(this));
   }
 }

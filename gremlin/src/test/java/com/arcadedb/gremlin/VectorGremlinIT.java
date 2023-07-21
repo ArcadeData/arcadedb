@@ -16,12 +16,11 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.integration.importer;
+package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.integration.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
@@ -32,7 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.io.*;
 import java.util.*;
 
-public class GloVeImporterIT {
+public class VectorGremlinIT {
   @Test
   public void importDocuments() {
     final String databasePath = "target/databases/test-glove";
@@ -52,7 +51,7 @@ public class GloVeImporterIT {
 
       Assertions.assertEquals(10, db.countType("Word", true));
 
-      final String key = "user";
+      final String key = "<user>";
 
       ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", key, 10);
       Assertions.assertTrue(resultSet.hasNext());
@@ -65,9 +64,25 @@ public class GloVeImporterIT {
           approximateResults.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
       }
 
+      Assertions.assertEquals(9, approximateResults.size());
+
+      resultSet = db.query("gremlin", "g.call('arcadedb.vectorNeighbors', [ 'indexName': 'Word[name,vector]', 'key': '" + key + "', 'limit': 10 ] )");
+      Assertions.assertTrue(resultSet.hasNext());
+      final List<Object> approximateResultsFromGremlin = new ArrayList<>();
+      while (resultSet.hasNext()) {
+        final Result row = resultSet.next();
+        final List<Map<String, Object>> neighbors = row.getProperty("result");
+
+        for (Map<String, Object> neighbor : neighbors)
+          approximateResultsFromGremlin.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
+      }
+
+      Assertions.assertEquals(9, approximateResultsFromGremlin.size());
+
+      Assertions.assertEquals(approximateResults, approximateResultsFromGremlin);
+
     } finally {
       db.drop();
-      TestHelper.checkActiveDatabases();
       FileUtils.deleteRecursively(new File(databasePath));
     }
   }
