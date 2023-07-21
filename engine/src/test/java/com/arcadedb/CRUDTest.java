@@ -21,7 +21,6 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
@@ -33,7 +32,7 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class CRUDTest extends TestHelper {
-  private static final int TOT = Bucket.DEF_PAGE_SIZE * 2;
+  private static final int TOT = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 2;
 
   @Override
   protected void beginTest() {

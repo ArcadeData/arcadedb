@@ -21,7 +21,6 @@ package com.arcadedb.integration.exporter;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.query.sql.executor.Result;
@@ -41,7 +40,8 @@ public class SQLLocalExporterTest {
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
 
     try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
-      database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
+      database.getConfiguration()
+          .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
 
       database.command("sql", "import database file://" + inputFile.getFile());
 
@@ -73,7 +73,8 @@ public class SQLLocalExporterTest {
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
 
     try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
-      database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
+      database.getConfiguration()
+          .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
 
       database.command("sql", "import database file://" + inputFile.getFile());
 

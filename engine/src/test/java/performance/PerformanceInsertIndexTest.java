@@ -18,11 +18,11 @@
  */
 package performance;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.NullLogger;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.async.ErrorCallback;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -61,8 +61,8 @@ public class PerformanceInsertIndexTest extends TestHelper {
     if (!database.getSchema().existsType(TYPE_NAME)) {
       database.begin();
 
-      final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(PARALLEL).withPageSize(Bucket.DEF_PAGE_SIZE)
-          .create();
+      final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(PARALLEL)
+          .withPageSize(((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue())).create();
 
       type.createProperty("id", Long.class);
       type.createProperty("area", String.class);

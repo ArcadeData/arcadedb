@@ -55,7 +55,6 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
  */
 public class Bucket extends PaginatedComponent {
   public static final    String BUCKET_EXT                       = "bucket";
-  public static final    int    DEF_PAGE_SIZE                    = 65536;
   public static final    int    CURRENT_VERSION                  = 0;
   public static final    long   RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
   public static final    long   FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK

@@ -18,14 +18,13 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -174,8 +173,7 @@ public enum GlobalConfiguration {
 
   TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", SCOPE.DATABASE, "Default number of buckets to create per type", Integer.class, 8),
 
-  BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE, "Default page size in bytes for buckets. Default is " + Bucket.DEF_PAGE_SIZE,
-      Integer.class, Bucket.DEF_PAGE_SIZE),
+  BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE, "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
 
   ASYNC_WORKER_THREADS("arcadedb.asyncWorkerThreads", SCOPE.DATABASE, "Number of asynchronous worker threads. 0 (default) = available cores minus 1",
       Integer.class, Runtime.getRuntime().availableProcessors() > 1 ? Runtime.getRuntime().availableProcessors() - 1 : 1),
