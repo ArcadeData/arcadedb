@@ -44,6 +44,7 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -523,6 +524,11 @@ public class ConsoleAsyncInsertTest {
     result.put("firstOrderId", firstOrderId[0]);
     result.put("lastOrderId", firstOrderId[0] + totalRows.get() - 1);
     return result;
+  }
+
+  @BeforeEach
+  public void cleanup() throws IOException {
+    FileUtils.deleteRecursively(new File("./databases"));
   }
 
   @AfterEach

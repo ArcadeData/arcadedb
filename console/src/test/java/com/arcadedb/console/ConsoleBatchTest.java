@@ -21,7 +21,9 @@ package com.arcadedb.console;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,5 +61,11 @@ public class ConsoleBatchTest {
   public void cleanup() throws IOException {
     FileUtils.deleteRecursively(new File("./target/databases"));
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+  }
+
+  @AfterEach
+  public void endTests() {
+    TestServerHelper.checkActiveDatabases();
+    GlobalConfiguration.resetAll();
   }
 }
