@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
@@ -52,9 +53,9 @@ public class BasicCommandContext implements CommandContext {
     if (name == null)
       return iDefault;
 
-    final Object result;
+    Object result;
 
-    final int pos = name.indexOf('.');
+    int pos = name.indexOf('.');
     String firstPart = pos > -1 ? name.substring(0, pos) : name;
     String otherParts = pos > -1 ? name.substring(pos + 1) : "";
 
@@ -85,6 +86,20 @@ public class BasicCommandContext implements CommandContext {
           result = child.getVariablePath(firstPart);
         else
           result = getVariableFromParentHierarchy(firstPart);
+      }
+
+      while (!otherParts.isEmpty()) {
+        pos = otherParts.indexOf('.');
+        firstPart = pos > -1 ? otherParts.substring(0, pos) : otherParts;
+        otherParts = pos > -1 ? otherParts.substring(pos + 1) : "";
+
+        if (result instanceof Result)
+          result = ((Result) result).getProperty(firstPart);
+        else if (result instanceof Map)
+          result = ((Map) result).get(firstPart);
+        else if (result instanceof Document)
+          result = ((Document) result).get(firstPart);
+
       }
     }
 

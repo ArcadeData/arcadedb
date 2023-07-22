@@ -280,22 +280,22 @@ public class SelectExecutionPlanner {
   private boolean handleHardwiredCountOnClass(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context,
       final boolean profilingEnabled) {
     final Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
-    if (targetClass == null) {
+    if (targetClass == null)
       return false;
-    }
-    if (info.distinct || info.expand) {
+
+    if (info.distinct || info.expand)
       return false;
-    }
-    if (info.preAggregateProjection != null) {
+
+    if (info.preAggregateProjection != null)
       return false;
-    }
-    if (!isCountStar(info)) {
+
+    if (!isCountStar(info))
       return false;
-    }
-    if (!isMinimalQuery(info)) {
+
+    if (!isMinimalQuery(info))
       return false;
-    }
-    result.chain(new CountFromClassStep(targetClass, info.projection.getAllAliases().iterator().next(), context, profilingEnabled));
+
+    result.chain(new CountFromClassStep(info.target.toString(), info.projection.getAllAliases().iterator().next(), context, profilingEnabled));
     return true;
   }
 

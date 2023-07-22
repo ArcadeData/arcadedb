@@ -325,7 +325,7 @@ public class BaseExpression extends MathExpression {
         return Collections.singletonList(modifier.suffix.identifier.toString());
       }
     }
-    return null;
+    return Collections.emptyList();
   }
 
   @Override

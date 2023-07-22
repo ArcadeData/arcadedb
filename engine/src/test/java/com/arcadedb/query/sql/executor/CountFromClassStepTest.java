@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.query.sql.parser.Identifier;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -37,11 +36,9 @@ public class CountFromClassStepTest {
         document.save();
       }
 
-      final Identifier classIdentifier = new Identifier(className);
-
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final CountFromClassStep step = new CountFromClassStep(classIdentifier, ALIAS, context, false);
+      final CountFromClassStep step = new CountFromClassStep(className, ALIAS, context, false);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(20, (long) result.next().getProperty(ALIAS));

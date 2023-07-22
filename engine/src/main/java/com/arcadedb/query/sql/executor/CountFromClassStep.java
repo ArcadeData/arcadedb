@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -32,8 +31,8 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila - at - gmail.com)
  */
 public class CountFromClassStep extends AbstractExecutionStep {
-  private final Identifier target;
-  private final String     alias;
+  private final String target;
+  private final String alias;
 
   private boolean executed = false;
 
@@ -43,7 +42,7 @@ public class CountFromClassStep extends AbstractExecutionStep {
    * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromClassStep(final Identifier targetClass, final String alias, final CommandContext context, final boolean profilingEnabled) {
+  public CountFromClassStep(final String targetClass, final String alias, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.target = targetClass;
     this.alias = alias;
@@ -66,12 +65,16 @@ public class CountFromClassStep extends AbstractExecutionStep {
         }
         final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          final DocumentType typez = context.getDatabase().getSchema().getType(target.getStringValue());
+          String targetName = target;
+          if (targetName.startsWith("$"))
+            targetName = (String) context.getVariablePath(targetName);
+
+          final DocumentType typez = context.getDatabase().getSchema().getType(targetName);
           if (typez == null) {
-            throw new CommandExecutionException("Type " + target.getStringValue() + " does not exist in the database schema");
+            throw new CommandExecutionException("Type " + targetName + " does not exist in the database schema");
           }
 
-          final long size = context.getDatabase().countType(target.getStringValue(), true);
+          final long size = context.getDatabase().countType(targetName, true);
           executed = true;
           final ResultInternal result = new ResultInternal();
           result.setProperty(alias, size);
