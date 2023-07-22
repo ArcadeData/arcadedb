@@ -72,33 +72,34 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EmbeddedSchema implements Schema {
-  public static final String                                 DEFAULT_ENCODING      = "UTF-8";
-  public static final String                                 SCHEMA_FILE_NAME      = "schema.json";
-  public static final String                                 SCHEMA_PREV_FILE_NAME = "schema.prev.json";
-  public static final int                                    BUILD_TX_BATCH_SIZE   = 100_000;
-  final               IndexFactory                           indexFactory          = new IndexFactory();
-  final               Map<String, DocumentType>              types                 = new HashMap<>();
-  private             String                                 encoding              = DEFAULT_ENCODING;
+  public static final String                                 DEFAULT_ENCODING       = "UTF-8";
+  public static final String                                 SCHEMA_FILE_NAME       = "schema.json";
+  public static final String                                 SCHEMA_PREV_FILE_NAME  = "schema.prev.json";
+  public static final String                                 CACHED_COUNT_FILE_NAME = "cached-count.json";
+  public static final int                                    BUILD_TX_BATCH_SIZE    = 100_000;
+  final               IndexFactory                           indexFactory           = new IndexFactory();
+  final               Map<String, DocumentType>              types                  = new HashMap<>();
+  private             String                                 encoding               = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
-  private final       List<Component>                        files                 = new ArrayList<>();
-  private final       Map<String, Bucket>                    bucketMap             = new HashMap<>();
-  private             Map<Integer, DocumentType>             bucketId2TypeMap      = new HashMap<>();
-  protected final     Map<String, IndexInternal>             indexMap              = new HashMap<>();
+  private final       List<Component>                        files                  = new ArrayList<>();
+  private final       Map<String, Bucket>                    bucketMap              = new HashMap<>();
+  private             Map<Integer, DocumentType>             bucketId2TypeMap       = new HashMap<>();
+  protected final     Map<String, IndexInternal>             indexMap               = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
   private final       ComponentFactory                       componentFactory;
   private             Dictionary                             dictionary;
-  private             String                                 dateFormat            = GlobalConfiguration.DATE_FORMAT.getValueAsString();
-  private             String                                 dateTimeFormat        = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
-  private             TimeZone                               timeZone              = TimeZone.getDefault();
-  private             ZoneId                                 zoneId                = ZoneId.systemDefault();
-  private             boolean                                readingFromFile       = false;
-  private             boolean                                dirtyConfiguration    = false;
-  private             boolean                                loadInRamCompleted    = false;
-  private             boolean                                multipleUpdate        = false;
-  private final       AtomicLong                             versionSerial         = new AtomicLong();
-  private final       Map<String, FunctionLibraryDefinition> functionLibraries     = new ConcurrentHashMap<>();
+  private             String                                 dateFormat             = GlobalConfiguration.DATE_FORMAT.getValueAsString();
+  private             String                                 dateTimeFormat         = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
+  private             TimeZone                               timeZone               = TimeZone.getDefault();
+  private             ZoneId                                 zoneId                 = ZoneId.systemDefault();
+  private             boolean                                readingFromFile        = false;
+  private             boolean                                dirtyConfiguration     = false;
+  private             boolean                                loadInRamCompleted     = false;
+  private             boolean                                multipleUpdate         = false;
+  private final       AtomicLong                             versionSerial          = new AtomicLong();
+  private final       Map<String, FunctionLibraryDefinition> functionLibraries      = new ConcurrentHashMap<>();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -564,12 +565,54 @@ public class EmbeddedSchema implements Schema {
   }
 
   public void close() {
+    writeCachedCountFile();
     files.clear();
     types.clear();
     bucketMap.clear();
     indexMap.clear();
     dictionary = null;
     bucketId2TypeMap.clear();
+  }
+
+  private void readCachedCountFile() {
+    try {
+      File file = new File(databasePath + File.separator + CACHED_COUNT_FILE_NAME);
+      if (!file.exists() || file.length() == 0)
+        return;
+
+      final JSONObject json;
+      try (final FileInputStream fis = new FileInputStream(file)) {
+        final String fileContent = FileUtils.readStreamAsString(fis, encoding);
+        json = new JSONObject(fileContent);
+      }
+
+      for (Map.Entry<String, Object> entry : json.toMap().entrySet()) {
+        final Bucket bucket = bucketMap.get(entry.getKey());
+        if (bucket != null) {
+          bucket.setCachedRecordCount(((Number) entry.getValue()).longValue());
+        }
+      }
+
+    } catch (Throwable e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on saving cached count file", e);
+    }
+  }
+
+  private void writeCachedCountFile() {
+    try {
+      final JSONObject json = new JSONObject();
+      for (Map.Entry<String, Bucket> b : bucketMap.entrySet()) {
+        final long cachedCount = b.getValue().getCachedRecordCount();
+        if (cachedCount > -1)
+          json.put(b.getKey(), cachedCount);
+      }
+
+      try (final FileWriter file = new FileWriter(databasePath + File.separator + CACHED_COUNT_FILE_NAME)) {
+        file.write(json.toString());
+      }
+    } catch (Throwable e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on saving cached count file", e);
+    }
   }
 
   public Dictionary getDictionary() {
@@ -1057,6 +1100,7 @@ public class EmbeddedSchema implements Schema {
         saveConfiguration();
 
       rebuildBucketTypeMap();
+      readCachedCountFile();
     }
   }
 

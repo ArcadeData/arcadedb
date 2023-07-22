@@ -40,6 +40,7 @@ import com.arcadedb.log.LogManager;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 /**
@@ -55,6 +56,7 @@ import java.util.logging.*;
 public class TransactionContext implements Transaction {
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new HashMap<>();
+  private final Map<Integer, AtomicInteger>          bucketRecordDelta     = new HashMap<>();
   private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
   private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
   private final TransactionIndexContext              indexChanges;
@@ -408,6 +410,28 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Returns the delta of records considering the pending changes in transaction.
+   */
+  public long getBucketRecordDelta(final int bucketId) {
+    final AtomicInteger delta = bucketRecordDelta.get(bucketId);
+    if (delta != null)
+      return delta.get();
+    return 0;
+  }
+
+  /**
+   * Updates the record counter for buckets. At transaction commit, the delta is updated into the schema.
+   */
+  public void updateBucketRecordDelta(final int bucketId, final int delta) {
+    AtomicInteger counter = bucketRecordDelta.get(bucketId);
+    if (counter == null) {
+      counter = new AtomicInteger(delta);
+      bucketRecordDelta.put(bucketId, counter);
+    } else
+      counter.addAndGet(delta);
+  }
+
+  /**
    * Executes 1st phase from a replica.
    */
   public void commitFromReplica(final WALFile.WALTransaction buffer,
@@ -591,6 +615,12 @@ public class TransactionContext implements Transaction {
         }
       }
 
+      // UPDATE RECORD COUNT
+      for (Map.Entry<Integer, AtomicInteger> entry : bucketRecordDelta.entrySet()) {
+        final Bucket bucket = database.getSchema().getBucketById(entry.getKey());
+        bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue().get());
+      }
+
       for (final Record r : modifiedRecordsCache.values())
         ((RecordInternal) r).unsetDirty();
 
@@ -642,6 +672,7 @@ public class TransactionContext implements Transaction {
     modifiedRecordsCache.clear();
     immutableRecordsCache.clear();
     immutablePages.clear();
+    bucketRecordDelta.clear();
     txId = -1;
   }
 

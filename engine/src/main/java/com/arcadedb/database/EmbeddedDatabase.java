@@ -807,7 +807,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         bucket = schema.getBucketByName(bucketName);
 
       ((RecordInternal) record).setIdentity(bucket.createRecord(record, discardRecordAfter));
-      getTransaction().updateRecordInCache(record);
+
+      final TransactionContext transaction = getTransaction();
+      transaction.updateRecordInCache(record);
+      transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
 
       if (record instanceof MutableDocument) {
         final MutableDocument doc = (MutableDocument) record;
@@ -970,6 +973,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       events.onAfterDelete(record);
       if (record instanceof Document)
         ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterDelete(record);
+
+      final TransactionContext transaction = getTransaction();
+      transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
 
     } finally {
       if (implicitTransaction) {
@@ -1682,6 +1688,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       if (mode == ComponentFile.MODE.READ_ONLY)
         throw new DatabaseMetadataException("Database needs recovery but has been open in read only mode");
+
+      // RESET THE COUNT OF RECORD IN CASE THE DATABASE WAS NOT CLOSED PROPERLY
+      for (Bucket b : schema.getBuckets())
+        b.setCachedRecordCount(-1);
 
       executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
 

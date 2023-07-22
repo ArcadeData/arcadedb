@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.RecordInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -36,6 +37,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -54,19 +56,20 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
  * it is filled with blanks.
  */
 public class Bucket extends PaginatedComponent {
-  public static final    String BUCKET_EXT                       = "bucket";
-  public static final    int    CURRENT_VERSION                  = 0;
-  public static final    long   RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
-  public static final    long   FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
-  public static final    long   NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
-  protected static final int    PAGE_RECORD_COUNT_IN_PAGE_OFFSET = 0;
-  protected static final int    PAGE_RECORD_TABLE_OFFSET         = PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
-  private static final   int    DEF_MAX_RECORDS_IN_PAGE          = 2048;
-  private static final   int    MINIMUM_RECORD_SIZE              = 5;    // RECORD SIZE CANNOT BE < 5 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER
-  private static final   long   RECORD_PLACEHOLDER_CONTENT       = MINIMUM_RECORD_SIZE * -1L;    // < -5 FOR SURROGATE RECORDS
-  private static final   long   MINIMUM_SPACE_LEFT_IN_PAGE       = 50L;
-  protected final        int    contentHeaderSize;
-  private final          int    maxRecordsInPage                 = DEF_MAX_RECORDS_IN_PAGE;
+  public static final    String     BUCKET_EXT                       = "bucket";
+  public static final    int        CURRENT_VERSION                  = 0;
+  public static final    long       RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
+  public static final    long       FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
+  public static final    long       NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
+  protected static final int        PAGE_RECORD_COUNT_IN_PAGE_OFFSET = 0;
+  protected static final int        PAGE_RECORD_TABLE_OFFSET         = PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
+  private static final   int        DEF_MAX_RECORDS_IN_PAGE          = 2048;
+  private static final   int        MINIMUM_RECORD_SIZE              = 5;    // RECORD SIZE CANNOT BE < 5 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER
+  private static final   long       RECORD_PLACEHOLDER_CONTENT       = MINIMUM_RECORD_SIZE * -1L;    // < -5 FOR SURROGATE RECORDS
+  private static final   long       MINIMUM_SPACE_LEFT_IN_PAGE       = 50L;
+  protected final        int        contentHeaderSize;
+  private final          int        maxRecordsInPage                 = DEF_MAX_RECORDS_IN_PAGE;
+  private final          AtomicLong cachedRecordCount                = new AtomicLong(-1);
 
   private static class AvailableSpace {
     public BasePage page              = null;
@@ -90,6 +93,7 @@ public class Bucket extends PaginatedComponent {
       throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
+    cachedRecordCount.set(0);
   }
 
   /**
@@ -271,13 +275,19 @@ public class Bucket extends PaginatedComponent {
   public long count() {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
+    final TransactionContext transaction = database.getTransaction();
+
+    final long cached = cachedRecordCount.get();
+    if (cached > -1)
+      return cached + transaction.getBucketRecordDelta(fileId);
+
     long total = 0;
 
     final int txPageCount = getTotalPages();
 
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
-        final BasePage page = database.getTransaction().getPage(new PageId(file.getFileId(), pageId), pageSize);
+        final BasePage page = transaction.getPage(new PageId(file.getFileId(), pageId), pageSize);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -294,6 +304,9 @@ public class Bucket extends PaginatedComponent {
           }
         }
       }
+
+      cachedRecordCount.set(total);
+
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot count bucket '" + componentName + "'", e);
     }
@@ -537,6 +550,14 @@ public class Bucket extends PaginatedComponent {
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on lookup of record " + rid, e);
     }
+  }
+
+  public long getCachedRecordCount() {
+    return cachedRecordCount.get();
+  }
+
+  public void setCachedRecordCount(final long count) {
+    cachedRecordCount.set(count);
   }
 
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
