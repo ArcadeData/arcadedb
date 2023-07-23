@@ -570,12 +570,12 @@ function displaySchema(){
       let row = data.result[i];
       let tabName = row.name.replaceAll(":", "-");
 
-      let tabHtml = "<li class='nav-item' style='height: 32px'><a data-toggle='tab' href='#tab-" + tabName + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
+      let tabHtml = "<li class='nav-item' style='height: 32px; width: 240px'><a data-toggle='tab' href='#tab-" + tabName + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
       tabHtml += "' id='tab-" + tabName + "-sel'>" + row.name + "</a></li>";
 
       let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+tabName+"' role='tabpanel'>";
 
-      panelHtml += "<h3>" + row.name + "</h3>";
+      panelHtml += "<h3>" + row.name + " <span style='font-size: 60%'>("+ row.records +" records)</span></h3>";
       if( row.parentTypes != "" ){
         panelHtml += "Super Types: <b>";
         for( ptidx in row.parentTypes ) {
@@ -604,15 +604,27 @@ function displaySchema(){
       }
 
       if( row.indexes != "" ){
-        panelHtml += "<br>Indexes: <b>";
-        panelHtml += row.indexes.map(i => " " + i.name );
-        panelHtml += "</b>";
+        panelHtml += "<br><h6>Indexes</h6>";
+        panelHtml += "<div class='table-responsive'>";
+        panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
+        panelHtml += "<thead><tr><th scope='col'>Name</th>";
+        panelHtml += "<th scope='col'>Defined In</th>";
+        panelHtml += "<th scope='col'>Properties</th>";
+        panelHtml += "<th scope='col'>Type</th>";
+        panelHtml += "<th scope='col'>Unique</th>";
+        panelHtml += "<th scope='col'>Automatic</th>";
+        panelHtml += "<th scope='col'>Actions</th>";
+        panelHtml += "<tbody>";
+
+        panelHtml += renderIndexes( row, data.result );
+
+        panelHtml += "</tbody></table></div>";
       }
 
-      panelHtml += "<br><br><h6>Properties</h6>";
+      panelHtml += "<br><h6>Properties</h6>";
       //panelHtml += "<button class='btn btn-pill' onclick='createProperty()'><i class='fa fa-plus'></i> Create Property</button>";
       panelHtml += "<div class='table-responsive'>";
-      panelHtml += "<table class='table table-striped table-sm table-responsive' style='border: 0px; width: 100%'>";
+      panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
       panelHtml += "<thead><tr><th scope='col'>Name</th>";
       panelHtml += "<th scope='col'>Defined In</th>";
       panelHtml += "<th scope='col'>Type</th>";
@@ -623,7 +635,8 @@ function displaySchema(){
       panelHtml += "<th scope='col'>Min</th>";
       panelHtml += "<th scope='col'>Max</th>";
       panelHtml += "<th scope='col'>Regexp</th>";
-      panelHtml += "<th scope='col'>Indexed</th><th scope='col'>Actions</th>";
+      panelHtml += "<th scope='col'>Indexes</th>";
+      panelHtml += "<th scope='col'>Actions</th>";
       panelHtml += "<tbody>";
 
       panelHtml += renderProperties( row, data.result );
@@ -690,15 +703,16 @@ function renderProperties(row, results ){
     panelHtml += "<td>" + ( property.max != null ? property.max : "" ) + "</td>";
     panelHtml += "<td>" + ( property.regexp != null ? property.regexp : "" ) + "</td>";
 
-    let actionHtml = "<button class='btn btn-pill' onclick='dropProperty(\""+row.name+"\", \""+property.name+"\")'><i class='fa fa-minus'></i> Drop Property</button>";
-
-    let propIndexes = [];
-    if( row.indexes != null && row.indexes.length > 0 ) {
-      propIndexes.push( row.indexes.filter(i => i.properties.includes( property.name )).map(i => (i.name + " " + i.unique ? "" : "Not ") + "Unique, Type(" + i.type + ")" + ( i.properties.length > 1 ? ", on multi properties " + i.properties : "" )) );
-      actionHtml += row.indexes.filter(i => i.properties.includes( property.name )).map(i => ( "<button class='btn btn-pill' onclick='dropIndex(\"" + i.name + "\")'><i class='fa fa-minus'></i> Drop Index</button>" ) );
+    let totalIndexes = 0;
+    if( row.indexes != null && row.indexes.length > 0 ){
+      for( i in row.indexes ){
+        if( row.indexes[i].properties.includes( property.name ) )
+          ++totalIndexes;
+      }
     }
-    panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
-    panelHtml += "<td>" + actionHtml + "</td></tr>";
+
+    panelHtml += "<td>"+(totalIndexes > 0 ? totalIndexes : "None")+"</td>";
+    panelHtml += "<td><button class='btn btn-pill' onclick='dropProperty(\""+row.name+"\", \""+property.name+"\")'><i class='fa fa-minus'></i> Drop Property</button></td></tr>";
 
     if( property.custom != null && Object.keys( property.custom ).length > 0 ) {
       panelHtml += "<td></td>";
@@ -719,6 +733,22 @@ function renderProperties(row, results ){
     }
   }
 
+  return panelHtml;
+}
+
+function renderIndexes(row, results ){
+  let panelHtml = "";
+
+  for( let k in row.indexes ) {
+    let index = row.indexes[k];
+    panelHtml += "<tr><td>"+index.name+"</td><td>" + index.typeName + "</td>";
+    panelHtml += "<td>" + index.properties + "</td>";
+    panelHtml += "<td>" + index.type + "</td>";
+
+    panelHtml += "<td>" + ( index.unique ? true : false ) + "</td>";
+    panelHtml += "<td>" + ( index.automatic ? true : false ) + "</td>";
+    panelHtml += "<td><button class='btn btn-pill' onclick='dropIndex(\"" + index.name + "\")'><i class='fa fa-minus'></i> Drop Index</button></td></tr>";
+  }
   return panelHtml;
 }
 
