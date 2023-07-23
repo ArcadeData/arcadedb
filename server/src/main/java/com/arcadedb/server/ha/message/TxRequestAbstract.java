@@ -24,20 +24,24 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.ReplicationException;
 
+import java.util.*;
+
 public abstract class TxRequestAbstract extends HAAbstractCommand {
-  protected String databaseName;
-  protected int    changesUncompressedLength;
-  protected Binary changesBuffer;
+  protected String                databaseName;
+  protected int                   changesUncompressedLength;
+  protected Binary                changesBuffer;
+  protected Map<Integer, Integer> bucketRecordDelta;    // @SINCE 23.7.1
 
   protected TxRequestAbstract() {
   }
 
-  protected TxRequestAbstract(final String dbName, final Binary changesBuffer) {
+  protected TxRequestAbstract(final String dbName, final Map<Integer, Integer> bucketRecordDelta, final Binary changesBuffer) {
     this.databaseName = dbName;
 
     changesBuffer.rewind();
     this.changesUncompressedLength = changesBuffer.size();
     this.changesBuffer = CompressionFactory.getDefault().compress(changesBuffer);
+    this.bucketRecordDelta = bucketRecordDelta;
   }
 
   @Override
@@ -45,6 +49,13 @@ public abstract class TxRequestAbstract extends HAAbstractCommand {
     stream.putString(databaseName);
     stream.putInt(changesUncompressedLength);
     stream.putBytes(changesBuffer.getContent(), changesBuffer.size());
+
+    // @SINCE 23.7.1
+    stream.putInt(bucketRecordDelta.size());
+    for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
+      stream.putInt(entry.getKey());
+      stream.putInt(entry.getValue());
+    }
   }
 
   @Override
@@ -52,6 +63,13 @@ public abstract class TxRequestAbstract extends HAAbstractCommand {
     databaseName = stream.getString();
     changesUncompressedLength = stream.getInt();
     changesBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), changesUncompressedLength);
+
+    // @SINCE 23.7.1
+    final int deltaSize = stream.getInt();
+    bucketRecordDelta = new HashMap<>(deltaSize);
+    for (int i = 0; i < deltaSize; i++) {
+      bucketRecordDelta.put(stream.getInt(), stream.getInt());
+    }
   }
 
   protected WALFile.WALTransaction readTxFromBuffer() {
@@ -120,5 +138,4 @@ public abstract class TxRequestAbstract extends HAAbstractCommand {
 
     return tx;
   }
-
 }

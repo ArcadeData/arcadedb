@@ -72,8 +72,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
 
           r.setProperty("unique", index.isUnique());
           r.setProperty("automatic", index.isAutomatic());
-          if (index instanceof IndexInternal)
-            r.setProperty("compacting", ((IndexInternal) index).isCompacting());
+          r.setProperty("compacting", ((IndexInternal) index).isCompacting());
 
           if (fileId > -1) {
             r.setProperty("fileId", fileId);

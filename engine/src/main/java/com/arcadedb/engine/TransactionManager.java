@@ -225,7 +225,7 @@ public class TransactionManager {
 
           lastTxId = lowerTxId;
 
-          applyChanges(walPositions[lowerTx], true);
+          applyChanges(walPositions[lowerTx], Collections.emptyMap(), true);
 
           walPositions[lowerTx] = activeWALFilePool[lowerTx].getTransaction(walPositions[lowerTx].endPositionInLog);
         }
@@ -267,7 +267,7 @@ public class TransactionManager {
     return map;
   }
 
-  public boolean applyChanges(final WALFile.WALTransaction tx, final boolean ignoreErrors) {
+  public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta, final boolean ignoreErrors) {
     boolean changed = false;
     boolean involveDictionary = false;
 
@@ -360,6 +360,11 @@ public class TransactionManager {
         LogManager.instance().log(this, Level.SEVERE, "Error on applying changes to page %s", e, pageId);
         throw new WALException("Cannot apply changes to page " + pageId, e);
       }
+    }
+
+    for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
+      final Bucket bucket = database.getSchema().getBucketById(entry.getKey());
+      bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
     }
 
     if (involveDictionary) {

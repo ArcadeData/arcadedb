@@ -72,6 +72,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             t = "edge";
 
           r.setProperty("type", t);
+          r.setProperty("records", context.getDatabase().countType(typeName, false));
           r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
           r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
 

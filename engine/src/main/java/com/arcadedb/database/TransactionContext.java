@@ -409,6 +409,13 @@ public class TransactionContext implements Transaction {
     immutablePages.clear();
   }
 
+  public Map<Integer, Integer> getBucketRecordDelta() {
+    final Map<Integer, Integer> map = new HashMap<>(bucketRecordDelta.size());
+    for (Map.Entry<Integer, AtomicInteger> entry : bucketRecordDelta.entrySet())
+      map.put(entry.getKey(), entry.getValue().get());
+    return map;
+  }
+
   /**
    * Returns the delta of records considering the pending changes in transaction.
    */

@@ -50,9 +50,10 @@ public class TxForwardRequest extends TxRequestAbstract {
   public TxForwardRequest() {
   }
 
-  public TxForwardRequest(final DatabaseInternal database, Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel, final Binary bufferChanges,
+  public TxForwardRequest(final DatabaseInternal database, Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel,
+      final Map<Integer, Integer> bucketRecordDelta, final Binary bufferChanges,
       final Map<String, TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>>> keysTx) {
-    super(database.getName(), bufferChanges);
+    super(database.getName(), bucketRecordDelta, bufferChanges);
     this.isolationLevelIndex = transactionIsolationLevel.ordinal();
     writeIndexKeysToBuffer(database, keysTx);
   }

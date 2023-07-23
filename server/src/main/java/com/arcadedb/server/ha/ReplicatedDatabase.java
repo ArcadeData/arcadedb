@@ -117,8 +117,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
               replicateTx(tx, phase1, bufferChanges);
             else {
               // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-              final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, getTransactionIsolationLevel(), bufferChanges,
-                  tx.getIndexChanges().toMap());
+              final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, getTransactionIsolationLevel(), tx.getBucketRecordDelta(),
+                  bufferChanges, tx.getIndexChanges().toMap());
               server.getHA().forwardCommandToLeader(command, timeout * 2);
               tx.reset();
             }
@@ -171,7 +171,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       throw new IllegalArgumentException("Quorum " + quorum + " not managed");
     }
 
-    final TxRequest req = new TxRequest(getName(), bufferChanges, reqQuorum > 1);
+    final TxRequest req = new TxRequest(getName(), tx.getBucketRecordDelta(), bufferChanges, reqQuorum > 1);
 
     final DatabaseChangeStructureRequest changeStructureRequest = getChangeStructure(-1);
     if (changeStructureRequest != null) {

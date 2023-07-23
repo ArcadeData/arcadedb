@@ -29,6 +29,7 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 
 import java.nio.channels.*;
+import java.util.*;
 import java.util.logging.*;
 
 /**
@@ -41,8 +42,8 @@ public class TxRequest extends TxRequestAbstract {
   public TxRequest() {
   }
 
-  public TxRequest(final String dbName, final Binary bufferChanges, final boolean waitForResponse) {
-    super(dbName, bufferChanges);
+  public TxRequest(final String dbName, final Map<Integer, Integer> bucketRecordDelta, final Binary bufferChanges, final boolean waitForResponse) {
+    super(dbName, bucketRecordDelta, bufferChanges);
     this.waitForResponse = waitForResponse;
   }
 
@@ -92,7 +93,7 @@ public class TxRequest extends TxRequestAbstract {
     try {
       LogManager.instance().log(this, Level.FINE, "Applying tx %d from server %s (modifiedPages=%d)...", walTx.txId, remoteServerName, walTx.pages.length);
 
-      db.getTransactionManager().applyChanges(walTx, false);
+      db.getTransactionManager().applyChanges(walTx, bucketRecordDelta, false);
 
     } catch (final WALException e) {
       if (e.getCause() instanceof ClosedChannelException) {
