@@ -603,6 +603,8 @@ function displaySchema(){
         panelHtml += "</b>";
       }
 
+      panelHtml += "<br>";
+
       if( row.indexes != "" ){
         panelHtml += "<br><h6>Indexes</h6>";
         panelHtml += "<div class='table-responsive'>";
