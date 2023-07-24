@@ -92,7 +92,7 @@ public class TxForwardRequest extends TxRequestAbstract {
       db.begin(Database.TRANSACTION_ISOLATION_LEVEL.values()[isolationLevelIndex]);
       final TransactionContext tx = db.getTransaction();
 
-      tx.commitFromReplica(walTx, keysTx);
+      tx.commitFromReplica(walTx, keysTx, bucketRecordDelta);
 
       if (db.isTransactionActive())
         throw new ReplicationException("Error on committing transaction in database '" + databaseName + "': a nested transaction occurred");

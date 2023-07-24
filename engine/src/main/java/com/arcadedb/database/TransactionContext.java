@@ -442,8 +442,11 @@ public class TransactionContext implements Transaction {
    * Executes 1st phase from a replica.
    */
   public void commitFromReplica(final WALFile.WALTransaction buffer,
-      final Map<String, TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>>> keysTx)
-      throws TransactionException {
+      final Map<String, TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>>> keysTx,
+      final Map<Integer, Integer> bucketRecordDelta) throws TransactionException {
+
+    for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet())
+      this.bucketRecordDelta.put(entry.getKey(), new AtomicInteger(entry.getValue()));
 
     final int totalImpactedPages = buffer.pages.length;
     if (totalImpactedPages == 0 && keysTx.isEmpty()) {
