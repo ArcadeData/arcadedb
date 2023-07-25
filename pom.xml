@@ -82,6 +82,9 @@
         <license-maven-plugin.version>4.5</license-maven-plugin.version>
         <mockito-core.version>5.12.0</mockito-core.version>
         <maven-install-plugin.version>3.1.2</maven-install-plugin.version>
+
+        <native.maven.plugin.version>0.9.23</native.maven.plugin.version>
+
     </properties>
 
     <developers>
@@ -539,5 +542,32 @@
             </properties>
         </profile>
 
+        <profile>
+            <id>native-no</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>${native.maven.plugin.version}</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-image</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <agent>true</agent>
+                            <metadataRepository>
+                                <enabled>true</enabled>
+                            </metadataRepository>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 </project>

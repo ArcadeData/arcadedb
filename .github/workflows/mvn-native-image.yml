@@ -1,0 +1,35 @@
+name: Java CI - test
+
+on:
+  workflow_dispatch:
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: xembly/workflow-manager@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          run: clean, cancel
+          verbose: false
+      - uses: actions/checkout@v3.3.0
+      - uses: actions/setup-python@v4
+
+
+      - name: Set up GraalVM 11
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '20'
+          distribution: 'graalvm'
+          components: 'js'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+
+      - name: Native image
+        continue-on-error: ${{ matrix.continue-on-error }}
+        run: mvn clean install -DskipTests -Pnative
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
