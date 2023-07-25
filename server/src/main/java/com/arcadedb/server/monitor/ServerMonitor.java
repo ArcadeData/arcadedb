@@ -23,8 +23,8 @@ package com.arcadedb.server.monitor;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
 
-import java.io.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Monitor ArcadeDB's server health.
@@ -58,7 +58,7 @@ public class ServerMonitor {
       try {
         checkDiskSpace();
         checkHeapRAM();
-        checkJVMHotSpot();
+//        checkJVMHotSpot();
 
         Thread.sleep(INTERVAL_TIME);
       } catch (InterruptedException e) {
@@ -105,6 +105,7 @@ public class ServerMonitor {
 
   private void checkJVMHotSpot() {
     final sun.management.HotspotRuntimeMBean runtime = sun.management.ManagementFactoryHelper.getHotspotRuntimeMBean();
+
 
     final long hotspotSafepointTime = runtime.getTotalSafepointTime();
     final long hotspotSafepointCount = runtime.getSafepointCount();
