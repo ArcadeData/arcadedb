@@ -41,7 +41,11 @@ public enum GlobalConfiguration {
     try {
       final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
       dumpConfiguration(new PrintStream(buffer));
-      LogManager.instance().log(buffer, Level.WARNING, new String(buffer.toByteArray()));
+      if (LogManager.instance() != null)
+        LogManager.instance().log(buffer, Level.WARNING, new String(buffer.toByteArray()));
+      else
+        System.out.println(new String(buffer.toByteArray()));
+
       buffer.close();
     } catch (IOException e) {
       System.out.println("Error on printing initial configuration to log (error=" + e + ")");
@@ -633,7 +637,8 @@ public enum GlobalConfiguration {
             // OVERWRITE IT
             value = newValue;
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error during setting property %s=%s", e, key, value);
+          if (LogManager.instance() != null)
+            LogManager.instance().log(this, Level.SEVERE, "Error during setting property %s=%s", e, key, value);
         }
 
       if (allowed != null && value != null)
