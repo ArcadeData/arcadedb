@@ -196,19 +196,36 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return indexName;
   }
 
-  public List<Pair<Identifiable, ? extends Number>> findNeighbors(final TId id, final int k) {
+  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromId(final TId id, final int k) {
     final Vertex start = get(id);
     if (start == null)
       return Collections.emptyList();
 
-    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(getVectorFromVertex(start), k + 1).stream()
-        .filter(result -> !getIdFromVertex(result.item()).equals(id)).limit(k).collect(Collectors.toList());
+    return findNeighborsFromVertex(start, k);
+  }
+
+  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVertex(final Vertex start, final int k) {
+    final RID startRID = start.getIdentity();
+    final TVector vector = getVectorFromVertex(start);
+
+    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(vector, k + 1).stream()//
+        .filter(result -> !result.item().getIdentity().equals(startRID))//
+        .limit(k)//
+        .collect(Collectors.toList());
 
     final List<Pair<Identifiable, ? extends Number>> result = new ArrayList<>(neighbors.size());
     for (SearchResult<Vertex, TDistance> neighbor : neighbors)
       result.add(new Pair(neighbor.item(), neighbor.distance()));
     return result;
+  }
 
+  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVector(final TVector vector, final int k) {
+    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(vector, k + 1).stream().limit(k).collect(Collectors.toList());
+
+    final List<Pair<Identifiable, ? extends Number>> result = new ArrayList<>(neighbors.size());
+    for (SearchResult<Vertex, TDistance> neighbor : neighbors)
+      result.add(new Pair(neighbor.item(), neighbor.distance()));
+    return result;
   }
 
   public boolean add(Vertex vertex) {

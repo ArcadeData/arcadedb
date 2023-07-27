@@ -140,7 +140,7 @@ public class GloVeTest {
               }
             } else {
               database.begin();
-              approximateResults = persistentIndex.findNeighbors(input, k);
+              approximateResults = persistentIndex.findNeighborsFromVector(input, k);
               database.rollback();
             }
 

@@ -81,7 +81,7 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
       limit = -1;
 
     final HnswVectorIndex persistentIndex = (HnswVectorIndex) graph.getDatabase().getSchema().getIndexByName(indexName);
-    final List<Pair<Identifiable, ? extends Number>> neighbors = persistentIndex.findNeighbors(key, limit);
+    final List<Pair<Identifiable, ? extends Number>> neighbors = persistentIndex.findNeighborsFromVector(key, limit);
 
     final List<Map> result = new ArrayList<>(neighbors.size());
     for (Pair<Identifiable, ? extends Number> n : neighbors)
