@@ -778,7 +778,13 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         if (nodeMaxLevel > maxLevel)
           maxLevel = nodeMaxLevel;
 
-        final MutableVertex vertex = database.newVertex(vertexType).set(idPropertyName, node.item.id()).set(vectorPropertyName, node.item.vector());
+        final MutableVertex vertex;
+        final IndexCursor existent = underlyingIndex.get(new Object[] { node.item.id() });
+        if (existent.hasNext())
+          vertex = existent.next().asVertex().modify();
+        else
+          vertex = database.newVertex(vertexType).set(idPropertyName, node.item.id()).set(vectorPropertyName, node.item.vector());
+
         if (nodeMaxLevel > 0)
           // SAVE MAX LEVEL INTO THE VERTEX. IF NOT PRESENT, MEANS 0
           vertex.set("vectorMaxLevel", nodeMaxLevel);

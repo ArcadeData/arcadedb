@@ -69,11 +69,11 @@ public class TextEmbeddingsImporter {
   private volatile long             verticesCreated      = 0L;
   private volatile long             verticesConnected    = 0L;
 
-  public class IndexedText implements Item<String, float[]> {
+  public static class IndexedText implements Item<String, float[]> {
     private final String  id;
     private final float[] vector;
 
-    public IndexedText(String id, float[] vector) {
+    public IndexedText(final String id, final float[] vector) {
       this.id = id;
       this.vector = vector;
     }
