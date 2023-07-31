@@ -1304,6 +1304,10 @@ public class EmbeddedSchema implements Schema {
     }
   }
 
+  protected boolean isSchemaLoaded() {
+    return loadInRamCompleted;
+  }
+
   protected void updateSecurity() {
     if (security != null)
       security.updateSchema(database);

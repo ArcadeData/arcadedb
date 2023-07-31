@@ -146,7 +146,7 @@ public class Property {
             throw new SchemaException("Type '" + ofType + "' not defined");
         }
       } else if (type == Type.LINK || type == Type.EMBEDDED) {
-        if (!owner.schema.existsType(ofType))
+        if (owner.schema.isSchemaLoaded() && !owner.schema.existsType(ofType))
           throw new SchemaException("Type '" + ofType + "' not defined");
       }
 
