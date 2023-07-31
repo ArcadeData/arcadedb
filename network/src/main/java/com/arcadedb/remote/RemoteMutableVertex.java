@@ -86,12 +86,14 @@ public class RemoteMutableVertex extends MutableVertex {
   }
 
   @Override
-  public synchronized JSONObject toJSON() {
+  public synchronized JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject result = new JSONSerializer(database).map2json(map);
-    result.put("@cat", "v");
-    result.put("@type", typeName);
-    if (getIdentity() != null)
-      result.put("@rid", getIdentity().toString());
+    if (includeMetadata) {
+      result.put("@cat", "v");
+      result.put("@type", typeName);
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
     return result;
   }
 
@@ -167,6 +169,11 @@ public class RemoteMutableVertex extends MutableVertex {
   @Override
   public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
     return internal.isConnectedTo(toVertex, direction);
+  }
+
+  @Override
+  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeType) {
+    return internal.isConnectedTo(toVertex, direction, edgeType);
   }
 
   @Override

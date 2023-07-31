@@ -195,8 +195,11 @@ public class MutableEdge extends MutableDocument implements Edge {
     return map;
   }
 
-  public synchronized JSONObject toJSON() {
-    return super.toJSON().put("@cat", "e").put("@in", in).put("@out", out);
+  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+    JSONObject json = super.toJSON(includeMetadata);
+    if (includeMetadata)
+      json.put("@cat", "e").put("@in", in).put("@out", out);
+    return json;
   }
 
   private void init() {

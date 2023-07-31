@@ -66,6 +66,8 @@ public interface Vertex extends Document {
 
   boolean isConnectedTo(Identifiable toVertex, DIRECTION direction);
 
+  boolean isConnectedTo(Identifiable toVertex, DIRECTION direction, String edgeType);
+
   @Override
   default Vertex asVertex() {
     return this;

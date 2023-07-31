@@ -84,6 +84,11 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
+  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeType) {
+    return internal.isConnectedTo(toVertex, direction, edgeType);
+  }
+
+  @Override
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional, final Object... properties) {
     return internal.newEdge(edgeType, toVertex, bidirectional, properties);
   }

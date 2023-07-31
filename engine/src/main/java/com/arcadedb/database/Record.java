@@ -36,5 +36,9 @@ public interface Record extends Identifiable {
 
   void delete();
 
-  JSONObject toJSON();
+  default JSONObject toJSON(){
+    return toJSON(true);
+  }
+
+  JSONObject toJSON(boolean includeMetadata);
 }

@@ -170,6 +170,11 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
+  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeTypes) {
+    return database.getGraphEngine().isVertexConnectedTo(this, toVertex, direction, edgeTypes);
+  }
+
+  @Override
   public Vertex asVertex() {
     return this;
   }
@@ -182,15 +187,17 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   @Override
   public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> map = super.toMap(includeMetadata);
-    if (includeMetadata) {
+    if (includeMetadata)
       map.put("@cat", "v");
-    }
     return map;
   }
 
   @Override
-  public synchronized JSONObject toJSON() {
-    return super.toJSON().put("@cat", "v");
+  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+    final JSONObject json = super.toJSON(includeMetadata);
+    if (includeMetadata)
+      json.put("@cat", "v");
+    return json;
   }
 
   private void init() {

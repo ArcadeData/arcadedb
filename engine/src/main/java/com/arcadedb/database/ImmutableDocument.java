@@ -68,15 +68,16 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public synchronized JSONObject toJSON() {
+  public synchronized JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
-
     final JSONObject result = new JSONSerializer(database).map2json(map);
-    result.put("@cat", "d");
-    result.put("@type", type.getName());
-    if (getIdentity() != null)
-      result.put("@rid", getIdentity().toString());
+    if (includeMetadata) {
+      result.put("@cat", "d");
+      result.put("@type", type.getName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
     return result;
   }
 

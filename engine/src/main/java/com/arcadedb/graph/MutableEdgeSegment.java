@@ -161,7 +161,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
-  public JSONObject toJSON() {
+  public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = new JSONObject();
     final int used = getUsed();
     if (used > 0) {

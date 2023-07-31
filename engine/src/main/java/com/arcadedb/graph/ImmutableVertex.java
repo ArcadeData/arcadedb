@@ -137,6 +137,11 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
+  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeType) {
+    return database.getGraphEngine().isVertexConnectedTo(getMostUpdatedVertex(this), toVertex, direction, edgeType);
+  }
+
+  @Override
   public Vertex asVertex() {
     return this;
   }
@@ -155,8 +160,11 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public synchronized JSONObject toJSON() {
-    return super.toJSON().put("@cat", "v");
+  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+    final JSONObject json = super.toJSON(includeMetadata);
+    if (includeMetadata)
+      json.put("@cat", "v");
+    return json;
   }
 
   @Override

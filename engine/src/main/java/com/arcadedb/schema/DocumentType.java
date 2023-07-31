@@ -379,7 +379,18 @@ public class DocumentType {
    * @param propertyType Property type, by type name @{@link String}, to use in case the property does not exist and will be created
    */
   public Property getOrCreateProperty(final String propertyName, final String propertyType) {
-    return getOrCreateProperty(propertyName, Type.getTypeByName(propertyType));
+    return getOrCreateProperty(propertyName, Type.getTypeByName(propertyType), null);
+  }
+
+  /**
+   * Returns a property by its name. If the property does not exist, it is created with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type, by type name @{@link String}, to use in case the property does not exist and will be created
+   * @param ofType       Linked type. For List the type contained in the list. For RID the schema type name.
+   */
+  public Property getOrCreateProperty(final String propertyName, final String propertyType, final String ofType) {
+    return getOrCreateProperty(propertyName, Type.getTypeByName(propertyType), ofType);
   }
 
   /**
@@ -389,7 +400,7 @@ public class DocumentType {
    * @param propertyType Property type, as Java @{@link Class}, to use in case the property does not exist and will be created
    */
   public Property getOrCreateProperty(final String propertyName, final Class<?> propertyType) {
-    return getOrCreateProperty(propertyName, Type.getTypeByClass(propertyType));
+    return getOrCreateProperty(propertyName, Type.getTypeByClass(propertyType), null);
   }
 
   /**
@@ -399,6 +410,17 @@ public class DocumentType {
    * @param propertyType Property type, as @{@link Type}, to use in case the property does not exist and will be created
    */
   public Property getOrCreateProperty(final String propertyName, final Type propertyType) {
+    return getOrCreateProperty(propertyName, propertyType, null);
+  }
+
+  /**
+   * Returns a property by its name. If the property does not exist, it is created with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type, as @{@link Type}, to use in case the property does not exist and will be created
+   * @param ofType       Linked type. For List the type contained in the list. For RID the schema type name.
+   */
+  public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
     final Property p = properties.get(propertyName);
     if (p != null) {
       if (p.getType().equals(propertyType))
@@ -407,7 +429,7 @@ public class DocumentType {
       // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE
       dropProperty(propertyName);
     }
-    return createProperty(propertyName, propertyType);
+    return createProperty(propertyName, propertyType, ofType);
   }
 
   /**

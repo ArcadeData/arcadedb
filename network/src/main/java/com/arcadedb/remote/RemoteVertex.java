@@ -97,6 +97,13 @@ public class RemoteVertex {
     return resultSet.hasNext();
   }
 
+  public boolean isConnectedTo(final Identifiable toVertex, final Vertex.DIRECTION direction, final String edgeType) {
+    final String query = "select from ( select " + direction.toString().toLowerCase() + "('" + edgeType + "') as vertices from " + vertex.getIdentity()
+        + " ) where vertices contains " + toVertex;
+    final ResultSet resultSet = remoteDatabase.query("sql", query);
+    return resultSet.hasNext();
+  }
+
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional, final Object... properties) {
     if (!bidirectional)
       throw new UnsupportedOperationException("Creating unidirectional edges is not supported from remote database");

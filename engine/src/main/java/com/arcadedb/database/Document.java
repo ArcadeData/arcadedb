@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.*;
 import java.time.*;
@@ -105,8 +104,6 @@ public interface Document extends Record {
   DocumentType getType();
 
   String getTypeName();
-
-  JSONObject toJSON();
 
   /**
    * Returns a map containing the document properties, including metadata such as `@rid`, `@type` and `@cat`.

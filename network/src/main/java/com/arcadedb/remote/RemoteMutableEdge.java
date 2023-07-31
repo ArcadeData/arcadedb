@@ -86,12 +86,14 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  public synchronized JSONObject toJSON() {
+  public synchronized JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject result = new JSONSerializer(database).map2json(map);
-    result.put("@cat", "e");
-    result.put("@type", typeName);
-    if (getIdentity() != null)
-      result.put("@rid", getIdentity().toString());
+    if (includeMetadata) {
+      result.put("@cat", "e");
+      result.put("@type", typeName);
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
     return result;
   }
 
