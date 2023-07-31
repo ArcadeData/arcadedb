@@ -41,6 +41,7 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public abstract class AbstractHandler implements HttpHandler {
@@ -60,17 +61,17 @@ public abstract class AbstractHandler implements HttpHandler {
     if (!mustExecuteOnWorkerThread())
       LogManager.instance().log(this, Level.SEVERE, "Error: handler must return true at mustExecuteOnWorkerThread() to read payload from request");
 
-    final StringBuilder result = new StringBuilder();
+    final AtomicReference<String> result = new AtomicReference<>();
     e.getRequestReceiver().receiveFullBytes(
         // OK
-        (exchange, data) -> result.append(new String(data, DatabaseFactory.getDefaultCharset())),
+        (exchange, data) -> result.set(new String(data, DatabaseFactory.getDefaultCharset())),
         // ERROR
         (exchange, err) -> {
-          LogManager.instance().log(this, Level.SEVERE, "getFullBytes completed with an error: %s", err, err.getMessage());
+          LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
           exchange.setStatusCode(500);
           exchange.getResponseSender().send("Invalid Request");
         });
-    return result.toString();
+    return result.get();
   }
 
   @Override
