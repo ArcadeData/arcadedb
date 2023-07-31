@@ -113,14 +113,12 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
             if (recordIncluded)
               edges.put(serializerImpl.serializeGraphElement(e));
             if (includedVertices.add(e.getIn())) {
-              if (includedRecords.add(e.getIn()))
-                records.put(serializerImpl.serializeDocument(e.getInVertex()));
+              includedRecords.add(e.getIn());
 
               vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
             }
             if (includedVertices.add(e.getOut())) {
-              if (includedRecords.add(e.getOut()))
-                records.put(serializerImpl.serializeDocument(e.getOutVertex()));
+              includedRecords.add(e.getOut());
 
               vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
             }
