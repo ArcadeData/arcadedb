@@ -23,6 +23,7 @@ package com.arcadedb.gremlin;
 import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
@@ -443,6 +444,14 @@ public class ArcadeGraph implements Graph, Closeable {
   @Override
   public ServiceRegistry getServiceRegistry() {
     return serviceRegistry;
+  }
+
+  public ArcadeVertex getVertexFromRecord(final Identifiable record) {
+    return new ArcadeVertex(this, record.asVertex());
+  }
+
+  public ArcadeEdge getEdgeFromRecord(final Identifiable record) {
+    return new ArcadeEdge(this, record.asEdge());
   }
 
   private void init() {

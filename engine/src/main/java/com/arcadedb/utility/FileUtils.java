@@ -302,6 +302,10 @@ public class FileUtils {
     return buffer;
   }
 
+  public static String readStreamAsString(final InputStream iStream) throws IOException {
+    return readStreamAsString(iStream, "utf8", 0);
+  }
+
   public static String readStreamAsString(final InputStream iStream, final String iCharset) throws IOException {
     return readStreamAsString(iStream, iCharset, 0);
   }
@@ -485,5 +489,19 @@ public class FileUtils {
       decodedLine.append(c);
     }
     return decodedLine.toString();
+  }
+
+  public static byte[] readInputStreamAsBytes(final InputStream fis) throws IOException {
+    final byte[] bytes = new byte[(int) fis.available()];
+    fis.read(bytes);
+    return bytes;
+  }
+
+  public static byte[] readFileAsBytes(final File file) throws IOException {
+    final byte[] bytes = new byte[(int) file.length()];
+    try (FileInputStream fis = new FileInputStream(file)) {
+      fis.read(bytes);
+    }
+    return bytes;
   }
 }

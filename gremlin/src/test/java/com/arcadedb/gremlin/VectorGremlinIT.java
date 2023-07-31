@@ -51,9 +51,9 @@ public class VectorGremlinIT {
 
       Assertions.assertEquals(10, db.countType("Word", true));
 
-      final String key = "<user>";
+      final float[] vector = new float[100];
 
-      ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", key, 10);
+      ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", vector, 10);
       Assertions.assertTrue(resultSet.hasNext());
       final List<Pair<Identifiable, Float>> approximateResults = new ArrayList<>();
       while (resultSet.hasNext()) {
@@ -64,9 +64,10 @@ public class VectorGremlinIT {
           approximateResults.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
       }
 
-      Assertions.assertEquals(9, approximateResults.size());
+      Assertions.assertEquals(10, approximateResults.size());
 
-      resultSet = db.query("gremlin", "g.call('arcadedb.vectorNeighbors', [ 'indexName': 'Word[name,vector]', 'key': '" + key + "', 'limit': 10 ] )");
+      resultSet = db.query("gremlin", "g.call('arcadedb#vectorNeighbors', [ 'indexName': 'Word[name,vector]', 'vector': vector, 'limit': 10 ] )", "vector",
+          vector);
       Assertions.assertTrue(resultSet.hasNext());
       final List<Object> approximateResultsFromGremlin = new ArrayList<>();
       while (resultSet.hasNext()) {
@@ -77,7 +78,7 @@ public class VectorGremlinIT {
           approximateResultsFromGremlin.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
       }
 
-      Assertions.assertEquals(9, approximateResultsFromGremlin.size());
+      Assertions.assertEquals(10, approximateResultsFromGremlin.size());
 
       Assertions.assertEquals(approximateResults, approximateResultsFromGremlin);
 

@@ -42,11 +42,11 @@ import static org.apache.tinkerpop.gremlin.util.tools.CollectionFactory.asMap;
  */
 public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceFactory<Vertex, List<Map>> implements Service<Vertex, List<Map>> {
 
-  public static final String NAME = "arcadedb.vectorNeighbors";
+  public static final String NAME = "arcadedb#vectorNeighbors";
 
   private static final Map<String, String> PARAMS = asMap(//
-      "indexName", "Specify the edge direction (optional), default is Direction.IN",//
-      "key", "Key to find",//
+      "indexName", "Name of the index to use",//
+      "vector", "vector where to find neighbors",//
       "limit", "max number of neighbors to return");
 
   public VectorNeighborsFactory(final ArcadeGraph graph) {
@@ -75,17 +75,17 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
 
   public CloseableIterator<List<Map>> execute(final ServiceCallContext ctx, final Map params) {
     final String indexName = (String) params.get("indexName");
-    final Object key = params.get("key");
+    final Object vector = params.get("vector");
     Integer limit = (Integer) params.get("limit");
     if (limit == null)
       limit = -1;
 
     final HnswVectorIndex persistentIndex = (HnswVectorIndex) graph.getDatabase().getSchema().getIndexByName(indexName);
-    final List<Pair<Identifiable, ? extends Number>> neighbors = persistentIndex.findNeighborsFromVector(key, limit);
+    final List<Pair<Identifiable, ? extends Number>> neighbors = persistentIndex.findNeighborsFromVector(vector, limit);
 
     final List<Map> result = new ArrayList<>(neighbors.size());
     for (Pair<Identifiable, ? extends Number> n : neighbors)
-      result.add(Map.of("vertex", n.getFirst(), "distance", n.getSecond()));
+      result.add(Map.of("vertex", graph.getVertexFromRecord(n.getFirst()), "distance", n.getSecond()));
     return CloseableIterator.of(Collections.singletonList(result).iterator());
   }
 
