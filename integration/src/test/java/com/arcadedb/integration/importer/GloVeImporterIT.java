@@ -52,7 +52,7 @@ public class GloVeImporterIT {
 
       Assertions.assertEquals(10, db.countType("Word", true));
 
-      final String key = "user";
+      final float[] key = new float[100];
 
       ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", key, 10);
       Assertions.assertTrue(resultSet.hasNext());
