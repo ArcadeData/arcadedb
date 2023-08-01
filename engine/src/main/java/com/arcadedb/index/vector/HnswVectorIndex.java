@@ -137,7 +137,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         .withIgnoreIfExists(true).withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
     this.globalLock = new ReentrantLock();
-    this.indexName = vertexType + "[" + idPropertyName + "," + vectorPropertyName + "]";
+    this.indexName = builder.getIndexName() != null ? builder.getIndexName() : vertexType + "[" + idPropertyName + "," + vectorPropertyName + "]";
   }
 
   /**
@@ -178,7 +178,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     this.globalLock = new ReentrantLock();
     this.cache = null;
-    this.indexName = vertexType + "[" + idPropertyName + "," + vectorPropertyName + "]";
+    this.indexName = json.getString("indexName");
   }
 
   @Override
