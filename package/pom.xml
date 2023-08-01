@@ -372,7 +372,7 @@
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--enable-url-protocols=https</buildArg>
                                 <buildArg>-H:IncludeResources=.*.*$</buildArg>
-                                <buildArg>-H:Log=registerResource:3</buildArg>
+                                <buildArg>-H:Log=registerResource:1</buildArg>
                             </buildArgs>
                             <agent>true</agent>
                             <metadataRepository>
