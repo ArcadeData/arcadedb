@@ -892,8 +892,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public String toString() {
-    final String baseIndex = underlyingIndex.toString();
-    return baseIndex.substring(0, baseIndex.length() - 1) + "," + vectorPropertyName + "]";
+    return indexName;
   }
 
   @Override

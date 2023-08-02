@@ -676,7 +676,7 @@ public class EmbeddedSchema implements Schema {
         }
 
         // DELETE ALL ASSOCIATED INDEXES
-        for (final Index m : type.getAllIndexes(true))
+        for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
           dropIndex(m.getName());
 
         if (type instanceof VertexType)
