@@ -90,6 +90,10 @@
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>${maven-resources-plugin.version}</version>
             </plugin>
+            <plugin>
+                <groupId>org.graalvm.buildtools</groupId>
+                <artifactId>native-maven-plugin</artifactId>
+            </plugin>
         </plugins>
     </build>
 
@@ -140,16 +144,16 @@
             <artifactId>hnswlib-core</artifactId>
             <version>${hnswlib.version}</version>
         </dependency>
-<!--        <dependency>-->
-<!--            <groupId>org.graalvm.sdk</groupId>-->
-<!--            <artifactId>graal-sdk</artifactId>-->
-<!--            <version>${graalvm.version}</version>-->
-<!--        </dependency>-->
-<!--        <dependency>-->
-<!--            <groupId>org.graalvm.js</groupId>-->
-<!--            <artifactId>js</artifactId>-->
-<!--            <version>${graalvm.version}</version>-->
-<!--            <scope>runtime</scope>-->
-<!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>org.graalvm.sdk</groupId>-->
+        <!--            <artifactId>graal-sdk</artifactId>-->
+        <!--            <version>${graalvm.version}</version>-->
+        <!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>org.graalvm.js</groupId>-->
+        <!--            <artifactId>js</artifactId>-->
+        <!--            <version>${graalvm.version}</version>-->
+        <!--            <scope>runtime</scope>-->
+        <!--        </dependency>-->
     </dependencies>
 </project>

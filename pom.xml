@@ -339,6 +339,29 @@
                         </filters>
                     </configuration>
                 </plugin>
+
+                <plugin>
+                    <groupId>org.graalvm.buildtools</groupId>
+                    <artifactId>native-maven-plugin</artifactId>
+                    <version>${native.maven.plugin.version}</version>
+                    <extensions>true</extensions>
+                    <configuration>
+                        <agent>
+                            <enabled>true</enabled>
+                            <options>
+                                <trackReflectionMetadata>true</trackReflectionMetadata>
+                                <enableExperimentalUnsafeAllocationTracing>true
+                                </enableExperimentalUnsafeAllocationTracing>
+                            </options>
+                        </agent>
+                        <metadataRepository>
+                            <enabled>true</enabled>
+                        </metadataRepository>
+
+                    </configuration>
+                </plugin>
+
+
             </plugins>
         </pluginManagement>
     </build>
@@ -542,32 +565,5 @@
             </properties>
         </profile>
 
-        <profile>
-            <id>native-no</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.graalvm.buildtools</groupId>
-                        <artifactId>native-maven-plugin</artifactId>
-                        <version>${native.maven.plugin.version}</version>
-                        <extensions>true</extensions>
-                        <executions>
-                            <execution>
-                                <id>build-image</id>
-                                <goals>
-                                    <goal>compile-no-fork</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                        <configuration>
-                            <agent>true</agent>
-                            <metadataRepository>
-                                <enabled>true</enabled>
-                            </metadataRepository>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
     </profiles>
 </project>
