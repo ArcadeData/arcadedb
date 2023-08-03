@@ -749,8 +749,12 @@ public class SelectExecutionPlanner {
       final List<RID> rids = new ArrayList<>();
       final Collection<Identifiable> records = (Collection<Identifiable>) context.getVariablePath(target.toString());
       if (records != null && !records.isEmpty()) {
-        for (Identifiable i : records)
-          rids.add(i.getIdentity());
+        for (Object o : records) {
+          if (o instanceof Identifiable)
+            rids.add(((Identifiable) o).getIdentity());
+          else if (o instanceof Result && ((Result) o).isElement())
+            rids.add(((Result) o).toElement().getIdentity());
+        }
         info.fetchExecutionPlan.chain(new FetchFromRidsStep(rids, context, profilingEnabled));
       } else
         result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
