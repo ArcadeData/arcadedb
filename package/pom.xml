@@ -344,8 +344,6 @@
                     <plugin>
                         <groupId>org.graalvm.buildtools</groupId>
                         <artifactId>native-maven-plugin</artifactId>
-                        <version>${native.maven.plugin.version}</version>
-                        <extensions>true</extensions>
                         <executions>
                             <execution>
                                 <id>build-native</id>
@@ -374,11 +372,6 @@
                                 <buildArg>-H:IncludeResources=.*.*$</buildArg>
                                 <buildArg>-H:Log=registerResource:1</buildArg>
                             </buildArgs>
-                            <agent>true</agent>
-                            <metadataRepository>
-                                <enabled>true</enabled>
-                            </metadataRepository>
-
                         </configuration>
                     </plugin>
                 </plugins>
