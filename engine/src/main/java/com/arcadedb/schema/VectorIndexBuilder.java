@@ -57,6 +57,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   String                   vectorPropertyName;
   Type                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
   String                   idPropertyName;
+  String                   deletedPropertyName;
   Map<RID, Vertex>         cache;
   HnswVectorIndexRAM       origin;
   Index.BuildIndexCallback vertexCreationCallback;
@@ -92,6 +93,8 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
       throw new IndexException("Vertex id property name is missing from vector index declaration");
     if (vectorPropertyName == null)
       throw new IndexException("Vertex vector property name is missing from vector index declaration");
+    if (deletedPropertyName == null)
+      throw new IndexException("Vertex deleted property name is missing from vector index declaration");
 
     filePath = database.getDatabasePath() + File.separator + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_" + System.nanoTime() + "."
         + database.getFileManager().newFileId() + ".v" + HnswVectorIndex.CURRENT_VERSION + "." + HnswVectorIndex.FILE_EXT;
@@ -109,6 +112,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     final VertexType vType = database.getSchema().getOrCreateVertexType(vertexType);
     vType.getOrCreateProperty(idPropertyName, Type.STRING);
     vType.getOrCreateProperty(vectorPropertyName, vectorPropertyType);
+    vType.getOrCreateProperty(deletedPropertyName, Type.BOOLEAN);
 
     final HnswVectorIndex index = (HnswVectorIndex) schema.indexFactory.createIndex(this);
 
@@ -221,6 +225,11 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     return this;
   }
 
+  public VectorIndexBuilder withDeletedProperty(final String deletedPropertyName) {
+    this.deletedPropertyName = deletedPropertyName;
+    return this;
+  }
+
   public VectorIndexBuilder withCache(final Map<RID, Vertex> cache) {
     this.cache = cache;
     return this;
@@ -265,6 +274,10 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
   public String getIdPropertyName() {
     return idPropertyName;
+  }
+
+  public String getDeletedPropertyName() {
+    return deletedPropertyName;
   }
 
   public String getEdgeType() {

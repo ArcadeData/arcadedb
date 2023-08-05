@@ -64,6 +64,7 @@ public class TextEmbeddingsImporter {
   private          String           distanceFunctionName = "InnerProduct";
   private          String           vectorPropertyName   = "vector";
   private          String           idPropertyName       = "name";
+  private          String           deletedPropertyName  = "deleted";
   private volatile long             embeddingsParsed     = 0L;
   private volatile long             indexedEmbedding     = 0L;
   private volatile long             verticesCreated      = 0L;
@@ -123,6 +124,9 @@ public class TextEmbeddingsImporter {
     if (settings.options.containsKey("idProperty"))
       this.idPropertyName = settings.options.get("idProperty");
 
+    if (settings.options.containsKey("deletedProperty"))
+      this.deletedPropertyName = settings.options.get("deletedProperty");
+
     if (settings.options.containsKey("m"))
       this.m = Integer.parseInt(settings.options.get("m"));
 
@@ -178,7 +182,9 @@ public class TextEmbeddingsImporter {
 
       hnswIndex.createPersistentIndex(database)//
           .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName).withVectorProperty(vectorPropertyName, vectorPropertyType)
-          .withIdProperty(idPropertyName).withVertexCreationCallback((record, total) -> ++verticesCreated)//
+          .withIdProperty(idPropertyName)//
+          .withDeletedProperty(deletedPropertyName)//
+          .withVertexCreationCallback((record, total) -> ++verticesCreated)//
           .withCallback((record, total) -> ++verticesConnected)//
           .create();
     }

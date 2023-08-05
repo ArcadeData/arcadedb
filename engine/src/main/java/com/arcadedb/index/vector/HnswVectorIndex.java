@@ -81,16 +81,16 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   private final   int                                  efConstruction;
   public volatile RID                                  entryPointRIDToLoad;
   public volatile Vertex                               entryPoint;
-
-  private       TypeIndex        underlyingIndex;
-  private final ReentrantLock    globalLock;
-  private final Set<RID>         excludedCandidates = new HashSet<>();
-  private final String           vertexType;
-  private final String           edgeType;
-  private final String           vectorPropertyName;
-  private final String           idPropertyName;
-  private final Map<RID, Vertex> cache;
-  private       String           indexName;
+  private         TypeIndex                            underlyingIndex;
+  private final   ReentrantLock                        globalLock;
+  private final   Set<RID>                             excludedCandidates = new HashSet<>();
+  private final   String                               vertexType;
+  private final   String                               edgeType;
+  private final   String                               vectorPropertyName;
+  private final   String                               idPropertyName;
+  private final   String                               deletedPropertyName;
+  private final   Map<RID, Vertex>                     cache;
+  private         String                               indexName;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -130,6 +130,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     this.edgeType = builder.getEdgeType();
     this.vectorPropertyName = builder.getVectorPropertyName();
     this.idPropertyName = builder.getIdPropertyName();
+    this.deletedPropertyName = builder.getDeletedPropertyName();
 
     this.cache = builder.getCache();
 
@@ -166,7 +167,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     this.ef = json.getInt("ef");
     this.efConstruction = json.getInt("efConstruction");
 
-    if (json.getString("entryPoint").length() > 0) {
+    if (!json.getString("entryPoint").isEmpty()) {
       this.entryPointRIDToLoad = new RID(database, json.getString("entryPoint"));
     } else
       this.entryPointRIDToLoad = null;
@@ -175,6 +176,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     this.edgeType = json.getString("edgeType");
     this.idPropertyName = json.getString("idPropertyName");
     this.vectorPropertyName = json.getString("vectorPropertyName");
+    this.deletedPropertyName = json.has("deletedPropertyName") ? json.getString("deletedPropertyName") : "deleted";
 
     this.globalLock = new ReentrantLock();
     this.cache = null;
@@ -300,18 +302,16 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
           for (int level = Math.min(randomLevel, entryPointCopyMaxLevel); level >= 0; level--) {
             final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, vertexVector, efConstruction, level);
 
-            // TODO: MANAGE DELETE OF ENTRYPOINT
-//              if (entryPointCopy.deleted) {
-//                TDistance distance = distanceFunction.distance(vertex.vector(), entryPointCopy.item.vector());
-//                topCandidates.add(new NodeIdAndDistance<>(entryPointCopy.id, distance, maxValueDistanceComparator));
-//
-//                if (topCandidates.size() > efConstruction) {
-//                  topCandidates.poll();
-//                }
-//              }
+            final boolean entryPointDeleted = getDeletedFromVertex(entryPointCopy);
+            if (entryPointDeleted) {
+              TDistance distance = distanceFunction.distance(vertexVector, getVectorFromVertex(entryPointCopy));
+              topCandidates.add(new NodeIdAndDistance<>(getIdFromVertex(entryPointCopy), distance, maxValueDistanceComparator));
+
+              if (topCandidates.size() > efConstruction)
+                topCandidates.poll();
+            }
 
             mutuallyConnectNewElement(vertex, topCandidates, level);
-
           }
         }
 
@@ -502,19 +502,19 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     TDistance lowerBound;
 
-    final TVector entryPointVector = getVectorFromVertex(entryPointNode);
+    if (!getDeletedFromVertex(entryPointNode)) {
+      final TVector entryPointVector = getVectorFromVertex(entryPointNode);
+      final TDistance distance = distanceFunction.distance(destination, entryPointVector);
+      final NodeIdAndDistance<TDistance> pair = new NodeIdAndDistance<>(entryPointNode.getIdentity(), distance, maxValueDistanceComparator);
 
-    final TDistance distance = distanceFunction.distance(destination, entryPointVector);
-    final NodeIdAndDistance<TDistance> pair = new NodeIdAndDistance<>(entryPointNode.getIdentity(), distance, maxValueDistanceComparator);
-
-    topCandidates.add(pair);
-    lowerBound = distance;
-    candidateSet.add(pair);
-
-    // TODO: MANAGE WHEN ENTRY POINT WAS DELETED
-//      lowerBound = MaxValueComparator.maxValue();
-//      NodeIdAndDistance<TDistance> pair = new NodeIdAndDistance<>(entryPointNode.id, lowerBound, maxValueDistanceComparator);
-//      candidateSet.add(pair);
+      topCandidates.add(pair);
+      lowerBound = distance;
+      candidateSet.add(pair);
+    } else {
+      lowerBound = MaxValueComparator.maxValue();
+      NodeIdAndDistance<TDistance> pair = new NodeIdAndDistance<>(entryPointNode.getIdentity(), lowerBound, maxValueDistanceComparator);
+      candidateSet.add(pair);
+    }
 
     visitedNodes.add(entryPointNode.getIdentity());
 
@@ -540,6 +540,9 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
             candidateSet.add(candidatePair);
             topCandidates.add(candidatePair);
+
+            if (!getDeletedFromVertex(candidateNode))
+              topCandidates.add(candidatePair);
 
             if (topCandidates.size() > k)
               topCandidates.poll();
@@ -656,6 +659,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   public <TVector> TVector getVectorFromVertex(final Vertex vertex) {
     return (TVector) vertex.get(vectorPropertyName);
+  }
+
+  public boolean getDeletedFromVertex(final Vertex vertex) {
+    final Boolean deleted = vertex.getBoolean(deletedPropertyName);
+    return deleted != null && deleted;
   }
 
   public int getDimensionFromVertex(final Vertex vertex) {
