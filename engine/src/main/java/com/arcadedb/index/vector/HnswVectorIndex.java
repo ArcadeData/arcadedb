@@ -45,6 +45,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
+import com.github.jelmerk.knn.Item;
 import com.github.jelmerk.knn.SearchResult;
 import com.github.jelmerk.knn.util.Murmur3;
 import org.eclipse.collections.api.list.primitive.MutableIntList;
@@ -65,6 +66,10 @@ import java.util.stream.*;
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
 public class HnswVectorIndex<TId, TVector, TDistance> extends Component implements com.arcadedb.index.Index, IndexInternal {
+  public interface BuildVectorIndexCallback<TId, TVector> {
+    void onVertexIndexed(Vertex document, Item<TId, TVector> item, long totalIndexed);
+  }
+
   public static final String FILE_EXT        = "hnswidx";
   public static final int    CURRENT_VERSION = 0;
 
@@ -228,6 +233,24 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     for (SearchResult<Vertex, TDistance> neighbor : neighbors)
       result.add(new Pair(neighbor.item(), neighbor.distance()));
     return result;
+  }
+
+  public void addAll(final List<Item<TId, TVector>> embeddings, final BuildVectorIndexCallback callback) {
+    database.transaction(() -> {
+      int indexed = 0;
+      for (Item<TId, TVector> embedding : embeddings) {
+        final IndexCursor existent = underlyingIndex.get(new Object[] { embedding.id() });
+        Vertex vertex;
+        if (existent.hasNext())
+          vertex = existent.next().asVertex();
+        else
+          vertex = database.newVertex(vertexType).set(idPropertyName, embedding.id()).set(vectorPropertyName, embedding.vector()).save();
+
+        add(vertex);
+
+        callback.onVertexIndexed(vertex, embedding, ++indexed);
+      }
+    });
   }
 
   public boolean add(Vertex vertex) {
@@ -785,7 +808,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return underlyingIndex.build(buildIndexBatchSize, callback);
   }
 
-  public long build(final HnswVectorIndexRAM origin, final int buildIndexBatchSize, final BuildIndexCallback vertexCreationCallback,
+  public long build(final HnswVectorIndexRAM origin, final int buildIndexBatchSize, final BuildVectorIndexCallback vertexCreationCallback,
       final BuildIndexCallback edgeCallback) {
     if (origin != null) {
       // IMPORT FROM RAM Index
@@ -817,7 +840,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         vertex.save();
 
         if (vertexCreationCallback != null)
-          vertexCreationCallback.onDocumentIndexed(vertex, totalVertices);
+          vertexCreationCallback.onVertexIndexed(vertex, node.item, totalVertices);
 
         pointersToRIDMapping[node.id] = vertex.getIdentity();
 

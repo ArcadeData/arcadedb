@@ -45,22 +45,22 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   public static final  int DEFAULT_EF_CONSTRUCTION = 200;
   private static final int CURRENT_VERSION         = 1;
 
-  int                      dimensions;
-  DistanceFunction         distanceFunction;
-  Comparator               distanceComparator;
-  int                      maxItemCount;
-  int                      m                  = DEFAULT_M;
-  int                      ef                 = DEFAULT_EF;
-  int                      efConstruction     = DEFAULT_EF_CONSTRUCTION;
-  String                   vertexType;
-  String                   edgeType;
-  String                   vectorPropertyName;
-  Type                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
-  String                   idPropertyName;
-  String                   deletedPropertyName;
-  Map<RID, Vertex>         cache;
-  HnswVectorIndexRAM       origin;
-  Index.BuildIndexCallback vertexCreationCallback;
+  int                                      dimensions;
+  DistanceFunction                         distanceFunction;
+  Comparator                               distanceComparator;
+  int                                      maxItemCount;
+  int                                      m                  = DEFAULT_M;
+  int                                      ef                 = DEFAULT_EF;
+  int                                      efConstruction     = DEFAULT_EF_CONSTRUCTION;
+  String                                   vertexType;
+  String                                   edgeType;
+  String                                   vectorPropertyName;
+  Type                                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
+  String                                   idPropertyName;
+  String                                   deletedPropertyName;
+  Map<RID, Vertex>                         cache;
+  HnswVectorIndexRAM                       origin;
+  HnswVectorIndex.BuildVectorIndexCallback vertexCreationCallback;
 
   VectorIndexBuilder(final DatabaseInternal database) {
     super(database, HnswVectorIndex.class);
@@ -235,7 +235,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     return this;
   }
 
-  public VectorIndexBuilder withVertexCreationCallback(final Index.BuildIndexCallback callback) {
+  public VectorIndexBuilder withVertexCreationCallback(final HnswVectorIndex.BuildVectorIndexCallback callback) {
     this.vertexCreationCallback = callback;
     return this;
   }

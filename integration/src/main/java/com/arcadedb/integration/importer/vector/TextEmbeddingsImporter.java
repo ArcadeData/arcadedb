@@ -184,7 +184,7 @@ public class TextEmbeddingsImporter {
           .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName).withVectorProperty(vectorPropertyName, vectorPropertyType)
           .withIdProperty(idPropertyName)//
           .withDeletedProperty(deletedPropertyName)//
-          .withVertexCreationCallback((record, total) -> ++verticesCreated)//
+          .withVertexCreationCallback((record, item, total) -> ++verticesCreated)//
           .withCallback((record, total) -> ++verticesConnected)//
           .create();
     }
