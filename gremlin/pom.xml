@@ -33,7 +33,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <gremlin.version>3.6.5</gremlin.version>
+        <gremlin.version>3.7.0</gremlin.version>
         <translation.version>1.0.4</translation.version>
         <snakeyaml.version>2.0</snakeyaml.version>
     </properties>
@@ -61,6 +61,16 @@
         <dependency>
             <groupId>org.apache.tinkerpop</groupId>
             <artifactId>gremlin-server</artifactId>
+            <version>${gremlin.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tinkerpop</groupId>
+            <artifactId>gremlin-driver</artifactId>
+            <version>${gremlin.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tinkerpop</groupId>
+            <artifactId>gremlin-util</artifactId>
             <version>${gremlin.version}</version>
         </dependency>
         <dependency>
