@@ -487,6 +487,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public IndexInternal getAssociatedIndex() {
+    if (typeIndex != null)
+      return typeIndex.getAssociatedIndex();
+    return null;
+  }
+
+  @Override
   public String toString() {
     return name;
   }

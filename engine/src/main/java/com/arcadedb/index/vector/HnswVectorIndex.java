@@ -27,6 +27,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
@@ -35,6 +36,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
@@ -54,6 +56,7 @@ import java.io.*;
 import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.locks.*;
+import java.util.logging.*;
 import java.util.stream.*;
 
 /**
@@ -142,6 +145,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     this.underlyingIndex = builder.getDatabase().getSchema().buildTypeIndex(builder.getVertexType(), new String[] { idPropertyName }).withUnique(true)
         .withIgnoreIfExists(true).withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
+    this.underlyingIndex.setAssociatedIndex(this);
+
     this.globalLock = new ReentrantLock();
     this.indexName = builder.getIndexName() != null ? builder.getIndexName() : vertexType + "[" + idPropertyName + "," + vectorPropertyName + "]";
   }
@@ -190,12 +195,23 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public void onAfterSchemaLoad() {
-    // AFTER THE WHOLE SCHEMA IS LOADED< INITIALIZE THE INDEX
-    if (this.entryPointRIDToLoad != null)
-      this.entryPoint = this.entryPointRIDToLoad.asVertex();
-
     this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withIgnoreIfExists(true).withUnique(true)
         .withType(Schema.INDEX_TYPE.LSM_TREE).create();
+
+    this.underlyingIndex.setAssociatedIndex(this);
+
+    // AFTER THE WHOLE SCHEMA IS LOADED INITIALIZE THE INDEX
+    if (this.entryPointRIDToLoad != null) {
+      try {
+        this.entryPoint = this.entryPointRIDToLoad.asVertex();
+      } catch (RecordNotFoundException e) {
+        // ENTRYPOINT DELETED, DROP THE INDEX
+        LogManager.instance().log(this, Level.WARNING, "HNSW index '" + indexName + "' has an invalid entrypoint. The index will be removed");
+        this.entryPointRIDToLoad = null;
+        database.getSchema().dropIndex(indexName);
+        return;
+      }
+    }
   }
 
   @Override
@@ -325,7 +341,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
           for (int level = Math.min(randomLevel, entryPointCopyMaxLevel); level >= 0; level--) {
             final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, vertexVector, efConstruction, level);
 
-            final boolean entryPointDeleted = getDeletedFromVertex(entryPointCopy);
+            final boolean entryPointDeleted = isDeletedFromVertex(entryPointCopy);
             if (entryPointDeleted) {
               TDistance distance = distanceFunction.distance(vertexVector, getVectorFromVertex(entryPointCopy));
               topCandidates.add(new NodeIdAndDistance<>(getIdFromVertex(entryPointCopy), distance, maxValueDistanceComparator));
@@ -433,43 +449,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     }
   }
 
-  private void getNeighborsByHeuristic2(final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates, final int m) {
-    if (topCandidates.size() < m)
-      return;
-
-    final PriorityQueue<NodeIdAndDistance<TDistance>> queueClosest = new PriorityQueue<>();
-    final List<NodeIdAndDistance<TDistance>> returnList = new ArrayList<>();
-
-    while (!topCandidates.isEmpty()) {
-      queueClosest.add(topCandidates.poll());
-    }
-
-    while (!queueClosest.isEmpty()) {
-      if (returnList.size() >= m)
-        break;
-
-      final NodeIdAndDistance<TDistance> currentPair = queueClosest.poll();
-      final TDistance distToQuery = currentPair.distance;
-
-      boolean good = true;
-      for (NodeIdAndDistance<TDistance> secondPair : returnList) {
-
-        final TDistance curdist = distanceFunction.distance(//
-            getVectorFromVertex(loadVertexFromRID(secondPair.nodeId)),//
-            getVectorFromVertex(loadVertexFromRID(currentPair.nodeId)));
-
-        if (lt(curdist, distToQuery)) {
-          good = false;
-          break;
-        }
-
-      }
-      if (good) {
-        returnList.add(currentPair);
-      }
-    }
-
-    topCandidates.addAll(returnList);
+  public TypeIndex getUnderlyingIndex() {
+    return underlyingIndex;
   }
 
   public List<SearchResult<Vertex, TDistance>> findNearest(final TVector destination, final int k) {
@@ -525,7 +506,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     TDistance lowerBound;
 
-    if (!getDeletedFromVertex(entryPointNode)) {
+    if (!isDeletedFromVertex(entryPointNode)) {
       final TVector entryPointVector = getVectorFromVertex(entryPointNode);
       final TDistance distance = distanceFunction.distance(destination, entryPointVector);
       final NodeIdAndDistance<TDistance> pair = new NodeIdAndDistance<>(entryPointNode.getIdentity(), distance, maxValueDistanceComparator);
@@ -563,7 +544,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
             candidateSet.add(candidatePair);
 
-            if (!getDeletedFromVertex(candidateNode))
+            if (!isDeletedFromVertex(candidateNode))
               topCandidates.add(candidatePair);
 
             if (topCandidates.size() > k)
@@ -683,7 +664,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return (TVector) vertex.get(vectorPropertyName);
   }
 
-  public boolean getDeletedFromVertex(final Vertex vertex) {
+  public boolean isDeletedFromVertex(final Vertex vertex) {
     final Boolean deleted = vertex.getBoolean(deletedPropertyName);
     return deleted != null && deleted;
   }
@@ -763,8 +744,18 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
+  public IndexInternal getAssociatedIndex() {
+    return null;
+  }
+
+  @Override
   public void drop() {
-    underlyingIndex.drop();
+    if (underlyingIndex != null)
+      database.getSchema().dropIndex(underlyingIndex.getName());
+
+    final File cfg = new File(filePath);
+    if (cfg.exists())
+      cfg.delete();
   }
 
   @Override
@@ -927,7 +918,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
-    underlyingIndex.setMetadata(name, propertyNames, associatedBucketId);
   }
 
   @Override
@@ -947,22 +937,25 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public List<Integer> getFileIds() {
+    if (underlyingIndex == null)
+      // NOT PROPERLY BUILT YET
+      return Collections.emptyList();
     return underlyingIndex.getFileIds();
   }
 
   @Override
   public void setTypeIndex(final TypeIndex typeIndex) {
-    underlyingIndex.setTypeIndex(typeIndex);
+    throw new UnsupportedOperationException("setTypeIndex");
   }
 
   @Override
   public TypeIndex getTypeIndex() {
-    return underlyingIndex.getTypeIndex();
+    return null;
   }
 
   @Override
   public int getAssociatedBucketId() {
-    return underlyingIndex.getAssociatedBucketId();
+    return -1;
   }
 
   public void addIndexOnBucket(final IndexInternal index) {
@@ -1013,14 +1006,13 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   public void remove(final Object[] keys) {
     globalLock.lock();
     try {
-      final IndexCursor cursor = underlyingIndex.get(keys);
+      final IndexCursor cursor = underlyingIndex.get(new Object[] { keys[0] });
       if (!cursor.hasNext())
         return;
 
       final Vertex vertex = loadVertexFromRID(cursor.next());
-      if (vertex.equals(entryPoint)) {
-        // TODO: CHANGE THE ENTRYPOINT
-      }
+      vertex.modify().set(deletedPropertyName, true).save();
+      underlyingIndex.remove(keys);
 
       vertex.delete();
     } finally {
@@ -1032,7 +1024,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   public void remove(final Object[] keys, final Identifiable rid) {
     globalLock.lock();
     try {
-      final IndexCursor cursor = underlyingIndex.get(keys);
+      final IndexCursor cursor = underlyingIndex.get(new Object[] { keys[0] });
       if (!cursor.hasNext())
         return;
 
@@ -1041,11 +1033,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         return;
 
       final Vertex vertex = loadVertexFromRID(itemRID);
-      if (vertex.equals(entryPoint)) {
-        // TODO: CHANGE THE ENTRYPOINT
-      }
+      vertex.modify().set(deletedPropertyName, true).save();
 
-      vertex.delete();
+      underlyingIndex.remove(keys, rid);
+
     } finally {
       globalLock.unlock();
     }
@@ -1107,5 +1098,44 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     } finally {
       globalLock.unlock();
     }
+  }
+
+  private void getNeighborsByHeuristic2(final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates, final int m) {
+    if (topCandidates.size() < m)
+      return;
+
+    final PriorityQueue<NodeIdAndDistance<TDistance>> queueClosest = new PriorityQueue<>();
+    final List<NodeIdAndDistance<TDistance>> returnList = new ArrayList<>();
+
+    while (!topCandidates.isEmpty()) {
+      queueClosest.add(topCandidates.poll());
+    }
+
+    while (!queueClosest.isEmpty()) {
+      if (returnList.size() >= m)
+        break;
+
+      final NodeIdAndDistance<TDistance> currentPair = queueClosest.poll();
+      final TDistance distToQuery = currentPair.distance;
+
+      boolean good = true;
+      for (NodeIdAndDistance<TDistance> secondPair : returnList) {
+
+        final TDistance curdist = distanceFunction.distance(//
+            getVectorFromVertex(loadVertexFromRID(secondPair.nodeId)),//
+            getVectorFromVertex(loadVertexFromRID(currentPair.nodeId)));
+
+        if (lt(curdist, distToQuery)) {
+          good = false;
+          break;
+        }
+
+      }
+      if (good) {
+        returnList.add(currentPair);
+      }
+    }
+
+    topCandidates.addAll(returnList);
   }
 }

@@ -46,6 +46,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
   private final DocumentType        type;
   private       boolean             valid            = true;
+  private       IndexInternal       associatedIndex;
 
   public TypeIndex(final String logicName, final DocumentType type) {
     this.logicName = logicName;
@@ -402,6 +403,15 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public IndexInternal getAssociatedIndex() {
+    return associatedIndex;
+  }
+
+  public void setAssociatedIndex(final IndexInternal associatedIndex) {
+    this.associatedIndex = associatedIndex;
+  }
+
+  @Override
   public int getAssociatedBucketId() {
     return -1;
   }
@@ -436,7 +446,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // USE THE SHARDED INDEX
       final List<String> propNames = getPropertyNames();
 
-      List<Index> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
+      List<IndexInternal> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
 
       final List<DocumentType> subTypes = type.getSubTypes();
       if (!subTypes.isEmpty()) {
@@ -444,7 +454,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         polymorphicIndexesOnKeys = new ArrayList<>(polymorphicIndexesOnKeys);
 
         for (DocumentType s : subTypes) {
-          final List<Index> subIndexes = s.getPolymorphicBucketIndexByBucketId(s.getBuckets(false).get(bucketIndex).getFileId(), propNames);
+          final List<IndexInternal> subIndexes = s.getPolymorphicBucketIndexByBucketId(s.getBuckets(false).get(bucketIndex).getFileId(), propNames);
           polymorphicIndexesOnKeys.addAll(subIndexes);
 
         }

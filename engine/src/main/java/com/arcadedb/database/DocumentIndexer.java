@@ -24,6 +24,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -35,7 +36,7 @@ public class DocumentIndexer {
     this.database = database;
   }
 
-  public List<Index> getInvolvedIndexes(final Document modifiedRecord) {
+  public List<IndexInternal> getInvolvedIndexes(final Document modifiedRecord) {
     if (modifiedRecord == null)
       throw new IllegalArgumentException("Modified record is null");
 
@@ -55,7 +56,7 @@ public class DocumentIndexer {
       throw new IllegalArgumentException("Cannot index a non persistent record");
 
     // INDEX THE RECORD
-    final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucket.getFileId(), null);
+    final List<IndexInternal> metadata = type.getPolymorphicBucketIndexByBucketId(bucket.getFileId(), null);
     for (final Index entry : metadata)
       addToIndex(entry, rid, record);
   }
@@ -71,7 +72,7 @@ public class DocumentIndexer {
     index.put(keyValues, new RID[] { rid });
   }
 
-  public void updateDocument(final Document originalRecord, final Document modifiedRecord, final List<Index> indexes) {
+  public void updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> indexes) {
     if (indexes == null || indexes.isEmpty())
       return;
 
@@ -128,13 +129,20 @@ public class DocumentIndexer {
     if (type == null)
       throw new IllegalStateException("Type not found for bucket " + bucketId);
 
-    final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucketId, null);
+    final List<IndexInternal> metadata = type.getPolymorphicBucketIndexByBucketId(bucketId, null);
     if (metadata != null && !metadata.isEmpty()) {
       if (record instanceof RecordInternal)
         // FORCE RESET OF ANY PROPERTY TEMPORARY SET
         ((RecordInternal) record).unsetDirty();
 
-      for (final Index index : metadata) {
+      final List<IndexInternal> allIndexes = new ArrayList(metadata);
+      for (final IndexInternal index : metadata) {
+        final IndexInternal assIndex = index.getAssociatedIndex();
+        if (assIndex != null)
+          allIndexes.add(assIndex);
+      }
+
+      for (final IndexInternal index : allIndexes) {
         final List<String> keyNames = index.getPropertyNames();
         final Object[] keyValues = new Object[keyNames.size()];
         for (int i = 0; i < keyNames.size(); ++i) {

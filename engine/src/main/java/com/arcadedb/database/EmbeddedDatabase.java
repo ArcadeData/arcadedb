@@ -50,8 +50,8 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
-import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
@@ -864,7 +864,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
           if (record instanceof Document) {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
-            final List<Index> indexes = indexer.getInvolvedIndexes((Document) record);
+            final List<IndexInternal> indexes = indexer.getInvolvedIndexes((Document) record);
             if (!indexes.isEmpty()) {
               // UPDATE THE INDEXES TOO
               final Document originalRecord = getOriginalDocument(record);
@@ -900,7 +900,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
     try {
-      final List<Index> indexes = record instanceof Document ? indexer.getInvolvedIndexes((Document) record) : Collections.emptyList();
+      final List<IndexInternal> indexes = record instanceof Document ? indexer.getInvolvedIndexes((Document) record) : Collections.emptyList();
 
       if (!indexes.isEmpty()) {
         // UPDATE THE INDEXES TOO
