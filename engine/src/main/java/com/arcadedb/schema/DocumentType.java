@@ -824,9 +824,8 @@ public class DocumentType {
     final List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new ArrayList<>());
     list.add(index);
 
-    final List<String> propertyList = Arrays.asList(propertyNames);
-
     if (propIndex == null) {
+      final List<String> propertyList = Arrays.asList(propertyNames);
       propIndex = indexesByProperties.get(propertyList);
       if (propIndex == null) {
         // CREATE THE TYPE-INDEX FOR THE 1ST TIME

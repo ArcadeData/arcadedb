@@ -68,6 +68,8 @@ public class CountFromClassStep extends AbstractExecutionStep {
           String targetName = target;
           if (targetName.startsWith("$"))
             targetName = (String) context.getVariablePath(targetName);
+          else if (targetName.startsWith("`") && targetName.endsWith("`"))
+            targetName = targetName.substring(1, targetName.length() - 1);
 
           final DocumentType typez = context.getDatabase().getSchema().getType(targetName);
           if (typez == null) {
