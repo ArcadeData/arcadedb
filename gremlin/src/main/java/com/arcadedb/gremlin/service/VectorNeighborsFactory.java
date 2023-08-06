@@ -33,8 +33,6 @@ import org.apache.tinkerpop.gremlin.structure.util.CloseableIterator;
 
 import java.util.*;
 
-import static org.apache.tinkerpop.gremlin.util.tools.CollectionFactory.asMap;
-
 /**
  * Uses the vector index HNSW to retrieve the top K neighbors from a key.
  *
@@ -44,7 +42,7 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
 
   public static final String NAME = "arcadedb#vectorNeighbors";
 
-  private static final Map<String, String> PARAMS = asMap(//
+  private static final Map<String, String> PARAMS = Map.of(//
       "indexName", "Name of the index to use",//
       "vector", "vector where to find neighbors",//
       "limit", "max number of neighbors to return");

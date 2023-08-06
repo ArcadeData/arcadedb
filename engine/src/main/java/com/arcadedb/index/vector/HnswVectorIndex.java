@@ -562,7 +562,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
                 maxValueDistanceComparator);
 
             candidateSet.add(candidatePair);
-            topCandidates.add(candidatePair);
 
             if (!getDeletedFromVertex(candidateNode))
               topCandidates.add(candidatePair);

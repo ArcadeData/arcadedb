@@ -599,6 +599,11 @@ public class EmbeddedSchema implements Schema {
   }
 
   private void writeCachedCountFile() {
+    final File directory = new File(databasePath);
+    if (!directory.exists())
+      // DATABASE DIRECTORY WAS DELETED
+      return;
+
     try {
       final JSONObject json = new JSONObject();
       for (Map.Entry<String, Bucket> b : bucketMap.entrySet()) {
@@ -607,7 +612,7 @@ public class EmbeddedSchema implements Schema {
           json.put(b.getKey(), cachedCount);
       }
 
-      try (final FileWriter file = new FileWriter(databasePath + File.separator + CACHED_COUNT_FILE_NAME)) {
+      try (final FileWriter file = new FileWriter(new File(directory, CACHED_COUNT_FILE_NAME))) {
         file.write(json.toString());
       }
     } catch (Throwable e) {
