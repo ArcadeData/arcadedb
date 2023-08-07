@@ -1,0 +1,363 @@
+{
+  "resources":{
+  "includes":[{
+    "pattern":"\\QMETA-INF/dgminfo\\E"
+  }, {
+    "pattern":"\\QMETA-INF/groovy/org.codehaus.groovy.runtime.ExtensionModule\\E"
+  }, {
+    "pattern":"\\QMETA-INF/groovy/org.codehaus.groovy.source.Extensions\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.oracle.truffle.api.TruffleLanguage$Provider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.oracle.truffle.api.instrumentation.TruffleInstrument$Provider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/org.apache.tinkerpop.gremlin.jsr223.GremlinScriptEngineFactory\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/org.apache.tinkerpop.gremlin.server.OpProcessor\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/org.codehaus.groovy.transform.ASTTransformation\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/org.slf4j.spi.SLF4JServiceProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/org.xnio.XnioProvider\\E"
+  }, {
+    "pattern":"\\Qarcadedb-log.properties\\E"
+  }, {
+    "pattern":"\\Qcom/arcadedb/arcadedb.properties\\E"
+  }, {
+    "pattern":"\\Qcom/oracle/truffle/nfi/backend/libffi/LibFFILanguage.class\\E"
+  }, {
+    "pattern":"\\Qio/undertow/version.properties\\E"
+  }, {
+    "pattern":"\\Qjava/sql/Timestamp.class\\E"
+  }, {
+    "pattern":"\\Qjava/util/Date.class\\E"
+  }, {
+    "pattern":"\\Qjava/util/UUID.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/BaseConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/CombinedConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/CompositeConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/Configuration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/ConfigurationUtils.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/HierarchicalConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/MapConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/PropertiesConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/SubsetConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/XMLConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/commons/configuration2/builder/fluent/Configurations.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/jsr223/JavaTranslator.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/Computer.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/ComputerResult.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/GraphComputer.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/Memory.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/VertexProgram.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/clone/CloneVertexProgram.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/clustering/connected/ConnectedComponentVertexProgram.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/clustering/peerpressure/ClusterCountMapReduce.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/clustering/peerpressure/ClusterPopulationMapReduce.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/clustering/peerpressure/PeerPressureVertexProgram.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/ranking/pagerank/PageRankMapReduce.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/ranking/pagerank/PageRankVertexProgram.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/search/path/ShortestPathVertexProgram.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/MemoryTraversalSideEffects.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/TraversalVertexProgram.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/step/map/ConnectedComponent.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/step/map/PageRank.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/step/map/PeerPressure.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/step/map/ShortestPath.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/strategy/decoration/VertexProgramStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/strategy/optimization/GraphFilterStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/computer/traversal/strategy/verification/VertexProgramRestrictionStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/remote/RemoteConnection.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/AnonymousTraversalSource.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Bindings.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/IO.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Merge.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Operator.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Order.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/P.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Pick.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Pop.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/SackFunctions$Barrier.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/SackFunctions.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Scope.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/TextP.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Translator.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/Traversal.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/dsl/graph/GraphTraversal.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/dsl/graph/GraphTraversalSource.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/dsl/graph/__.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/step/TraversalOptionParent.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/step/util/WithOptions.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/decoration/ConnectiveStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/decoration/ElementIdStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/decoration/EventStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/decoration/HaltedTraverserStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/decoration/PartitionStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/decoration/SeedStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/decoration/SubgraphStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/finalization/MatchAlgorithmStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/finalization/ProfileStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/finalization/ReferenceElementStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/AdjacentToIncidentStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/ByModulatorOptimizationStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/CountStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/EarlyLimitStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/FilterRankingStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/IdentityRemovalStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/IncidentToAdjacentStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/LazyBarrierStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/MatchPredicateStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/OrderLimitStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/PathProcessorStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/optimization/ProductiveByStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/verification/ComputerVerificationStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/verification/EdgeLabelVerificationStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/verification/LambdaRestrictionStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/verification/ReadOnlyStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/strategy/verification/StandardVerificationStrategy.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/translator/DotNetTranslator.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/translator/GroovyTranslator.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/translator/JavascriptTranslator.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/translator/PythonTranslator.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/process/traversal/util/TraversalMetrics.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/Column.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/Direction.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/Edge.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/Element.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/Graph.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/Property.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/T.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/Transaction.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/Vertex.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/VertexProperty$Cardinality.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/VertexProperty.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/GraphReader.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/GraphWriter.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/Io.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/IoCore.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/Storage.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphml/GraphMLIo.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphml/GraphMLMapper.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphml/GraphMLReader.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphml/GraphMLWriter.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphson/GraphSONIo.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphson/GraphSONMapper.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphson/GraphSONReader.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphson/GraphSONTokens.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphson/GraphSONVersion.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphson/GraphSONWriter.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/graphson/LegacyGraphSONReader.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/gryo/GryoClassResolverV1d0.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/gryo/GryoClassResolverV3d0.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/gryo/GryoIo.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/gryo/GryoMapper.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/gryo/GryoReader.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/gryo/GryoVersion.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/io/gryo/GryoWriter.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/util/ElementHelper.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/util/GraphFactory.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/util/empty/EmptyGraph.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/util/reference/ReferenceEdge.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/util/reference/ReferenceProperty.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/util/reference/ReferenceVertex.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/structure/util/reference/ReferenceVertexProperty.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/util/DatetimeHelper.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/util/Gremlin.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/util/TimeUtil.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/util/function/Lambda.class\\E"
+  }, {
+    "pattern":"\\Qorg/apache/tinkerpop/gremlin/util/iterator/IteratorUtils.class\\E"
+  }, {
+    "pattern":"\\Qorg/jboss/threads/Version.properties\\E"
+  }, {
+    "pattern":"\\Qorg/xnio/Version.properties\\E"
+  }, {
+    "pattern":"\\Qorg/xnio/nio/Version.properties\\E"
+  }, {
+    "pattern":"\\Qstatic/api.html\\E"
+  }, {
+    "pattern":"\\Qstatic/cluster.html\\E"
+  }, {
+    "pattern":"\\Qstatic/components/DataTables/datatables.min.css\\E"
+  }, {
+    "pattern":"\\Qstatic/components/bootstrap-colorselector/css/bootstrap-colorselector.min.css\\E"
+  }, {
+    "pattern":"\\Qstatic/components/codemirror/css/codemirror.css\\E"
+  }, {
+    "pattern":"\\Qstatic/components/codemirror/css/neo.css\\E"
+  }, {
+    "pattern":"\\Qstatic/components/fontawesome-iconpicker/css/fontawesome-iconpicker.min.css\\E"
+  }, {
+    "pattern":"\\Qstatic/components/fontawesome/css/fontawesome.min.css\\E"
+  }, {
+    "pattern":"\\Qstatic/components/fontawesome/css/solid.min.css\\E"
+  }, {
+    "pattern":"\\Qstatic/css/apexcharts.css\\E"
+  }, {
+    "pattern":"\\Qstatic/css/bootstrap.min.css\\E"
+  }, {
+    "pattern":"\\Qstatic/css/studio.css\\E"
+  }, {
+    "pattern":"\\Qstatic/database.html\\E"
+  }, {
+    "pattern":"\\Qstatic/images/arcade-favico.png\\E"
+  }, {
+    "pattern":"\\Qstatic/index.html\\E"
+  }, {
+    "pattern":"\\Qstatic/popup-login.html\\E"
+  }, {
+    "pattern":"\\Qstatic/query.html\\E"
+  }, {
+    "pattern":"\\Qstatic/resources.html\\E"
+  }, {
+    "pattern":"\\Qstatic/server.html\\E"
+  }, {
+    "pattern":"java.base:\\Qjava/util/Date.class\\E"
+  }, {
+    "pattern":"java.base:\\Qjava/util/UUID.class\\E"
+  }, {
+    "pattern":"java.base:\\Qjdk/internal/icu/impl/data/icudt72b/nfc.nrm\\E"
+  }, {
+    "pattern":"java.base:\\Qjdk/internal/icu/impl/data/icudt72b/nfkc.nrm\\E"
+  }, {
+    "pattern":"java.base:\\Qjdk/internal/icu/impl/data/icudt72b/uprops.icu\\E"
+  }, {
+    "pattern":"java.base:\\Qsun/net/idn/uidna.spp\\E"
+  }, {
+    "pattern":"java.sql:\\Qjava/sql/Timestamp.class\\E"
+  }]},
+  "bundles":[]
+}
