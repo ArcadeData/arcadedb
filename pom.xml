@@ -353,6 +353,10 @@
                                 <enableExperimentalUnsafeAllocationTracing>true
                                 </enableExperimentalUnsafeAllocationTracing>
                             </options>
+                            <metadataCopy>
+                                <merge>true</merge>
+                                <outputDirectory>src/main/resources/META-INF/native-image</outputDirectory>
+                            </metadataCopy>
                         </agent>
                         <metadataRepository>
                             <enabled>true</enabled>
