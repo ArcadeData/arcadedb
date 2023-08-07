@@ -22,6 +22,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Meterian Scanner
-        uses: MeterianHQ/meterian-github-action@v1.0.13
+        uses: MeterianHQ/meterian-github-action@v1.0.15
         env:
           METERIAN_API_TOKEN: ${{ secrets.METERIAN_API_TOKEN }}
