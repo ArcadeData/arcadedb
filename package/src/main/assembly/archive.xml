@@ -53,6 +53,17 @@
             <fileMode>755</fileMode>
             <filtered>true</filtered>
         </fileSet>
+
+        <fileSet>
+            <directory>${basedir}/src/main/data</directory>
+            <outputDirectory>demo-data</outputDirectory>
+            <includes>
+                <include>*.json</include>
+            </includes>
+            <fileMode>755</fileMode>
+            <filtered>true</filtered>
+        </fileSet>
+
         <fileSet> <!-- Create empty directory -->
             <outputDirectory>databases</outputDirectory>
             <excludes><exclude>**/*</exclude></excludes>
