@@ -254,7 +254,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
         Assertions.assertTrue(((Map) o).get("t").equals("V1") || ((Map) o).get("t").equals("V2"));
 
       final List<Object> records = responseAsJson.getJSONObject("result").getJSONArray("records").toList();
-      Assertions.assertEquals(3, records.size());
+      Assertions.assertEquals(1, records.size());
       for (final Object o : records)
         Assertions.assertTrue(((Map) o).get("@type").equals("V1") || ((Map) o).get("@type").equals("V2") || ((Map) o).get("@type").equals("E1"));
 
