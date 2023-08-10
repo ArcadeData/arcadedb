@@ -567,7 +567,11 @@ public class ArcadeDBServer {
           ServerSecurityUser user = security.getUser(userName);
           if (user.canAccessToDatabase(dbName)) {
             try {
-              user = security.authenticate(userName, userPassword, dbName);
+              if (GlobalConfiguration.OIDC_AUTH.getValueAsBoolean()) {
+                user = security.authenticate(userName, dbName);
+              } else {
+                user = security.authenticate(userName, userPassword, dbName);
+              }
 
               // UPDATE DB LIST + GROUP
               user.addDatabase(dbName, new String[] { userGroup });

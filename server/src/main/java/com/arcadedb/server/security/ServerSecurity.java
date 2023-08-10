@@ -153,19 +153,26 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
       groupRepository.stop();
   }
 
-  public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
+  public ServerSecurityUser authenticate(final String userName, final String databaseName) {
 
     final ServerSecurityUser su = users.get(userName);
     if (su == null)
-      throw new ServerSecurityException("User/Password not valid");
-
-    if (!passwordMatch(userPassword, su.getPassword()))
-      throw new ServerSecurityException("User/Password not valid");
+      throw new ServerSecurityException("User not valid");
 
     if (databaseName != null) {
       final Set<String> allowedDatabases = su.getAuthorizedDatabases();
       if (!allowedDatabases.contains(SecurityManager.ANY) && !su.getAuthorizedDatabases().contains(databaseName))
-        throw new ServerSecurityException("User has not access to database '" + databaseName + "'");
+        throw new ServerSecurityException("User does not have access to database '" + databaseName + "'");
+    }
+
+    return su;
+  }
+
+  public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
+
+    final ServerSecurityUser su = authenticate(userName, databaseName);
+    if (!passwordMatch(userPassword, su.getPassword())) {
+      throw new ServerSecurityException("User/Password not valid");
     }
 
     return su;

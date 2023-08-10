@@ -4,31 +4,174 @@ var globalGraphMaxResult = 1000;
 var globalCredentials = null;
 
 /* API Gateway route */
-// TODO pull window relative path, or env var.
 var basePath = "/api/v1/arcadedb";
 
+/**
+ * The datetime that the access token expires. Stores this in local storage because javascript has
+ * no access to HttpOnly cookies, and will be unable to refer to the expiration time in the JWT once
+ * it leaves working memory.
+ * */
+const ACCESS_TOKEN_EXPIRES = "accessExpires";
+const REFRESH_TOKEN = "refreshToken";
+const REFRESH_EXPIRES = "refreshExpires";
+let refreshTokenTimer;
+window.addEventListener("load", onLoad, true);
+
+/** Handle page refreshes */
+function onLoad() {
+  // reset refresh token timer
+  let shouldLogout = false;
+  const accessExpires = localStorage.getItem(ACCESS_TOKEN_EXPIRES);
+  if (accessExpires && accessExpires > Date.now()) {
+    refreshToken();
+    const expiresSeconds = (accessExpires - Date.now()) / 1000 - 5;
+    if (expiresSeconds > 0) {
+      createRefreshTokenTimer(expiresSeconds);
+    } else {
+      shouldLogout = true;
+    }
+  }
+  if (shouldLogout) {
+    logout();
+  }
+}
+
+/**
+ * String 64 encodes the provided username and password. THIS DOES NOT ENCRYPT.
+ * Should only be used for inner pod communication.
+ */
 function make_base_auth(user, password) {
   var tok = user + ':' + password;
   var hash = btoa(tok);
   return "Basic " + hash;
 }
 
-function login(){
-  var userName = $("#inputUserName").val().trim();
-  if( userName.length == 0 )
-    return;
+async function postJSON(data) {
+  try {
+    const response = await fetch(`${basePath}/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
+    });
+    const result = await response.json();
+    console.log("Success:", result);
+  } catch (error) {
+    console.error("Error:", error);
+  }
+}
 
-  var userPassword = $("#inputUserPassword").val().trim();
-  if( userPassword.length == 0 )
-    return;
+async function logout() {
+  // TODO call backend to revoke tokens
+  // await fetch(`${basePath}/logout`, {
+  //   method: "POST",
+  //   headers: {
+  //     "Content-Type": "application/json",
+  //     //  Authorization: globalCredentials,
+  //   },
+  // });
+  globalCredentials = null;
+  localStorage.removeItem(REFRESH_EXPIRES);
+  localStorage.removeItem(REFRESH_TOKEN);
+  localStorage.removeItem(ACCESS_TOKEN_EXPIRES);
+  // redirect to login page
+  window.location.href = `${basePath}/studio`;
+}
 
-  $( "#loginSpinner" ).show();
+function createInactivityTimer() {
+  var time;
+  window.addEventListener("load", resetTimer, true);
+  var events = ["mousedown", "mousemove", "keypress", "scroll", "touchstart"];
+  events.forEach(function (name) {
+    document.addEventListener(name, resetTimer, true);
+  });
+  function resetTimer() {
+    clearTimeout(time);
+    time = setTimeout(logout, 900000); // 15 minutes
+  }
+}
 
-  globalCredentials = make_base_auth(userName, userPassword);
+async function login() {
+  const userName = $("#inputUserName").val().trim();
+  if (userName.length == 0) return;
 
-  updateDatabases( function(){
+  const password = $("#inputUserPassword").val().trim();
+  if (password.length == 0) return;
+
+  $("#loginSpinner").show();
+  const body = { username: userName, password: password };
+  const oauthResponse = await fetch(`${basePath}/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (oauthResponse.ok) {
+    const jwt = await oauthResponse.json();
+    globalCredentials = `Bearer ${jwt.access_token}`;
+    updateLocalStorageWithNewJwt(jwt);
+    createRefreshTokenTimer(jwt.expires_in);
+    createInactivityTimer();
+  }
+
+  updateDatabases(function () {
     initQuery();
   });
+}
+
+
+function updateLocalStorageWithNewJwt(jwt) {
+  localStorage.setItem(REFRESH_TOKEN, jwt.refresh_token);
+  localStorage.setItem(
+    REFRESH_EXPIRES,
+    getRefreshExpiration(jwt.refresh_expires_in)
+  );
+  // TODO get access token expiration from JWT and save to local storage.
+  // TODO update to use httpOnly cookies. Javascript has no access to them
+  localStorage.setItem(ACCESS_TOKEN_EXPIRES, Date.now() + jwt.expires_in * 1000);
+}
+
+function getRefreshExpiration(expiresIn) {
+  return Date.now() + expiresIn * 1000;
+}
+
+function createRefreshTokenTimer(expiresSeconds) {
+  if (expiresSeconds) {
+    clearTimeout(refreshTokenTimer);
+    refreshTokenTimer = setTimeout(refreshToken, (expiresSeconds - 5) * 1000);
+  }
+}
+
+async function refreshToken() {
+  console.log("refresh token");
+  const oauthResponse = await fetch(
+    `${basePath}/refreshToken`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+      },
+      body: 
+        JSON.stringify({refreshToken: localStorage.getItem(REFRESH_TOKEN)}),
+      
+    }
+  );
+  if (oauthResponse.ok) {
+    const jwt = await oauthResponse.json();
+    updateLocalStorageWithNewJwt(jwt);
+    createRefreshTokenTimer(jwt.expires_in);
+
+    if (globalCredentials == undefined) {
+      globalCredentials = `Bearer ${jwt.access_token}`;
+      updateDatabases(function () {
+        initQuery();
+      });
+    } else {
+      globalCredentials = `Bearer ${jwt.access_token}`;
+    }
+  }
 }
 
 function showLoginPopup(){
