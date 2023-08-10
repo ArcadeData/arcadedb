@@ -24,9 +24,10 @@ public class PostRefreshTokenHandler extends AbstractHandler {
 
         final String refreshToken = payload.has("refreshToken") ? payload.getString("refreshToken") : null;
         if (refreshToken == null) {
-            // return error
+            // TODO return error
         }
 
+        // TODO replace with keycloak configuration
         Map<String, String> formData = new HashMap<>();
         formData.put("refresh_token", refreshToken);
         formData.put("grant_type", "refresh_token");

@@ -34,9 +34,10 @@ public class PostLoginHandler extends AbstractHandler {
         final String username = payload.has("username") ? payload.getString("username") : null;
         final String password = payload.has("password") ? payload.getString("password") : null;
         if (username == null || password == null) {
-            // return error
+            // TODO return error
         }
 
+        // TODO replace with keycloak config, or use keycloak login GUI
         Map<String, String> formData = new HashMap<>();
         formData.put("username", username);
         formData.put("password", password);
