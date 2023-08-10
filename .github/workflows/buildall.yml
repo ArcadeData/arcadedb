@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - '*'
+      - 'dev'
 #   workflow_run:
 #     workflows: ["Tag & Release"]
 #     branch: ["*"]
