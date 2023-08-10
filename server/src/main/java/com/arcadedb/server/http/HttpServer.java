@@ -26,26 +26,7 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.handler.DeleteDropUserHandler;
-import com.arcadedb.server.http.handler.GetDatabasesHandler;
-import com.arcadedb.server.http.handler.GetDocumentHandler;
-import com.arcadedb.server.http.handler.GetDynamicContentHandler;
-import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
-import com.arcadedb.server.http.handler.GetQueryHandler;
-import com.arcadedb.server.http.handler.GetReadyHandler;
-import com.arcadedb.server.http.handler.GetServerHandler;
-import com.arcadedb.server.http.handler.PostBeginHandler;
-import com.arcadedb.server.http.handler.PostCloseDatabaseHandler;
-import com.arcadedb.server.http.handler.PostCommandHandler;
-import com.arcadedb.server.http.handler.PostCommitHandler;
-import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
-import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
-import com.arcadedb.server.http.handler.PostCreateUserHandler;
-import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
-import com.arcadedb.server.http.handler.PostOpenDatabaseHandler;
-import com.arcadedb.server.http.handler.PostQueryHandler;
-import com.arcadedb.server.http.handler.PostRollbackHandler;
-import com.arcadedb.server.http.handler.PostServerCommandHandler;
+import com.arcadedb.server.http.handler.*;
 import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
@@ -148,7 +129,9 @@ public class HttpServer implements ServerPlugin {
             .delete("/user/{userName}", new DeleteDropUserHandler(this))// DEPRECATED
             .get("/server", new GetServerHandler(this))//
             .post("/server", new PostServerCommandHandler(this))//
-            .get("/ready", new GetReadyHandler(this))//
+            .get("/ready", new GetReadyHandler(this))
+            .post("/login", new PostLoginHandler(this))
+            .post("/refreshToken", new PostRefreshTokenHandler(this))
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {

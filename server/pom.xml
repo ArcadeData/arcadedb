@@ -87,6 +87,16 @@
             <version>${undertow-core.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.pac4j</groupId>
+            <artifactId>undertow-pac4j</artifactId>
+            <version>5.0.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pac4j</groupId>
+            <artifactId>pac4j-oidc</artifactId>
+            <version>5.7.1</version>
+        </dependency>
+        <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
             <version>${slf4j.version}</version>

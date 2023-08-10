@@ -5,8 +5,10 @@
 - API: ~/api/v1/arcadedb
 
 #### Demo data
-1. Give the arcadedb cluster a minute to come up. HA datasets need to be deployed onto the leader node, and a quorum needs to be established
-2. To import the preloaded demo dataset in arcadedb, run the following in the sql command line in arcadedb studio
+1. Create root user in keycloak
+2. log into arcade gui
+3. Create a demo database through the GUI. Click the second, database icon in the menu on the left. Create database button is in the upper right.
+4. To import the preloaded demo dataset in arcadedb, run the following in the sql command line in arcadedb studio
 
     ``````
     import database file://demo-data/FoodData_Central_foundation_food_json_2022-10-28.json with mapping = {
@@ -55,7 +57,7 @@
         }]
     }
     ``````
-3. Run the following query to see a graph representation of the uploaded data
+5. Wait a minute for the data to load, and then run the following query to see a graph representation of the uploaded data
    ``` select *, bothE() as `@edges` from `FinalFood` ```
 
 

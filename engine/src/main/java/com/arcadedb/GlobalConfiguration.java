@@ -162,6 +162,8 @@ public enum GlobalConfiguration {
     return value;
   }),
 
+  OIDC_AUTH("arcadedb.oidcAuth", SCOPE.SERVER, "Use OIDC Auth instead of basic", Boolean.class, true),
+
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax", String.class,
       "yyyy-MM-dd HH:mm:ss"),
 
