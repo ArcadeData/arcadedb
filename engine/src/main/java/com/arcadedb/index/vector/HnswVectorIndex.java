@@ -272,7 +272,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   public boolean add(Vertex vertex) {
     final TVector vertexVector = getVectorFromVertex(vertex);
     if (Array.getLength(vertexVector) != dimensions)
-      throw new IllegalArgumentException("Item does not have dimensionality of " + dimensions);
+      throw new IllegalArgumentException(
+          "Item has dimensionality of " + Array.getLength(vertexVector) + " but the index was defined with " + dimensions + " dimensions");
 
     final TId vertexId = getIdFromVertex(vertex);
     final int vertexMaxLevel = getMaxLevelFromVertex(vertex);
