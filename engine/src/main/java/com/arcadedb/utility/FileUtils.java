@@ -504,4 +504,12 @@ public class FileUtils {
     }
     return bytes;
   }
+
+  public static byte[] readFileAsBytes(final File file, final int maxBytes) throws IOException {
+    final byte[] bytes = new byte[maxBytes];
+    try (FileInputStream fis = new FileInputStream(file)) {
+      fis.read(bytes);
+    }
+    return bytes;
+  }
 }
