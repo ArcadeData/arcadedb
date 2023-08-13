@@ -1014,8 +1014,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       final Vertex vertex = loadVertexFromRID(cursor.next());
       vertex.modify().set(deletedPropertyName, true).save();
       underlyingIndex.remove(keys);
-
-      vertex.delete();
     } finally {
       globalLock.unlock();
     }
