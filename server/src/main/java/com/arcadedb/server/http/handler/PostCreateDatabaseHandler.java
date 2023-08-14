@@ -63,8 +63,10 @@ public class PostCreateDatabaseHandler extends AbstractHandler {
 
     final DatabaseInternal db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-      ((ReplicatedDatabase) db).createInReplicas();
+    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
+      final ReplicatedDatabase replicatedDatabase = (ReplicatedDatabase) db.getEmbedded();
+      replicatedDatabase.createInReplicas();
+    }
 
     return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
   }

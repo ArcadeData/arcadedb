@@ -332,11 +332,11 @@ public class ArcadeDBServer {
     return databases.containsKey(databaseName);
   }
 
-  public DatabaseInternal createDatabase(final String databaseName, final ComponentFile.MODE mode) {
-    DatabaseInternal db;
+  public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
+    ServerDatabase serverDatabase;
     synchronized (databases) {
-      db = databases.get(databaseName);
-      if (db != null)
+      serverDatabase = databases.get(databaseName);
+      if (serverDatabase != null)
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
       final DatabaseFactory factory = new DatabaseFactory(
@@ -345,23 +345,22 @@ public class ArcadeDBServer {
       if (factory.exists())
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
-      db = (DatabaseInternal) factory.create();
+      DatabaseInternal embeddedDatabase = (DatabaseInternal) factory.create();
 
       if (mode == READ_ONLY) {
-        db.close();
-        db = (DatabaseInternal) factory.open(mode);
+        embeddedDatabase.close();
+        embeddedDatabase = (DatabaseInternal) factory.open(mode);
       }
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-        db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
+        embeddedDatabase = new ReplicatedDatabase(this, (EmbeddedDatabase) embeddedDatabase);
 
-      db = new ServerDatabase(db);
+      serverDatabase = new ServerDatabase(embeddedDatabase);
 
       // FORCE LOADING INTO THE SERVER
-      databases.put(databaseName, (ServerDatabase) db);
+      databases.put(databaseName, serverDatabase);
+      return serverDatabase;
     }
-
-    return db;
   }
 
   public Set<String> getDatabaseNames() {

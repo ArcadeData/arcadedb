@@ -28,6 +28,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
 import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
@@ -173,10 +174,12 @@ public class PostServerCommandHandler extends AbstractHandler {
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.create-database").hit();
 
-    final DatabaseInternal db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-      ((ReplicatedDatabase) db).createInReplicas();
+    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
+      final ReplicatedDatabase replicatedDatabase = (ReplicatedDatabase) db.getEmbedded();
+      replicatedDatabase.createInReplicas();
+    }
   }
 
   private ExecutionResponse getServerEvents(final String command) {
