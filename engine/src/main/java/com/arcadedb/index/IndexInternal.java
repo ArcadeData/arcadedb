@@ -64,4 +64,6 @@ public interface IndexInternal extends Index {
   String getMostRecentFileName();
 
   JSONObject toJSON();
+
+  IndexInternal getAssociatedIndex();
 }

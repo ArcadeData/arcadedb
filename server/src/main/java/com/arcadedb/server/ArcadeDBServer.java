@@ -308,11 +308,11 @@ public class ArcadeDBServer {
     return serverMetrics;
   }
 
-  public Database getDatabase(final String databaseName) {
+  public ServerDatabase getDatabase(final String databaseName) {
     return getDatabase(databaseName, false, true);
   }
 
-  public Database getOrCreateDatabase(final String databaseName) {
+  public ServerDatabase getOrCreateDatabase(final String databaseName) {
     return getDatabase(databaseName, true, true);
   }
 
@@ -332,11 +332,11 @@ public class ArcadeDBServer {
     return databases.containsKey(databaseName);
   }
 
-  public DatabaseInternal createDatabase(final String databaseName, final ComponentFile.MODE mode) {
-    DatabaseInternal db;
+  public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
+    ServerDatabase serverDatabase;
     synchronized (databases) {
-      db = databases.get(databaseName);
-      if (db != null)
+      serverDatabase = databases.get(databaseName);
+      if (serverDatabase != null)
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
       final DatabaseFactory factory = new DatabaseFactory(
@@ -345,23 +345,22 @@ public class ArcadeDBServer {
       if (factory.exists())
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
-      db = (DatabaseInternal) factory.create();
+      DatabaseInternal embeddedDatabase = (DatabaseInternal) factory.create();
 
       if (mode == READ_ONLY) {
-        db.close();
-        db = (DatabaseInternal) factory.open(mode);
+        embeddedDatabase.close();
+        embeddedDatabase = (DatabaseInternal) factory.open(mode);
       }
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-        db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
+        embeddedDatabase = new ReplicatedDatabase(this, (EmbeddedDatabase) embeddedDatabase);
 
-      db = new ServerDatabase(db);
+      serverDatabase = new ServerDatabase(embeddedDatabase);
 
       // FORCE LOADING INTO THE SERVER
-      databases.put(databaseName, (ServerDatabase) db);
+      databases.put(databaseName, serverDatabase);
+      return serverDatabase;
     }
-
-    return db;
   }
 
   public Set<String> getDatabaseNames() {
@@ -411,11 +410,11 @@ public class ArcadeDBServer {
     return getServerName();
   }
 
-  public Database getDatabase(final String databaseName, final boolean createIfNotExists, final boolean allowLoad) {
+  public ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists, final boolean allowLoad) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
-    DatabaseInternal db;
+    ServerDatabase db;
     synchronized (databases) {
       db = databases.get(databaseName);
 
@@ -433,34 +432,35 @@ public class ArcadeDBServer {
         if (defaultDbMode == null)
           defaultDbMode = READ_WRITE;
 
+        DatabaseInternal embDatabase;
         if (createIfNotExists)
-          db = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
+          embDatabase = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
         else {
           final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
           if (!activeDatabases.isEmpty()) {
-            db = null;
+            embDatabase = null;
             for (Database existentDatabase : activeDatabases) {
               if (existentDatabase.getDatabasePath().equals(path)) {
                 // REUSE THE OPEN DATABASE. THIS TYPICALLY HAPPENS WHEN A SERVER PLUGIN OPENS THE DATABASE AT STARTUP
-                db = (DatabaseInternal) existentDatabase;
+                embDatabase = (DatabaseInternal) existentDatabase;
                 break;
               }
             }
 
-            if (db == null)
+            if (embDatabase == null)
               // OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
-              db = (DatabaseInternal) factory.open(defaultDbMode);
+              embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
 
           } else
-            db = (DatabaseInternal) factory.open(defaultDbMode);
+            embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
         }
 
         if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-          db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
+          embDatabase = new ReplicatedDatabase(this, (EmbeddedDatabase) embDatabase);
 
-        db = new ServerDatabase(db);
+        db = new ServerDatabase(embDatabase);
 
-        databases.put(databaseName, (ServerDatabase) db);
+        databases.put(databaseName, db);
       }
     }
     return db;

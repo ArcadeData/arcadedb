@@ -183,6 +183,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
+  public IndexInternal getAssociatedIndex() {
+    return null;
+  }
+
+  @Override
   public long countEntries() {
     return underlyingIndex.countEntries();
   }

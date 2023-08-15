@@ -28,6 +28,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
 import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
@@ -173,10 +174,12 @@ public class PostServerCommandHandler extends AbstractHandler {
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.create-database").hit();
 
-    final DatabaseInternal db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-      ((ReplicatedDatabase) db).createInReplicas();
+    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
+      final ReplicatedDatabase replicatedDatabase = (ReplicatedDatabase) db.getEmbedded();
+      replicatedDatabase.createInReplicas();
+    }
   }
 
   private ExecutionResponse getServerEvents(final String command) {
@@ -221,11 +224,11 @@ public class PostServerCommandHandler extends AbstractHandler {
     if (databaseName.isEmpty())
       throw new IllegalArgumentException("Database name empty");
 
-    final Database database = httpServer.getServer().getDatabase(databaseName);
+    final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
 
     httpServer.getServer().getServerMetrics().meter("http.drop-database").hit();
 
-    ((DatabaseInternal) database).getEmbedded().drop();
+    database.getEmbedded().drop();
     httpServer.getServer().removeDatabase(database.getName());
   }
 
@@ -234,8 +237,8 @@ public class PostServerCommandHandler extends AbstractHandler {
     if (databaseName.isEmpty())
       throw new IllegalArgumentException("Database name empty");
 
-    final Database database = httpServer.getServer().getDatabase(databaseName);
-    ((DatabaseInternal) database).getEmbedded().close();
+    final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
+    database.getEmbedded().close();
 
     httpServer.getServer().getServerMetrics().meter("http.close-database").hit();
     httpServer.getServer().removeDatabase(database.getName());
@@ -247,7 +250,6 @@ public class PostServerCommandHandler extends AbstractHandler {
       throw new IllegalArgumentException("Database name empty");
 
     httpServer.getServer().getDatabase(databaseName);
-
     httpServer.getServer().getServerMetrics().meter("http.open-database").hit();
   }
 

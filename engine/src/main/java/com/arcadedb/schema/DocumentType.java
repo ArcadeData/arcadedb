@@ -621,7 +621,7 @@ public class DocumentType {
     return Collections.unmodifiableCollection(list);
   }
 
-  public List<Index> getPolymorphicBucketIndexByBucketId(final int bucketId, final List<String> filterByProperties) {
+  public List<IndexInternal> getPolymorphicBucketIndexByBucketId(final int bucketId, final List<String> filterByProperties) {
     List<IndexInternal> r = bucketIndexesByBucket.get(bucketId);
 
     if (r != null && filterByProperties != null) {
@@ -639,7 +639,7 @@ public class DocumentType {
         return Collections.unmodifiableList(r);
     }
 
-    final List<Index> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
+    final List<IndexInternal> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
     for (final DocumentType t : superTypes)
       result.addAll(t.getPolymorphicBucketIndexByBucketId(bucketId, filterByProperties));
 
@@ -824,9 +824,8 @@ public class DocumentType {
     final List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new ArrayList<>());
     list.add(index);
 
-    final List<String> propertyList = Arrays.asList(propertyNames);
-
     if (propIndex == null) {
+      final List<String> propertyList = Arrays.asList(propertyNames);
       propIndex = indexesByProperties.get(propertyList);
       if (propIndex == null) {
         // CREATE THE TYPE-INDEX FOR THE 1ST TIME

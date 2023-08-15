@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -216,5 +217,44 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
    */
   default ResultSet copy() {
     return new InternalResultSet(this);
+  }
+
+  /**
+   * Browses the result and returns a list of documents if the result contains documents, otherwise an empty list.
+   */
+  default List<Document> toDocuments() {
+    final List<Document> result = new ArrayList<>();
+    while (hasNext()) {
+      final Result r = next();
+      if (r.isElement())
+        result.add(r.getElement().get());
+    }
+    return result;
+  }
+
+  /**
+   * Browses the result and returns a list of vertices if the result contains vertices, otherwise an empty list.
+   */
+  default List<Vertex> toVertices() {
+    final List<Vertex> result = new ArrayList<>();
+    while (hasNext()) {
+      final Result r = next();
+      if (r.isVertex())
+        result.add(r.getVertex().get());
+    }
+    return result;
+  }
+
+  /**
+   * Browses the result and returns a list of edges if the result contains edges, otherwise an empty list.
+   */
+  default List<Edge> toEdges() {
+    final List<Edge> result = new ArrayList<>();
+    while (hasNext()) {
+      final Result r = next();
+      if (r.isEdge())
+        result.add(r.getEdge().get());
+    }
+    return result;
   }
 }
