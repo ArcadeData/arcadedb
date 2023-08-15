@@ -41,13 +41,6 @@ RUN groupadd arcadedb -f -g 1234
 
 WORKDIR /home/arcadedb
 
-USER root
-RUN mkdir /mnt/data0
-RUN mkdir /mnt/data0/databases
-RUN chown arcadedb:arcadedb /mnt
-RUN chown arcadedb:arcadedb /mnt/data0
-RUN chown arcadedb:arcadedb /mnt/data0/databases
-
 USER arcadedb
 
 COPY --from=build  --chown=arcadedb:arcadedb ./package/target/arcadedb-*/arcadedb-*  ./
