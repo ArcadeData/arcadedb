@@ -18,15 +18,15 @@
  */
 package com.arcadedb.server.gremlin;
 
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
+import com.arcadedb.server.BaseGraphServerTest;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
-import org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1;
 import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.WithOptions;
 import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
+import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -44,7 +44,8 @@ public class ConnectRemoteGremlinServer {
     final GraphTraversalSource g = traversal();
 
     g.addV().property("myProp", "some value").next(); // creates the vertex
-    final List<Map<Object, Object>> vertices = g.V().valueMap().with(WithOptions.tokens).toList(); // verifies that the vertex created with properties is returned
+    final List<Map<Object, Object>> vertices = g.V().valueMap().with(WithOptions.tokens)
+        .toList(); // verifies that the vertex created with properties is returned
 
     Assertions.assertFalse(vertices.isEmpty());
   }
@@ -53,8 +54,8 @@ public class ConnectRemoteGremlinServer {
     final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
         new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
-    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182).credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).serializer(serializer)
-        .create();
+    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182).credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)
+        .serializer(serializer).create();
   }
 
   private GraphTraversalSource traversal() {

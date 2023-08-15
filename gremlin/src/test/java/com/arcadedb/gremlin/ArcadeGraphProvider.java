@@ -49,7 +49,7 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
     IGNORED_TESTS.put(TransactionTest.class, asList("shouldExecuteWithCompetingThreads"));
     IGNORED_TESTS.put(VertexTest.BasicVertexTest.class, Arrays.asList("shouldNotGetConcurrentModificationException"));
     //This tests become broken after gremlin 3.2.4
-    IGNORED_TESTS.put(SerializationTest.GraphSONV3d0Test.class, Arrays.asList("shouldSerializeTraversalMetrics"));
+    IGNORED_TESTS.put(SerializationTest.GraphSONV3Test.class, Arrays.asList("shouldSerializeTraversalMetrics"));
     IGNORED_TESTS.put(ProfileTest.Traversals.class, Arrays.asList("testProfileStrategyCallback", "testProfileStrategyCallbackSideEffect"));
     IGNORED_TESTS.put(IoGraphTest.class, Arrays.asList("shouldReadWriteClassicToFileWithHelpers[graphml]", "shouldReadWriteModernToFileWithHelpers[graphml]"));
     IGNORED_TESTS.put(org.apache.tinkerpop.gremlin.process.traversal.step.map.CountTest.Traversals.class, Arrays.asList("g_VX1X_valuesXageX_countXlocalX"));

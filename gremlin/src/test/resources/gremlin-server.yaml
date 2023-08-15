@@ -14,15 +14,15 @@ scriptEngines:
         files:
           - ./target/config/gremlin-server.groovy
 serializers:
-  - className: org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1
+  - className: org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1
     config:
       ioRegistries:
         - com.arcadedb.gremlin.io.ArcadeIoRegistry
-  - className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV3d0
+  - className: org.apache.tinkerpop.gremlin.util.ser.GraphSONMessageSerializerV3
     config:
       ioRegistries:
         - com.arcadedb.gremlin.io.ArcadeIoRegistry
-  - className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV2d0
+  - className: org.apache.tinkerpop.gremlin.util.ser.GraphSONMessageSerializerV2
     config:
       ioRegistries:
         - com.arcadedb.gremlin.io.ArcadeIoRegistry
