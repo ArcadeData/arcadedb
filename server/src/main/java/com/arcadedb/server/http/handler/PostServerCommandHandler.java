@@ -224,11 +224,11 @@ public class PostServerCommandHandler extends AbstractHandler {
     if (databaseName.isEmpty())
       throw new IllegalArgumentException("Database name empty");
 
-    final Database database = httpServer.getServer().getDatabase(databaseName);
+    final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
 
     httpServer.getServer().getServerMetrics().meter("http.drop-database").hit();
 
-    ((DatabaseInternal) database).getEmbedded().drop();
+    database.getEmbedded().drop();
     httpServer.getServer().removeDatabase(database.getName());
   }
 
@@ -237,8 +237,8 @@ public class PostServerCommandHandler extends AbstractHandler {
     if (databaseName.isEmpty())
       throw new IllegalArgumentException("Database name empty");
 
-    final Database database = httpServer.getServer().getDatabase(databaseName);
-    ((DatabaseInternal) database).getEmbedded().close();
+    final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
+    database.getEmbedded().close();
 
     httpServer.getServer().getServerMetrics().meter("http.close-database").hit();
     httpServer.getServer().removeDatabase(database.getName());
@@ -250,7 +250,6 @@ public class PostServerCommandHandler extends AbstractHandler {
       throw new IllegalArgumentException("Database name empty");
 
     httpServer.getServer().getDatabase(databaseName);
-
     httpServer.getServer().getServerMetrics().meter("http.open-database").hit();
   }
 
