@@ -54,7 +54,7 @@ jobs:
         uses: docker/build-push-action@v2.9.0
         with:
           # TODO update arcade build final name to a consistent name, and update here
-          context: ./package/target/arcadedb-23.6.1-SNAPSHOT.dir
+          context: .
           file: ./Dockerfile-multi
           platforms: linux/amd64,linux/arm64
           push: true
