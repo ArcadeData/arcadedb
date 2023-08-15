@@ -32,6 +32,7 @@ ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxre
 
 RUN useradd -ms /bin/bash arcadedb -u 1234
 RUN groupadd arcadedb -f -g 1234
+RUN usermod -a -G arcadedb arcadedb
 
 WORKDIR /home/arcadedb
 
