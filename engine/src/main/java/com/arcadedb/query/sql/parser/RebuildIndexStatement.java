@@ -91,9 +91,11 @@ public class RebuildIndexStatement extends DDLStatement {
 
       if (all) {
         for (final Index idx : database.getSchema().getIndexes()) {
-          indexName = idx.getName();
-          buildIndex(maxAttempts, database, callback, idx, batchSize);
-          indexList.add(idx.getName());
+          if (idx.isAutomatic()) {
+            indexName = idx.getName();
+            buildIndex(maxAttempts, database, callback, idx, batchSize);
+            indexList.add(idx.getName());
+          }
         }
       } else {
         final Index idx = database.getSchema().getIndexByName(name.getValue());
@@ -106,7 +108,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, indexName);
-      throw new IndexException("Error on rebuilding index '" + name.getValue() + "'", e);
+      throw new IndexException("Error on rebuilding index '" + indexName + "'", e);
     }
 
     // SUCCESS
