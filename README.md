@@ -102,6 +102,8 @@ imported `OpenBeer` database to find your favorite beer.
 
 ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#Docker) and [Kubernetes](https://docs.arcadedb.com/#Kubernetes) support.
 
+You can also [download the latest release](https://github.com/ArcadeData/arcadedb/releases), unpack it on your local hard drive and start the server with ```bin/server.sh``` or ```bin/server.bat``` for Windows.
+
 ### Community
 
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
