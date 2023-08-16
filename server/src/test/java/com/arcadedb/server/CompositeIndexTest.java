@@ -81,7 +81,6 @@ public class CompositeIndexTest {
     String processor = "SIR1LRM-7.1";
     String status;
     status = "PENDING";
-    System.out.println();
     try {
       // insert 2 orders
       database.begin();
@@ -89,13 +88,13 @@ public class CompositeIndexTest {
       vstop = LocalDateTime.parse("2019-05-05T00:07:57.423797", DateTimeFormatter.ofPattern(dateTimePattern));
       try (ResultSet resultSet = database.command("sql", sqlString, 1, processor, vstart, vstop, status, processor, vstart, vstop)) {
         Assertions.assertTrue(resultSet.hasNext());
-        System.out.println("insert result = " + resultSet.next().toJSON());
+        resultSet.next().toJSON();
       }
       vstart = LocalDateTime.parse("2019-05-05T00:10:37.288211", DateTimeFormatter.ofPattern(dateTimePattern));
       vstop = LocalDateTime.parse("2019-05-05T00:12:38.236835", DateTimeFormatter.ofPattern(dateTimePattern));
       try (ResultSet resultSet = database.command("sql", sqlString, 2, processor, vstart, vstop, status, processor, vstart, vstop)) {
         Assertions.assertTrue(resultSet.hasNext());
-        System.out.println("insert result = " + resultSet.next().toJSON());
+        resultSet.next().toJSON();
       }
       database.commit();
       // update one order
@@ -103,24 +102,24 @@ public class CompositeIndexTest {
       database.begin();
       status = "COMPLETED";
       try (ResultSet resultSet = database.command("sql", sqlString, status, 1)) {
-        System.out.println("update result = " + resultSet.next().toJSON());
+        resultSet.next().toJSON();
       }
       database.commit();
       // select orders
       sqlString = "SELECT FROM Order WHERE status = ?";
       try (ResultSet resultSet = database.query("sql", sqlString, "COMPLETED")) {
         Assertions.assertTrue(resultSet.hasNext());
-        System.out.println("select result = " + resultSet.next().toJSON());
+        resultSet.next().toJSON();
       }
       try (ResultSet resultSet = database.query("sql", "SELECT FROM Order WHERE id = 2")) {
         Assertions.assertTrue(resultSet.hasNext());
         Result result = resultSet.next();
         Assertions.assertTrue(result.getProperty("status").equals("PENDING"));
-        System.out.println("select result = " + result.toJSON());
+        result.toJSON();
       }
       try (ResultSet resultSet = database.query("sql", sqlString, "PENDING")) {
         Assertions.assertTrue(resultSet.hasNext());
-        System.out.println("select result = " + resultSet.next().toJSON());
+        resultSet.next().toJSON();
       }
     } catch (Exception e) {
       e.printStackTrace();

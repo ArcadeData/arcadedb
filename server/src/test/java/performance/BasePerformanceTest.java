@@ -107,13 +107,6 @@ public abstract class BasePerformanceTest {
       servers[i] = new ArcadeDBServer(config);
       onBeforeStarting(servers[i]);
       servers[i].start();
-
-      try {
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        e.printStackTrace();
-      }
     }
   }
 

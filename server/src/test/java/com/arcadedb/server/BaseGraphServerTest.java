@@ -264,13 +264,6 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
       LogManager.instance().log(this, Level.FINE, "Server %d database directory: %s", i,
           servers[i].getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
-
-      try {
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        e.printStackTrace();
-      }
     }
   }
 

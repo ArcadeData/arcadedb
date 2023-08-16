@@ -81,7 +81,13 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   @Override
   public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
     final boolean[] permissions = fileAccessMap[fileId];
-    return permissions == null || permissions[access.ordinal()];
+    final int index = access.ordinal();
+    if (permissions != null) {
+      if (index >= permissions.length)
+        throw new ServerSecurityException("Attempt to access to a profiled resources while the security map was refreshing");
+      return permissions[index];
+    }
+    return true;
   }
 
   public void updateDatabaseConfiguration(final JSONObject configuredGroups) {
@@ -159,7 +165,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
 
     for (int i = 0; i < files.size(); ++i) {
-      final DocumentType type = database.getSchema().getTypeByBucketId(i);
+      final DocumentType type = database.getSchema().getInvolvedTypeByBucketId(i);
       if (type == null)
         continue;
 

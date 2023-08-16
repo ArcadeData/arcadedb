@@ -72,34 +72,35 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EmbeddedSchema implements Schema {
-  public static final String                                 DEFAULT_ENCODING       = "UTF-8";
-  public static final String                                 SCHEMA_FILE_NAME       = "schema.json";
-  public static final String                                 SCHEMA_PREV_FILE_NAME  = "schema.prev.json";
-  public static final String                                 CACHED_COUNT_FILE_NAME = "cached-count.json";
-  public static final int                                    BUILD_TX_BATCH_SIZE    = 100_000;
-  final               IndexFactory                           indexFactory           = new IndexFactory();
-  final               Map<String, DocumentType>              types                  = new HashMap<>();
-  private             String                                 encoding               = DEFAULT_ENCODING;
+  public static final String                                 DEFAULT_ENCODING         = "UTF-8";
+  public static final String                                 SCHEMA_FILE_NAME         = "schema.json";
+  public static final String                                 SCHEMA_PREV_FILE_NAME    = "schema.prev.json";
+  public static final String                                 CACHED_COUNT_FILE_NAME   = "cached-count.json";
+  public static final int                                    BUILD_TX_BATCH_SIZE      = 100_000;
+  final               IndexFactory                           indexFactory             = new IndexFactory();
+  final               Map<String, DocumentType>              types                    = new HashMap<>();
+  private             String                                 encoding                 = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
-  private final       List<Component>                        files                  = new ArrayList<>();
-  private final       Map<String, Bucket>                    bucketMap              = new HashMap<>();
-  private             Map<Integer, DocumentType>             bucketId2TypeMap       = new HashMap<>();
-  protected final     Map<String, IndexInternal>             indexMap               = new HashMap<>();
+  private final       List<Component>                        files                    = new ArrayList<>();
+  private final       Map<String, Bucket>                    bucketMap                = new HashMap<>();
+  private             Map<Integer, DocumentType>             bucketId2TypeMap         = new HashMap<>();
+  private             Map<Integer, DocumentType>             bucketId2InvolvedTypeMap = new HashMap<>();
+  protected final     Map<String, IndexInternal>             indexMap                 = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
   private final       ComponentFactory                       componentFactory;
   private             Dictionary                             dictionary;
-  private             String                                 dateFormat             = GlobalConfiguration.DATE_FORMAT.getValueAsString();
-  private             String                                 dateTimeFormat         = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
-  private             TimeZone                               timeZone               = TimeZone.getDefault();
-  private             ZoneId                                 zoneId                 = ZoneId.systemDefault();
-  private             boolean                                readingFromFile        = false;
-  private             boolean                                dirtyConfiguration     = false;
-  private             boolean                                loadInRamCompleted     = false;
-  private             boolean                                multipleUpdate         = false;
-  private final       AtomicLong                             versionSerial          = new AtomicLong();
-  private final       Map<String, FunctionLibraryDefinition> functionLibraries      = new ConcurrentHashMap<>();
+  private             String                                 dateFormat               = GlobalConfiguration.DATE_FORMAT.getValueAsString();
+  private             String                                 dateTimeFormat           = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
+  private             TimeZone                               timeZone                 = TimeZone.getDefault();
+  private             ZoneId                                 zoneId                   = ZoneId.systemDefault();
+  private             boolean                                readingFromFile          = false;
+  private             boolean                                dirtyConfiguration       = false;
+  private             boolean                                loadInRamCompleted       = false;
+  private             boolean                                multipleUpdate           = false;
+  private final       AtomicLong                             versionSerial            = new AtomicLong();
+  private final       Map<String, FunctionLibraryDefinition> functionLibraries        = new ConcurrentHashMap<>();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -648,6 +649,11 @@ public class EmbeddedSchema implements Schema {
   @Override
   public DocumentType getTypeByBucketId(final int bucketId) {
     return bucketId2TypeMap.get(bucketId);
+  }
+
+  @Override
+  public DocumentType getInvolvedTypeByBucketId(final int bucketId) {
+    return bucketId2InvolvedTypeMap.get(bucketId);
   }
 
   @Override
@@ -1323,12 +1329,18 @@ public class EmbeddedSchema implements Schema {
    */
   private void rebuildBucketTypeMap() {
     final Map<Integer, DocumentType> newBucketId2TypeMap = new HashMap<>();
-
     for (final DocumentType t : types.values()) {
       for (final Bucket b : t.getBuckets(false))
         newBucketId2TypeMap.put(b.getFileId(), t);
     }
-
     bucketId2TypeMap = newBucketId2TypeMap;
+
+    // COMPUTE INVOLVED BUCKETS FOR SECURITY
+    final Map<Integer, DocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
+    for (final DocumentType t : types.values()) {
+      for (final Bucket b : t.getInvolvedBuckets())
+        newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
+    }
+    bucketId2InvolvedTypeMap = newBucketId2InvolvedTypeMap;
   }
 }

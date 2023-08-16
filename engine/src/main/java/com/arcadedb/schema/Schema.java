@@ -132,6 +132,8 @@ public interface Schema {
 
   DocumentType getTypeByBucketId(int bucketId);
 
+  DocumentType getInvolvedTypeByBucketId(int bucketId);
+
   DocumentType getTypeByBucketName(String bucketName);
 
   boolean existsType(String typeName);

@@ -489,6 +489,10 @@ public class DocumentType {
         .withCallback(callback).withIgnoreIfExists(true).create();
   }
 
+  public List<Bucket> getInvolvedBuckets() {
+    return getBuckets(false);
+  }
+
   public List<Bucket> getBuckets(final boolean polymorphic) {
     return polymorphic ? cachedPolymorphicBuckets : buckets;
   }

@@ -200,7 +200,7 @@ public class BatchInsertUpdateTest {
     }
 
     result.put("totalRows", counter.get());
-    System.out.println("insert orders result = " + result + " in " + (System.currentTimeMillis() - begin) + "ms");
+    //System.out.println("insert orders result = " + result + " in " + (System.currentTimeMillis() - begin) + "ms");
     return result;
   }
 
