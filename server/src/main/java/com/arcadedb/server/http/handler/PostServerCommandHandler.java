@@ -38,6 +38,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.StatusCodes;
 
 import java.io.*;
 import java.rmi.*;
@@ -158,7 +159,7 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     final String serverAddress = command.substring("connect cluster ".length());
     return ha.connectToLeader(serverAddress, exception -> {
-      exchange.setStatusCode(500);
+      exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
       exchange.getResponseSender().send("{ \"error\" : \"" + exception.getMessage() + "\"}");
       return null;
     });

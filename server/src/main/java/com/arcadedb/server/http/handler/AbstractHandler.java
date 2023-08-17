@@ -39,6 +39,7 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
+import io.undertow.util.StatusCodes;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
@@ -68,7 +69,7 @@ public abstract class AbstractHandler implements HttpHandler {
         // ERROR
         (exchange, err) -> {
           LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
-          exchange.setStatusCode(500);
+          exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
           exchange.getResponseSender().send("Invalid Request");
         });
     return result.get();

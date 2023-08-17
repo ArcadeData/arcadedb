@@ -32,6 +32,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
+import io.undertow.util.StatusCodes;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
@@ -152,7 +153,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
       // LOOK UP FOR THE SESSION ID
       final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
       if (session == null) {
-        exchange.setStatusCode(401);
+        exchange.setStatusCode(StatusCodes.UNAUTHORIZED);
         throw new TransactionException("Remote transaction not found or expired");
       }
 
