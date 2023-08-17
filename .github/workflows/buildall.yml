@@ -13,9 +13,11 @@ on:
 
 env:
   GHCR_REGISTRY: ghcr.io
-  DOCKERHUB_REGISTRY: docker.io
   GHCR_REPOSITORY: raft-tech
+  DOCKERHUB_REGISTRY: docker.io
   DOCKERHUB_REPOSITORY: rafttech
+  SSF_REGISTRY: nexus.ssf.sclzdev.net
+  SSF_REPOSITORY: raft
   IMAGE_NAME: data-fabric-arcadedb
   TAG: 'dev'
  # TAG: ${{'dev' || github.event.inputs.tag }}
@@ -47,6 +49,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.CR_PAT }}
 
+      - name: Login to SSF Registry
+        uses: docker/login-action@v1.12.0
+        with:
+          registry: ${{ env.SSF_REGISTRY }}
+          username: ${{ secrets.SSF_REGISTRY_USERNAME }}
+          password: ${{ secrets.SSF_REGISTRY_PASSWORD }}
+
       - name: List Files
         run: ls
 
@@ -58,4 +67,6 @@ jobs:
           file: ./Dockerfile-multi
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{env.TAG}}
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
+            ${{ env.SSF_REGISTRY }}/${{ env.SSF_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
