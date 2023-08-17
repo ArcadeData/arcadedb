@@ -209,7 +209,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         LogManager.instance().log(this, Level.WARNING, "HNSW index '" + indexName + "' has an invalid entrypoint. The index will be removed");
         this.entryPointRIDToLoad = null;
         database.getSchema().dropIndex(indexName);
-        return;
       }
     }
   }

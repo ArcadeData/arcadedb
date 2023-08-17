@@ -124,7 +124,7 @@ public class FastTextDatabase {
 
             database.begin();
 
-            List<Pair<Vertex, Float>> approximateResults = persistentIndex.findNeighborsFromVector(input, k);
+            List<Pair<Vertex, Float>> approximateResults = persistentIndex.findNeighborsFromId(input, k);
 
             final long delta = System.currentTimeMillis() - startWord;
 
@@ -150,7 +150,7 @@ public class FastTextDatabase {
             database.rollback();
 
           } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Not Found");
+            LogManager.instance().log(this, Level.SEVERE, "Not Found: " + e.getMessage());
           }
         });
 
