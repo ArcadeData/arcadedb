@@ -59,6 +59,8 @@ public interface IndexInternal extends Index {
 
   boolean isCompacting();
 
+  boolean isValid();
+
   boolean scheduleCompaction();
 
   String getMostRecentFileName();

@@ -126,6 +126,11 @@ public class RebuildIndexStatement extends DDLStatement {
 
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        if (!((IndexInternal) idx).isValid()) {
+          LogManager.instance().log(RebuildIndexStatement.class, Level.SEVERE, "Error on rebuild invalid index '%s'. The index will be removed", idx.getName());
+          return;
+        }
+
         if (((IndexInternal) idx).isCompacting())
           throw new NeedRetryException("Cannot rebuild the index '" + idx.getName() + "' while is compacting");
 

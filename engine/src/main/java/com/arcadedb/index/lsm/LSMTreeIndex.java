@@ -253,6 +253,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS;
   }
 
+  @Override
+  public boolean isValid() {
+    return valid;
+  }
+
   public boolean setStatus(final INDEX_STATUS expectedStatus, final INDEX_STATUS newStatus) {
     return this.status.compareAndSet(expectedStatus, newStatus);
   }

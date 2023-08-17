@@ -467,6 +467,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return indexesOnBuckets;
   }
 
+  @Override
+  public boolean isValid() {
+    return valid;
+  }
+
   private void checkIsValid() {
     if (!valid)
       throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");

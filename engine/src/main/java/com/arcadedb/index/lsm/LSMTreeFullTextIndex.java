@@ -75,8 +75,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       if (builder.isUnique())
         throw new IllegalArgumentException("Full text index cannot be unique");
 
-      return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(), ComponentFile.MODE.READ_WRITE, builder.getPageSize(),
-          builder.getNullStrategy());
+      return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(), ComponentFile.MODE.READ_WRITE,
+          builder.getPageSize(), builder.getNullStrategy());
     }
   }
 
@@ -330,6 +330,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   public Analyzer getAnalyzer() {
     return analyzer;
+  }
+
+  @Override
+  public boolean isValid() {
+    return underlyingIndex.isValid();
   }
 
   public List<String> analyzeText(final Analyzer analyzer, final Object[] text) {

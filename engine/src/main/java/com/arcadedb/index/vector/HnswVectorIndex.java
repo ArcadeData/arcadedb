@@ -73,6 +73,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     void onVertexIndexed(Vertex document, Item<TId, TVector> item, long totalIndexed);
   }
 
+  public interface IgnoreVertexCallback {
+    boolean ignoreVertex(Vertex v);
+  }
+
   public static final String FILE_EXT        = "hnswidx";
   public static final int    CURRENT_VERSION = 0;
 
@@ -219,18 +223,22 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   public List<Pair<Identifiable, ? extends Number>> findNeighborsFromId(final TId id, final int k) {
+    return findNeighborsFromId(id, k, null);
+  }
+
+  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromId(final TId id, final int k, IgnoreVertexCallback ignoreVertexCallback) {
     final Vertex start = get(id);
     if (start == null)
       return Collections.emptyList();
 
-    return findNeighborsFromVertex(start, k);
+    return findNeighborsFromVertex(start, k, ignoreVertexCallback);
   }
 
-  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVertex(final Vertex start, final int k) {
+  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVertex(final Vertex start, final int k, final IgnoreVertexCallback ignoreVertexCallback) {
     final RID startRID = start.getIdentity();
     final TVector vector = getVectorFromVertex(start);
 
-    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(vector, k + 1).stream()//
+    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(vector, k + 1, ignoreVertexCallback).stream()//
         .filter(result -> !result.item().getIdentity().equals(startRID))//
         .limit(k)//
         .collect(Collectors.toList());
@@ -242,7 +250,12 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVector(final TVector vector, final int k) {
-    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(vector, k + 1).stream().limit(k).collect(Collectors.toList());
+    return findNeighborsFromVector(vector, k, null);
+  }
+
+  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVector(final TVector vector, final int k,
+      final IgnoreVertexCallback ignoreVertexCallback) {
+    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(vector, k + 1, ignoreVertexCallback).stream().limit(k).collect(Collectors.toList());
 
     final List<Pair<Identifiable, ? extends Number>> result = new ArrayList<>(neighbors.size());
     for (SearchResult<Vertex, TDistance> neighbor : neighbors)
@@ -339,7 +352,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
           }
 
           for (int level = Math.min(randomLevel, entryPointCopyMaxLevel); level >= 0; level--) {
-            final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, vertexVector, efConstruction, level);
+            final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, vertexVector, efConstruction, level, null);
 
             final boolean entryPointDeleted = isDeletedFromVertex(entryPointCopy);
             if (entryPointDeleted) {
@@ -453,7 +466,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return underlyingIndex;
   }
 
-  public List<SearchResult<Vertex, TDistance>> findNearest(final TVector destination, final int k) {
+  public List<SearchResult<Vertex, TDistance>> findNearest(final TVector destination, final int k, final IgnoreVertexCallback ignoreVertexCallback) {
     if (entryPoint == null)
       return Collections.emptyList();
 
@@ -483,7 +496,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       }
     }
 
-    final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, destination, Math.max(ef, k), 0);
+    final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, destination, Math.max(ef, k), 0, ignoreVertexCallback);
 
     while (topCandidates.size() > k) {
       topCandidates.poll();
@@ -498,7 +511,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return results;
   }
 
-  private PriorityQueue<NodeIdAndDistance<TDistance>> searchBaseLayer(final Vertex entryPointNode, final TVector destination, final int k, final int layer) {
+  private PriorityQueue<NodeIdAndDistance<TDistance>> searchBaseLayer(final Vertex entryPointNode, final TVector destination, final int k, final int layer,
+      final IgnoreVertexCallback ignoreVertexCallback) {
     final Set<RID> visitedNodes = new HashSet<>();
 
     final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = new PriorityQueue<>(Comparator.<NodeIdAndDistance<TDistance>>naturalOrder().reversed());
@@ -506,7 +520,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     TDistance lowerBound;
 
-    if (!isDeletedFromVertex(entryPointNode)) {
+    if (!ignoreVertex(entryPointNode, ignoreVertexCallback)) {
       final TVector entryPointVector = getVectorFromVertex(entryPointNode);
       final TDistance distance = distanceFunction.distance(destination, entryPointVector);
       final NodeIdAndDistance<TDistance> pair = new NodeIdAndDistance<>(entryPointNode.getIdentity(), distance, maxValueDistanceComparator);
@@ -544,7 +558,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
             candidateSet.add(candidatePair);
 
-            if (!isDeletedFromVertex(candidateNode))
+            if (!ignoreVertex(candidateNode, ignoreVertexCallback))
               topCandidates.add(candidatePair);
 
             if (topCandidates.size() > k)
@@ -669,6 +683,14 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return deleted != null && deleted;
   }
 
+  public boolean ignoreVertex(final Vertex vertex, final IgnoreVertexCallback ignoreVertexCallback) {
+    if (isDeletedFromVertex(vertex))
+      return true;
+    if (ignoreVertexCallback != null)
+      return ignoreVertexCallback.ignoreVertex(vertex);
+    return false;
+  }
+
   public int getDimensionFromVertex(final Vertex vertex) {
     return Array.getLength(getVectorFromVertex(vertex));
   }
@@ -775,7 +797,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public boolean isUnique() {
-    return underlyingIndex.isUnique();
+    return true;
   }
 
   @Override
@@ -1053,6 +1075,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   @Override
   public boolean isCompacting() {
     return underlyingIndex.isCompacting();
+  }
+
+  @Override
+  public boolean isValid() {
+    return underlyingIndex.isValid();
   }
 
   @Override
