@@ -37,6 +37,26 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void testServerInfo() throws Exception {
+    testEachServer((serverIndex) -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      try {
+        connection.connect();
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
   public void propagationOfSchema() throws Exception {
     testEachServer((serverIndex) -> {
       // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER

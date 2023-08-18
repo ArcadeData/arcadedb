@@ -265,6 +265,32 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       LogManager.instance().log(this, Level.FINE, "Server %d database directory: %s", i,
           servers[i].getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     }
+
+    waitAllReplicasAreConnected();
+  }
+
+  protected void waitAllReplicasAreConnected() {
+    final int serverCount = getServerCount();
+
+    int lastTotalConnectedReplica = 0;
+    final long beginTime = System.currentTimeMillis();
+    while (System.currentTimeMillis() - beginTime < 5_000) {
+      for (int i = 0; i < serverCount; ++i) {
+        if (servers[i].getHA().isLeader()) {
+          lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
+          if (lastTotalConnectedReplica >= serverCount - 1)
+            // ALL CONNECTED
+            return;
+
+          try {
+            Thread.sleep(300);
+          } catch (InterruptedException e) {
+            break;
+          }
+        }
+      }
+    }
+    LogManager.instance().log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica, serverCount);
   }
 
   protected void stopServers() {
