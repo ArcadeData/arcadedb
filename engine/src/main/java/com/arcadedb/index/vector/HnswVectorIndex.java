@@ -357,7 +357,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
             final boolean entryPointDeleted = isDeletedFromVertex(entryPointCopy);
             if (entryPointDeleted) {
               TDistance distance = distanceFunction.distance(vertexVector, getVectorFromVertex(entryPointCopy));
-              topCandidates.add(new NodeIdAndDistance<>(getIdFromVertex(entryPointCopy), distance, maxValueDistanceComparator));
+              topCandidates.add(new NodeIdAndDistance<>(entryPointCopy.getIdentity(), distance, maxValueDistanceComparator));
 
               if (topCandidates.size() > efConstruction)
                 topCandidates.poll();
