@@ -39,7 +39,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void testServerInfo() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
