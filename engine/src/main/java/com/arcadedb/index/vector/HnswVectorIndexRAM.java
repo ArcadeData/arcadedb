@@ -13,10 +13,8 @@ import com.github.jelmerk.knn.util.GenericObjectPool;
 import com.github.jelmerk.knn.util.Murmur3;
 import org.eclipse.collections.api.list.primitive.MutableIntList;
 import org.eclipse.collections.api.map.primitive.MutableObjectIntMap;
-import org.eclipse.collections.api.map.primitive.MutableObjectLongMap;
 import org.eclipse.collections.impl.list.mutable.primitive.IntArrayList;
 import org.eclipse.collections.impl.map.mutable.primitive.ObjectIntHashMap;
-import org.eclipse.collections.impl.map.mutable.primitive.ObjectLongHashMap;
 
 import java.io.*;
 import java.nio.file.*;
@@ -58,14 +56,12 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
   private double levelLambda;
   private int    ef;
   private int    efConstruction;
-
-  private int nodeCount;
+  int nodeCount;
 
   protected volatile Node<TItem> entryPoint;
 
   private AtomicReferenceArray<Node<TItem>> nodes;
   private MutableObjectIntMap<TId>          lookup;
-  private MutableObjectLongMap<TId>         deletedItemVersions;
   private Map<TId, Object>                  locks;
 
   private ReentrantLock globalLock;
@@ -91,7 +87,6 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     this.nodes = new AtomicReferenceArray<>(this.maxItemCount);
 
     this.lookup = new ObjectIntHashMap<>();
-    this.deletedItemVersions = new ObjectLongHashMap<>();
     this.locks = new HashMap<>();
 
     this.globalLock = new ReentrantLock();
@@ -178,8 +173,6 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
 
       lookup.remove(id);
 
-      deletedItemVersions.put(id, version);
-
       return true;
     } finally {
       globalLock.unlock();
@@ -211,9 +204,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
       if (existingNodeId != NO_NODE_ID) {
         Node<TItem> node = nodes.get(existingNodeId);
 
-        if (item.version() < node.item.version()) {
+        if (item.version() < node.item.version())
           return false;
-        }
 
         if (Objects.deepEquals(node.item.vector(), item.vector())) {
           node.item = item;
@@ -221,9 +213,6 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
         } else {
           remove(item.id(), item.version());
         }
-
-      } else if (item.version() < deletedItemVersions.getIfAbsent(item.id(), -1)) {
-        return false;
       }
 
       if (nodeCount >= this.maxItemCount) {
@@ -240,7 +229,6 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
 
       nodes.set(newNodeId, newNode);
       lookup.put(item.id(), newNodeId);
-      deletedItemVersions.remove(item.id());
 
       Object lock = locks.computeIfAbsent(item.id(), k -> new Object());
 
@@ -309,7 +297,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
             }
 
             // zoom out to the highest level
-            if (entryPoint == null || newNode.maxLevel() > entryPointCopy.maxLevel()) {
+            if (entryPoint == null || entryPointCopy == null || newNode.maxLevel() > entryPointCopy.maxLevel()) {
               // this is thread safe because we get the global lock when we add a level
               this.entryPoint = newNode;
             }

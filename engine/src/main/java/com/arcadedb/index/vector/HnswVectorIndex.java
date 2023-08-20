@@ -824,7 +824,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       final BuildIndexCallback edgeCallback) {
     if (origin != null) {
       // IMPORT FROM RAM Index
-      final RID[] pointersToRIDMapping = new RID[origin.size()];
+      final RID[] pointersToRIDMapping = new RID[origin.nodeCount];
 
       database.begin();
 
@@ -895,8 +895,13 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
             final int pointer = pointers.get(i);
 
             final RID destination = pointersToRIDMapping[pointer];
-            source.newEdge(edgeTypeLevel, destination, false);
-            ++totalEdges;
+
+            if (destination == null)
+              LogManager.instance().log(this, Level.WARNING, "Destination vertex %d is null", pointer);
+            else {
+              source.newEdge(edgeTypeLevel, destination, false);
+              ++totalEdges;
+            }
           }
         }
 
