@@ -39,8 +39,8 @@ public class PageManagerFlushThread extends Thread {
   private volatile boolean                               running   = true;
   private final    AtomicBoolean                         suspended = new AtomicBoolean(false); // USED DURING BACKUP
 
-  public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration) {
-    super("ArcadeDB AsyncFlush");
+  public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration, final String databaseName) {
+    super("ArcadeDB AsyncFlush " + databaseName);
     setDaemon(false);
     this.pageManager = pageManager;
     this.logContext = LogManager.instance().getContext();

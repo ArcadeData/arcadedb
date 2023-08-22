@@ -81,7 +81,7 @@ public class PageManager extends LockContext {
     public int  readCachePages;
   }
 
-  public PageManager(final FileManager fileManager, final TransactionManager txManager, final ContextConfiguration configuration) {
+  public PageManager(final FileManager fileManager, final TransactionManager txManager, final ContextConfiguration configuration, final String databaseName) {
     this.fileManager = fileManager;
     this.txManager = txManager;
 
@@ -92,7 +92,7 @@ public class PageManager extends LockContext {
     if (maxRAM < 0)
       throw new ConfigurationException(GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + maxRAM + " MB)");
 
-    flushThread = new PageManagerFlushThread(this, configuration);
+    flushThread = new PageManagerFlushThread(this, configuration, databaseName);
     flushThread.start();
   }
 

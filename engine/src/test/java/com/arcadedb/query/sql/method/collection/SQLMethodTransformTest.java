@@ -186,21 +186,23 @@ class SQLMethodTransformTest {
 
       @Override
       public void setWrapper(String name, Object instance) {
-
       }
 
       @Override
       public void checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS access) {
-
       }
 
       @Override
       public void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access) {
-
       }
 
       @Override
       public boolean checkTransactionIsActive(boolean createTx) {
+        return false;
+      }
+
+      @Override
+      public boolean isAsyncProcessing() {
         return false;
       }
 

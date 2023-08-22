@@ -76,6 +76,8 @@ public interface DatabaseInternal extends Database {
 
   boolean checkTransactionIsActive(boolean createTx);
 
+  boolean isAsyncProcessing();
+
   long getResultSetLimit();
 
   long getReadTimeout();

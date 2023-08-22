@@ -263,6 +263,19 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     }
   }
 
+  @Override
+  public boolean isAsyncProcessing() {
+    if (async != null) {
+      asyncLock.lock();
+      try {
+        return async.isProcessing();
+      } finally {
+        asyncLock.unlock();
+      }
+    }
+    return false;
+  }
+
   public DatabaseAsyncExecutor async() {
     if (async == null) {
       asyncLock.lock();
@@ -1711,7 +1724,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT);
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
-      pageManager = new PageManager(fileManager, transactionManager, configuration);
+      pageManager = new PageManager(fileManager, transactionManager, configuration, name);
 
       open = true;
 

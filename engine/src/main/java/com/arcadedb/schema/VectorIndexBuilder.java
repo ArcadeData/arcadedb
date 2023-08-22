@@ -82,7 +82,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   public HnswVectorIndex create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    if (database.async().isProcessing())
+    if (database.isAsyncProcessing())
       throw new SchemaException("Cannot create a new index while asynchronous tasks are running");
 
     if (vertexType == null)

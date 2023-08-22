@@ -427,6 +427,11 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.checkTransactionIsActive(createTx);
   }
 
+  @Override
+  public boolean isAsyncProcessing() {
+    return wrapped.isAsyncProcessing();
+  }
+
   public DocumentIndexer getIndexer() {
     return wrapped.getIndexer();
   }

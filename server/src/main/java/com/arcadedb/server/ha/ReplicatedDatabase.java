@@ -383,6 +383,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public boolean isAsyncProcessing() {
+    return proxied.isAsyncProcessing();
+  }
+
+  @Override
   public void transaction(final TransactionScope txBlock) {
     proxied.transaction(txBlock);
   }
