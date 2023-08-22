@@ -492,9 +492,7 @@ public class FileUtils {
   }
 
   public static byte[] readInputStreamAsBytes(final InputStream fis) throws IOException {
-    final byte[] bytes = new byte[(int) fis.available()];
-    fis.read(bytes);
-    return bytes;
+    return fis.readAllBytes();
   }
 
   public static byte[] readFileAsBytes(final File file) throws IOException {

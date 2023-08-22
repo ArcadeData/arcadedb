@@ -32,7 +32,6 @@ import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 import com.github.jelmerk.knn.DistanceFunction;
-import com.github.jelmerk.knn.Item;
 
 import java.io.*;
 import java.util.*;
@@ -69,36 +68,6 @@ public class TextEmbeddingsImporter {
   private volatile long             indexedEmbedding     = 0L;
   private volatile long             verticesCreated      = 0L;
   private volatile long             verticesConnected    = 0L;
-
-  public static class IndexedText implements Item<String, float[]> {
-    private final String  id;
-    private final float[] vector;
-
-    public IndexedText(final String id, final float[] vector) {
-      this.id = id;
-      this.vector = vector;
-    }
-
-    @Override
-    public String id() {
-      return id;
-    }
-
-    @Override
-    public float[] vector() {
-      return vector;
-    }
-
-    @Override
-    public int dimensions() {
-      return vector.length;
-    }
-
-    @Override
-    public String toString() {
-      return "IndexedText{" + "id='" + id + '\'' + ", vector=" + Arrays.toString(vector) + '}';
-    }
-  }
 
   public TextEmbeddingsImporter(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings) throws ClassNotFoundException {
     this.settings = settings;
@@ -148,7 +117,7 @@ public class TextEmbeddingsImporter {
 
     beginTime = System.currentTimeMillis();
 
-    final List<IndexedText> texts = loadFromFile();
+    final List<TextFloatsEmbedding> texts = loadFromFile();
 
     if (settings.documentsSkipEntries != null) {
       for (int i = 0; i < settings.documentsSkipEntries; i++)
@@ -160,8 +129,8 @@ public class TextEmbeddingsImporter {
 
       logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions in RAM", texts.size(), dimensions);
 
-      final HnswVectorIndexRAM<String, float[], IndexedText, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions, distanceFunction, texts.size())
-          .withM(m).withEf(ef).withEfConstruction(efConstruction).build();
+      final HnswVectorIndexRAM<String, float[], TextFloatsEmbedding, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions, distanceFunction,
+          texts.size()).withM(m).withEf(ef).withEfConstruction(efConstruction).build();
 
       hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
 
@@ -264,7 +233,7 @@ public class TextEmbeddingsImporter {
     return this;
   }
 
-  private List<IndexedText> loadFromFile() throws IOException {
+  private List<TextFloatsEmbedding> loadFromFile() throws IOException {
     try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
       final Stream<String> parser = reader.lines();
 
@@ -287,7 +256,7 @@ public class TextEmbeddingsImporter {
           // FOR INNER PRODUCT SEARCH NORMALIZE VECTORS
           vector = VectorUtils.normalize(vector);
 
-        return new IndexedText(word, vector);
+        return new TextFloatsEmbedding(word, vector);
       }).collect(Collectors.toList());
     }
   }
