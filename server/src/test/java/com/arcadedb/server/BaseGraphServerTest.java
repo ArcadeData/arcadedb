@@ -276,7 +276,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     final long beginTime = System.currentTimeMillis();
     while (System.currentTimeMillis() - beginTime < 5_000) {
       for (int i = 0; i < serverCount; ++i) {
-        if (servers[i].getHA().isLeader()) {
+        if (servers[i].getHA() != null && servers[i].getHA().isLeader()) {
           lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
           if (lastTotalConnectedReplica >= serverCount - 1)
             // ALL CONNECTED
