@@ -24,12 +24,16 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.MongoServer;
-import de.bwaldvogel.mongo.backend.AbstractMongoBackend;
-import de.bwaldvogel.mongo.exception.MongoServerException;
+import de.bwaldvogel.mongo.backend.DatabaseResolver;
 
-public class MongoDBProtocolPlugin implements ServerPlugin {
-  private MongoServer    mongoDBServer;
-  private ArcadeDBServer server;
+import java.util.*;
+import java.util.concurrent.*;
+
+public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
+  private MongoServer                         mongoDBServer;
+  private MongoDBBackend                      mongoDBBackend;
+  private ArcadeDBServer                      server;
+  private Map<String, MongoDBDatabaseWrapper> databases = new ConcurrentHashMap<>();
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -38,17 +42,18 @@ public class MongoDBProtocolPlugin implements ServerPlugin {
 
   @Override
   public void startService() {
-    mongoDBServer = new MongoServer(new AbstractMongoBackend() {
-      @Override
-      protected MongoDatabase openOrCreateDatabase(final String databaseName) throws MongoServerException {
-        return new MongoDBDatabaseWrapper(server.getDatabase(databaseName), this);
-      }
-    });
+    mongoDBBackend = new MongoDBBackend(server, this);
+    mongoDBServer = new MongoServer(mongoDBBackend);
     mongoDBServer.bind(GlobalConfiguration.MONGO_HOST.getValueAsString(), GlobalConfiguration.MONGO_PORT.getValueAsInteger());
   }
 
   @Override
   public void stopService() {
     mongoDBServer.shutdown();
+  }
+
+  @Override
+  public MongoDatabase resolve(final String s) {
+    return databases.get(s);
   }
 }

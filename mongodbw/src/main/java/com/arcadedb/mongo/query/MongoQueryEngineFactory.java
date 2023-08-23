@@ -40,7 +40,7 @@ public class MongoQueryEngineFactory implements QueryEngine.QueryEngineFactory {
 
     try {
 
-      engine = new MongoQueryEngine(MongoDBDatabaseWrapper.open(database));
+      engine = new MongoQueryEngine(new MongoDBDatabaseWrapper(database, null, null));
       database.setWrapper(MongoQueryEngine.ENGINE_NAME, engine);
       return (MongoQueryEngine) engine;
 

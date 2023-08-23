@@ -31,11 +31,13 @@ import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.*;
+import java.util.stream.*;
 
 public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private final Database database;
-//  private final int      collectionId;
+  //  private final int      collectionId;
   private final String   collectionName;
+  private final UUID     uuid = UUID.randomUUID();
 
 //  private static class ProjectingIterable implements Iterable<Document> {
 //    private final Iterable<Document> iterable;
@@ -96,6 +98,11 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 //  }
 
   @Override
+  public UUID getUuid() {
+    return uuid;
+  }
+
+  @Override
   public MongoDatabase getDatabase() {
     return null;
   }
@@ -137,8 +144,43 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
+  public void addDocuments(Stream<Document> documents) {
+    MongoCollection.super.addDocuments(documents);
+  }
+
+  @Override
   public void removeDocument(final Document document) {
     // TODO
+  }
+
+  @Override
+  public void addDocumentIfMissing(Document document) {
+    MongoCollection.super.addDocumentIfMissing(document);
+  }
+
+  @Override
+  public Iterable<Document> queryAll() {
+    return MongoCollection.super.queryAll();
+  }
+
+  @Override
+  public Stream<Document> queryAllAsStream() {
+    return MongoCollection.super.queryAllAsStream();
+  }
+
+  @Override
+  public Iterable<Document> handleQuery(Document query) {
+    return MongoCollection.super.handleQuery(query);
+  }
+
+  @Override
+  public Stream<Document> handleQueryAsStream(Document query) {
+    return MongoCollection.super.handleQueryAsStream(query);
+  }
+
+  @Override
+  public QueryResult handleQuery(Document query, int numberToSkip, int limit) {
+    return MongoCollection.super.handleQuery(query, numberToSkip, limit);
   }
 
   @Override
@@ -151,17 +193,19 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
     final Document queryObject = queryParameters.getQuerySelector();
 
-    final Document query;
-    final Document orderBy;
-    if (queryObject.containsKey("query")) {
-      query = (Document) queryObject.get("query");
-    } else if (queryObject.containsKey("$query")) {
-      query = (Document) queryObject.get("$query");
-    } else {
-      query = queryObject;
-    }
+    Document query = null;
+    Document orderBy = null;
+    if (queryObject != null) {
+      if (queryObject.containsKey("query")) {
+        query = (Document) queryObject.get("query");
+      } else if (queryObject.containsKey("$query")) {
+        query = (Document) queryObject.get("$query");
+      } else {
+        query = queryObject;
+      }
 
-    orderBy = (Document) queryObject.remove("$orderBy");
+      orderBy = (Document) queryObject.remove("$orderBy");
+    }
 
     if (this.count() == 0)
       return new QueryResult();
@@ -172,7 +216,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
-  public List<Document> insertDocuments(final List<Document> list) {
+  public void insertDocuments(final List<Document> list) {
     database.begin();
 
     for (final Document d : list) {
@@ -199,8 +243,6 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     }
 
     database.commit();
-
-    return list;
   }
 
   @Override
@@ -250,6 +292,11 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
+  public boolean isEmpty() {
+    return MongoCollection.super.isEmpty();
+  }
+
+  @Override
   public int count() {
     return (int) database.countType(getCollectionName(), false);
   }
@@ -274,7 +321,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
     final Iterator it;
 
-    if (query.isEmpty()) {
+    if (query == null || query.isEmpty()) {
       // SCAN
       it = database.iterateType(collectionName, false);
     } else {
