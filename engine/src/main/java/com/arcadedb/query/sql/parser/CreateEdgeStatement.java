@@ -38,6 +38,7 @@ public class CreateEdgeStatement extends Statement {
   protected Number     retry;
   protected Number     wait;
   protected boolean    ifNotExists;
+  protected boolean    unidirectional = false;
 
   public CreateEdgeStatement(final int id) {
     super(id);
@@ -90,6 +91,9 @@ public class CreateEdgeStatement extends Statement {
     builder.append(" TO ");
     rightExpression.toString(params, builder);
 
+    if (unidirectional)
+      builder.append(" UNIDIRECTIONAL");
+
     if (ifNotExists)
       builder.append(" IF NOT EXISTS");
 
@@ -115,6 +119,7 @@ public class CreateEdgeStatement extends Statement {
     result.leftExpression = leftExpression == null ? null : leftExpression.copy();
     result.rightExpression = rightExpression == null ? null : rightExpression.copy();
     result.ifNotExists = ifNotExists;
+    result.unidirectional = unidirectional;
     result.body = body == null ? null : body.copy();
     result.retry = retry;
     result.wait = wait;
@@ -123,7 +128,7 @@ public class CreateEdgeStatement extends Statement {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, ifNotExists, body, retry, wait };
+    return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, unidirectional, ifNotExists, body, retry, wait };
   }
 
   public Identifier getTargetType() {
@@ -144,6 +149,10 @@ public class CreateEdgeStatement extends Statement {
 
   public boolean ifNotExists() {
     return ifNotExists;
+  }
+
+  public boolean isUnidirectional() {
+    return unidirectional;
   }
 
   public InsertBody getBody() {

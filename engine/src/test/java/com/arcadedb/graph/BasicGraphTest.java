@@ -403,7 +403,8 @@ public class BasicGraphTest extends BaseGraphTest {
 
       // UNIDIRECTIONAL EDGE
       final Vertex v1 = database.newVertex(VERTEX1_TYPE_NAME).save();
-      v1.newEdge(EDGE1_TYPE_NAME, v1, false).save();
+
+      database.command("sql", "create edge " + EDGE1_TYPE_NAME + " from ? to ? unidirectional", v1, v1);
 
       Assertions.assertTrue(v1.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext());
       Assertions.assertEquals(v1, v1.getVertices(Vertex.DIRECTION.OUT).iterator().next());

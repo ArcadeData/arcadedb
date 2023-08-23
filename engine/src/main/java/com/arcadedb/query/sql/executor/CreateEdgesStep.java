@@ -39,15 +39,15 @@ import java.util.*;
  */
 public class CreateEdgesStep extends AbstractExecutionStep {
 
-  private final Identifier targetClass;
-  private final Identifier targetCluster;
-  private final String     uniqueIndexName;
-  private final Identifier fromAlias;
-  private final Identifier toAlias;
-  private final boolean    ifNotExists;
-  private final Number     wait;
-  private final Number     retry;
-
+  private final Identifier  targetClass;
+  private final Identifier  targetCluster;
+  private final String      uniqueIndexName;
+  private final Identifier  fromAlias;
+  private final Identifier  toAlias;
+  private final boolean     ifNotExists;
+  private final Number      wait;
+  private final Number      retry;
+  private final boolean     unidirectional;
   // operation stuff
   private       Iterator    fromIter;
   private       Iterator    toIterator;
@@ -61,7 +61,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private boolean inited = false;
 
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final String uniqueIndex, final Identifier fromAlias,
-      final Identifier toAlias, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext context,
+      final Identifier toAlias, final boolean unidirectional, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext context,
       final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.targetClass = targetClass;
@@ -69,6 +69,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     this.uniqueIndexName = uniqueIndex;
     this.fromAlias = fromAlias;
     this.toAlias = toAlias;
+    this.unidirectional = unidirectional;
     this.ifNotExists = ifNotExists;
     this.wait = wait;
     this.retry = retry;
@@ -109,7 +110,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               return null;
           }
 
-          final MutableEdge edge = edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(targetClass.getStringValue(), currentTo, true);
+          final MutableEdge edge = edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(targetClass.getStringValue(), currentTo, !unidirectional);
 
           final UpdatableResult result = new UpdatableResult(edge);
           currentTo = null;
@@ -265,7 +266,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FOR EACH x in " + fromAlias + "\n";
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
-    result += spaces + "       CREATE EDGE " + targetClass + " FROM x TO y";
+    result += spaces + "       CREATE EDGE " + targetClass + " FROM x TO y " + (unidirectional ? "UNIDIRECTIONAL" : "BIDIRECTIONAL");
     if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
 
@@ -283,6 +284,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   @Override
   public ExecutionStep copy(final CommandContext context) {
     return new CreateEdgesStep(targetClass == null ? null : targetClass.copy(), targetCluster == null ? null : targetCluster.copy(), uniqueIndexName,
-        fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), ifNotExists, wait, retry, context, profilingEnabled);
+        fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), unidirectional, ifNotExists, wait, retry, context,
+        profilingEnabled);
   }
 }

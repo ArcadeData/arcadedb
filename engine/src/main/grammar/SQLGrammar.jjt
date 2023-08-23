@@ -369,6 +369,8 @@ TOKEN:
   |
   <SYSTEM: ("s"|"S")("y"|"Y")("s"|"S")("t"|"T")("e"|"E")("m"|"M") >
   |
+  <UNIDIRECTIONAL: ("u"|"U")("n"|"N")("i"|"I")("d"|"D")("i"|"I")("r"|"R")("e"|"E")("c"|"C")("t"|"T")("i"|"I")("o"|"O")("n"|"N")("a"|"A")("l"|"L") >
+  |
   <THIS: "@" ( ("t"|"T")("h"|"H")("i"|"I")("s"|"S") ) >
   |
   <RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <FIELDS_ATTR> | <OUT_ATTR> | <IN_ATTR> >
@@ -896,6 +898,8 @@ Identifier Identifier():
   token = <RID>
   |
   token = <SYSTEM>
+  |
+  token = <UNIDIRECTIONAL>
   |
   quotedToken = <QUOTED_IDENTIFIER>
 ) {
@@ -1710,6 +1714,7 @@ CreateEdgeStatement CreateEdgeStatement():
   (
     jjtThis.rightExpression = Expression()
   )
+  [ <UNIDIRECTIONAL> { jjtThis.unidirectional = true; }]
   [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
   [ jjtThis.body = InsertBody() ]
   [ jjtThis.retry = Retry() ]
