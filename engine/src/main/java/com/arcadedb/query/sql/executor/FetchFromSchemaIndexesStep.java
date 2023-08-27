@@ -21,12 +21,14 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
+import java.util.logging.*;
 
 /**
  * Returns an OResult containing metadata regarding the schema indexes.
@@ -56,36 +58,40 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
           final ResultInternal r = new ResultInternal();
           result.add(r);
 
-          final int fileId = ((IndexInternal) index).getFileId();
+          try {
+            final int fileId = ((IndexInternal) index).getFileId();
 
-          r.setProperty("name", index.getName());
-          r.setProperty("typeName", index.getTypeName());
-          if (index.getPropertyNames() != null)
-            r.setProperty("properties", Arrays.asList(index.getPropertyNames()));
+            r.setProperty("name", index.getName());
+            r.setProperty("typeName", index.getTypeName());
+            if (index.getPropertyNames() != null)
+              r.setProperty("properties", Arrays.asList(index.getPropertyNames()));
 
-          // KEY TYPES
-          final List<String> keyTypes = new ArrayList<>();
-          if (((IndexInternal) index).getKeyTypes() != null)
-            for (final Type k : ((IndexInternal) index).getKeyTypes())
-              keyTypes.add(k.name());
-          r.setProperty("keyTypes", keyTypes);
+            // KEY TYPES
+            final List<String> keyTypes = new ArrayList<>();
+            if (((IndexInternal) index).getKeyTypes() != null)
+              for (final Type k : ((IndexInternal) index).getKeyTypes())
+                keyTypes.add(k.name());
+            r.setProperty("keyTypes", keyTypes);
 
-          r.setProperty("unique", index.isUnique());
-          r.setProperty("automatic", index.isAutomatic());
-          r.setProperty("compacting", ((IndexInternal) index).isCompacting());
+            r.setProperty("unique", index.isUnique());
+            r.setProperty("automatic", index.isAutomatic());
+            r.setProperty("compacting", ((IndexInternal) index).isCompacting());
 
-          if (fileId > -1) {
-            r.setProperty("fileId", fileId);
-            try {
-              r.setProperty("size", FileUtils.getSizeAsString(context.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
-            } catch (final IOException e) {
-              // IGNORE IT, NO SIZE AVAILABLE
+            if (fileId > -1) {
+              r.setProperty("fileId", fileId);
+              try {
+                r.setProperty("size", FileUtils.getSizeAsString(context.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
+              } catch (final IOException e) {
+                // IGNORE IT, NO SIZE AVAILABLE
+              }
             }
+            r.setProperty("supportsOrderedIterations", index.supportsOrderedIterations());
+            if (index.getAssociatedBucketId() > -1)
+              r.setProperty("associatedBucketId", index.getAssociatedBucketId());
+            r.setProperty("nullStrategy", index.getNullStrategy());
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.WARNING, "Requested information for index, but the index '%s' is not valid", e, index.getName());
           }
-          r.setProperty("supportsOrderedIterations", index.supportsOrderedIterations());
-          if (index.getAssociatedBucketId() > -1)
-            r.setProperty("associatedBucketId", index.getAssociatedBucketId());
-          r.setProperty("nullStrategy", index.getNullStrategy());
         }
       } finally {
         if (profilingEnabled) {
