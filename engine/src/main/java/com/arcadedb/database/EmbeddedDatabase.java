@@ -902,7 +902,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public Document getOriginalDocument(final Record record) {
     final Binary originalBuffer = ((RecordInternal) record).getBuffer();
     if (originalBuffer == null)
-      throw new IllegalStateException("Cannot read original buffer");
+      throw new IllegalStateException(
+          "Cannot read original buffer for record " + record.getIdentity() + ". In case of tx retry check the record is created inside the transaction");
     originalBuffer.rewind();
     return (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer, null);
   }
