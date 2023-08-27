@@ -28,6 +28,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
@@ -772,8 +773,26 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public void drop() {
-    if (underlyingIndex != null)
-      database.getSchema().dropIndex(underlyingIndex.getName());
+// KEEP THE UNDERLYING INDEX ALIVE TO ALLOW THE REBUILD WITHOUT CALCULATING THE EMBEDDINGS
+//    if (underlyingIndex != null)
+//      database.getSchema().dropIndex(underlyingIndex.getName());
+    database.transaction(() -> {
+      final IndexCursor it = underlyingIndex.iterator(true);
+      while (it.hasNext()) {
+        try {
+          final Identifiable next = it.next();
+          if (next != null) {
+            final Vertex vertex = next.asVertex();
+            for (int level = 0; level < getMaxLevelFromVertex(vertex); level++) {
+              for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
+                e.delete();
+            }
+          }
+        } catch (RecordNotFoundException e) {
+          // IGNORE IT
+        }
+      }
+    });
 
     final File cfg = new File(filePath);
     if (cfg.exists())
@@ -1039,7 +1058,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
       final Vertex vertex = loadVertexFromRID(cursor.next());
       vertex.modify().set(deletedPropertyName, true).save();
-      underlyingIndex.remove(keys);
+      //underlyingIndex.remove(keys);
     } finally {
       globalLock.unlock();
     }
@@ -1059,8 +1078,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
       final Vertex vertex = loadVertexFromRID(itemRID);
       vertex.modify().set(deletedPropertyName, true).save();
-
-      underlyingIndex.remove(keys, rid);
+      // underlyingIndex.remove(keys, rid);
 
     } finally {
       globalLock.unlock();
