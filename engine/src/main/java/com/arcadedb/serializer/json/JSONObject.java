@@ -150,11 +150,11 @@ public class JSONObject {
     return getElement(name).getAsString();
   }
 
-  public Integer getInt(final String name) {
+  public int getInt(final String name) {
     return getElement(name).getAsNumber().intValue();
   }
 
-  public Long getLong(final String name) {
+  public long getLong(final String name) {
     return getElement(name).getAsNumber().longValue();
   }
 
@@ -166,7 +166,7 @@ public class JSONObject {
     return getElement(name).getAsNumber().doubleValue();
   }
 
-  public Boolean getBoolean(final String name) {
+  public boolean getBoolean(final String name) {
     return getElement(name).getAsBoolean();
   }
 

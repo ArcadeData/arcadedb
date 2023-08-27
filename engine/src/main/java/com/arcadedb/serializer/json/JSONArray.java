@@ -109,6 +109,14 @@ public class JSONArray implements Iterable<Object> {
     return array.get(i).getAsNumber();
   }
 
+  public float getFloat(final int i) {
+    return array.get(i).getAsFloat();
+  }
+
+  public double getDouble(final int i) {
+    return array.get(i).getAsDouble();
+  }
+
   public JSONObject getJSONObject(final int i) {
     return new JSONObject(array.get(i).getAsJsonObject());
   }
