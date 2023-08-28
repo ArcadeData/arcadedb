@@ -421,7 +421,7 @@ public class DocumentType {
    * @param ofType       Linked type. For List the type contained in the list. For RID the schema type name.
    */
   public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
-    final Property p = properties.get(propertyName);
+    final Property p = getPolymorphicProperty(propertyName);
     if (p != null) {
       if (p.getType().equals(propertyType))
         return p;
