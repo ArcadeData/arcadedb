@@ -429,7 +429,7 @@ public class EmbeddedSchema implements Schema {
       if (index == null)
         return null;
 
-      if (index.getTypeName() != null) {
+      if (index.getTypeName() != null && existsType(index.getTypeName())) {
         final DocumentType type = getType(index.getTypeName());
         final BucketSelectionStrategy strategy = type.getBucketSelectionStrategy();
         if (strategy instanceof PartitionedBucketSelectionStrategy) {

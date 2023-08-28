@@ -776,23 +776,27 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 // KEEP THE UNDERLYING INDEX ALIVE TO ALLOW THE REBUILD WITHOUT CALCULATING THE EMBEDDINGS
 //    if (underlyingIndex != null)
 //      database.getSchema().dropIndex(underlyingIndex.getName());
-    database.transaction(() -> {
-      final IndexCursor it = underlyingIndex.iterator(true);
-      while (it.hasNext()) {
-        try {
-          final Identifiable next = it.next();
-          if (next != null) {
-            final Vertex vertex = next.asVertex();
-            for (int level = 0; level < getMaxLevelFromVertex(vertex); level++) {
-              for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
-                e.delete();
+    try {
+      database.transaction(() -> {
+        final IndexCursor it = underlyingIndex.iterator(true);
+        while (it.hasNext()) {
+          try {
+            final Identifiable next = it.next();
+            if (next != null) {
+              final Vertex vertex = next.asVertex();
+              for (int level = 0; level < getMaxLevelFromVertex(vertex); level++) {
+                for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
+                  e.delete();
+              }
             }
+          } catch (RecordNotFoundException e) {
+            // IGNORE IT
           }
-        } catch (RecordNotFoundException e) {
-          // IGNORE IT
         }
-      }
-    });
+      });
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on scanning the vector index to delete edges", e);
+    }
 
     final File cfg = new File(filePath);
     if (cfg.exists())

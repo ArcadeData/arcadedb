@@ -385,7 +385,6 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public List<Integer> getFileIds() {
-    checkIsValid();
     final List<Integer> ids = new ArrayList<>(indexesOnBuckets.size() * 2);
     for (final IndexInternal idx : indexesOnBuckets)
       ids.addAll(idx.getFileIds());
