@@ -112,7 +112,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final ComponentFile.MODE mode,
       final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     try {
-      this.name = FileUtils.encode(name, database.getSchema().getEncoding());
+      this.name = name;
       this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
     } catch (final IOException e) {
       throw new IndexException("Error on creating index '" + name + "'", e);

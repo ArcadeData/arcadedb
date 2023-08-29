@@ -30,6 +30,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -802,6 +804,41 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
     Assertions.assertTrue(typeIndexAfter.get(new Object[] { 0 }).hasNext());
     Assertions.assertEquals(0, typeIndexAfter.get(new Object[] { 0 }).next().asDocument().getInteger("id"));
+  }
+
+  @Test
+  public void testIndexNameSpecialCharacters() {
+    VertexType type = database.getSchema().createVertexType("This.is:special");
+    type.createProperty("other.special:property", Type.STRING);
+
+    database.async().waitCompletion();
+
+    final TypeIndex idx = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "other.special:property");
+
+    database.command("sql", "rebuild index `" + idx.getName() + "`");
+  }
+
+  @Test
+  public void testIndexNameSpecialCharactersUsingSQL() {
+    database.command("sql", "create vertex type `This.is:special`");
+    database.command("sql", "create property `This.is:special`.`other.special:property` string");
+    database.transaction(() -> {
+      database.newVertex("This.is:special").set("other.special:property", "testEncoding").save();
+    });
+
+    database.async().waitCompletion();
+
+    database.command("sql", "create index on `This.is:special`(`other.special:property`) unique");
+    database.command("sql", "rebuild index `This.is:special[other.special:property]`");
+
+    database.close();
+
+    database = factory.exists() ? factory.open() : factory.create();
+    database.command("sql", "rebuild index `This.is:special[other.special:property]`");
+
+    Assertions.assertEquals("testEncoding",
+        database.query("sql", "select from `This.is:special` where `other.special:property` = 'testEncoding'").nextIfAvailable()
+            .getProperty("other.special:property"));
   }
 
   @Test

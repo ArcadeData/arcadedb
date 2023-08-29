@@ -1285,7 +1285,7 @@ public class EmbeddedSchema implements Schema {
     if (bucket == null)
       throw new IllegalArgumentException("bucket is null");
 
-    final String indexName = FileUtils.encode(bucket.getName(), encoding) + "_" + System.nanoTime();
+    final String indexName = bucket.getName() + "_" + System.nanoTime();
 
     if (indexMap.containsKey(indexName))
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
