@@ -200,21 +200,25 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public void onAfterSchemaLoad() {
-    this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withIgnoreIfExists(true).withUnique(true)
-        .withType(Schema.INDEX_TYPE.LSM_TREE).create();
+    try {
+      this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName }).withIgnoreIfExists(true).withUnique(true)
+          .withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
-    this.underlyingIndex.setAssociatedIndex(this);
+      this.underlyingIndex.setAssociatedIndex(this);
 
-    // AFTER THE WHOLE SCHEMA IS LOADED INITIALIZE THE INDEX
-    if (this.entryPointRIDToLoad != null) {
-      try {
-        this.entryPoint = this.entryPointRIDToLoad.asVertex();
-      } catch (RecordNotFoundException e) {
-        // ENTRYPOINT DELETED, DROP THE INDEX
-        LogManager.instance().log(this, Level.WARNING, "HNSW index '" + indexName + "' has an invalid entrypoint. The index will be removed");
-        this.entryPointRIDToLoad = null;
-        database.getSchema().dropIndex(indexName);
+      // AFTER THE WHOLE SCHEMA IS LOADED INITIALIZE THE INDEX
+      if (this.entryPointRIDToLoad != null) {
+        try {
+          this.entryPoint = this.entryPointRIDToLoad.asVertex();
+        } catch (RecordNotFoundException e) {
+          // ENTRYPOINT DELETED, DROP THE INDEX
+          LogManager.instance().log(this, Level.WARNING, "HNSW index '" + indexName + "' has an invalid entrypoint. The index will be removed");
+          this.entryPointRIDToLoad = null;
+          database.getSchema().dropIndex(indexName);
+        }
       }
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on loading of HNSW index '" + indexName + "'", e);
     }
   }
 
@@ -777,23 +781,25 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 //    if (underlyingIndex != null)
 //      database.getSchema().dropIndex(underlyingIndex.getName());
     try {
-      database.transaction(() -> {
-        final IndexCursor it = underlyingIndex.iterator(true);
-        while (it.hasNext()) {
-          try {
-            final Identifiable next = it.next();
-            if (next != null) {
-              final Vertex vertex = next.asVertex();
-              for (int level = 0; level < getMaxLevelFromVertex(vertex); level++) {
-                for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
-                  e.delete();
+      if (underlyingIndex != null) {
+        database.transaction(() -> {
+          final IndexCursor it = underlyingIndex.iterator(true);
+          while (it.hasNext()) {
+            try {
+              final Identifiable next = it.next();
+              if (next != null) {
+                final Vertex vertex = next.asVertex();
+                for (int level = 0; level < getMaxLevelFromVertex(vertex); level++) {
+                  for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
+                    e.delete();
+                }
               }
+            } catch (RecordNotFoundException e) {
+              // IGNORE IT
             }
-          } catch (RecordNotFoundException e) {
-            // IGNORE IT
           }
-        }
-      });
+        });
+      }
     } catch (Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error on scanning the vector index to delete edges", e);
     }
