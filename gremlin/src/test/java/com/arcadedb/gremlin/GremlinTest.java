@@ -423,7 +423,7 @@ public class GremlinTest {
       value = graph.gremlin("g.inject(Long.MAX_VALUE, 1).sum()").execute().nextIfAvailable();
       Assertions.assertEquals(Long.MAX_VALUE + 1, (long) value.getProperty("result"));
 
-      value = graph.gremlin("g.inject(new BigInteger(Long.MAX_VALUE), 1).sum()").execute().nextIfAvailable();
+      value = graph.gremlin("g.inject(BigInteger.valueOf(Long.MAX_VALUE), 1).sum()").execute().nextIfAvailable();
       Assertions.assertEquals(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)), (BigInteger) value.getProperty("result"));
     } finally {
       graph.drop();
