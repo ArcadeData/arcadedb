@@ -90,11 +90,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   private final   int                                  maxM;
   private final   int                                  maxM0;
   private final   double                               levelLambda;
-  private         int                                  ef;
+  private final   int                                  ef;
   private final   int                                  efConstruction;
-  public volatile RID                                  entryPointRIDToLoad;
-  public volatile Vertex                               entryPoint;
-  private         TypeIndex                            underlyingIndex;
   private final   ReentrantLock                        globalLock;
   private final   Set<RID>                             excludedCandidates = new HashSet<>();
   private final   String                               vertexType;
@@ -103,7 +100,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   private final   String                               idPropertyName;
   private final   String                               deletedPropertyName;
   private final   Map<RID, Vertex>                     cache;
-  private         String                               indexName;
+  private final   String                               indexName;
+  private         TypeIndex                            underlyingIndex;
+  public volatile RID                                  entryPointRIDToLoad;
+  public volatile Vertex                               entryPoint;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -373,9 +373,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         }
 
         // zoom out to the highest level
-        if (entryPoint == null || vertexMaxLevel > entryPointCopyMaxLevel)
+        if (entryPoint == null || vertexMaxLevel > entryPointCopyMaxLevel) {
           // this is thread safe because we get the global lock when we add a level
           this.entryPoint = vertex;
+          save();
+        }
 
         return true;
 
@@ -607,15 +609,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   /**
-   * Set the size of the dynamic list for the nearest neighbors (used during the search)
-   *
-   * @param ef The size of the dynamic list for the nearest neighbors
-   */
-  public void setEf(int ef) {
-    this.ef = ef;
-  }
-
-  /**
    * Returns the parameter has the same meaning as ef, but controls the index time / index precision.
    *
    * @return the parameter has the same meaning as ef, but controls the index time / index precision
@@ -741,8 +734,12 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     }
   }
 
-  public void save() throws IOException {
-    FileUtils.writeFile(new File(filePath), toJSON().toString());
+  public void save() {
+    try {
+      FileUtils.writeFile(new File(filePath), toJSON().toString());
+    } catch (IOException e) {
+      throw new IndexException("Error on saving HNSW index '" + indexName + "'", e);
+    }
   }
 
   @Override
@@ -944,6 +941,9 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       }
 
       database.commit();
+
+      save();
+
       return totalVertices;
     }
 

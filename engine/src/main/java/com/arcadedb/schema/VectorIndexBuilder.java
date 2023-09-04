@@ -120,12 +120,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     schema.indexMap.put(index.getName(), index);
 
     index.build(origin, EmbeddedSchema.BUILD_TX_BATCH_SIZE, vertexCreationCallback, callback);
-
-    try {
-      index.save();
-    } catch (IOException e) {
-      throw new IndexException("Error on saving vector index " + index.getName(), e);
-    }
+    index.save();
 
     return index;
   }
