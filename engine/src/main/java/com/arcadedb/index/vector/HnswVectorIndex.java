@@ -223,6 +223,15 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
+  public void onAfterCommit() {
+    if (entryPoint != null && !entryPoint.getIdentity().equals(entryPointRIDToLoad)) {
+      // ENTRY POINT IS CHANGED: SAVE THE NEW CONFIGURATION TO DISK
+      save();
+      entryPointRIDToLoad = entryPoint.getIdentity();
+    }
+  }
+
+  @Override
   public String getName() {
     return indexName;
   }
@@ -373,11 +382,9 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         }
 
         // zoom out to the highest level
-        if (entryPoint == null || vertexMaxLevel > entryPointCopyMaxLevel) {
+        if (entryPoint == null || vertexMaxLevel > entryPointCopyMaxLevel)
           // this is thread safe because we get the global lock when we add a level
           this.entryPoint = vertex;
-          save();
-        }
 
         return true;
 
