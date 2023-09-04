@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
@@ -83,7 +84,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (database.isAsyncProcessing())
-      throw new SchemaException("Cannot create a new index while asynchronous tasks are running");
+      throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
 
     if (vertexType == null)
       throw new IndexException("Vertex type is missing from vector index declaration");

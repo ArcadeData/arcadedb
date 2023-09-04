@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -44,7 +45,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (database.isAsyncProcessing())
-      throw new SchemaException("Cannot create a new index while asynchronous tasks are running");
+      throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
 
     final EmbeddedSchema schema = database.getSchema().getEmbedded();
 

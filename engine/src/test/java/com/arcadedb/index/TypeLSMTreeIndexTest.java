@@ -807,15 +807,21 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testIndexNameSpecialCharacters() {
+  public void testIndexNameSpecialCharacters() throws InterruptedException {
     VertexType type = database.getSchema().createVertexType("This.is:special");
     type.createProperty("other.special:property", Type.STRING);
 
-    database.async().waitCompletion();
-
-    final TypeIndex idx = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "other.special:property");
-
-    database.command("sql", "rebuild index `" + idx.getName() + "`");
+    while (true) {
+      database.async().waitCompletion();
+      try {
+        final TypeIndex idx = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "other.special:property");
+        database.command("sql", "rebuild index `" + idx.getName() + "`");
+        break;
+      } catch (NeedRetryException e) {
+        // RETRY
+        Thread.sleep(1000);
+      }
+    }
   }
 
   @Test

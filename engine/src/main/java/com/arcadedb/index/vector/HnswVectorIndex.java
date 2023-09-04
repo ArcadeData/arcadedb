@@ -64,6 +64,7 @@ import java.util.stream.*;
  * This work is derived from the excellent work made by Jelmer Kuperus on https://github.com/jelmerk/hnswlib.
  * <p>
  * Implementation of {@link Index} that implements the hnsw algorithm.
+ * TODO: Check if the global lock interferes with ArcadeDB's tx approach
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  * @see <a href="https://arxiv.org/abs/1603.09320">
