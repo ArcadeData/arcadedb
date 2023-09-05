@@ -19,7 +19,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -76,7 +75,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   @Override
   public void handleClose(final Channel channel) {
-    ((DatabaseInternal) database).getEmbedded().close();
+    // THIS IS CALLED FROM THE CLIENT TO FREE CONNECTION RESOURCES. DO NOT CLOSE THE DATABASE BECAUSE OTHER CONNECTIONS MAY NEED IT
+    collections.clear();
+    lastResults.clear();
   }
 
   @Override
