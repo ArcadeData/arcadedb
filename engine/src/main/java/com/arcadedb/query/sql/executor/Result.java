@@ -178,6 +178,19 @@ public interface Result {
       jsonVal = builder.toString();
     } else if (val instanceof byte[]) {
       jsonVal = "\"" + Base64.getEncoder().encodeToString((byte[]) val) + "\"";
+    } else if (val.getClass().isArray()) {
+      if (val instanceof int[])
+        jsonVal = Arrays.toString((int[]) val);
+      else if (val instanceof long[])
+        jsonVal = Arrays.toString((long[]) val);
+      else if (val instanceof short[])
+        jsonVal = Arrays.toString((short[]) val);
+      else if (val instanceof float[])
+        jsonVal = Arrays.toString((float[]) val);
+      else if (val instanceof double[])
+        jsonVal = Arrays.toString((double[]) val);
+      else
+        jsonVal = Arrays.toString((Object[]) val);
     } else if (val instanceof Date) {
       new SimpleDateFormat().format(val);//TODO
 //      jsonVal = "\"" + ODateHelper.getDateTimeFormatInstance().format(val) + "\"";

@@ -106,10 +106,11 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
   @Override
   public void remove() {
-    currentContainer.removeEntry(lastElementPosition, currentPosition.get());
-    database.updateRecord(currentContainer);
-
-    currentPosition.set(lastElementPosition);
+    if (currentContainer != null) {
+      currentContainer.removeEntry(lastElementPosition, currentPosition.get());
+      database.updateRecord(currentContainer);
+      currentPosition.set(lastElementPosition);
+    }
   }
 
   public RID getNextVertex() {

@@ -340,6 +340,11 @@ public class BinaryComparator {
   }
 
   public int compareBytes(final byte[] buffer1, final Binary buffer2) {
+    if (buffer1 == null)
+      return -1;
+    if (buffer2 == null)
+      return 1;
+
     final long b1Size = buffer1.length;
     final long b2Size = buffer2.getUnsignedNumber();
 

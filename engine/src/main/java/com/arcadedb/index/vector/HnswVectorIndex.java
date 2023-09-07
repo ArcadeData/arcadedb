@@ -279,21 +279,19 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   public void addAll(final List<Item<TId, TVector>> embeddings, final BuildVectorIndexCallback callback) {
-    database.transaction(() -> {
-      int indexed = 0;
-      for (Item<TId, TVector> embedding : embeddings) {
-        final IndexCursor existent = underlyingIndex.get(new Object[] { embedding.id() });
-        Vertex vertex;
-        if (existent.hasNext())
-          vertex = existent.next().asVertex();
-        else
-          vertex = database.newVertex(vertexType).set(idPropertyName, embedding.id()).set(vectorPropertyName, embedding.vector()).save();
+    int indexed = 0;
+    for (Item<TId, TVector> embedding : embeddings) {
+      final IndexCursor existent = underlyingIndex.get(new Object[] { embedding.id() });
+      Vertex vertex;
+      if (existent.hasNext())
+        vertex = existent.next().asVertex();
+      else
+        vertex = database.newVertex(vertexType).set(idPropertyName, embedding.id()).set(vectorPropertyName, embedding.vector()).save();
 
-        add(vertex);
+      add(vertex);
 
-        callback.onVertexIndexed(vertex, embedding, ++indexed);
-      }
-    });
+      callback.onVertexIndexed(vertex, embedding, ++indexed);
+    }
   }
 
   public boolean add(Vertex vertex) {
