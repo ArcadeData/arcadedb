@@ -73,9 +73,7 @@ public class PageManagerFlushThread extends Thread {
         flushPagesFromQueueToDisk();
 
       } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
         running = false;
-        return;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on processing page flush requests", e);
       }
