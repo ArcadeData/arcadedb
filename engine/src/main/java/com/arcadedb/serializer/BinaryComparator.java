@@ -334,6 +334,14 @@ public class BinaryComparator {
       break;
     }
 
+    case BinaryTypes.TYPE_MAP: {
+      switch (type2) {
+      case BinaryTypes.TYPE_MAP:
+        return CollectionUtils.compare((Map) value1, (Map) value2);
+      }
+      break;
+    }
+
     }
 
     throw new IllegalArgumentException("Comparison between type " + type1 + " and " + type2 + " not supported");
@@ -422,6 +430,8 @@ public class BinaryComparator {
       return compareBytes(((String) a).getBytes(), ((String) b).getBytes(DatabaseFactory.getDefaultCharset()));
     else if (a instanceof byte[] && b instanceof byte[])
       return compareBytes((byte[]) a, (byte[]) b);
+    else if (a instanceof Map && b instanceof Map)
+      return CollectionUtils.compare((Map) a, (Map) b);
     return ((Comparable<Object>) a).compareTo(b);
   }
 

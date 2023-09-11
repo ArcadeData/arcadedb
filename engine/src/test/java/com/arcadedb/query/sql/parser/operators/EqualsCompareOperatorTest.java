@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -64,5 +65,11 @@ public class EqualsCompareOperatorTest {
     Assertions.assertFalse(op.execute(null, new RID(null, 1, 10), new RID(null, (short) 1, 20)));
 
     Assertions.assertFalse(op.execute(null, new Object(), new Object()));
+
+    // MAPS
+    Assertions.assertTrue(op.execute(null, Map.of("a", "b"), Map.of("a", "b")));
+
+    Assertions.assertTrue(op.execute(null, Map.of("a", "b", "c", 3), Map.of("a", "b", "c", 3)));
+    Assertions.assertFalse(op.execute(null, Map.of("a", "b", "c", 3), Map.of("a", "b")));
   }
 }

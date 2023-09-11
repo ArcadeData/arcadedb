@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -63,5 +64,13 @@ public class LtOperatorTest {
     } catch (final Exception e) {
       Assertions.assertTrue(e instanceof ClassCastException);
     }
+
+    // MAPS
+    Assertions.assertFalse(op.execute(null, Map.of("a", "b"), Map.of("a", "b")));
+
+    Assertions.assertFalse(op.execute(null, Map.of("a", "b", "c", 3), Map.of("a", "b", "c", 3)));
+    Assertions.assertFalse(op.execute(null, Map.of("a", "b", "c", 3), Map.of("a", "b")));
+
+    Assertions.assertTrue(op.execute(null, Map.of("a", "b"), Map.of("a", "b", "c", 3)));
   }
 }

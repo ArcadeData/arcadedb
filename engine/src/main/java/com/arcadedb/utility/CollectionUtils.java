@@ -42,6 +42,30 @@ public class CollectionUtils {
     return 0;
   }
 
+  public static int compare(final Map<?, Comparable> m1, final Map<?, Comparable> m2) {
+    final Set<? extends Map.Entry<?, Comparable>> entries1 = m1.entrySet();
+    for (Map.Entry<?, Comparable> entry : entries1) {
+      final Comparable value1 = entry.getValue();
+      final Comparable value2 = m2.get(entry.getKey());
+      if (value1 == null) {
+        if (value2 == null)
+          return 0;
+        return -1;
+      } else if (value2 == null)
+        return 1;
+
+      final int cmp = value1.compareTo(value2);
+      if (cmp != 0)
+        return cmp;
+    }
+
+    if (m1.size() > m2.size())
+      return 1;
+    else if (m1.size() < m2.size())
+      return -1;
+    return 0;
+  }
+
   /**
    * Returns the count of the remaining items that have not been iterated yet.<br>
    * <b>NOTE: the default implementation consumes the iterator</b>.
