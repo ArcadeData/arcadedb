@@ -77,7 +77,7 @@ public class Rid extends SimpleNode {
         if (!(((String) result).startsWith("#") && (((String) result).contains(":"))))
           throw new CommandExecutionException("Cannot convert to RID: " + result);
 
-        final List<String> parts = CodeUtils.split(((String) result).substring(1), ':');
+        final List<String> parts = CodeUtils.split(((String) result).substring(1), ':', 3);
         if (parts.size() != 2)
           throw new CommandExecutionException("Cannot convert to RID: " + result);
 

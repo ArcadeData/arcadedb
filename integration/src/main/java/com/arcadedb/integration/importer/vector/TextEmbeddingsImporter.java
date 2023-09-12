@@ -36,6 +36,7 @@ import com.github.jelmerk.knn.DistanceFunction;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.stream.*;
 
 /**
@@ -241,17 +242,20 @@ public class TextEmbeddingsImporter {
       if (settings.parsingLimitEntries > 0)
         parser.limit(settings.parsingLimitEntries);
 
+      final AtomicInteger vectorSize = new AtomicInteger(301);
+
       return parser.map(line -> {
         ++embeddingsParsed;
 
-        final List<String> tokens = CodeUtils.split(line, ' ');
+        final List<String> tokens = CodeUtils.split(line, ' ', -1, vectorSize.get());
 
         String word = tokens.get(0);
 
         float[] vector = new float[tokens.size() - 1];
-        for (int i = 1; i < tokens.size() - 1; i++) {
+        for (int i = 1; i < tokens.size() - 1; i++)
           vector[i] = Float.parseFloat(tokens.get(i));
-        }
+
+        vectorSize.set(vector.length);
 
         if (normalizeVectors)
           // FOR INNER PRODUCT SEARCH NORMALIZE VECTORS

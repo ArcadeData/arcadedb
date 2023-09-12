@@ -58,11 +58,15 @@ public class CodeUtils {
   }
 
   public static List<String> split(final String text, final char sep) {
-    return split(text, sep, -1);
+    return split(text, sep, -1, 10);
   }
 
   public static List<String> split(final String text, final char sep, final int limit) {
-    final List<String> parts = limit > -1 ? new ArrayList<>(limit) : new ArrayList<>();
+    return split(text, sep, limit, 10);
+  }
+
+  public static List<String> split(final String text, final char sep, final int limit, final int estimatedSize) {
+    final List<String> parts = limit > -1 ? new ArrayList<>(limit) : new ArrayList<>(estimatedSize);
     int startPos = 0;
     for (int i = 0; i < text.length(); i++) {
       final char c = text.charAt(i);
