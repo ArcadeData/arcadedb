@@ -30,6 +30,7 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 import com.github.jelmerk.knn.DistanceFunction;
 
@@ -155,7 +156,7 @@ public class TextEmbeddingsImporter {
           .withDeletedProperty(deletedPropertyName)//
           .withVertexCreationCallback((record, item, total) -> ++verticesCreated)//
           .withCallback((record, total) -> ++verticesConnected)//
-          .create();
+          .withBatchSize(1000).create();
     }
 
     logger.logLine(1, "***************************************************************************************************");
@@ -243,13 +244,13 @@ public class TextEmbeddingsImporter {
       return parser.map(line -> {
         ++embeddingsParsed;
 
-        String[] tokens = line.split(" ");
+        final List<String> tokens = CodeUtils.split(line, ' ');
 
-        String word = tokens[0];
+        String word = tokens.get(0);
 
-        float[] vector = new float[tokens.length - 1];
-        for (int i = 1; i < tokens.length - 1; i++) {
-          vector[i] = Float.parseFloat(tokens[i]);
+        float[] vector = new float[tokens.size() - 1];
+        for (int i = 1; i < tokens.size() - 1; i++) {
+          vector[i] = Float.parseFloat(tokens.get(i));
         }
 
         if (normalizeVectors)

@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
+import java.util.*;
 import java.util.logging.*;
 
 /**
@@ -54,5 +55,26 @@ public class CodeUtils {
     if (first == null)
       return second == null;
     return first.equals(second);
+  }
+
+  public static List<String> split(final String text, final char sep) {
+    return split(text, sep, -1);
+  }
+
+  public static List<String> split(final String text, final char sep, final int limit) {
+    final List<String> parts = limit > -1 ? new ArrayList<>(limit) : new ArrayList<>();
+    int startPos = 0;
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c == sep) {
+        parts.add(text.substring(startPos, i));
+        if (limit > -1 && parts.size() >= limit)
+          break;
+        startPos = i + 1;
+      }
+    }
+    if (startPos < text.length() && (limit == -1 || parts.size() < limit))
+      parts.add(text.substring(startPos));
+    return parts;
   }
 }

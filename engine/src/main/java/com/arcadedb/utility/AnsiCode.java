@@ -86,9 +86,9 @@ public enum AnsiCode {
 
         final StringBuilder buffer = new StringBuilder();
 
-        final String[] codes = code.split(":");
-        for (int i = 0; i < codes.length; ++i)
-          buffer.append(AnsiCode.valueOf(codes[i].toUpperCase(Locale.ENGLISH)));
+        final List<String> codes = CodeUtils.split(code, ':');
+        for (int i = 0; i < codes.size(); ++i)
+          buffer.append(AnsiCode.valueOf(codes.get(i).toUpperCase(Locale.ENGLISH)));
 
         if (pos > -1) {
           buffer.append(text);

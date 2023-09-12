@@ -30,7 +30,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class IndexBuilder<T extends Index> {
-  public static final int                    BUILD_BATCH_SIZE = 20_000;
+  public static final int                    BUILD_BATCH_SIZE = 5_000;
   final               DatabaseInternal       database;
   final               Class<? extends Index> indexImplementation;
   Schema.INDEX_TYPE                  indexType;

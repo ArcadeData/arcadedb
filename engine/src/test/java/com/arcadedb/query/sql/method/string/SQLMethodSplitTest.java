@@ -19,40 +19,81 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.utility.CodeUtils;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodSplitTest {
 
-    private SQLMethod method;
+  private SQLMethod method;
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodSplit();
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodSplit();
+  }
+
+  @Test
+  void testNull() {
+    //null ithis
+    Object result = method.execute(null, null, null, null, new Object[] { "," });
+    assertThat(result).isNull();
+
+    //null prefix
+    result = method.execute("first, second", null, null, null, null);
+    assertThat(result).isEqualTo("first, second");
+  }
+
+  @Test
+  void testSplitByComma() {
+    //null separator
+    final Object result = method.execute("first,second", null, null, null, new Object[] { "," });
+    assertThat(result).isInstanceOf(String[].class);
+    final String[] splitted = (String[]) result;
+    assertThat(splitted).hasSize(2).contains("first", "second");
+  }
+
+  //@Test
+  void perfTestSystemSplitVsCodeUtils() {
+    long start = System.currentTimeMillis();
+    for (int i = 0; i < 10; i++)
+      perfSystemSplit();
+    System.out.println(System.currentTimeMillis() - start);
+
+    start = System.currentTimeMillis();
+    for (int i = 0; i < 10; i++)
+      perfCodeUtils();
+    System.out.println(System.currentTimeMillis() - start);
+
+    start = System.currentTimeMillis();
+    for (int i = 0; i < 10; i++)
+      perfSystemSplit();
+    System.out.println(System.currentTimeMillis() - start);
+
+    start = System.currentTimeMillis();
+    for (int i = 0; i < 10; i++)
+      perfCodeUtils();
+    System.out.println(System.currentTimeMillis() - start);
+
+  }
+
+  private void perfSystemSplit() {
+    final String rid = "#12:23231";
+    for (int i = 0; i < 10_000_000; i++) {
+      final String[] parts = rid.split(":", 2);
+      Assertions.assertEquals(2, parts.length);
     }
+  }
 
-    @Test
-    void testNull() {
-        //null ithis
-        Object result = method.execute(null, null, null, null, new Object[]{","});
-        assertThat(result).isNull();
-
-        //null prefix
-        result = method.execute("first, second", null, null, null, null);
-        assertThat(result).isEqualTo("first, second");
+  private void perfCodeUtils() {
+    final String rid = "#12:23231";
+    for (int i = 0; i < 10_000_000; i++) {
+      final List<String> parts = CodeUtils.split(rid, ':', 2);
+      Assertions.assertEquals(2, parts.size());
     }
-
-    @Test
-    void testSplitByComma() {
-
-        //null separator
-        final Object result = method.execute("first,second", null, null, null, new Object[]{","});
-        assertThat(result).isInstanceOf(String[].class);
-        final String[] splitted = (String[]) result;
-        assertThat(splitted).hasSize(2)
-                .contains("first", "second");
-    }
-
+  }
 }

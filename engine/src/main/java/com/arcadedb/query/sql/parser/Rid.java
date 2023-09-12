@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.CodeUtils;
 
 import java.util.*;
 
@@ -76,12 +77,12 @@ public class Rid extends SimpleNode {
         if (!(((String) result).startsWith("#") && (((String) result).contains(":"))))
           throw new CommandExecutionException("Cannot convert to RID: " + result);
 
-        final String[] parts = ((String) result).substring(1).split(":");
-        if (parts.length != 2)
+        final List<String> parts = CodeUtils.split(((String) result).substring(1), ':');
+        if (parts.size() != 2)
           throw new CommandExecutionException("Cannot convert to RID: " + result);
 
         try {
-          return new RID(context.getDatabase(), Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+          return new RID(context.getDatabase(), Integer.parseInt(parts.get(0)), Integer.parseInt(parts.get(1)));
         } catch (final Exception e) {
           throw new CommandExecutionException("Cannot convert to RID: " + result);
         }

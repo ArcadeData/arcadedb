@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.NumberUtils;
 
 import java.io.*;
@@ -61,9 +62,9 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
     value = value.substring(1);
 
-    final String[] parts = value.split(":", 2);
-    this.bucketId = Integer.parseInt(parts[0]);
-    this.offset = Long.parseLong(parts[1]);
+    final List<String> parts = CodeUtils.split(value, ':', 2);
+    this.bucketId = Integer.parseInt(parts.get(0));
+    this.offset = Long.parseLong(parts.get(1));
   }
 
   public static boolean is(final Object value) {
@@ -73,8 +74,8 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     if (value instanceof String) {
       final String valueAsString = value.toString();
       if (valueAsString.length() > 3 && valueAsString.charAt(0) == '#') {
-        final String[] parts = valueAsString.substring(1).split(":");
-        return parts.length == 2 && NumberUtils.isIntegerNumber(parts[0]) && NumberUtils.isIntegerNumber(parts[1]);
+        final List<String> parts = CodeUtils.split(valueAsString.substring(1), ':');
+        return parts.size() == 2 && NumberUtils.isIntegerNumber(parts.get(0)) && NumberUtils.isIntegerNumber(parts.get(1));
       }
     }
 
