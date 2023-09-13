@@ -2,9 +2,11 @@
 name: RELEASE - Build and Push Docker Image
 
 on:
-  release:
+  workflow_run:
+    workflows: ["Tag & Release"]
+    branch: ["dev"]
     types:
-      - created
+      - completed
 
 env:
   GHCR_REGISTRY: ghcr.io

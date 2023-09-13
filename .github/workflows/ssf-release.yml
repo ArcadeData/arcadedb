@@ -2,9 +2,11 @@
 name: Create SSF Release Branch
 
 on:
-  release:
+  workflow_run:
+    workflows: ["Tag & Release"]
+    branch: ["dev"]
     types:
-      - created
+      - completed
 
 jobs:
   branch:
@@ -15,22 +17,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
-        with:
-          ref: ${{ github.event.release.tag_name }} # Checkout the tag created from the release
           
       - name: Set Branch Name
         run: |
-          TAG_NAME=${{ github.event.release.tag_name }}
+          TAG_NAME=${{ github.ref }}
           echo "BRANCH_NAME=release/${TAG_NAME#v}" >> $GITHUB_ENV
 
       - name: Create and Push Branch
-        run: |
-          git checkout -b $BRANCH_NAME
-          git push origin $BRANCH_NAME
-
-      # This is needed to trigger the ssf-push Workflow with the same GITHUB_TOKEN
-      - name: Trigger ssf-push
-        uses: peter-evans/repository-dispatch@v2
+        uses: ad-m/github-push-action@master
         with:
-          event-type: trigger-ssf-push
-          client-payload: '{"ref": "${{ github.event.release.tag_name }}"}'
+          github_token: ${{ secrets.GHCR_PAT }}
+          branch: ${{ env.BRANCH_NAME }}
