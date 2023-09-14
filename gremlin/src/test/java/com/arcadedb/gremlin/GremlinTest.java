@@ -473,7 +473,7 @@ public class GremlinTest {
     GlobalConfiguration.GREMLIN_TRAVERSAL_BINDINGS.setValue(
         Map.of(
             "friends",
-            (ArcadeTraversalBinder.TraversalSupplier) g -> g.traversal(SocialTraversalSource.class)));
+            ArcadeTraversalBinder.TraversalSupplier.of(SocialTraversalSource.class)));
 
     final ArcadeGraph graph = ArcadeGraph.open("./target/testTraversalBindings");
     try {
@@ -487,15 +487,30 @@ public class GremlinTest {
       ResultSet resultSet = graph.gremlin("friends.V().person('Alice').friendOf('Bob')").execute();
       Result result = resultSet.nextIfAvailable();
       Assertions.assertEquals(result.getProperty("name"), "Bob");
-
     } finally {
       graph.drop();
     }
+  }
+
+  @Test
+  public void testTraversalBindingInvalidEntries() {
+    List<Map<?, ?>> invalidBindingMaps = List.of(
+        // asserts illegal binding value
+        Map.of("binding", "not a traversal supplier"),
+        // asserts illegal binding key
+        Map.of(42, ArcadeTraversalBinder.TraversalSupplier.of(SocialTraversalSource.class)));
+
+    invalidBindingMaps.forEach(map -> {
+          GlobalConfiguration.GREMLIN_TRAVERSAL_BINDINGS.setValue(map);
+          Assertions.assertThrows(ArcadeTraversalBinder.IllegalTraversalBindingsEntry.class,
+              () -> ArcadeGraph.open("./target/testTraversalBindings"));
+        });
   }
 
   @BeforeEach
   @AfterEach
   public void clean() {
     FileUtils.deleteRecursively(new File("./target/testgremlin"));
+    GlobalConfiguration.resetAll();
   }
 }
