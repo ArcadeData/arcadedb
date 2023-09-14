@@ -476,6 +476,5 @@ public class ArcadeGraph implements Graph, Closeable {
 
     serviceRegistry = new ArcadeServiceRegistry(this);
     serviceRegistry.registerService(new VectorNeighborsFactory(this));
-
   }
 }

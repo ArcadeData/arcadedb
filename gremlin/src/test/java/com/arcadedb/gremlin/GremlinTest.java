@@ -484,7 +484,7 @@ public class GremlinTest {
       final Vertex bob = graph.addVertex(T.label, "Person", "name", "Bob");
       alice.addEdge("FriendOf", bob);
 
-      ResultSet resultSet = graph.gremlin("friends.V().named('Alice').friend('Bob')").execute();
+      ResultSet resultSet = graph.gremlin("friends.V().person('Alice').friendOf('Bob')").execute();
       Result result = resultSet.nextIfAvailable();
       Assertions.assertEquals(result.getProperty("name"), "Bob");
 

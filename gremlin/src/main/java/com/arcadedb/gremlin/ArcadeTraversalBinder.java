@@ -6,17 +6,16 @@ import org.apache.tinkerpop.gremlin.process.traversal.TraversalSource;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 
 import java.util.Map;
-import java.util.function.Function;
 
 public class ArcadeTraversalBinder {
+
+  private final Map<String, TraversalSupplier> traversalBindings;
+  private final Graph graph;
 
   @FunctionalInterface
   public interface TraversalSupplier {
     TraversalSource get(Graph g);
   }
-
-  private final Map<String, TraversalSupplier> traversalBindings;
-  private final Graph graph;
 
   ArcadeTraversalBinder(ArcadeGraph arcadeGraph) {
     graph = arcadeGraph;

@@ -12,11 +12,11 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 @GremlinDsl
 public interface SocialTraversalDsl<S, E> extends GraphTraversal.Admin<S, E> {
 
-  public default GraphTraversal<S, Vertex> named(String name) {
+  public default GraphTraversal<S, Vertex> person(String name) {
     return V().hasLabel("Person").has("name", name);
   }
 
-  public default GraphTraversal<S, Vertex> friend(String name) {
+  public default GraphTraversal<S, Vertex> friendOf(String name) {
     return out("FriendOf").hasLabel("Person").has("name", name);
   }
 }
