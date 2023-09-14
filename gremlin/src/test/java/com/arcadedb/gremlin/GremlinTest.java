@@ -20,6 +20,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
@@ -467,9 +468,49 @@ public class GremlinTest {
     }
   }
 
+  @Test
+  public void testTraversalBinding() {
+    GlobalConfiguration.GREMLIN_TRAVERSAL_BINDINGS.setValue(
+        Map.of(
+            "friends",
+            ArcadeTraversalBinder.TraversalSupplier.of(SocialTraversalSource.class)));
+
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testTraversalBindings");
+    try {
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person");
+      graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
+
+      final Vertex alice = graph.addVertex(T.label, "Person", "name", "Alice");
+      final Vertex bob = graph.addVertex(T.label, "Person", "name", "Bob");
+      alice.addEdge("FriendOf", bob);
+
+      ResultSet resultSet = graph.gremlin("friends.V().person('Alice').friendOf('Bob')").execute();
+      Result result = resultSet.nextIfAvailable();
+      Assertions.assertEquals(result.getProperty("name"), "Bob");
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testTraversalBindingInvalidEntries() {
+    List<Map<?, ?>> invalidBindingMaps = List.of(
+        // asserts illegal binding value
+        Map.of("binding", "not a traversal supplier"),
+        // asserts illegal binding key
+        Map.of(42, ArcadeTraversalBinder.TraversalSupplier.of(SocialTraversalSource.class)));
+
+    invalidBindingMaps.forEach(map -> {
+          GlobalConfiguration.GREMLIN_TRAVERSAL_BINDINGS.setValue(map);
+          Assertions.assertThrows(ArcadeTraversalBinder.IllegalTraversalBindingsEntry.class,
+              () -> ArcadeGraph.open("./target/testInvalidTraversalBindings"));
+        });
+  }
+
   @BeforeEach
   @AfterEach
   public void clean() {
     FileUtils.deleteRecursively(new File("./target/testgremlin"));
+    GlobalConfiguration.resetAll();
   }
 }
