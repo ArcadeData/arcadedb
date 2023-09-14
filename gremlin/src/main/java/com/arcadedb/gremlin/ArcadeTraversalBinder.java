@@ -73,8 +73,8 @@ public final class ArcadeTraversalBinder {
   private static void validateTraversalBindings(Map<String, TraversalSupplier> bindings) {
     bindings.entrySet().forEach(entry -> {
           try {
-            String unusedBindingName = String.class.cast(entry.getKey());
-            TraversalSupplier unusedSupplier = TraversalSupplier.class.cast(entry.getValue());
+            String.class.cast(entry.getKey());
+            TraversalSupplier.class.cast(entry.getValue());
           } catch (ClassCastException e) {
             throw new IllegalTraversalBindingsEntry(
                 "illegal Map<String, TraversalSupplier> entry in GREMLIN_TRAVERSAL_BINDINGS "
