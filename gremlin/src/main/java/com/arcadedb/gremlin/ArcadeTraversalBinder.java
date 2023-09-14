@@ -16,6 +16,9 @@ import java.util.Map;
  */
 public final class ArcadeTraversalBinder {
 
+  private final Map<String, TraversalSupplier> traversalBindings;
+  private final Graph graph;
+
   /**
    * Thrown in `ArcadeTraversalBinder` constructor if the `GREMLIN_TRAVERSAL_BINDINGS` configuration
    * contains invalid map entries.
@@ -29,9 +32,6 @@ public final class ArcadeTraversalBinder {
       super(message);
     }
   }
-
-  private final Map<String, TraversalSupplier> traversalBindings;
-  private final Graph graph;
 
   /**
    * A lambda builder interface which accepts a `Graph` object and returns a `TraversalSource`,
