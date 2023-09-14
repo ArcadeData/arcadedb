@@ -20,6 +20,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
@@ -462,6 +463,31 @@ public class GremlinTest {
       Assertions.assertNotNull(result.getProperty("Alice"));
       Assertions.assertNotNull(result.getProperty("Bob"));
       Assertions.assertNotNull(result.getProperty("Steve"));
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testTraversalBinding() {
+    GlobalConfiguration.GREMLIN_TRAVERSAL_BINDINGS.setValue(
+        Map.of(
+            "friends",
+            (ArcadeTraversalBinder.TraversalSupplier) g -> g.traversal(SocialTraversalSource.class)));
+
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testTraversalBindings");
+    try {
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person");
+      graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
+
+      final Vertex alice = graph.addVertex(T.label, "Person", "name", "Alice");
+      final Vertex bob = graph.addVertex(T.label, "Person", "name", "Bob");
+      alice.addEdge("FriendOf", bob);
+
+      ResultSet resultSet = graph.gremlin("friends.V().named('Alice').friend('Bob')").execute();
+      Result result = resultSet.nextIfAvailable();
+      Assertions.assertEquals(result.getProperty("name"), "Bob");
+
     } finally {
       graph.drop();
     }

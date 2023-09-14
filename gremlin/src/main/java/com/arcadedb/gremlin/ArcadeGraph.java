@@ -460,15 +460,22 @@ public class ArcadeGraph implements Graph, Closeable {
     importPlugin.classImports(Math.class, CustomFunctions.class, CustomPredicate.class);
     importPlugin.methodImports(List.of("java.lang.Math#*", "org.opencypher.gremlin.traversal.CustomFunctions#*"));
 
+    final ArcadeTraversalBinder traversalBinder = new ArcadeTraversalBinder(this);
+
     // INITIALIZE JAVA ENGINE
     gremlinJavaEngine = new GremlinLangScriptEngine(importPlugin.create().getCustomizers().get());
     gremlinJavaEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
+    gremlinJavaEngine.put("g", traversal());
+    traversalBinder.bind(gremlinJavaEngine);
 
     // INITIALIZE GROOVY ENGINE
     gremlinGroovyEngine = new GremlinGroovyScriptEngine(importPlugin.create().getCustomizers().get());
     gremlinGroovyEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
+    gremlinGroovyEngine.put("g", traversal());
+    traversalBinder.bind(gremlinGroovyEngine);
 
     serviceRegistry = new ArcadeServiceRegistry(this);
     serviceRegistry.registerService(new VectorNeighborsFactory(this));
+
   }
 }
