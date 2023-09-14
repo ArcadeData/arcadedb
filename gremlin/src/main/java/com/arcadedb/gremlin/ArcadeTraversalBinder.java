@@ -41,7 +41,7 @@ public final class ArcadeTraversalBinder {
   public interface TraversalSupplier {
 
     /**
-     * Convenience function for creating a travesal supplier for a particular traversal source
+     * Convenience function for creating a traversal supplier for a particular traversal source
      * class. More custom requirements to configure a `TraversalSource` with extensive additions
      * should instead implement the lambda `TraversalSupplier` interface.
      */
@@ -73,12 +73,12 @@ public final class ArcadeTraversalBinder {
   private static void validateTraversalBindings(Map<String, TraversalSupplier> bindings) {
     bindings.entrySet().forEach(entry -> {
           try {
-            String key = String.class.cast(entry.getKey());
-            TraversalSupplier supplier = TraversalSupplier.class.cast(entry.getValue());
+            String unusedBindingName = String.class.cast(entry.getKey());
+            TraversalSupplier unusedSupplier = TraversalSupplier.class.cast(entry.getValue());
           } catch (ClassCastException e) {
             throw new IllegalTraversalBindingsEntry(
                 "illegal Map<String, TraversalSupplier> entry in GREMLIN_TRAVERSAL_BINDINGS "
-                + "configuration: %s".formatted(e));
+                + "configuration: %s".formatted(entry));
           }
         });
   }

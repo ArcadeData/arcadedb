@@ -503,7 +503,7 @@ public class GremlinTest {
     invalidBindingMaps.forEach(map -> {
           GlobalConfiguration.GREMLIN_TRAVERSAL_BINDINGS.setValue(map);
           Assertions.assertThrows(ArcadeTraversalBinder.IllegalTraversalBindingsEntry.class,
-              () -> ArcadeGraph.open("./target/testTraversalBindings"));
+              () -> ArcadeGraph.open("./target/testInvalidTraversalBindings"));
         });
   }
 
