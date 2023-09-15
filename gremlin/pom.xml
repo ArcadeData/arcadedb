@@ -100,12 +100,6 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.apache.tinkerpop</groupId>
-            <artifactId>gremlin-annotations</artifactId>
-            <version>${gremlin.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
             <groupId>org.junit.vintage</groupId>
             <artifactId>junit-vintage-engine</artifactId>
             <version>${junit.jupiter.version}</version>
@@ -126,24 +120,6 @@
             <!--                    </execution>-->
             <!--                </executions>-->
             <!--            </plugin>-->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>${maven-compiler-plugin.version}</version>
-		<configuration>
-                  <annotationProcessorPaths>
-                    <annotationProcessorPath>
-		      <groupId>org.apache.tinkerpop</groupId>
-		      <artifactId>gremlin-annotations</artifactId>
-		      <version>${gremlin.version}</version>
-                    </annotationProcessorPath>
-                  </annotationProcessorPaths>
-                  <annotationProcessors>
-                    <annotationProcessor>org.apache.tinkerpop.gremlin.process.traversal.dsl.GremlinDslProcessor</annotationProcessor>
-                  </annotationProcessors>
-              </configuration>
-            </plugin>
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>

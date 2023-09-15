@@ -214,10 +214,6 @@ public enum GlobalConfiguration {
       "Gremlin engine to use. By default the `auto` setting uses the legacy `groovy` engine in case parameters are set, otherwise, the new native `java` is preferred. If you have compatibility issues with gremlin statements that use lambdas or in general, switch to the `groovy` one",
       String.class, "auto", Set.of("auto", "groovy", "java")),
 
-  GREMLIN_TRAVERSAL_BINDINGS("arcadedb.gremlin.traversalbindings", SCOPE.DATABASE,
-      "Additional Gremlin traversal sources to bind into the `GremlinScriptEngine`, expected to be of the shape `Map<String, ArcadeTraversalBinder.TraversalSupplier>`.",
-      Map.class, Map.of()),
-
   /**
    * Not in use anymore after removing Gremlin Executor
    */

@@ -38,12 +38,11 @@ import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTrav
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
 
+import javax.script.ScriptException;
+import javax.script.SimpleBindings;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
-import javax.script.ScriptContext;
-import javax.script.ScriptException;
-import javax.script.SimpleBindings;
 
 /**
  * Gremlin Expression builder.
@@ -208,8 +207,7 @@ public class ArcadeGremlin extends ArcadeQuery {
       final GremlinLangScriptEngine gremlinEngineImpl = graph.getGremlinJavaEngine();
 
       final SimpleBindings bindings = new SimpleBindings();
-      bindings.putAll(gremlinEngineImpl.getBindings(ScriptContext.ENGINE_SCOPE));
-
+      bindings.put("g", graph.traversal());
       if (parameters != null)
         bindings.putAll(parameters);
       result = gremlinEngineImpl.eval(query, bindings);
@@ -219,8 +217,7 @@ public class ArcadeGremlin extends ArcadeQuery {
       final GremlinGroovyScriptEngine gremlinEngineImpl = graph.getGremlinGroovyEngine();
 
       final SimpleBindings bindings = new SimpleBindings();
-      bindings.putAll(gremlinEngineImpl.getBindings(ScriptContext.ENGINE_SCOPE));
-
+      bindings.put("g", graph.traversal());
       if (parameters != null)
         bindings.putAll(parameters);
       result = gremlinEngineImpl.eval(query, bindings);
