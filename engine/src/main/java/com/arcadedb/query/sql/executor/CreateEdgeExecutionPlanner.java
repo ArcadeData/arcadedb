@@ -42,8 +42,6 @@ public class CreateEdgeExecutionPlanner {
   protected final boolean    unidirectional;
   protected final boolean    ifNotExists;
   protected final InsertBody body;
-  protected final Number     retry;
-  protected final Number     wait;
 
   public CreateEdgeExecutionPlanner(final CreateEdgeStatement statement) {
     this.targetClass = statement.getTargetType() == null ? null : statement.getTargetType().copy();
@@ -53,8 +51,6 @@ public class CreateEdgeExecutionPlanner {
     this.unidirectional = statement.isUnidirectional();
     this.ifNotExists = statement.ifNotExists();
     this.body = statement.getBody() == null ? null : statement.getBody().copy();
-    this.retry = statement.getRetry();
-    this.wait = statement.getWait();
   }
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
@@ -90,7 +86,7 @@ public class CreateEdgeExecutionPlanner {
     uniqueIndexName = null;
 
     result.chain(new CreateEdgesStep(targetClass, targetClusterName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
-        new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), unidirectional, ifNotExists, wait, retry, context, enableProfiling));
+        new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), unidirectional, ifNotExists, context, enableProfiling));
 
     handleSetFields(result, body, context, enableProfiling);
     handleSave(result, targetClusterName, context, enableProfiling);

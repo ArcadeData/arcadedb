@@ -35,8 +35,6 @@ public class CreateEdgeStatement extends Statement {
   protected Expression leftExpression;
   protected Expression rightExpression;
   protected InsertBody body;
-  protected Number     retry;
-  protected Number     wait;
   protected boolean    ifNotExists;
   protected boolean    unidirectional = false;
 
@@ -101,14 +99,6 @@ public class CreateEdgeStatement extends Statement {
       builder.append(" ");
       body.toString(params, builder);
     }
-    if (retry != null) {
-      builder.append(" RETRY ");
-      builder.append(retry);
-    }
-    if (wait != null) {
-      builder.append(" WAIT ");
-      builder.append(wait);
-    }
   }
 
   @Override
@@ -121,14 +111,12 @@ public class CreateEdgeStatement extends Statement {
     result.ifNotExists = ifNotExists;
     result.unidirectional = unidirectional;
     result.body = body == null ? null : body.copy();
-    result.retry = retry;
-    result.wait = wait;
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, unidirectional, ifNotExists, body, retry, wait };
+    return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, unidirectional, ifNotExists, body };
   }
 
   public Identifier getTargetType() {
@@ -157,14 +145,6 @@ public class CreateEdgeStatement extends Statement {
 
   public InsertBody getBody() {
     return body;
-  }
-
-  public Number getRetry() {
-    return retry;
-  }
-
-  public Number getWait() {
-    return wait;
   }
 }
 /* JavaCC - OriginalChecksum=2d3dc5693940ffa520146f8f7f505128 (do not edit this line) */

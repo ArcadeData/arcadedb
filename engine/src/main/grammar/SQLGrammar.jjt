@@ -1717,8 +1717,6 @@ CreateEdgeStatement CreateEdgeStatement():
   [ <UNIDIRECTIONAL> { jjtThis.unidirectional = true; }]
   [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
   [ jjtThis.body = InsertBody() ]
-  [ jjtThis.retry = Retry() ]
-  [ jjtThis.wait = Wait() ]
   {return jjtThis;}
 }
 

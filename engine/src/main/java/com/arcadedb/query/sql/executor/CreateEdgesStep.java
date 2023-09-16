@@ -45,8 +45,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private final Identifier  fromAlias;
   private final Identifier  toAlias;
   private final boolean     ifNotExists;
-  private final Number      wait;
-  private final Number      retry;
   private final boolean     unidirectional;
   // operation stuff
   private       Iterator    fromIter;
@@ -61,8 +59,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private boolean inited = false;
 
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final String uniqueIndex, final Identifier fromAlias,
-      final Identifier toAlias, final boolean unidirectional, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext context,
-      final boolean profilingEnabled) {
+      final Identifier toAlias, final boolean unidirectional, final boolean ifNotExists, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.targetClass = targetClass;
     this.targetCluster = targetClusterName;
@@ -71,8 +68,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     this.toAlias = toAlias;
     this.unidirectional = unidirectional;
     this.ifNotExists = ifNotExists;
-    this.wait = wait;
-    this.retry = retry;
   }
 
   @Override
@@ -284,7 +279,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   @Override
   public ExecutionStep copy(final CommandContext context) {
     return new CreateEdgesStep(targetClass == null ? null : targetClass.copy(), targetCluster == null ? null : targetCluster.copy(), uniqueIndexName,
-        fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), unidirectional, ifNotExists, wait, retry, context,
-        profilingEnabled);
+        fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), unidirectional, ifNotExists, context, profilingEnabled);
   }
 }
