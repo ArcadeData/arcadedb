@@ -63,7 +63,8 @@ public class TypeBuilder<T> {
       if (t.getClass().equals(type))
         return (T) t;
 
-      throw new SchemaException("Type '" + typeName + "' is not a vertex type");
+      final String expectedType = type.isAssignableFrom(VertexType.class) ? "vertex" : type.isAssignableFrom(EdgeType.class) ? "edge" : "document";
+      throw new SchemaException("Type '" + typeName + "' is not a " + expectedType + " type");
     }
 
     if (!type.equals(DocumentType.class) &&//
