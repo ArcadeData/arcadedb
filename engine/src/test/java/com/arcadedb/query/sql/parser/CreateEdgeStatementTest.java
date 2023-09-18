@@ -68,11 +68,6 @@ public class CreateEdgeStatementTest {
   }
 
   @Test
-  public void testRetry() {
-    checkRightSyntax("create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] retry 3 wait 20");
-  }
-
-  @Test
   public void testCreateFromRidSet() {
     checkRightSyntax("create edge Foo from #11:0 to #11:1 set foo='bar', bar=2");
   }
@@ -83,15 +78,8 @@ public class CreateEdgeStatementTest {
   }
 
   @Test
-  public void testRetrySet() {
-    checkRightSyntax(
-        "create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] set foo='bar', bar=2 retry 3 wait 20");
-  }
-
-  @Test
   public void testBatch() {
-    checkRightSyntax(
-        "create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] set foo='bar', bar=2 retry 3 wait 20");
+    checkRightSyntax("create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] set foo='bar', bar=2");
   }
 
   public void testInputVariables() {
@@ -103,8 +91,7 @@ public class CreateEdgeStatementTest {
   public void testSubStatements() {
     checkRightSyntax("create edge Foo from (select from Foo) to (select from bar)");
     checkRightSyntax("create edge Foo from (traverse out() from #12:0) to (select from bar)");
-    checkRightSyntax(
-        "create edge Foo from (MATCH {type:Person, as:A} return $elements) to (select from bar)");
+    checkRightSyntax("create edge Foo from (MATCH {type:Person, as:A} return $elements) to (select from bar)");
   }
 
   private void printTree(final String s) {
