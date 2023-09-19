@@ -40,7 +40,7 @@ import java.util.*;
 public class CreateEdgesStep extends AbstractExecutionStep {
 
   private final Identifier  targetClass;
-  private final Identifier  targetCluster;
+  private final Identifier  targetBucket;
   private final String      uniqueIndexName;
   private final Identifier  fromAlias;
   private final Identifier  toAlias;
@@ -58,11 +58,12 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   private boolean inited = false;
 
-  public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final String uniqueIndex, final Identifier fromAlias,
-      final Identifier toAlias, final boolean unidirectional, final boolean ifNotExists, final CommandContext context, final boolean profilingEnabled) {
+  public CreateEdgesStep(final Identifier targetClass, final Identifier targetBucketName, final String uniqueIndex,
+      final Identifier fromAlias, final Identifier toAlias, final boolean unidirectional, final boolean ifNotExists,
+      final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.targetClass = targetClass;
-    this.targetCluster = targetClusterName;
+    this.targetBucket = targetBucketName;
     this.uniqueIndexName = uniqueIndex;
     this.fromAlias = fromAlias;
     this.toAlias = toAlias;
@@ -105,7 +106,9 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               return null;
           }
 
-          final MutableEdge edge = edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(targetClass.getStringValue(), currentTo, !unidirectional);
+          final String target = targetBucket != null ? "bucket:" + targetBucket.getStringValue() : targetClass.getStringValue();
+
+          final MutableEdge edge = edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(target, currentTo, !unidirectional);
 
           final UpdatableResult result = new UpdatableResult(edge);
           currentTo = null;
@@ -245,7 +248,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
     if (currentFrom instanceof Result) {
       final Object from = currentFrom;
-      currentFrom = ((Result) currentFrom).getVertex().orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from));
+      currentFrom = ((Result) currentFrom).getVertex()
+          .orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from));
     }
     if (currentFrom instanceof Vertex)
       return (Vertex) currentFrom;
@@ -253,7 +257,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     if (currentFrom instanceof Document)
       return ((Document) currentFrom).asVertex();
 
-    throw new CommandExecutionException("Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
+    throw new CommandExecutionException(
+        "Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
   }
 
   @Override
@@ -261,12 +266,13 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FOR EACH x in " + fromAlias + "\n";
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
-    result += spaces + "       CREATE EDGE " + targetClass + " FROM x TO y " + (unidirectional ? "UNIDIRECTIONAL" : "BIDIRECTIONAL");
+    result +=
+        spaces + "       CREATE EDGE " + targetClass + " FROM x TO y " + (unidirectional ? "UNIDIRECTIONAL" : "BIDIRECTIONAL");
     if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
 
-    if (targetCluster != null)
-      result += "\n" + spaces + "       (target cluster " + targetCluster + ")";
+    if (targetBucket != null)
+      result += "\n" + spaces + "       (target cluster " + targetBucket + ")";
 
     return result;
   }
@@ -278,7 +284,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new CreateEdgesStep(targetClass == null ? null : targetClass.copy(), targetCluster == null ? null : targetCluster.copy(), uniqueIndexName,
-        fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), unidirectional, ifNotExists, context, profilingEnabled);
+    return new CreateEdgesStep(targetClass == null ? null : targetClass.copy(), targetBucket == null ? null : targetBucket.copy(),
+        uniqueIndexName, fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), unidirectional,
+        ifNotExists, context, profilingEnabled);
   }
 }

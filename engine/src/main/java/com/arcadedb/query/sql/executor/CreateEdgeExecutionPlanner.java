@@ -36,7 +36,7 @@ import java.util.*;
 public class CreateEdgeExecutionPlanner {
 
   protected       Identifier targetClass;
-  protected final Identifier targetClusterName;
+  protected final Identifier targetBucketName;
   protected final Expression leftExpression;
   protected final Expression rightExpression;
   protected final boolean    unidirectional;
@@ -45,7 +45,7 @@ public class CreateEdgeExecutionPlanner {
 
   public CreateEdgeExecutionPlanner(final CreateEdgeStatement statement) {
     this.targetClass = statement.getTargetType() == null ? null : statement.getTargetType().copy();
-    this.targetClusterName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
+    this.targetBucketName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
     this.leftExpression = statement.getLeftExpression() == null ? null : statement.getLeftExpression().copy();
     this.rightExpression = statement.getRightExpression() == null ? null : statement.getRightExpression().copy();
     this.unidirectional = statement.isUnidirectional();
@@ -56,11 +56,12 @@ public class CreateEdgeExecutionPlanner {
   public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
 
     if (targetClass == null) {
-      if (targetClusterName == null) {
+      if (targetBucketName == null) {
         throw new CommandSQLParsingException("Missing target");
       } else {
         final Database db = context.getDatabase();
-        final DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getFileId()));
+        final DocumentType typez = db.getSchema()
+            .getTypeByBucketId((db.getSchema().getBucketByName(targetBucketName.getStringValue()).getFileId()));
         if (typez != null) {
           targetClass = new Identifier(typez.getName());
         } else {
@@ -85,17 +86,18 @@ public class CreateEdgeExecutionPlanner {
 //    } else
     uniqueIndexName = null;
 
-    result.chain(new CreateEdgesStep(targetClass, targetClusterName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
-        new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), unidirectional, ifNotExists, context, enableProfiling));
+    result.chain(
+        new CreateEdgesStep(targetClass, targetBucketName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
+            new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), unidirectional, ifNotExists, context, enableProfiling));
 
     handleSetFields(result, body, context, enableProfiling);
-    handleSave(result, targetClusterName, context, enableProfiling);
+    handleSave(result, targetBucketName, context, enableProfiling);
     //TODO implement batch, wait and retry
     return result;
   }
 
-  private void handleGlobalLet(final InsertExecutionPlan result, final Identifier name, final Expression expression, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleGlobalLet(final InsertExecutionPlan result, final Identifier name, final Expression expression,
+      final CommandContext context, final boolean profilingEnabled) {
     result.chain(new GlobalLetExpressionStep(name, expression, context, profilingEnabled));
   }
 
@@ -105,16 +107,19 @@ public class CreateEdgeExecutionPlanner {
     }
   }
 
-  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context, final boolean profilingEnabled) {
+  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context,
+      final boolean profilingEnabled) {
     result.chain(new SaveElementStep(context, targetClusterName, profilingEnabled));
   }
 
-  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext context, final boolean profilingEnabled) {
+  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext context,
+      final boolean profilingEnabled) {
     if (insertBody == null) {
       return;
     }
     if (insertBody.getIdentifierList() != null) {
-      result.chain(new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), context, profilingEnabled));
+      result.chain(
+          new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), context, profilingEnabled));
     } else if (insertBody.getContent() != null) {
       result.chain(new UpdateContentStep(insertBody.getContent(), context, profilingEnabled));
     } else if (insertBody.getContentInputParam() != null) {
