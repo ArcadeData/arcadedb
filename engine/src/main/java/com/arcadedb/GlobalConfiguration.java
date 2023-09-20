@@ -184,7 +184,7 @@ public enum GlobalConfiguration {
 
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
-      String.class, "standard", Set.of(new String[] { "standard", "fast" })),
+      String.class, "standard", Set.of((Object[]) new String[] { "standard", "fast" })),
 
   ASYNC_OPERATIONS_QUEUE_SIZE("arcadedb.asyncOperationsQueueSize", SCOPE.DATABASE,
       "Size of the total asynchronous operation queues (it is divided by the number of parallel threads in the pool)", Integer.class, 1024),
@@ -259,7 +259,7 @@ public enum GlobalConfiguration {
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user", String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class, "development",
-      Set.of(new String[] { "development", "test", "production" })),
+      Set.of((Object[]) new String[] { "development", "test", "production" })),
 
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
 
@@ -283,7 +283,7 @@ public enum GlobalConfiguration {
   SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER,
       "The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}"
           + "Databases which are newly created will always be opened READ_WRITE.", String.class, "READ_WRITE",
-      Set.of(new String[] { "read_only", "read_write" })),
+      Set.of((Object[]) new String[] { "read_only", "read_write" })),
 
   SERVER_PLUGINS("arcadedb.server.plugins", SCOPE.SERVER, "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`",
       String.class, ""),
@@ -326,7 +326,7 @@ public enum GlobalConfiguration {
       "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424", String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER, "Default quorum between 'none', 1, 2, 3, 'majority' and 'all' servers. Default is majority", String.class,
-      "majority", Set.of(new String[] { "none", "1", "2", "3", "majority", "all" })),
+      "majority", Set.of((Object[]) new String[] { "none", "1", "2", "3", "majority", "all" })),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
