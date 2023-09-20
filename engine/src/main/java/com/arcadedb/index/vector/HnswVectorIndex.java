@@ -352,8 +352,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         if (currObj != null) {
           if (vertexMaxLevel < entryPointCopyMaxLevel) {
             final TVector vector = getVectorFromVertex(currObj);
-            if (vector == null)
+            if (vector == null) {
+              LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", currObj);
               throw new IndexException("Embeddings not found in object " + currObj);
+            }
 
             TDistance curDist = distanceFunction.distance(vertexVector, vector);
             for (int activeLevel = entryPointCopyMaxLevel; activeLevel > vertexMaxLevel; activeLevel--) {
@@ -368,9 +370,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
                     final Vertex candidateNode = candidateConnections.next();
 
                     final TVector candidateNodeVector = getVectorFromVertex(candidateNode);
-                    if (candidateNodeVector == null)
+                    if (candidateNodeVector == null) {
                       // INVALID
+                      LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", candidateNode);
                       continue;
+                    }
 
                     final TDistance candidateDistance = distanceFunction.distance(vertexVector, candidateNodeVector);
 
@@ -512,8 +516,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     Vertex currObj = entryPointCopy;
 
     final TVector vector = getVectorFromVertex(currObj);
-    if (vector == null)
+    if (vector == null) {
+      LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", currObj);
       return Collections.emptyList();
+    }
 
     TDistance curDist = distanceFunction.distance(destination, vector);
 
@@ -598,9 +604,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
           visitedNodes.add(candidateNode.getIdentity());
 
           final TVector vector = getVectorFromVertex(candidateNode);
-          if (vector == null)
+          if (vector == null) {
             // INVALID
+            LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", candidateNode);
             continue;
+          }
 
           final TDistance candidateDistance = distanceFunction.distance(destination, vector);
           if (topCandidates.size() < k || gt(lowerBound, candidateDistance)) {
