@@ -293,6 +293,9 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       MutableVertex vertex;
       if (existent.hasNext()) {
         vertex = existent.next().asVertex().modify();
+        final Boolean deleted = vertex.getBoolean(deletedPropertyName);
+        if (deleted != null && deleted)
+          vertex.remove(deletedPropertyName);
       } else
         vertex = database.newVertex(vertexType);
 
@@ -325,6 +328,12 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     globalLock.lock();
     try {
+      final Boolean deleted = vertex.getBoolean(deletedPropertyName);
+      if (deleted != null && deleted) {
+        vertex = vertex.modify();
+        ((MutableVertex) vertex).remove(deletedPropertyName);
+        ((MutableVertex) vertex).save();
+      }
 
       final long totalEdges = vertex.countEdges(Vertex.DIRECTION.OUT, getEdgeType(0));
       if (totalEdges > 0)
@@ -332,6 +341,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         return true;
 
       vertex = vertex.modify().set("vectorMaxLevel", randomLevel).save();
+
       if (cache != null)
         cache.put(vertex.getIdentity(), vertex);
 
@@ -918,9 +928,13 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
         final MutableVertex vertex;
         final IndexCursor existent = underlyingIndex.get(new Object[] { node.item.id() });
-        if (existent.hasNext())
+        if (existent.hasNext()) {
           vertex = existent.next().asVertex().modify();
-        else
+          final Boolean deleted = vertex.getBoolean(deletedPropertyName);
+          if (deleted != null && deleted)
+            vertex.remove(deletedPropertyName);
+
+        } else
           vertex = database.newVertex(vertexType);
 
         vertex.set(idPropertyName, node.item.id()).set(vectorPropertyName, node.item.vector());
