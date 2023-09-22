@@ -667,11 +667,12 @@ public class SelectExecutionPlanner {
       info.perRecordLetClause.extractSubQueries(collector);
 
     int i = 0;
+    int j = 0;
     for (final Map.Entry<Identifier, Statement> entry : collector.getSubQueries().entrySet()) {
       final Identifier alias = entry.getKey();
       final Statement query = entry.getValue();
       if (query.refersToParent()) {
-        addRecordLevelLet(info, alias, query, -1);
+        addRecordLevelLet(info, alias, query, j++);
       } else {
         addGlobalLet(info, alias, query, i++);
       }

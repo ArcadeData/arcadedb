@@ -56,7 +56,8 @@ public class MatchStatementExecutionTest extends TestHelper {
     final String[][] friendList = new String[][] { { "n1", "n2" }, { "n1", "n3" }, { "n2", "n4" }, { "n4", "n5" }, { "n4", "n6" } };
 
     for (final String[] pair : friendList) {
-      database.command("sql", "CREATE EDGE Friend from (select from Person where name = ?) to (select from Person where name = ?)", pair[0], pair[1]);
+      database.command("sql", "CREATE EDGE Friend from (select from Person where name = ?) to (select from Person where name = ?)",
+          pair[0], pair[1]);
     }
 
     database.command("sql", "CREATE VERTEX type MathOp");
@@ -100,8 +101,8 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     for (int i = 0; i < 100; i++) {
       final String cmd =
-          "CREATE EDGE IndexedEdge FROM (SELECT FROM IndexedVertex WHERE uid = 0) TO (SELECT FROM IndexedVertex WHERE uid > " + (i * nodes / 100) + " and uid <"
-              + ((i + 1) * nodes / 100) + ")";
+          "CREATE EDGE IndexedEdge FROM (SELECT FROM IndexedVertex WHERE uid = 0) TO (SELECT FROM IndexedVertex WHERE uid > " + (
+              i * nodes / 100) + " and uid <" + ((i + 1) * nodes / 100) + ")";
       database.command("sql", cmd);
     }
 
@@ -186,9 +187,8 @@ public class MatchStatementExecutionTest extends TestHelper {
       if (manager != null) {
         database.command("sql", "CREATE Vertex Employee set name = '" + manager + "' ");
 
-        database.command("sql",
-            "CREATE EDGE ManagerOf from (select from Employee where name = '" + manager + "" + "') to (select from Department where name = 'department" + dept
-                + "') ");
+        database.command("sql", "CREATE EDGE ManagerOf from (select from Employee where name = '" + manager + ""
+            + "') to (select from Department where name = 'department" + dept + "') ");
       }
     }
 
@@ -197,9 +197,8 @@ public class MatchStatementExecutionTest extends TestHelper {
       for (final String employee : employeesForDept) {
         database.command("sql", "CREATE Vertex Employee set name = '" + employee + "' ");
 
-        database.command("sql",
-            "CREATE EDGE WorksAt from (select from Employee where name = '" + employee + "" + "') to (select from Department where name = 'department" + dept
-                + "') ");
+        database.command("sql", "CREATE EDGE WorksAt from (select from Employee where name = '" + employee + ""
+            + "') to (select from Department where name = 'department" + dept + "') ");
       }
     }
   }
@@ -212,10 +211,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     for (int i = 0; i < 10; i++) {
       database.command("sql", "CREATE VERTEX TriangleV set uid = ?", i);
     }
-    final int[][] edges = { { 0, 1 }, { 0, 2 }, { 1, 2 }, { 1, 3 }, { 2, 4 }, { 3, 4 }, { 3, 5 }, { 4, 0 }, { 4, 7 }, { 6, 7 }, { 7, 8 }, { 7, 9 }, { 8, 9 },
-        { 9, 1 }, { 8, 3 }, { 8, 4 } };
+    final int[][] edges = { { 0, 1 }, { 0, 2 }, { 1, 2 }, { 1, 3 }, { 2, 4 }, { 3, 4 }, { 3, 5 }, { 4, 0 }, { 4, 7 }, { 6, 7 },
+        { 7, 8 }, { 7, 9 }, { 8, 9 }, { 9, 1 }, { 8, 3 }, { 8, 4 } };
     for (final int[] edge : edges) {
-      database.command("sql", "CREATE EDGE TriangleE from (select from TriangleV where uid = ?) to (select from TriangleV where uid = ?)", edge[0], edge[1]);
+      database.command("sql",
+          "CREATE EDGE TriangleE from (select from TriangleV where uid = ?) to (select from TriangleV where uid = ?)", edge[0],
+          edge[1]);
     }
   }
 
@@ -227,7 +228,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     }
     final int[][] edges = { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 } };
     for (final int[] edge : edges) {
-      database.command("sql", "CREATE EDGE DiamondE from (select from DiamondV where uid = ?) to (select from DiamondV where uid = ?)", edge[0], edge[1]);
+      database.command("sql",
+          "CREATE EDGE DiamondE from (select from DiamondV where uid = ?) to (select from DiamondV where uid = ?)", edge[0],
+          edge[1]);
     }
   }
 
@@ -248,7 +251,8 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSimpleWhere() {
-    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person");
+    final ResultSet qResult = database.query("sql",
+        "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person");
 
     for (int i = 0; i < 2; i++) {
       final Result item = qResult.next();
@@ -264,7 +268,8 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSimpleLimit() {
-    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 1");
+    final ResultSet qResult = database.query("sql",
+        "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 1");
     Assertions.assertTrue(qResult.hasNext());
     qResult.next();
     Assertions.assertFalse(qResult.hasNext());
@@ -273,7 +278,8 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSimpleLimit2() {
-    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit -1");
+    final ResultSet qResult = database.query("sql",
+        "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit -1");
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(qResult.hasNext());
       qResult.next();
@@ -284,7 +290,8 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   public void testSimpleLimit3() {
 
-    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 3");
+    final ResultSet qResult = database.query("sql",
+        "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 3");
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(qResult.hasNext());
       qResult.next();
@@ -294,7 +301,8 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSimpleUnnamedParams() {
-    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = ? or name = ?)} return person", "n1", "n2");
+    final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = ? or name = ?)} return person",
+        "n1", "n2");
 
     for (int i = 0; i < 2; i++) {
 
@@ -1232,7 +1240,8 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query.toString());
 
-    result.getExecutionPlan().ifPresent(x -> x.getSteps().stream().filter(y -> y instanceof MatchPrefetchStep).forEach(prefetchStepFound -> fail()));
+    result.getExecutionPlan()
+        .ifPresent(x -> x.getSteps().stream().filter(y -> y instanceof MatchPrefetchStep).forEach(prefetchStepFound -> fail()));
 
     for (int i = 0; i < 1000; i++) {
       Assertions.assertTrue(result.hasNext());
@@ -1585,7 +1594,8 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testOptional() {
-    final ResultSet qResult = database.query("sql", "match {type:Person, as: person} -NonExistingEdge-> {as:b, optional:true} return person, b.name");
+    final ResultSet qResult = database.query("sql",
+        "match {type:Person, as: person} -NonExistingEdge-> {as:b, optional:true} return person, b.name");
 
     for (int i = 0; i < 6; i++) {
       Assertions.assertTrue(qResult.hasNext());
@@ -1618,7 +1628,8 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testOptional3() {
     final ResultSet qResult = database.query("sql", "select friend.name as name, b from ("
         + "match {type:Person, as:a, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)},"
-        + "{as:a}.out(){as:b, where:(nonExisting = 12), optional:true}," + "{as:friend}.out(){as:b, optional:true}" + " return friend, b)");
+        + "{as:a}.out(){as:b, where:(nonExisting = 12), optional:true}," + "{as:friend}.out(){as:b, optional:true}"
+        + " return friend, b)");
 
     Assertions.assertTrue(qResult.hasNext());
     final Result doc = qResult.next();
@@ -1754,7 +1765,8 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', num = 5");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', num = 6");
 
-    final String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as a, max(a.num) as maxNum group by a.name order by a.name";
+    final String query =
+        "MATCH { type: " + clazz + ", as:a} RETURN a.name as a, max(a.num) as maxNum group by a.name order by a.name";
 
     final ResultSet result = database.query("sql", query);
     Assertions.assertTrue(result.hasNext());
@@ -1879,12 +1891,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'ccc'");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'ddd'");
 
-    database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'aaa') TO (SELECT FROM " + clazz + " WHERE name = 'bbb')");
-    database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'bbb') TO (SELECT FROM " + clazz + " WHERE name = 'ccc')");
-    database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'ccc') TO (SELECT FROM " + clazz + " WHERE name = 'ddd')");
+    database.command("sql",
+        "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'aaa') TO (SELECT FROM " + clazz + " WHERE name = 'bbb')");
+    database.command("sql",
+        "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'bbb') TO (SELECT FROM " + clazz + " WHERE name = 'ccc')");
+    database.command("sql",
+        "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'ccc') TO (SELECT FROM " + clazz + " WHERE name = 'ddd')");
 
-    final String query =
-        "MATCH { type: " + clazz + ", as:a, where:(name = 'aaa')} --> {as:b, while:($depth<10), depthAlias: xy} RETURN a.name as name, b.name as bname, xy";
+    final String query = "MATCH { type: " + clazz
+        + ", as:a, where:(name = 'aaa')} --> {as:b, while:($depth<10), depthAlias: xy} RETURN a.name as name, b.name as bname, xy";
 
     final ResultSet result = database.query("sql", query);
 
@@ -1929,12 +1944,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'ccc'");
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'ddd'");
 
-    database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'aaa') TO (SELECT FROM " + clazz + " WHERE name = 'bbb')");
-    database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'bbb') TO (SELECT FROM " + clazz + " WHERE name = 'ccc')");
-    database.command("sql", "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'ccc') TO (SELECT FROM " + clazz + " WHERE name = 'ddd')");
+    database.command("sql",
+        "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'aaa') TO (SELECT FROM " + clazz + " WHERE name = 'bbb')");
+    database.command("sql",
+        "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'bbb') TO (SELECT FROM " + clazz + " WHERE name = 'ccc')");
+    database.command("sql",
+        "CREATE EDGE Friend FROM (SELECT FROM " + clazz + " WHERE name = 'ccc') TO (SELECT FROM " + clazz + " WHERE name = 'ddd')");
 
-    final String query =
-        "MATCH { type: " + clazz + ", as:a, where:(name = 'aaa')} --> {as:b, while:($depth<10), pathAlias: xy} RETURN a.name as name, b.name as bname, xy";
+    final String query = "MATCH { type: " + clazz
+        + ", as:a, where:(name = 'aaa')} --> {as:b, while:($depth<10), pathAlias: xy} RETURN a.name as name, b.name as bname, xy";
 
     final ResultSet result = database.query("sql", query);
 
@@ -1998,7 +2016,8 @@ public class MatchStatementExecutionTest extends TestHelper {
     v2.newEdge("Friend", v3, true).save();
     v1.newEdge("Friend", v3, true).save();
 
-    final String query = "MATCH { bucket: " + clazz + "_one, as:a} --> {as:b, bucket:" + clazz + "_two} RETURN a.name as aname, b.name as bname";
+    final String query =
+        "MATCH { bucket: " + clazz + "_one, as:a} --> {as:b, bucket:" + clazz + "_two} RETURN a.name as aname, b.name as bname";
 
     final ResultSet result = database.query("SQL", query);
 
@@ -2016,42 +2035,45 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
-    Assertions.assertTrue(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_one").getFileId()));
+    Assertions.assertTrue(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+        .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId()));
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_one").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     Assertions.assertFalse(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_one").getFileId()));
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+            .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+            .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId()));
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
-    Assertions.assertTrue(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_two").getFileId()));
+    Assertions.assertTrue(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+        .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId()));
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_two").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     Assertions.assertFalse(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_two").getFileId()));
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+            .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+            .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId()));
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
-    Assertions.assertTrue(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_three").getFileId()));
+    Assertions.assertTrue(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+        .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId()));
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_three").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     Assertions.assertFalse(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream().map((r) -> r.getAssociatedBucketId())
-            .collect(Collectors.toSet()).contains(database.getSchema().getBucketByName(clazz + "_three").getFileId()));
+        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+            .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+            .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId()));
 
     result.close();
   }
@@ -2223,6 +2245,14 @@ public class MatchStatementExecutionTest extends TestHelper {
     final String query = "MATCH {type: `" + className + "`, as:foo} RETURN $elements";
 
     try (final ResultSet rs = database.query("SQL", query)) {
+      Assertions.assertEquals(1L, rs.stream().count());
+    }
+  }
+
+  @Test
+  public void testMatchInSubQuery() {
+    try (final ResultSet rs = database.query("SQL",
+        "SELECT $a LET $a=(MATCH{type:Person,as:Person_0}RETURN expand(Person_0))")) {
       Assertions.assertEquals(1L, rs.stream().count());
     }
   }

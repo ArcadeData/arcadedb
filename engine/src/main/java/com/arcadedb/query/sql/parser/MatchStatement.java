@@ -296,7 +296,8 @@ public class MatchStatement extends Statement {
         } else {
           final String lower = getLowerSubclass(database, typez, previousClass);
           if (lower == null) {
-            throw new CommandExecutionException("classes defined for alias " + alias + " (" + typez + ", " + previousClass + ") are not in the same hierarchy");
+            throw new CommandExecutionException(
+                "classes defined for alias " + alias + " (" + typez + ", " + previousClass + ") are not in the same hierarchy");
           }
           aliasUserTypes.put(alias, lower);
         }
@@ -386,12 +387,17 @@ public class MatchStatement extends Statement {
   public MatchStatement copy() {
     final MatchStatement result = new MatchStatement(-1);
     result.database = database;
-    result.matchExpressions = matchExpressions == null ? null : matchExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.notMatchExpressions =
-        notMatchExpressions == null ? null : notMatchExpressions.stream().map(x -> x == null ? null : x.copy()).collect(Collectors.toList());
-    result.returnItems = returnItems == null ? null : returnItems.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.returnAliases = returnAliases == null ? null : returnAliases.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.returnNestedProjections = returnNestedProjections == null ? null : returnNestedProjections.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.matchExpressions =
+        matchExpressions == null ? null : matchExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.notMatchExpressions = notMatchExpressions == null ?//
+        null : notMatchExpressions.stream().map(x -> x == null ? null : x.copy()).collect(Collectors.toList());
+    result.returnItems = returnItems == null ?//
+        null : returnItems.stream().map(x -> x == null ? null : x.copy()).collect(Collectors.toList());
+    result.returnAliases = returnAliases == null ?//
+        null : returnAliases.stream().map(x -> x == null ? null : x.copy()).collect(Collectors.toList());
+    result.returnNestedProjections = returnNestedProjections == null ?
+        null :
+        returnNestedProjections.stream().map(x -> x == null ? null : x.copy()).collect(Collectors.toList());
     result.groupBy = groupBy == null ? null : groupBy.copy();
     result.orderBy = orderBy == null ? null : orderBy.copy();
     result.unwind = unwind == null ? null : unwind.copy();
@@ -522,6 +528,12 @@ public class MatchStatement extends Statement {
     this.skip = skip;
   }
 
+  @Override
+  public boolean refersToParent() {
+    // TODO check this!
+    return false;
+  }
+
   private void setProfilingConstraints(final DatabaseInternal db) {
     final long profiledLimit = db.getResultSetLimit();
     if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))
@@ -531,5 +543,6 @@ public class MatchStatement extends Statement {
     if (profiledTimeout > -1 && (timeout == null || timeout.val.longValue() > profiledTimeout))
       setTimeout(new Timeout(JJTTIMEOUT).setValue((int) profiledTimeout));
   }
+
 }
 /* JavaCC - OriginalChecksum=6ff0afbe9d31f08b72159fcf24070c9f (do not edit this line) */
