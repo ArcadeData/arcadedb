@@ -78,6 +78,8 @@ public class PostServerCommandHandler extends AbstractHandler {
     if (command == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Server command is null\"}");
 
+    final JSONObject response = createResult(user, null).put("result","ok");
+
     final String command_lc = command.toLowerCase();
 
     if (command_lc.equals(LIST_DATABASES))
@@ -109,7 +111,7 @@ public class PostServerCommandHandler extends AbstractHandler {
     else if (command_lc.startsWith(SET_SERVER_SETTING))
       setServerSetting(command.substring(SET_SERVER_SETTING.length()).trim());
     else if (command_lc.startsWith(GET_SERVER_EVENTS))
-      return getServerEvents(command.substring(GET_SERVER_EVENTS.length()).trim());
+      response.put("result",getServerEvents(command.substring(GET_SERVER_EVENTS.length()).trim()));
     else if (command_lc.startsWith(ALIGN_DATABASE))
       alignDatabase(command.substring(ALIGN_DATABASE.length()).trim());
     else {
@@ -117,7 +119,7 @@ public class PostServerCommandHandler extends AbstractHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Server command not valid\"}");
     }
 
-    return new ExecutionResponse(200, "{ \"result\" : \"ok\"}");
+    return new ExecutionResponse(200, response.toString());
   }
 
   private ExecutionResponse listDatabases(final ServerSecurityUser user) {
@@ -130,7 +132,9 @@ public class PostServerCommandHandler extends AbstractHandler {
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);
 
-    return new ExecutionResponse(200, "{ \"result\" : " + new JSONArray(installedDatabases) + "}");
+    final JSONObject response = createResult(user, null).put("result",new JSONArray(installedDatabases));
+
+    return new ExecutionResponse(200,response.toString());
   }
 
   private void shutdownServer(final String serverName) throws IOException {
@@ -270,14 +274,14 @@ public class PostServerCommandHandler extends AbstractHandler {
     httpServer.getServer().getConfiguration().setValue(keyValue[0], keyValue[1]);
   }
 
-  private ExecutionResponse getServerEvents(final String fileName) {
+  private String getServerEvents(final String fileName) {
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.get-server-events").hit();
 
     final JSONArray events = fileName.isEmpty() ? server.getEventLog().getCurrentEvents() : server.getEventLog().getEvents(fileName);
     final JSONArray files = server.getEventLog().getFiles();
 
-    return new ExecutionResponse(200, "{ \"result\" : { \"events\": " + events + ", \"files\": " + files + " } }");
+    return "{ \"events\": " + events + ", \"files\": " + files + " }";
   }
 
   private void alignDatabase(final String databaseName) {
