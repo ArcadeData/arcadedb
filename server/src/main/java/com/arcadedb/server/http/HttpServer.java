@@ -26,23 +26,15 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.handler.DeleteDropUserHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
-import com.arcadedb.server.http.handler.GetDocumentHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
 import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.http.handler.GetServerHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
-import com.arcadedb.server.http.handler.PostCloseDatabaseHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
-import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
-import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
-import com.arcadedb.server.http.handler.PostCreateUserHandler;
-import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
-import com.arcadedb.server.http.handler.PostOpenDatabaseHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
 import com.arcadedb.server.http.handler.PostServerCommandHandler;
@@ -131,21 +123,13 @@ public class HttpServer implements ServerPlugin {
     routes.addPrefixPath("/api/v1",//
         basicRoutes//
             .post("/begin/{database}", new PostBeginHandler(this))//
-            .post("/close/{database}", new PostCloseDatabaseHandler(this))// DEPRECATED
             .post("/command/{database}", new PostCommandHandler(this))//
             .post("/commit/{database}", new PostCommitHandler(this))//
-            .post("/create/{database}", new PostCreateDatabaseHandler(this))//
             .get("/databases", new GetDatabasesHandler(this))//
-            .get("/document/{database}/{rid}", new GetDocumentHandler(this))// DEPRECATED
-            .post("/document/{database}", new PostCreateDocumentHandler(this))// DEPRECATED
-            .post("/drop/{database}", new PostDropDatabaseHandler(this))// DEPRECATED
             .get("/exists/{database}", new GetExistsDatabaseHandler(this))//
-            .post("/open/{database}", new PostOpenDatabaseHandler(this))// DEPRECATED
             .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
             .post("/query/{database}", new PostQueryHandler(this))//
             .post("/rollback/{database}", new PostRollbackHandler(this))//
-            .post("/user", new PostCreateUserHandler(this))// DEPRECATED
-            .delete("/user/{userName}", new DeleteDropUserHandler(this))// DEPRECATED
             .get("/server", new GetServerHandler(this))//
             .post("/server", new PostServerCommandHandler(this))//
             .get("/ready", new GetReadyHandler(this))//
