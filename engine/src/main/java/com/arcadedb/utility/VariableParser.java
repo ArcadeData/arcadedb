@@ -19,6 +19,7 @@
 package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
+import org.apache.lucene.codecs.CodecUtil;
 
 import java.util.logging.*;
 
@@ -28,39 +29,44 @@ import java.util.logging.*;
  * @author Luca Garulli (luca.garulli--at--assetdata.it)
  */
 public class VariableParser {
-  public static Object resolveVariables(final String iText, final String iBegin, final String iEnd, final VariableParserListener iListener) {
+  public static Object resolveVariables(final String iText, final String iBegin, final String iEnd,
+      final VariableParserListener iListener) {
     return resolveVariables(iText, iBegin, iEnd, iListener, null);
   }
 
-  public static Object resolveVariables(final String iText, final String iBegin, final String iEnd, final VariableParserListener iListener,
-      final Object iDefaultValue) {
-    if (iListener == null)
+  public static Object resolveVariables(final String text, final String beginPattern, final String endPattern,
+      final VariableParserListener listener, final Object defaultValue) {
+    if (listener == null)
       throw new IllegalArgumentException("Missed VariableParserListener listener");
 
-    final int beginPos = iText.lastIndexOf(iBegin);
+    final int beginPos = text.lastIndexOf(beginPattern);
     if (beginPos == -1)
-      return iText;
+      return text;
 
-    final int endPos = iText.indexOf(iEnd, beginPos + 1);
+    final int endPos = text.indexOf(endPattern, beginPos + 1);
     if (endPos == -1)
-      return iText;
+      return text;
 
-    final String pre = iText.substring(0, beginPos);
-    final String var = iText.substring(beginPos + iBegin.length(), endPos);
-    final String post = iText.substring(endPos + iEnd.length());
+    final String pre = text.substring(0, beginPos);
+    String var = text.substring(beginPos + beginPattern.length(), endPos);
+    final String post = text.substring(endPos + endPattern.length());
 
-    Object resolved = iListener.resolve(var);
+    // DECODE INTERNAL
+    var = var.replace("$\\{", "${");
+    var = var.replace("\\}", "}");
+
+    Object resolved = listener.resolve(var);
 
     if (resolved == null) {
-      if (iDefaultValue == null)
-        LogManager.instance().log(null, Level.INFO, "[VariableParser.resolveVariables] Error on resolving property: %s", var);
+      if (defaultValue == null)
+        LogManager.instance().log(null, Level.INFO, "Error on resolving property: %s", var);
       else
-        resolved = iDefaultValue;
+        resolved = defaultValue;
     }
 
     if (pre.length() > 0 || post.length() > 0) {
       final String path = pre + (resolved != null ? resolved.toString() : "") + post;
-      return resolveVariables(path, iBegin, iEnd, iListener);
+      return resolveVariables(path, beginPattern, endPattern, listener);
     }
 
     return resolved;
