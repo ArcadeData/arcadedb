@@ -24,10 +24,12 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.io.*;
 import java.util.*;
 
 /**
@@ -63,12 +65,32 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
   public synchronized MutableVertex modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
-    if (recordInCache != null && recordInCache != this && recordInCache instanceof MutableVertex)
-      return (MutableVertex) recordInCache;
+    if (recordInCache != null) {
+      if (recordInCache instanceof MutableVertex)
+        return (MutableVertex) recordInCache;
+    } else if (!database.getTransaction().hasPageForRecord(rid.getPageId())) {
+      // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
+      // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
+      try {
+        // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
+        database.getTransaction()
+            .getPageToModify(rid.getPageId(), database.getSchema().getBucketById(rid.getBucketId()).getPageSize(), false);
+        reload();
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Error on reloading vertex " + rid, e);
+      }
+    }
 
     checkForLazyLoading();
     buffer.rewind();
     return new MutableVertex(database, (VertexType) type, rid, buffer.copyOfContent());
+  }
+
+  @Override
+  public void reload() {
+    // FORCE THE RELOAD
+    buffer = null;
+    super.reload();
   }
 
   @Override
@@ -93,7 +115,8 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     throw new UnsupportedOperationException("setInEdgesHeadChunk");
   }
 
-  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional, final Object... properties) {
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
+      final Object... properties) {
     return database.getGraphEngine().newEdge(getMostUpdatedVertex(this), edgeType, toVertex, bidirectional, properties);
   }
 
@@ -169,7 +192,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
   @Override
   protected boolean checkForLazyLoading() {
-    if (super.checkForLazyLoading()) {
+    if (super.checkForLazyLoading() || buffer != null && buffer.position() == 1) {
       buffer.position(1); // SKIP RECORD TYPE
       outEdges = new RID(database, buffer.getInt(), buffer.getLong());
       if (outEdges.getBucketId() == -1)

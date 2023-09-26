@@ -162,8 +162,8 @@ public class TransactionContext implements Transaction {
     final long pageNum = pos / bucket.getMaxRecordsInPage();
 
     // FOR IMMUTABLE RECORDS AVOID THAT THEY ARE POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
-    immutableRecordsCache.values()
-        .removeIf(r -> r.getIdentity().getBucketId() == bucketId && r.getIdentity().getPosition() / bucket.getMaxRecordsInPage() == pageNum);
+    immutableRecordsCache.values().removeIf(
+        r -> r.getIdentity().getBucketId() == bucketId && r.getIdentity().getPosition() / bucket.getMaxRecordsInPage() == pageNum);
   }
 
   public void removeRecordFromCache(final RID rid) {
@@ -197,7 +197,8 @@ public class TransactionContext implements Transaction {
   @Override
   public void rollback() {
     LogManager.instance()
-        .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages, Thread.currentThread().getId());
+        .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
+            Thread.currentThread().getId());
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
       if (modifiedPages != null) {
@@ -249,6 +250,21 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Used to determine if a page has been already loaded. This is important for isolation.
+   */
+  public boolean hasPageForRecord(final PageId pageId) {
+    if (modifiedPages != null)
+      if (modifiedPages.containsKey(pageId))
+        return true;
+
+    if (newPages != null)
+      if (newPages.containsKey(pageId))
+        return true;
+
+    return immutablePages.containsKey(pageId);
+  }
+
+  /**
    * Looks for the page in the TX context first, then delegates to the database.
    */
   public BasePage getPage(final PageId pageId, final int size) throws IOException {
@@ -288,7 +304,7 @@ public class TransactionContext implements Transaction {
   /**
    * If the page is not already in transaction tx, loads from the database and clone it locally.
    */
-  public MutablePage getPageToModify(final PageId pageId, final int size, final boolean isNew) throws IOException {
+  public MutablePage getPageToModify(final PageId pageId, final int pageSize, final boolean isNew) throws IOException {
     if (!isActive())
       throw new TransactionException("Transaction not active");
 
@@ -302,7 +318,7 @@ public class TransactionContext implements Transaction {
         final ImmutablePage loadedPage = immutablePages.remove(pageId);
         if (loadedPage == null)
           // NOT FOUND, DELEGATES TO THE DATABASE
-          page = database.getPageManager().getMutablePage(pageId, size, isNew, true);
+          page = database.getPageManager().getMutablePage(pageId, pageSize, isNew, true);
         else
           page = loadedPage.modify();
 
@@ -522,7 +538,8 @@ public class TransactionContext implements Transaction {
           database.updateRecordNoLock(rec, false);
         } catch (final RecordNotFoundException e) {
           // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
-          LogManager.instance().log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
+          LogManager.instance()
+              .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
         }
       updatedRecords = null;
     }
@@ -586,7 +603,8 @@ public class TransactionContext implements Transaction {
       rollback();
       throw e;
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
+      LogManager.instance()
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       rollback();
       throw new TransactionException("Transaction error on commit", e);
     }
@@ -612,7 +630,8 @@ public class TransactionContext implements Transaction {
       // AT THIS POINT, LOCK + VERSION CHECK, THERE IS NO NEED TO MANAGE ROLLBACK BECAUSE THERE CANNOT BE CONCURRENT TX THAT UPDATE THE SAME PAGE CONCURRENTLY
       // UPDATE PAGE COUNTER FIRST
       LogManager.instance()
-          .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages, Thread.currentThread().getId());
+          .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
+              Thread.currentThread().getId());
 
       database.getPageManager().updatePages(newPages, modifiedPages, asyncFlush);
 
@@ -644,7 +663,8 @@ public class TransactionContext implements Transaction {
     } catch (final ConcurrentModificationException e) {
       throw e;
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
+      LogManager.instance()
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
       reset();

@@ -61,7 +61,7 @@ public abstract class BaseRecord implements Record {
           buffer = null;
         } else if (loaded != this) {
           // CREATE A BUFFER FROM THE MODIFIED RECORD
-          buffer = database.getSerializer().serialize(database, loaded);
+          buffer = ((RecordInternal) loaded).getBuffer().copy();
         }
 
       } catch (final RecordNotFoundException e) {
