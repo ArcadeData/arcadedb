@@ -342,7 +342,11 @@ public class DateUtils {
   }
 
   public static DateTimeFormatter getFormatter(final String format) {
-    return CACHED_FORMATTERS.computeIfAbsent(format, (f) -> DateTimeFormatter.ofPattern(f));
+    return CACHED_FORMATTERS.computeIfAbsent(format, (f) -> new DateTimeFormatterBuilder().appendPattern(f)
+                                                                .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
+                                                                .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)
+                                                                .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0)
+                                                                .toFormatter());
   }
 
   public static Object getDate(final Object date, final Class impl) {
