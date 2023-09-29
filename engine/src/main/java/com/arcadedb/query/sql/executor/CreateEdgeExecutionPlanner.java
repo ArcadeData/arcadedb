@@ -120,8 +120,8 @@ public class CreateEdgeExecutionPlanner {
     if (insertBody.getIdentifierList() != null) {
       result.chain(
           new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), context, profilingEnabled));
-    } else if (insertBody.getContent() != null) {
-      result.chain(new UpdateContentStep(insertBody.getContent(), context, profilingEnabled));
+    } else if (insertBody.getJsonContent() != null) {
+      result.chain(new UpdateContentStep(insertBody.getJsonContent(), context, profilingEnabled));
     } else if (insertBody.getContentInputParam() != null) {
       result.chain(new UpdateContentStep(insertBody.getContentInputParam(), context, profilingEnabled));
     } else if (insertBody.getSetExpressions() != null) {

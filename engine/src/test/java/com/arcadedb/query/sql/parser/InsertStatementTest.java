@@ -64,11 +64,15 @@ public class InsertStatementTest {
 
   @Test
   public void testInsertIntoBucket() {
-    checkRightSyntax("insert into bucket:default (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
-    checkRightSyntax("insert into BUCKET:default (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
+    checkRightSyntax(
+        "insert into bucket:default (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
+    checkRightSyntax(
+        "insert into BUCKET:default (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
 
-    checkRightSyntax("insert into Foo bucket foo1 (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
-    checkRightSyntax("insert into Foo BUCKET foo1 (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
+    checkRightSyntax(
+        "insert into Foo bucket foo1 (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
+    checkRightSyntax(
+        "insert into Foo BUCKET foo1 (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
   }
 
   @Test
@@ -86,12 +90,12 @@ public class InsertStatementTest {
   @Test
   public void testInsertEmbeddedDocs() {
     checkRightSyntax(
-        "INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = { \n" + "      count: 0, \n" + "      latest: [], \n" + "      '@type': 'document', \n"
-            + "      '@type': 'Like'\n" + "    }");
+        "INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = { \n" + "      count: 0, \n" + "      latest: [], \n"
+            + "      '@type': 'document', \n" + "      '@type': 'Like'\n" + "    }");
 
     checkRightSyntax(
-        "INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = { \n" + "      count: 0, \n" + "      latest: [], \n" + "      '@type': 'document', \n"
-            + "      '@type': 'Like'\n" + "    }");
+        "INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = { \n" + "      count: 0, \n" + "      latest: [], \n"
+            + "      '@type': 'document', \n" + "      '@type': 'Like'\n" + "    }");
   }
 
   @Test
@@ -101,6 +105,21 @@ public class InsertStatementTest {
         + ":\"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq"
         + "1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=\",\"isRead\":\"N\",\"id\":\"52013784-4e32-4e9b-9676-1814ca1256fb\",\"isPrivate\":\"F\",\"is"
         + "Shared\":0}");
+  }
+
+  @Test
+  public void testJsonArrayEscaping() {
+    // issue #5911
+    checkRightSyntax("insert into Bookmark content [{\"data\""
+        + ":\"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq"
+        + "1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=\",\"isRead\":\"N\",\"id\":\"52013784-4e32-4e9b-9676-1814ca1256fb\",\"isPrivate\":\"F\",\"is"
+        + "Shared\":0}, {}]");
+  }
+
+  @Test
+  public void testSlashInQuery() {
+    checkRightSyntax("insert into test content {\"node_id\": \"MFmqvmht//sYYWB8=\"}");
+    checkRightSyntax("insert into test content { \"node_id\": \"MFmqvmht\\/\\/GYsYYWB8=\"}");
   }
 
   @Test

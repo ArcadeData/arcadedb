@@ -28,7 +28,8 @@ public class InsertBody extends SimpleNode {
   protected List<Identifier>          identifierList;
   protected List<List<Expression>>    valueExpressions;
   protected List<InsertSetExpression> setExpressions;
-  protected Json                      content;
+  protected Json                      contentJson;
+  protected JsonArray                 contentArray;
   protected InputParameter            contentInputParam;
 
   public InsertBody(final int id) {
@@ -82,9 +83,12 @@ public class InsertBody extends SimpleNode {
       }
     }
 
-    if (content != null) {
+    if (contentJson != null) {
       builder.append("CONTENT ");
-      content.toString(params, builder);
+      contentJson.toString(params, builder);
+    } else if (contentArray != null) {
+      builder.append("CONTENT ");
+      contentArray.toString(params, builder);
     } else if (contentInputParam != null) {
       builder.append("CONTENT ");
       contentInputParam.toString(params, builder);
@@ -96,9 +100,11 @@ public class InsertBody extends SimpleNode {
     result.identifierList = identifierList == null ? null : identifierList.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.valueExpressions = valueExpressions == null ?
         null :
-        valueExpressions.stream().map(sub -> sub.stream().map(x -> x.copy()).collect(Collectors.toList())).collect(Collectors.toList());
+        valueExpressions.stream().map(sub -> sub.stream().map(x -> x.copy()).collect(Collectors.toList()))
+            .collect(Collectors.toList());
     result.setExpressions = setExpressions == null ? null : setExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.content = content == null ? null : content.copy();
+    result.contentJson = contentJson == null ? null : contentJson.copy();
+    result.contentArray = contentArray == null ? null : contentArray.copy();
     result.contentInputParam = contentInputParam == null ? null : contentInputParam.copy();
     return result;
   }
@@ -118,7 +124,9 @@ public class InsertBody extends SimpleNode {
       return false;
     if (!Objects.equals(setExpressions, that.setExpressions))
       return false;
-    if (!Objects.equals(content, that.content))
+    if (!Objects.equals(contentJson, that.contentJson))
+      return false;
+    if (!Objects.equals(contentArray, that.contentArray))
       return false;
     return Objects.equals(contentInputParam, that.contentInputParam);
   }
@@ -128,7 +136,8 @@ public class InsertBody extends SimpleNode {
     int result = identifierList != null ? identifierList.hashCode() : 0;
     result = 31 * result + (valueExpressions != null ? valueExpressions.hashCode() : 0);
     result = 31 * result + (setExpressions != null ? setExpressions.hashCode() : 0);
-    result = 31 * result + (content != null ? content.hashCode() : 0);
+    result = 31 * result + (contentJson != null ? contentJson.hashCode() : 0);
+    result = 31 * result + (contentArray != null ? contentArray.hashCode() : 0);
     result = 31 * result + (contentInputParam != null ? contentInputParam.hashCode() : 0);
     return result;
   }
@@ -145,8 +154,12 @@ public class InsertBody extends SimpleNode {
     return setExpressions;
   }
 
-  public Json getContent() {
-    return content;
+  public Json getJsonContent() {
+    return contentJson;
+  }
+
+  public JsonArray getJsonArrayContent() {
+    return contentArray;
   }
 
   public InputParameter getContentInputParam() {
