@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.InsertBody;
 import com.arcadedb.query.sql.parser.InsertSetExpression;
+import com.arcadedb.query.sql.parser.JsonArray;
 import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.schema.DocumentType;
 
@@ -51,6 +52,10 @@ public class CreateEdgeExecutionPlanner {
     this.unidirectional = statement.isUnidirectional();
     this.ifNotExists = statement.ifNotExists();
     this.body = statement.getBody() == null ? null : statement.getBody().copy();
+
+    final JsonArray jsonArray = statement.getBody().getJsonArrayContent();
+    if (jsonArray != null && jsonArray.items.size() != 1)
+      throw new CommandSQLParsingException("Expected one entry in the json array as content");
   }
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
@@ -122,6 +127,8 @@ public class CreateEdgeExecutionPlanner {
           new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), context, profilingEnabled));
     } else if (insertBody.getJsonContent() != null) {
       result.chain(new UpdateContentStep(insertBody.getJsonContent(), context, profilingEnabled));
+    } else if (insertBody.getJsonArrayContent() != null) {
+      result.chain(new UpdateContentStep(insertBody.getJsonArrayContent(), context, profilingEnabled));
     } else if (insertBody.getContentInputParam() != null) {
       result.chain(new UpdateContentStep(insertBody.getContentInputParam(), context, profilingEnabled));
     } else if (insertBody.getSetExpressions() != null) {

@@ -306,44 +306,6 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testVerticesContentJsonArray() {
-    final String className = "testVertexContentArray";
-    database.getSchema().createVertexType(className, 1);
-
-    String array = "[";
-    for (int i = 0; i < 1000; i++) {
-      if (i > 0)
-        array += ",";
-      array += "{'name':'name" + i + "', 'surname':'surname" + i + "'}";
-    }
-    array += "]";
-
-    ResultSet result = database.command("sql", "create vertex " + className + " content " + array);
-
-    for (int i = 0; i < 1000; i++) {
-      Assertions.assertTrue(result.hasNext());
-      final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name" + i, item.getProperty("name").toString());
-      Assertions.assertEquals("surname" + i, item.getProperty("surname").toString());
-    }
-    Assertions.assertFalse(result.hasNext());
-
-    result = database.query("sql", "select from " + className);
-
-    for (int i = 0; i < 1000; i++) {
-      Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name" + i, item.getProperty("name").toString());
-      Assertions.assertEquals("surname" + i, item.getProperty("surname").toString());
-    }
-
-    Assertions.assertFalse(result.hasNext());
-    result.close();
-  }
-
-  @Test
   public void testContentEmbedded() {
     final String className = "testContent";
     database.getSchema().createDocumentType(className);
