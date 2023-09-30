@@ -53,9 +53,11 @@ public class CreateEdgeExecutionPlanner {
     this.ifNotExists = statement.ifNotExists();
     this.body = statement.getBody() == null ? null : statement.getBody().copy();
 
-    final JsonArray jsonArray = statement.getBody().getJsonArrayContent();
-    if (jsonArray != null && jsonArray.items.size() != 1)
-      throw new CommandSQLParsingException("Expected one entry in the json array as content");
+    if (statement.getBody() != null) {
+      final JsonArray jsonArray = statement.getBody().getJsonArrayContent();
+      if (jsonArray != null && jsonArray.items.size() != 1)
+        throw new CommandSQLParsingException("Expected one entry in the json array as content");
+    }
   }
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
