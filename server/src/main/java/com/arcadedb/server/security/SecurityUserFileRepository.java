@@ -28,6 +28,7 @@ import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 
+// TODO replace with a PG database for arcade user mgmt?
 public class SecurityUserFileRepository {
   public static final  String FILE_NAME        = "server-users.jsonl";
   private static final int    BUFFER_SIZE      = 65536 * 10;

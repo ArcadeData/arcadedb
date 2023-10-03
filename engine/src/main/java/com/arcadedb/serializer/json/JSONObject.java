@@ -69,6 +69,16 @@ public class JSONObject {
     }
   }
 
+    public JSONObject(final String input, final boolean lenient) {
+    try {
+      final JsonReader reader = new JsonReader(new StringReader(input));
+      reader.setLenient(lenient);
+      object = (JsonObject) JsonParser.parseReader(reader);
+    } catch (Exception e) {
+      throw new JSONException("Invalid JSON object format", e);
+    }
+  }
+
   public JSONObject(final Map<String, ?> map) {
     object = new JsonObject();
     for (Map.Entry<String, ?> entry : map.entrySet())

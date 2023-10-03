@@ -201,17 +201,25 @@ function updateDatabases( callback ){
     }
   })
   .done(function(data){
-    let databases = "";
-    for( let i in data.result ){
-      let dbName = data.result[i];
-      databases += "<option value='"+dbName+"'>"+dbName+"</option>";
+    let json = JSON.parse(JSON.stringify(data));
+    
+    if (typeof json == "object" && json["result"] == 'ok') {
+      // no data returned, the user doesn't have access to any databases
+    } else {
+      // valid response, parse the databases the user has access to
+
+      let databases = "";
+      for( let i in data.result ){
+        let dbName = data.result[i];
+        databases += "<option value='"+dbName+"'>"+dbName+"</option>";
+      }
+      $("#inputDatabase").html(databases);
+  
+      if( selected != null && selected != "" )
+        $("#inputDatabase").val(selected);
+  
+      $("#currentDatabase").html( getCurrentDatabase() );
     }
-    $("#inputDatabase").html(databases);
-
-    if( selected != null && selected != "" )
-      $("#inputDatabase").val(selected);
-
-    $("#currentDatabase").html( getCurrentDatabase() );
 
     $("#user").html(data.user);
 

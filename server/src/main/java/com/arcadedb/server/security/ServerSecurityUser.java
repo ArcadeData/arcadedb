@@ -20,15 +20,21 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.security.SecurityUser;
 import com.arcadedb.server.ArcadeDBServer;
+
+import lombok.extern.slf4j.Slf4j;
+
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.logging.Level;
 
+@Slf4j
 public class ServerSecurityUser implements SecurityUser {
   private final ArcadeDBServer                                        server;
   private final JSONObject                                            userConfiguration;
@@ -129,6 +135,7 @@ public class ServerSecurityUser implements SecurityUser {
 
   @Override
   public boolean canAccessToDatabase(final String databaseName) {
+    log.debug("canAccessToDatabase: {} {} {} {}", name, databaseName, databasesNames.contains(SecurityManager.ANY), databasesNames.contains(databaseName));
     return databasesNames.contains(SecurityManager.ANY) || databasesNames.contains(databaseName);
   }
 
@@ -150,6 +157,7 @@ public class ServerSecurityUser implements SecurityUser {
   private ServerSecurityDatabaseUser registerDatabaseUser(final ArcadeDBServer server, final Database database, final String databaseName) {
     final JSONObject userDatabases = userConfiguration.getJSONObject("databases");
     final List<Object> groupList = userDatabases.getJSONArray(databaseName).toList();
+    log.debug("XX registerDatabaseUser: name: {}; database: {}; groupList: {}", name, databaseName, groupList.toString());
     ServerSecurityDatabaseUser dbu = new ServerSecurityDatabaseUser(databaseName, name, groupList.toArray(new String[groupList.size()]));
 
     final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(databaseName, dbu);
@@ -161,6 +169,7 @@ public class ServerSecurityUser implements SecurityUser {
       if (!SecurityManager.ANY.equals(database.getName())) {
         final JSONObject databaseGroups = server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
         dbu.updateDatabaseConfiguration(databaseGroups);
+        log.debug("registerDatabaseUser, calling updateFileAccess {} {}", databaseName, databaseGroups.toString());
         dbu.updateFileAccess((DatabaseInternal) database, databaseGroups);
       }
     }

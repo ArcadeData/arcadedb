@@ -39,12 +39,14 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
+import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Deque;
 import java.util.logging.Level;
 
+@Slf4j
 public abstract class AbstractHandler implements HttpHandler {
     private static final String AUTHORIZATION_BASIC = "Basic";
     protected final HttpServer httpServer;
@@ -110,7 +112,6 @@ public abstract class AbstractHandler implements HttpHandler {
 
             ServerSecurityUser user = null;
             if (authorization != null) {
-                LogManager.instance().log(this, getErrorLogLevel(), "oidc enabled (%s)", GlobalConfiguration.OIDC_AUTH.getValueAsBoolean(), SecurityException.class.getSimpleName());
                 if (GlobalConfiguration.OIDC_AUTH.getValueAsBoolean()) {
                     // TODO only allow root user basic access if JWT auth enabled
 
@@ -150,7 +151,6 @@ public abstract class AbstractHandler implements HttpHandler {
                     }
                 }
             }
-            LogManager.instance().log(this, getErrorLogLevel(), "test", GlobalConfiguration.OIDC_AUTH.getValueAsBoolean(), SecurityException.class.getSimpleName());
 
             final ExecutionResponse response = execute(exchange, user);
             if (response != null)
@@ -175,7 +175,8 @@ public abstract class AbstractHandler implements HttpHandler {
         } catch (final IllegalArgumentException e) {
             LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
             sendErrorResponse(exchange, 400, "Cannot execute command", e, null);
-        } catch (final CommandExecutionException | CommandParsingException e) {
+        } catch (final CommandExecutionException | CommandParsingException | IllegalStateException e) {
+            // TODO fix illegal state exception
             Throwable realException = e;
             if (e.getCause() != null)
                 realException = e.getCause();
@@ -213,15 +214,15 @@ public abstract class AbstractHandler implements HttpHandler {
     }
 
     protected static void checkRootUser(ServerSecurityUser user) {
-        if (!"root".equals(user.getName()))
-            throw new ServerSecurityException("Only root user is authorized to execute server commands");
+        // commented out because we don't want to limit admin activities to just the built in root user.
+    //    if (!"root".equals(user.getName()))
+    //        throw new ServerSecurityException("Only root user is authorized to execute server commands");
     }
 
     protected JSONObject createResult(final SecurityUser user, final Database database) {
         final JSONObject json = new JSONObject();
         if (database != null)
             json.setDateFormat(database.getSchema().getDateTimeFormat());
-        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "user (%s)", user, getClass().getSimpleName());
 
         json.put("user", user.getName());
         json.put("version", Constants.getVersion());

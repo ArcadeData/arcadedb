@@ -43,29 +43,29 @@ public class PostCreateUserHandler extends AbstractHandler {
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
-    checkRootUser(user);
+    // checkRootUser(user);
 
-    final String payload = parseRequestPayload(exchange);
-    if (payload == null || payload.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Payload requested\"}");
+    // final String payload = parseRequestPayload(exchange);
+    // if (payload == null || payload.isEmpty())
+    //   return new ExecutionResponse(400, "{ \"error\" : \"Payload requested\"}");
 
-    final JSONObject json = new JSONObject(payload);
+    // final JSONObject json = new JSONObject(payload);
 
-    if (!json.has("name"))
-      return new ExecutionResponse(400, "{ \"error\" : \"User name is null\"}");
+    // if (!json.has("name"))
+    //   return new ExecutionResponse(400, "{ \"error\" : \"User name is null\"}");
 
-    final String userPassword = json.getString("password");
-    if (userPassword.length() < 4)
-      throw new ServerSecurityException("User password must be 5 minimum characters");
-    if (userPassword.length() > 256)
-      throw new ServerSecurityException("User password cannot be longer than 256 characters");
+    // final String userPassword = json.getString("password");
+    // if (userPassword.length() < 4)
+    //   throw new ServerSecurityException("User password must be 5 minimum characters");
+    // if (userPassword.length() > 256)
+    //   throw new ServerSecurityException("User password cannot be longer than 256 characters");
 
-    json.put("password", httpServer.getServer().getSecurity().encodePassword(userPassword));
+    // json.put("password", httpServer.getServer().getSecurity().encodePassword(userPassword));
 
-    httpServer.getServer().getServerMetrics().meter("http.create-user").hit();
+    // httpServer.getServer().getServerMetrics().meter("http.create-user").hit();
 
-    httpServer.getServer().getSecurity().createUser(json);
+    // httpServer.getServer().getSecurity().createUser(json);
 
-    return new ExecutionResponse(204, "");
+    return new ExecutionResponse(501, "Please create new users through keycloak.");
   }
 }

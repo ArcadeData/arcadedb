@@ -163,6 +163,10 @@ public enum GlobalConfiguration {
   }),
 
   OIDC_AUTH("arcadedb.oidcAuth", SCOPE.SERVER, "Use OIDC Auth instead of basic", Boolean.class, true),
+  KEYCLOAK_ROOT_URL("arcadedb.keycloakRootUrl", SCOPE.SERVER, "Keycloak root URL", String.class, "http://df-keycloak.auth:8080"),
+  KEYCLOAK_ADMIN_USERNAME("arcadedb.keycloakAdminUsername", SCOPE.SERVER, "Keycloak admin username", String.class, "admin"),
+  KEYCLOAK_ADMIN_PASSWORD("arcadedb.keycloakAdminPassword", SCOPE.SERVER, "Keycloak admin password", String.class, ""),
+  KEYCLOAK_REALM("arcadedb.keycloakRealm", SCOPE.SERVER, "Keycloak realm", String.class, "data-fabric"),
 
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax", String.class,
       "yyyy-MM-dd HH:mm:ss"),
@@ -472,7 +476,7 @@ public enum GlobalConfiguration {
   public static void fromJSON(final String input) {
     if (input == null)
       return;
-
+    
     final JSONObject json = new JSONObject(input);
     final JSONObject cfg = json.getJSONObject("configuration");
     for (final String k : cfg.keySet()) {

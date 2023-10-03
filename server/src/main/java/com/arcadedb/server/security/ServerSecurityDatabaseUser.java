@@ -26,18 +26,21 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.util.*;
 
+@Slf4j
 public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
-  private static final JSONObject  NO_ACCESS_GROUP   = new JSONObject().put("types",
+  private static final JSONObject NO_ACCESS_GROUP = new JSONObject().put("types",
       new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access", new JSONArray())));
-  private final        String      databaseName;
-  private final        String      userName;
-  private              String[]    groups;
-  private              boolean[][] fileAccessMap     = null;
-  private              long        resultSetLimit    = -1;
-  private              long        readTimeout       = -1;
-  private final        boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+  private final String databaseName;
+  private final String userName;
+  private String[] groups;
+  private boolean[][] fileAccessMap = null;
+  private long resultSetLimit = -1;
+  private long readTimeout = -1;
+  private final boolean[] databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
     this.databaseName = databaseName;
@@ -75,13 +78,19 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
+    log.debug("requestAccessOnDatabase: access: {}, decision: {}", access,
+        databaseAccessMap[access.ordinal()]);
     return databaseAccessMap[access.ordinal()];
   }
 
   @Override
   public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
     final boolean[] permissions = fileAccessMap[fileId];
-    return permissions == null || permissions[access.ordinal()];
+    // log.info("requestAccessOnFile: database: {}; fileId: {}, access: {}, permissions: {}", databaseName, fileId, access,
+    //     permissions);
+    // log.info("requestAccessOnFile decision {} {}", permissions != null,
+    //     permissions != null ? permissions[access.ordinal()] : "false");
+    return permissions != null && permissions[access.ordinal()];
   }
 
   public void updateDatabaseConfiguration(final JSONObject configuredGroups) {
@@ -99,8 +108,19 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         continue;
 
       final JSONObject group = configuredGroups.getJSONObject(groupName);
-      if (group.has("access"))
-        access = group.getJSONArray("access");
+    
+      // Aggregate the dba roles from all groups so that the last group doesn't overwrite any roles from previous groups
+      if (group.has("access")) {
+        if (access == null)
+          access = group.getJSONArray("access");
+        else {
+          for (Object a : group.getJSONArray("access").toList()) {
+            if (!access.toList().contains(a.toString())) {
+              access.put(a.toString());
+            }
+          }
+        }
+      }
 
       if (group.has("resultSetLimit")) {
         final long value = group.getLong("resultSetLimit");
@@ -116,6 +136,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
           readTimeout = value;
       }
     }
+
+    log.debug("updateDatabaseConfiguration: access: {}", access);
 
     if (access == null && configuredGroups.has(SecurityManager.ANY)) {
       // NOT FOUND, GET DEFAULT GROUP ACCESS
@@ -146,16 +168,29 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   }
 
   public synchronized void updateFileAccess(final DatabaseInternal database, final JSONObject configuredGroups) {
+
+    //log.debug("updateFileAccess: database {} configuredGroups: {}", database.getName(), configuredGroups.toString());
+
     if (configuredGroups == null)
       return;
 
     final List<PaginatedFile> files = database.getFileManager().getFiles();
+    // below commented out for future debuging
+    // for (int i = 0; i < files.size(); ++i) {
+    //   log.debug("111 updateFileAccess fileId: {}; fileName: {}; cn: {}", files.get(i).getFileId(),
+    //       files.get(i).getFileName(), files.get(i).getComponentName());
+    // }
 
     fileAccessMap = new boolean[files.size()][];
 
-    final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY) ? configuredGroups.getJSONObject(SecurityManager.ANY) : NO_ACCESS_GROUP;
+    // below commented out for future debugging
+    // final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY)
+    //     ? configuredGroups.getJSONObject(SecurityManager.ANY)
+    //     : NO_ACCESS_GROUP;
 
-    final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
+    //final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
+
+    //  database.getSchema().getTypes().stream().forEach(t -> log.info("type {}", t.getName()));
 
     for (int i = 0; i < files.size(); ++i) {
       final DocumentType type = database.getSchema().getTypeByBucketId(i);
@@ -163,23 +198,33 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         continue;
 
       final String typeName = type.getName();
+      // log.info("updateFileAccess fileName {} typeName {}",
+      // files.get(i).getFileName(), typeName);
 
       for (final String groupName : groups) {
+        // log.info("updateFileAccess groupName {}", groupName);
         if (!configuredGroups.has(groupName))
           // GROUP NOT DEFINED
           continue;
 
         final JSONObject group = configuredGroups.getJSONObject(groupName);
+        // log.info("parsing group {}", group.toString());
 
         if (!group.has("types"))
           continue;
 
+        // log.info("updateFileAccess group {} has type {}", groupName, typeName);
+
         final JSONObject types = group.getJSONObject("types");
 
         JSONObject groupType = types.has(typeName) ? types.getJSONObject(typeName) : null;
+        // log.info("updateFileAccess group {} has groupType {}", groupName, groupType);
         if (groupType == null)
           // GET DEFAULT TYPE FOR THE GROUP IF ANY
           groupType = types.has(SecurityManager.ANY) ? types.getJSONObject(SecurityManager.ANY) : null;
+
+        // log.info("updateFileAccess null 2nd chance group {} has groupType {}",
+        // groupName, groupType);
 
         if (groupType == null)
           continue;
@@ -191,20 +236,45 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         // APPLY THE FOUND TYPE FROM THE FOUND GROUP
         updateAccessArray(fileAccessMap[i], groupType.getJSONArray("access"));
       }
+    }
 
-      if (fileAccessMap[i] == null) {
-        // NO GROUP+TYPE FOUND, APPLY SETTINGS FROM DEFAULT GROUP/TYPE
-        fileAccessMap[i] = new boolean[] { false, false, false, false };
+    // Grant permissions to outgoing and incoming edges. Currently required for read operations to succeed.
+    var typeSuffixesToAdd = List.of("_out_edges", "_in_edges");
 
-        final JSONObject t;
-        if (defaultGroup.has(typeName)) {
-          // APPLY THE FOUND TYPE FROM DEFAULT GROUP
-          t = defaultGroup.getJSONObject(typeName);
-        } else
-          // APPLY DEFAULT TYPE FROM DEFAULT GROUP
-          t = defaultType;
+    for (String typeSuffixToAdd : typeSuffixesToAdd) {
+      // loop through all files, and if file name matches extra type,
+      // look for corresponding vertex file and set full access to edge file references
+      // TODO lock down edge permissions if needed. Edges have their own permissions, but this could be a security loophole.
+      for (int i = 0; i < files.size(); ++i) {
 
-        updateAccessArray(fileAccessMap[i], t.getJSONArray("access"));
+        String fileName = files.get(i).getFileName();
+        // log.info("221 updateFileAccess fileName {}", fileName);
+        if (fileName.split("\\.")[0].endsWith(typeSuffixToAdd)) {
+          fileName = fileName.split("\\.")[0].substring(0,
+              (fileName.split("\\.")[0].length() - typeSuffixToAdd.length()));
+
+          for (int j = 0; j < files.size(); ++j) {
+            if (files.get(j).getFileName().split("\\.")[0].equals(fileName)) {
+              fileAccessMap[i] = new boolean[] { true, true, true, true };
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // Grant all permissions to arcade internal metadata types. Currently required for read operations to succeed.
+    var extraTypesToAdd = List.of("HAS_CATEGORY", "INPUT");
+
+    for (String extraType : extraTypesToAdd) {
+      // loop through all files, and if file name matches extra type, set access to
+      // null
+      for (int i = 0; i < files.size(); ++i) {
+        String fileName = files.get(i).getFileName();
+
+        if (fileName.split("\\.")[0].startsWith(extraType)) {
+          fileAccessMap[i] = new boolean[] { true, true, true, true };
+        }
       }
     }
   }
@@ -212,20 +282,21 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   public static boolean[] updateAccessArray(final boolean[] array, final JSONArray access) {
     for (int i = 0; i < access.length(); i++) {
       switch (access.getString(i)) {
-      case "createRecord":
-        array[0] = true;
-        break;
-      case "readRecord":
-        array[1] = true;
-        break;
-      case "updateRecord":
-        array[2] = true;
-        break;
-      case "deleteRecord":
-        array[3] = true;
-        break;
+        case "createRecord":
+          array[0] = true;
+          break;
+        case "readRecord":
+          array[1] = true;
+          break;
+        case "updateRecord":
+          array[2] = true;
+          break;
+        case "deleteRecord":
+          array[3] = true;
+          break;
       }
     }
+  //  log.debug("updateAccessArray: accessObj: {}; array: {}", access, array);
     return array;
   }
 }
