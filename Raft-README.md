@@ -1,7 +1,7 @@
 ### Info on Raft's modifications to ArcadeDb for the the SOCOM DF usecase.
 
 #### Access ArcadeDb on DF helm deployments at:
-- Studio: ~/api/v1/arcadedb/studio/#
+- Studio: /
 - API: ~/api/v1/arcadedb
 
 #### Demo data
