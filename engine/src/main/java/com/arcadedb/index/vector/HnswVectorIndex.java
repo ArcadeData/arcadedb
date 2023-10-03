@@ -320,13 +320,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     final int randomLevel = assignLevel(vertexId, this.levelLambda);
 
-    final ArrayList<RID>[] connections = new ArrayList[randomLevel + 1];
-
-    for (int level = 0; level <= randomLevel; level++) {
-      final int levelM = level == 0 ? maxM0 : maxM;
-      connections[level] = new ArrayList<>(levelM);
-    }
-
     globalLock.lock();
     try {
       final Boolean deleted = vertex.getBoolean(deletedPropertyName);
