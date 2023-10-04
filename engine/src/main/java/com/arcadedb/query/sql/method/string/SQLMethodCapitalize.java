@@ -22,20 +22,27 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.*;
+import java.util.regex.Pattern;
+
 /**
- * @author Johann Sorel (Geomatys)
+ * @author Christian Himpe (gramian)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodTrim extends AbstractSQLMethod {
+public class SQLMethodCapitalize extends AbstractSQLMethod {
 
-  public static final String NAME = "trim";
+  public static final String NAME = "capitalize";
 
-  public SQLMethodTrim() {
+  public SQLMethodCapitalize() {
     super(NAME);
   }
 
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    return ioResult != null ? ioResult.toString().trim() : null;
+    return ioResult != null ? Pattern.compile("\\b(.)(.*?)\\b")
+                                     .matcher(ioResult.toString())
+                                     .replaceAll(match -> match.group(1).toUpperCase(Locale.ENGLISH) +
+                                                          match.group(2).toLowerCase())
+                            : null;
   }
 }
