@@ -35,8 +35,7 @@ public class SQLMethodTrim extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    ioResult = ioResult != null ? ioResult.toString().trim() : null;
-    return ioResult;
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+    return ioResult != null ? ioResult.toString().trim() : null;
   }
 }
