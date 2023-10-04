@@ -46,7 +46,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     super(httpServer);
   }
 
-  protected void serializeResultSet(final Database database, final String serializer, final int limit, final JSONObject response, final ResultSet qResult) {
+  protected void serializeResultSet(final Database database, final String serializer, final int limit, final JSONObject response,
+      final ResultSet qResult) {
+    if (qResult == null)
+      return;
+
     switch (serializer) {
     case "graph": {
       // SERIALIZES THE GRAPH ELEMENTS IN VERTICES AND EDGES
@@ -153,7 +157,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
 
     case "record": {
-      final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
+      final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false)
+          .setUseCollectionSizeForEdges(false);
       final JSONArray result = new JSONArray(
           qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
       response.put("result", result);
@@ -161,7 +166,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
 
     default: {
-      final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
+      final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false)
+          .setUseCollectionSizeForEdges(false);
       final JSONArray result = new JSONArray(
           qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
       response.put("result", result);
@@ -169,8 +175,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
   }
 
-  protected void analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl, final Set<Identifiable> includedVertices,
-      final JSONArray vertices, final JSONArray edges, final Result row) {
+  protected void analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl,
+      final Set<Identifiable> includedVertices, final JSONArray vertices, final JSONArray edges, final Result row) {
     for (final String prop : row.getPropertyNames()) {
       final Object value = row.getProperty(prop);
       if (value == null)
@@ -183,8 +189,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
   }
 
-  protected void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl, final Set<Identifiable> includedVertices,
-      final JSONArray vertices, final JSONArray edges, final Object value) {
+  protected void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl,
+      final Set<Identifiable> includedVertices, final JSONArray vertices, final JSONArray edges, final Object value) {
     if (value instanceof Identifiable) {
 
       final DocumentType type;
