@@ -21,6 +21,7 @@ package com.arcadedb.serializer;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 
@@ -140,7 +141,8 @@ public class BinaryComparator {
         if (value2 instanceof byte[])
           return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1, (byte[]) value2);
         else
-          return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1, ((String) value2).getBytes(DatabaseFactory.getDefaultCharset()));
+          return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1,
+              ((String) value2).getBytes(DatabaseFactory.getDefaultCharset()));
       }
 
       return ((String) value1).compareTo(value2.toString());
@@ -378,6 +380,11 @@ public class BinaryComparator {
       return equalsBytes((byte[]) a, (byte[]) b);
     else if (a instanceof Binary && b instanceof Binary)
       return equalsBinary((Binary) a, (Binary) b);
+    else if (!a.getClass().equals(b.getClass()) &&//
+        a instanceof Number && b instanceof Number) {
+      final Number[] pair = Type.castComparableNumber((Number) a, (Number) b);
+      return pair[0].equals(pair[1]);
+    }
     return a.equals(b);
   }
 
@@ -385,7 +392,8 @@ public class BinaryComparator {
     if (buffer1 == null || buffer2 == null)
       return false;
 
-    return equalsBytes(buffer1.getBytes(DatabaseFactory.getDefaultCharset()), buffer2.getBytes(DatabaseFactory.getDefaultCharset()));
+    return equalsBytes(buffer1.getBytes(DatabaseFactory.getDefaultCharset()),
+        buffer2.getBytes(DatabaseFactory.getDefaultCharset()));
   }
 
   public static boolean equalsBytes(final byte[] buffer1, final byte[] buffer2) {

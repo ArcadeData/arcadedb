@@ -22,58 +22,61 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.*;
 
 public class QueryOperatorEquals {
-  public static boolean equals(Object iLeft, Object iRight) {
-    if (iLeft == null || iRight == null)
+  public static boolean equals(Object left, Object right) {
+    if (left == null || right == null)
       return false;
 
-    if (iLeft == iRight) {
+    if (left == right)
       return true;
-    }
 
-    if (iLeft instanceof Result && !(iRight instanceof Result)) {
-      if (((Result) iLeft).isElement()) {
-        iLeft = ((Result) iLeft).toElement();
+    if (left.getClass().equals(right.getClass()))
+      // SAME TYPE, NO CONVERSION
+      BinaryComparator.equals(left, right);
+
+    if (left instanceof Result && !(right instanceof Result)) {
+      if (((Result) left).isElement()) {
+        left = ((Result) left).toElement();
       } else {
-        return comparesValues(iRight, (Result) iLeft, true);
+        return comparesValues(right, (Result) left, true);
       }
     }
 
-    if (iRight instanceof Result && !(iLeft instanceof Result)) {
-      if (((Result) iRight).isElement()) {
-        iRight = ((Result) iRight).toElement();
+    if (right instanceof Result && !(left instanceof Result)) {
+      if (((Result) right).isElement()) {
+        right = ((Result) right).toElement();
       } else {
-        return comparesValues(iLeft, (Result) iRight, true);
+        return comparesValues(left, (Result) right, true);
       }
     }
 
     // RECORD & ORID
-    if (iLeft instanceof Identifiable)
-      return comparesValues(iRight, (Identifiable) iLeft, true);
-    else if (iRight instanceof Identifiable)
-      return comparesValues(iLeft, (Identifiable) iRight, true);
-    else if (iRight instanceof Result)
-      return comparesValues(iLeft, (Result) iRight, true);
+    if (left instanceof Identifiable)
+      return comparesValues(right, (Identifiable) left, true);
+    else if (right instanceof Identifiable)
+      return comparesValues(left, (Identifiable) right, true);
+    else if (right instanceof Result)
+      return comparesValues(left, (Result) right, true);
 
     // NUMBERS
-    if (iLeft instanceof Number && iRight instanceof Number) {
-      final Number[] couple = Type.castComparableNumber((Number) iLeft, (Number) iRight);
+    if (left instanceof Number && right instanceof Number) {
+      final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
       return couple[0].equals(couple[1]);
     }
 
     // ALL OTHER CASES
     try {
-      final Object right = Type.convert(null, iRight, iLeft.getClass());
-
+      right = Type.convert(null, right, left.getClass());
       if (right == null)
         return false;
-      if (iLeft instanceof byte[] && iRight instanceof byte[]) {
-        return Arrays.equals((byte[]) iLeft, (byte[]) iRight);
+      if (left instanceof byte[] && right instanceof byte[]) {
+        return Arrays.equals((byte[]) left, (byte[]) right);
       }
-      return iLeft.equals(right);
+      return BinaryComparator.equals(left, right);
     } catch (final Exception ignore) {
       return false;
     }

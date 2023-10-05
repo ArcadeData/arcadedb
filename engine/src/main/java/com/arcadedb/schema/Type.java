@@ -94,13 +94,15 @@ public enum Type {
 
   ARRAY_OF_SHORTS("Short[]", 19, BinaryTypes.TYPE_ARRAY_OF_SHORTS, short[].class, new Class<?>[] { short[].class, Short[].class }),
 
-  ARRAY_OF_INTEGERS("Integer[]", 20, BinaryTypes.TYPE_ARRAY_OF_INTEGERS, int[].class, new Class<?>[] { int[].class, Integer[].class }),
+  ARRAY_OF_INTEGERS("Integer[]", 20, BinaryTypes.TYPE_ARRAY_OF_INTEGERS, int[].class,
+      new Class<?>[] { int[].class, Integer[].class }),
 
   ARRAY_OF_LONGS("Long[]", 21, BinaryTypes.TYPE_ARRAY_OF_LONGS, long[].class, new Class<?>[] { long[].class, Long[].class }),
 
   ARRAY_OF_FLOATS("Float[]", 22, BinaryTypes.TYPE_ARRAY_OF_FLOATS, float[].class, new Class<?>[] { float[].class, Float[].class }),
 
-  ARRAY_OF_DOUBLES("Double[]", 23, BinaryTypes.TYPE_ARRAY_OF_DOUBLES, double[].class, new Class<?>[] { double[].class, Double[].class }),
+  ARRAY_OF_DOUBLES("Double[]", 23, BinaryTypes.TYPE_ARRAY_OF_DOUBLES, double[].class,
+      new Class<?>[] { double[].class, Double[].class }),
   ;
 
   // Don't change the order, the type discover get broken if you change the order.
@@ -171,7 +173,8 @@ public enum Type {
   protected final Class<?>[] allowAssignmentFrom;
   protected final Set<Type>  castable;
 
-  Type(final String iName, final int iId, final byte binaryType, final Class<?> iJavaDefaultType, final Class<?>[] iAllowAssignmentBy) {
+  Type(final String iName, final int iId, final byte binaryType, final Class<?> iJavaDefaultType,
+      final Class<?>[] iAllowAssignmentBy) {
     this.name = iName.toUpperCase();
     this.id = iId;
     this.binaryType = binaryType;
@@ -278,19 +281,6 @@ public enum Type {
 
   public static Type getTypeByName(final String name) {
     return TYPES_BY_NAME.get(name.toLowerCase());
-  }
-
-  public static boolean isSimpleType(final Object iObject) {
-    if (iObject == null)
-      return false;
-
-    final Class<?> iType = iObject.getClass();
-
-    return iType.isPrimitive() || Number.class.isAssignableFrom(iType) || String.class.isAssignableFrom(iType) || Boolean.class.isAssignableFrom(iType)
-        || Date.class.isAssignableFrom(iType) || (iType.isArray() && (iType.equals(byte[].class) || iType.equals(char[].class) || iType.equals(int[].class)
-        || iType.equals(long[].class) || iType.equals(double[].class) || iType.equals(float[].class) || iType.equals(short[].class) || iType.equals(
-        Integer[].class) || iType.equals(String[].class) || iType.equals(Long[].class) || iType.equals(Short[].class) || iType.equals(Double[].class)));
-
   }
 
   /**
@@ -487,7 +477,8 @@ public enum Type {
                 return LocalDateTime.parse(valueAsString);
               } catch (Exception e) {
                 try {
-                  return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+                  return LocalDateTime.parse(valueAsString,
+                      DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
                 } catch (final DateTimeParseException ignore) {
                   return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
                 }
@@ -553,7 +544,8 @@ public enum Type {
               try {
                 result.add(new RID(database, iValue.toString()));
               } catch (final Exception e) {
-                LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, targetClass);
+                LogManager.instance()
+                    .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, targetClass);
               }
             }
           }
@@ -562,7 +554,8 @@ public enum Type {
           try {
             return new RID(database, (String) iValue);
           } catch (final Exception e) {
-            LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, targetClass);
+            LogManager.instance()
+                .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, targetClass);
           }
         }
       }
@@ -683,7 +676,8 @@ public enum Type {
 
     }
 
-    throw new IllegalArgumentException("Cannot increment value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
+    throw new IllegalArgumentException(
+        "Cannot increment value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
   }
 
   public static Number decrement(final Number a, final Number b) {
@@ -792,7 +786,8 @@ public enum Type {
 
     }
 
-    throw new IllegalArgumentException("Cannot decrement value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
+    throw new IllegalArgumentException(
+        "Cannot decrement value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
   }
 
   public static Number[] castComparableNumber(Number left, Number right) {
@@ -851,7 +846,8 @@ public enum Type {
       // DOUBLE
       if (right instanceof BigDecimal)
         left = BigDecimal.valueOf(left.doubleValue());
-      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long || right instanceof Float)
+      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long
+          || right instanceof Float)
         right = right.doubleValue();
 
     } else if (left instanceof BigDecimal) {

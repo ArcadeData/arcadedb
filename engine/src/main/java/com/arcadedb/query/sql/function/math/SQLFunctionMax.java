@@ -52,7 +52,8 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
             max = subitem;
         }
       } else {
-        if ((item instanceof Number) && (max instanceof Number)) {
+        if (!item.getClass().equals(max.getClass()) &&//
+            item instanceof Number && max instanceof Number) {
           final Number[] converted = Type.castComparableNumber((Number) item, (Number) max);
           item = converted[0];
           max = converted[1];
@@ -88,7 +89,8 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
 
   public boolean aggregateResults() {
     // LET definitions (contain $current) does not require results aggregation
-    return configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString().contains("$current"));
+    return configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString()
+        .contains("$current"));
   }
 
   public String getSyntax() {
