@@ -198,11 +198,9 @@ public class NativeSelectExecutionIT extends TestHelper {
           .or().property("name").eq().value("Elon");
 
       final JSONObject json = select.json();
-      System.out.println(json.toString(2));
 
       final NativeSelect select2 = database.select().json(json);
       final JSONObject json2 = select2.json();
-      System.out.println(json.toString(2));
 
       Assertions.assertEquals(json, json2);
     }

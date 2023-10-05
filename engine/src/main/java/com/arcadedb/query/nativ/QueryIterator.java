@@ -32,4 +32,11 @@ public abstract class QueryIterator<T extends Document> implements Iterator<T> {
   public T nextOrNull() {
     return hasNext() ? next() : null;
   }
+
+  public List<T> toList() {
+    final List<T> result = new ArrayList<>();
+    while (hasNext())
+      result.add(next());
+    return result;
+  }
 }

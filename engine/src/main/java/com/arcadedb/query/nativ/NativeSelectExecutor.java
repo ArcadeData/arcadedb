@@ -14,17 +14,11 @@ package com.arcadedb.query.nativ;/*
  * limitations under the License.
  */
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.Vertex;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.MultiIterator;
 
 import java.util.*;
-import java.util.stream.*;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -35,6 +29,7 @@ import java.util.stream.*;
  */
 public class NativeSelectExecutor {
   private final NativeSelect select;
+  private       long         evaluatedRecords = 0;
 
   public NativeSelectExecutor(final NativeSelect select) {
     this.select = select;
@@ -42,18 +37,21 @@ public class NativeSelectExecutor {
 
   <T extends Document> QueryIterator<T> execute() {
     final int[] returned = new int[] { 0 };
-    final Iterator<Record> iterator;
+    final MultiIterator<Document> iterator;
 
     if (select.fromType != null)
-      iterator = select.database.iterateType(select.fromType.getName(), select.polymorphic);
+      iterator = (MultiIterator) select.database.iterateType(select.fromType.getName(), select.polymorphic);
     else if (select.fromBuckets.size() == 1)
-      iterator = select.database.iterateBucket(select.fromBuckets.get(0).getName());
+      iterator = (MultiIterator) select.database.iterateBucket(select.fromBuckets.get(0).getName());
     else {
       final MultiIterator multiIterator = new MultiIterator<>();
       for (Bucket b : select.fromBuckets)
         multiIterator.addIterator(b.iterator());
       iterator = multiIterator;
     }
+
+    if (select.timeoutUnit != null)
+      iterator.setTimeout(select.timeoutUnit.toMillis(select.timeoutValue));
 
     return new QueryIterator<>() {
       private T next = null;
@@ -98,8 +96,13 @@ public class NativeSelectExecutor {
     };
   }
 
+  public long getEvaluatedRecords() {
+    return evaluatedRecords;
+  }
+
   private boolean evaluateWhere(final Document record) {
     final Object result = select.rootTreeElement.eval(record);
+    evaluatedRecords++;
     if (result instanceof Boolean)
       return (Boolean) result;
     throw new IllegalArgumentException("A boolean result was expected but '" + result + "' was returned");

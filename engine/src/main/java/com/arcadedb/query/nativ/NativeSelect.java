@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.stream.*;
 
 /**
@@ -48,6 +49,8 @@ public class NativeSelect {
   Object             propertyValue;
   boolean            polymorphic = true;
   int                limit       = -1;
+  long               timeoutValue;
+  TimeUnit           timeoutUnit;
   private STATE          state = STATE.DEFAULT;
   private NativeTreeNode lastTreeElement;
 
@@ -169,6 +172,13 @@ public class NativeSelect {
   public NativeSelect limit(final int limit) {
     checkNotCompiled();
     this.limit = limit;
+    return this;
+  }
+
+  public NativeSelect timeout(final long timeoutValue, final TimeUnit timeoutUnit) {
+    checkNotCompiled();
+    this.timeoutValue = timeoutValue;
+    this.timeoutUnit = timeoutUnit;
     return this;
   }
 
