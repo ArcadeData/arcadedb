@@ -530,7 +530,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       // SET THE PROFILED LIMITS IF ANY
       iter.setLimit(getResultSetLimit());
-      iter.setTimeout(getReadTimeout());
+      iter.setTimeout(getReadTimeout(), true);
 
       for (final Bucket b : type.getBuckets(polymorphic))
         iter.addIterator(b.iterator());

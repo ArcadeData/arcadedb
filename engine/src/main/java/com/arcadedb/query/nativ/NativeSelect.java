@@ -51,6 +51,8 @@ public class NativeSelect {
   int                limit       = -1;
   long               timeoutValue;
   TimeUnit           timeoutUnit;
+  boolean            exceptionOnTimeout;
+
   private STATE          state = STATE.DEFAULT;
   private NativeTreeNode lastTreeElement;
 
@@ -175,10 +177,11 @@ public class NativeSelect {
     return this;
   }
 
-  public NativeSelect timeout(final long timeoutValue, final TimeUnit timeoutUnit) {
+  public NativeSelect timeout(final long timeoutValue, final TimeUnit timeoutUnit, final boolean exceptionOnTimeout) {
     checkNotCompiled();
     this.timeoutValue = timeoutValue;
     this.timeoutUnit = timeoutUnit;
+    this.exceptionOnTimeout = exceptionOnTimeout;
     return this;
   }
 

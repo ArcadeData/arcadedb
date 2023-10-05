@@ -178,21 +178,28 @@ public class NativeSelectExecutionIT extends TestHelper {
 
   @Test
   public void errorTimeout() {
-    final NativeSelect select = database.select().fromType("Vertex")//
-        .where().property("id").lt().value(10)//
-        .and().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS);
+    {
+      expectingException(() -> {
+        final QueryIterator<Vertex> iter = database.select().fromType("Vertex")//
+            .where().property("id").lt().value(10)//
+            .and().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS, true).vertices();
 
-    expectingException(() -> {
-      final QueryIterator<Vertex> iter = select.vertices();
-      while (iter.hasNext()) {
-        Assertions.assertTrue(iter.next().getInteger("id") < 10);
-        try {
-          Thread.sleep(2);
-        } catch (InterruptedException e) {
-          // IGNORE IT
+        while (iter.hasNext()) {
+          Assertions.assertTrue(iter.next().getInteger("id") < 10);
+          try {
+            Thread.sleep(2);
+          } catch (InterruptedException e) {
+            // IGNORE IT
+          }
         }
-      }
-    }, TimeoutException.class, "Timeout on iteration");
+      }, TimeoutException.class, "Timeout on iteration");
+    }
+
+    {
+      final QueryIterator<Vertex> iter = database.select().fromType("Vertex")//
+          .where().property("id").lt().value(10)//
+          .and().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS, false).vertices();
+    }
   }
 
   @Test

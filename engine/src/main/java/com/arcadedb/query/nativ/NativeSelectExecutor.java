@@ -51,7 +51,7 @@ public class NativeSelectExecutor {
     }
 
     if (select.timeoutUnit != null)
-      iterator.setTimeout(select.timeoutUnit.toMillis(select.timeoutValue));
+      iterator.setTimeout(select.timeoutUnit.toMillis(select.timeoutValue), select.exceptionOnTimeout);
 
     return new QueryIterator<>() {
       private T next = null;
