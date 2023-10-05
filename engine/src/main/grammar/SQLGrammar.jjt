@@ -1641,7 +1641,9 @@ InsertBody InsertBody():
       |
       ( <CONTENT>
          (
-           jjtThis.content = Json()
+           jjtThis.contentArray = JsonArray()
+           |
+           jjtThis.contentJson = Json()
            |
            jjtThis.contentInputParam = InputParameter()
          )
@@ -3119,6 +3121,29 @@ Json Json():
 }
 
 
+JsonArray JsonArray():
+{
+  Json lastItem;
+  Token token;
+}
+{
+  (
+    <LBRACKET>
+    [
+      lastItem = Json()
+      {
+        jjtThis.items = new ArrayList();
+        jjtThis.items.add(lastItem);
+      }
+      (
+        <COMMA>
+        lastItem = Json() { jjtThis.items.add(lastItem); }
+      )*
+    ]
+    <RBRACKET>
+  )
+  {return jjtThis;}
+}
 
 MatchExpression MatchExpression():
 { MatchPathItem nextItem = null; }

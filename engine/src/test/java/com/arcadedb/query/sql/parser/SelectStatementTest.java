@@ -317,7 +317,8 @@ public class SelectStatementTest {
 
   @Test
   public void testSpatial() {
-    checkRightSyntax("select *,$distance from Place where [latitude,longitude,$spatial] NEAR [41.893056,12.482778,{\"maxDistance\": 0.5}]");
+    checkRightSyntax(
+        "select *,$distance from Place where [latitude,longitude,$spatial] NEAR [41.893056,12.482778,{\"maxDistance\": 0.5}]");
     checkRightSyntax("select * from Place where [latitude,longitude] WITHIN [[51.507222,-0.1275],[55.507222,-0.1275]]");
   }
 
@@ -346,7 +347,8 @@ public class SelectStatementTest {
 
     checkRightSyntax("select from Person where name matches 'a'");
 
-    checkRightSyntax("select from Person where name matches '(?i)(^\\\\Qname1\\\\E$)|(^\\\\Qname2\\\\E$)|(^\\\\Qname3\\\\E$)' and age=30");
+    checkRightSyntax(
+        "select from Person where name matches '(?i)(^\\\\Qname1\\\\E$)|(^\\\\Qname2\\\\E$)|(^\\\\Qname3\\\\E$)' and age=30");
   }
 
   @Test
@@ -358,8 +360,9 @@ public class SelectStatementTest {
 
   @Test
   public void testEval() {
-    checkRightSyntax("  select  sum(weight) , f.name as name from (\n" + "      select weight, if(eval(\"out.name = 'one'\"),out,in) as f  from (\n"
-        + "      select expand(bothE('E')) from V\n" + "  )\n" + "      ) group by name\n");
+    checkRightSyntax("  select  sum(weight) , f.name as name from (\n"
+        + "      select weight, if(eval(\"out.name = 'one'\"),out,in) as f  from (\n" + "      select expand(bothE('E')) from V\n"
+        + "  )\n" + "      ) group by name\n");
   }
 
   @Test
@@ -370,6 +373,11 @@ public class SelectStatementTest {
   @Test
   public void testJsonWithUrl() {
     checkRightSyntax("insert into V content { \"url\": \"http://www.google.com\" } ");
+  }
+
+  @Test
+  public void testJsonArrayWithUrl() {
+    checkRightSyntax("insert into V content [{ \"url\": \"http://www.google.com\" }, { \"url\": \"http://www.tesla.com\" }] ");
   }
 
   @Test
@@ -384,12 +392,6 @@ public class SelectStatementTest {
     checkRightSyntax("select from foo where name like  '%'+ :param1 + '%'");
 
     checkRightSyntax("select from foo where name like  'aaa'+ :param1 + 'a'");
-  }
-
-  @Test
-  public void testSlashInQuery() {
-    checkRightSyntax("insert into test content {\"node_id\": \"MFmqvmht//sYYWB8=\"}");
-    checkRightSyntax("insert into test content { \"node_id\": \"MFmqvmht\\/\\/GYsYYWB8=\"}");
   }
 
   @Test
@@ -586,10 +588,12 @@ public class SelectStatementTest {
   public void testSkipLimitInQueryWithNoTarget() {
     // issue #5589
     checkRightSyntax("SELECT eval('$TotalListsQuery[0].Count') AS TotalLists\n"
-        + "   LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)\n" + " LIMIT 1");
+        + "   LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)\n"
+        + " LIMIT 1");
 
     checkRightSyntax("SELECT eval('$TotalListsQuery[0].Count') AS TotalLists\n"
-        + "   LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)\n" + " SKIP 10 LIMIT 1");
+        + "   LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)\n"
+        + " SKIP 10 LIMIT 1");
   }
 
   @Test

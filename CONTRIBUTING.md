@@ -40,9 +40,10 @@ follow [installation instructions](https://pre-commit.com/#install) for your ope
 
 ### Developer guide
 
-In order to use the latest distribution before the official release, you have to build it from the latest SNAPSHOT version in the `main` branch of GitHub.  All you need is:
+In order to use the latest distribution before the official release, you have to build it from the latest SNAPSHOT version in
+the `main` branch of GitHub. All you need is:
 
-- **Java v11** for the runtime. Apache Gremlin project is still not compatible with Java 16 and major. For this reason we suggest to use Java v11. if you have multiple Java runtimes installed on your computer, make sure you're using the Java11 one.
+- **Java v11** for the runtime or major
 - [**Apache Maven**](https://maven.apache.org/), to build the distribution
 
 It's super easy, just follow the following steps:
@@ -55,7 +56,10 @@ If you have git installed, execute the following command on a shell or command p
 $ git clone git@github.com:ArcadeData/arcadedb.git
 ```
 
-With this command above you have just cloned the `main` branch continaing the latest updates. If you don't have git installed, you can always download the latest souces from [GitHub as a zip file](https://github.com/ArcadeData/arcadedb/archive/refs/heads/main.zip). After downloaded, unzip the file on a local folder.
+With this command above you have just cloned the `main` branch continaing the latest updates. If you don't have git installed, you
+can always download the latest souces
+from [GitHub as a zip file](https://github.com/ArcadeData/arcadedb/archive/refs/heads/main.zip). After downloaded, unzip the file on
+a local folder.
 
 (2) Now build the project using Maven.
 
@@ -72,4 +76,5 @@ The build should take less than a minute.
 
 You will find a fresh built distribution under the directory `package/target/arcadedb-<version>.dir/arcadedb-<version>/`.
 
-For example, if the latest release is the `23.3.1-SNAPSHOT`, then the release will be available under the directory `package/target/arcadedb-23.3.1-SNAPSHOT.dir/arcadedb-23.3.1-SNAPSHOT/`
+For example, if the latest release is the `23.3.1-SNAPSHOT`, then the release will be available under the
+directory `package/target/arcadedb-23.3.1-SNAPSHOT.dir/arcadedb-23.3.1-SNAPSHOT/`

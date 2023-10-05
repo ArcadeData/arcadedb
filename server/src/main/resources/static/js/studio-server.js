@@ -1,7 +1,6 @@
 var GB_SIZE = 1024 * 1024 * 1024;
 
 var lastUpdate = null;
-var refreshTimeout = null;
 var serverData = null;
 var eventsData = {};
 var serverChartOSCPU = null;
@@ -11,6 +10,7 @@ var serverChartServerRAM = null;
 var serverChartCache = null;
 var serverChartCommands = null;
 var reqPerSecLastMinute = {};
+var serverRefreshTimer = null;
 
 function updateServer( callback ){
   let currentDate = new Date();
@@ -47,16 +47,11 @@ function updateServer( callback ){
     displayMetrics();
     displayServerSettings();
 
+    startServerRefreshTimer();
+
     if( callback )
       callback();
 
-    if( refreshTimeout != null )
-      clearTimeout( refreshTimeout );
-
-    refreshTimeout = setTimeout(function() {
-      if( studioCurrentTab == "server" )
-        updateServer();
-    }, 60000);
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotifyError( jqXHR.responseText );
@@ -480,6 +475,22 @@ function filterServerEvents(){
   });
 }
 
+function startServerRefreshTimer(userChange){
+  if( serverRefreshTimer != null )
+    clearTimeout(serverRefreshTimer);
+
+  const serverRefreshTimeoutInSecs = $("#serverRefreshTimeout").val();
+  if( serverRefreshTimeoutInSecs > 0 ) {
+    serverRefreshTimer = setTimeout( function(){
+      if( studioCurrentTab == "server" )
+        updateServer();
+    }, serverRefreshTimeoutInSecs * 1000 );
+  }
+
+  if( userChange )
+    globalSetCookie("serverRefreshTimeoutInSecs", serverRefreshTimeoutInSecs, 365);
+}
+
 document.addEventListener("DOMContentLoaded", function(event) {
   $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
     var activeTab = this.id;
@@ -501,4 +512,9 @@ document.addEventListener("DOMContentLoaded", function(event) {
   $('#serverEventsDb').change( function() {
     filterServerEvents();
   });
+
+  let serverRefreshTimeoutInSecs = globalGetCookie("serverRefreshTimeoutInSecs");
+  if( serverRefreshTimeoutInSecs == null )
+    serverRefreshTimeoutInSecs = 0;
+  $("#serverRefreshTimeout").val(serverRefreshTimeoutInSecs);
 });

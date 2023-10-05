@@ -24,6 +24,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.Json;
+import com.arcadedb.query.sql.parser.JsonArray;
+import com.arcadedb.serializer.json.JSONArray;
 
 import java.util.*;
 
@@ -32,11 +34,18 @@ import java.util.*;
  */
 public class UpdateContentStep extends AbstractExecutionStep {
   private Json           json;
+  private JsonArray      jsonArray;
+  private int            arrayIndex = 0;
   private InputParameter inputParameter;
 
   public UpdateContentStep(final Json json, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.json = json;
+  }
+
+  public UpdateContentStep(final JsonArray jsonArray, final CommandContext context, final boolean profilingEnabled) {
+    super(context, profilingEnabled);
+    this.jsonArray = jsonArray;
   }
 
   public UpdateContentStep(final InputParameter inputParameter, final CommandContext context, final boolean profilingEnabled) {
@@ -48,6 +57,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
+
       @Override
       public boolean hasNext() {
         return upstream.hasNext();
@@ -56,6 +66,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result result = upstream.next();
+
         if (result instanceof ResultInternal) {
           if (!(result.getElement().get() instanceof Document))
             ((ResultInternal) result).setElement((Document) result.getElement().get().getRecord());
@@ -75,12 +86,15 @@ public class UpdateContentStep extends AbstractExecutionStep {
     };
   }
 
-  private boolean handleContent(final Document record, final CommandContext context) {
+  private void handleContent(final Document record, final CommandContext context) {
     // REPLACE ALL THE CONTENT
     final MutableDocument doc = record.modify();
 
     if (json != null) {
       doc.fromMap(json.toMap(record, context));
+    } else if (jsonArray != null && arrayIndex < jsonArray.items.size()) {
+      final Json jsonItem = jsonArray.items.get(arrayIndex++);
+      doc.fromMap(jsonItem.toMap(record, context));
     } else if (inputParameter != null) {
       final Object val = inputParameter.getValue(context.getInputParameters());
       if (val instanceof Document) {
@@ -91,8 +105,6 @@ public class UpdateContentStep extends AbstractExecutionStep {
         throw new CommandExecutionException("Invalid value for UPDATE CONTENT: " + val);
       }
     }
-
-    return true;
   }
 
   @Override

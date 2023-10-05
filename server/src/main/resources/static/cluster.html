@@ -1,13 +1,12 @@
 <div class="tab-pane fade" id="tab-cluster" role="tabpanel">
-  <div class="row">
-    <div class="col-12"><h4><i class="fa fa-network-wired"></i> Cluster</h4></div>
-  </div>
-
-  <div class="row">
-    <div class="col-9">
-      <span id="serverInfo"></span>
+  <div class="d-flex justify-content-around">
+    <div class="p-2 flex-grow-1">
+      <div><h4><i class="fa fa-server"></i> Cluster</h4></div>
+      <div class="p-2">
+        <span id="serverInfo"></span>
+      </div>
     </div>
-    <div class="col-3 text-right">
+    <div class="p-2">
       <button id="clusterConnectButton" type="button" class="btn btn-secondary" onclick="connectToCluster()">Connect <i class="fas fa-wifi"></i></button>
       <button id="clusterDisconnectButton" type="button" class="btn btn-secondary" onclick="disconnectFromCluster()" style="display: none;">Disconnect <i
               class="fas fa-wifi"></i></button>
@@ -16,7 +15,22 @@
 
   <hr>
 
-  <div class="row">
+  <div class="d-flex justify-content-around pb-3">
+    <div class="flex-grow-1 py-1 form-inline">
+      <div class="form-row row">
+        <button class="btn btn-pill" onclick="updateCluster()">Refresh <i class="fa fa-sync"></i></button>
+        <select id="clusterRefreshTimeout" class="form-control form-select" onchange="startClusterRefreshTimer(true)">
+          <option value="0">Off</option>
+          <option value="10">Every 10 sec</option>
+          <option value="30">Every 30 sec</option>
+          <option value="60">Every 1 min</option>
+          <option value="300">Every 5 min</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="row pt-2">
     <div class="col-12"><label><h5>Online Replicas</h5></label></div>
   </div>
 

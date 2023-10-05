@@ -66,6 +66,7 @@ import com.arcadedb.query.sql.method.misc.SQLMethodType;
 
 // String
 import com.arcadedb.query.sql.method.string.SQLMethodAppend;
+import com.arcadedb.query.sql.method.string.SQLMethodCapitalize;
 import com.arcadedb.query.sql.method.string.SQLMethodCharAt;
 import com.arcadedb.query.sql.method.string.SQLMethodFormat;
 import com.arcadedb.query.sql.method.string.SQLMethodIndexOf;
@@ -137,6 +138,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
 
     // String
     register(SQLMethodAppend.NAME, new SQLMethodAppend());
+    register(SQLMethodCapitalize.NAME, new SQLMethodCapitalize());
     register(SQLMethodCharAt.NAME, new SQLMethodCharAt());
     register(SQLMethodFormat.NAME, new SQLMethodFormat());
     register(SQLMethodIndexOf.NAME, new SQLMethodIndexOf());

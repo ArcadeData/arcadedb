@@ -93,7 +93,8 @@ public class InsertStatementExecutionTest extends TestHelper {
     final String className = "testInsertValue2";
     database.getSchema().createDocumentType(className);
 
-    ResultSet result = database.command("sql", "insert into " + className + "  (name, surname) values ('name1', 'surname1'), ('name2', 'surname2')");
+    ResultSet result = database.command("sql",
+        "insert into " + className + "  (name, surname) values ('name1', 'surname1'), ('name2', 'surname2')");
 
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
@@ -233,7 +234,7 @@ public class InsertStatementExecutionTest extends TestHelper {
     Assertions.assertNotNull(item);
     List<Map> list = item.getProperty("test");
     Assertions.assertEquals(1, list.size());
-    Map<String,Integer> map = list.get(0);
+    Map<String, Integer> map = list.get(0);
     Assertions.assertEquals(777, map.get("777"));
     Assertions.assertEquals(888, map.get("888"));
     Assertions.assertFalse(result.hasNext());
@@ -262,6 +263,44 @@ public class InsertStatementExecutionTest extends TestHelper {
       Assertions.assertEquals("name1", item.getProperty("name"));
       Assertions.assertEquals("surname1", item.getProperty("surname"));
     }
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+  }
+
+  @Test
+  public void testContentJsonArray() {
+    final String className = "testContentArray";
+    database.getSchema().createDocumentType(className, 1);
+
+    String array = "[";
+    for (int i = 0; i < 1000; i++) {
+      if (i > 0)
+        array += ",";
+      array += "{'name':'name" + i + "', 'surname':'surname" + i + "'}";
+    }
+    array += "]";
+
+    ResultSet result = database.command("sql", "insert into " + className + " content " + array);
+
+    for (int i = 0; i < 1000; i++) {
+      Assertions.assertTrue(result.hasNext());
+      final Result item = result.next();
+      Assertions.assertNotNull(item);
+      Assertions.assertEquals("name" + i, item.getProperty("name").toString());
+      Assertions.assertEquals("surname" + i, item.getProperty("surname").toString());
+    }
+    Assertions.assertFalse(result.hasNext());
+
+    result = database.query("sql", "select from " + className);
+
+    for (int i = 0; i < 1000; i++) {
+      Assertions.assertTrue(result.hasNext());
+      Result item = result.next();
+      Assertions.assertNotNull(item);
+      Assertions.assertEquals("name" + i, item.getProperty("name").toString());
+      Assertions.assertEquals("surname" + i, item.getProperty("surname").toString());
+    }
+
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
@@ -329,10 +368,10 @@ public class InsertStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type " + className2 + ";").close();
     database.command("sql", "CREATE PROPERTY " + className2 + ".processingType LINK;").close();
 
-    database.command("sql", "INSERT INTO " + className2 + " SET name='Active', processingType = (SELECT FROM " + className1 + " WHERE name = 'Active') ;")
-        .close();
-    database.command("sql", "INSERT INTO " + className2 + " SET name='Inactive', processingType = (SELECT FROM " + className1 + " WHERE name = 'Inactive') ;")
-        .close();
+    database.command("sql", "INSERT INTO " + className2 + " SET name='Active', processingType = (SELECT FROM " + className1
+        + " WHERE name = 'Active') ;").close();
+    database.command("sql", "INSERT INTO " + className2 + " SET name='Inactive', processingType = (SELECT FROM " + className1
+        + " WHERE name = 'Inactive') ;").close();
 
     final ResultSet result = database.query("sql", "seLECT FROM " + className2);
     for (int i = 0; i < 2; i++) {
@@ -460,7 +499,8 @@ public class InsertStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY " + className + ".mymap MAP");
 
     database.command("sql", "INSERT INTO " + itemclassName + " (name) VALUES ('test')");
-    database.command("sql", "INSERT INTO " + className + " (mymap) VALUES ({'A-1': (SELECT FROM " + itemclassName + " WHERE name = 'test')})");
+    database.command("sql",
+        "INSERT INTO " + className + " (mymap) VALUES ({'A-1': (SELECT FROM " + itemclassName + " WHERE name = 'test')})");
 
     final ResultSet result = database.query("sql", "seLECT FROM " + className);
 

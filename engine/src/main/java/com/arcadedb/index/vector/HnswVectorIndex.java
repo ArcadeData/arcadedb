@@ -28,6 +28,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -318,13 +319,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     final int vertexMaxLevel = getMaxLevelFromVertex(vertex);
 
     final int randomLevel = assignLevel(vertexId, this.levelLambda);
-
-    final ArrayList<RID>[] connections = new ArrayList[randomLevel + 1];
-
-    for (int level = 0; level <= randomLevel; level++) {
-      final int levelM = level == 0 ? maxM0 : maxM;
-      connections[level] = new ArrayList<>(levelM);
-    }
 
     globalLock.lock();
     try {
@@ -849,8 +843,12 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
               if (next != null) {
                 final Vertex vertex = next.asVertex();
                 for (int level = 0; level < getMaxLevelFromVertex(vertex); level++) {
-                  for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
-                    e.delete();
+                  try {
+                    for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
+                      e.delete();
+                  } catch (RecordNotFoundException | SchemaException e) {
+                    // IGNORE IT
+                  }
                 }
               }
             } catch (RecordNotFoundException e) {

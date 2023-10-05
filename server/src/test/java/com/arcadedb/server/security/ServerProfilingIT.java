@@ -102,7 +102,8 @@ public class ServerProfilingIT {
 
   private static void executeRemoteCommand(final String command, final String userName, final String userPassword) {
     final String[] address = SERVER.getHttpServer().getListeningAddress().split(":");
-    final RemoteDatabase remoteDatabase = new RemoteDatabase(address[0], Integer.parseInt(address[1]), DATABASE_NAME, userName, userPassword);
+    final RemoteDatabase remoteDatabase = new RemoteDatabase(address[0], Integer.parseInt(address[1]), DATABASE_NAME, userName,
+        userPassword);
     remoteDatabase.command("sql", command);
   }
 
@@ -133,8 +134,8 @@ public class ServerProfilingIT {
 
   @Test
   void testMultipleGroupsAnyType() {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
-        .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator", "reader", "updater", "deleter" }))));
+    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk")).put("databases",
+        new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator", "reader", "updater", "deleter" }))));
 
     try {
       final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
@@ -161,8 +162,8 @@ public class ServerProfilingIT {
   @Test
   void testMultipleGroupsSpecificType() throws Throwable {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk")).put("databases",
-        new JSONObject().put(DATABASE_NAME,
-            new JSONArray(new String[] { "creatorOfDocuments", "readerOfDocuments", "updaterOfDocuments", "deleterOfDocuments" }))));
+        new JSONObject().put(DATABASE_NAME, new JSONArray(
+            new String[] { "creatorOfDocuments", "readerOfDocuments", "updaterOfDocuments", "deleterOfDocuments" }))));
 
     try {
       final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
@@ -298,12 +299,12 @@ public class ServerProfilingIT {
   }
 
   @Test
-  void updateOnlyAccess() throws Throwable {
+  void readAndUpdateOnlyAccess() throws Throwable {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
-        .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "updater" }))));
+        .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader", "updater" }))));
 
     try {
-      final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
       checkElonUser(setCurrentUser("elon", database));
 
@@ -321,10 +322,11 @@ public class ServerProfilingIT {
       // SWITCH BACK TO ELON
       checkElonUser(setCurrentUser("elon", database));
 
+      database.iterateType("Document1", true);
+      database.lookupByRID(validRID, true);
+
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
-      expectedSecurityException(() -> database.iterateType("Document1", true));
-      expectedSecurityException(() -> database.lookupByRID(validRID, true));
 
       database.transaction(() -> v.modify().set("justModified", true).save());
 
@@ -520,8 +522,9 @@ public class ServerProfilingIT {
     expectedSecurityException(() -> database.getSchema().createDocumentType("Document1"));
 
     expectedSecurityException(
-        () -> database.getSchema().buildBucketIndex("Document1", "Bucket1", new String[] { "id" }).withUnique(true).withType(Schema.INDEX_TYPE.LSM_TREE)
-            .withPageSize(10_000).withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.ERROR).create());
+        () -> database.getSchema().buildBucketIndex("Document1", "Bucket1", new String[] { "id" }).withUnique(true)
+            .withType(Schema.INDEX_TYPE.LSM_TREE).withPageSize(10_000).withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.ERROR)
+            .create());
 
     expectedSecurityException(() -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Document1", "id"));
 
@@ -617,22 +620,24 @@ public class ServerProfilingIT {
   private static void createSecurity() {
     SECURITY = SERVER.getSecurity();
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("reader",//
-        new JSONObject().put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("creator",
-        new JSONObject().put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("updater",
-        new JSONObject().put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "updateRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleter",
-        new JSONObject().put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
+        new JSONObject().put("types",
+            new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("creator", new JSONObject().put("types",
+        new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))));
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("updater", new JSONObject().put("types",
+        new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "updateRecord" })))));
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleter", new JSONObject().put("types",
+        new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
 
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocuments",//
-        new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("creatorOfDocuments",
-        new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("updaterOfDocuments",
-        new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "updateRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleterOfDocuments",
-        new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
+        new JSONObject().put("types",
+            new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("creatorOfDocuments", new JSONObject().put("types",
+        new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))));
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("updaterOfDocuments", new JSONObject().put("types",
+        new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "updateRecord" })))));
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleterOfDocuments", new JSONObject().put("types",
+        new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
 
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("createOnlyGraph",//
         new JSONObject().put("types", new JSONObject()//
@@ -642,11 +647,12 @@ public class ServerProfilingIT {
 
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsCapped",//
         new JSONObject().put("resultSetLimit", 10)//
-            .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+            .put("types",
+                new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
 
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsShortTimeout",//
-        new JSONObject().put("readTimeout", 1)
-            .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+        new JSONObject().put("readTimeout", 1).put("types",
+            new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
     SECURITY.saveGroups();
   }
 }

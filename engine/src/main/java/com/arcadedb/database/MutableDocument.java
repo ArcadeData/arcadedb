@@ -191,10 +191,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
     final Object old = get(propertyName);
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
-    if (old instanceof Collection)
+    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
+        embeddedTypeName);
+    if (old instanceof Collection) {
       ((Collection<EmbeddedDocument>) old).add(emb);
-    else
+      dirty = true;
+    } else
       set(propertyName, emb);
 
     return emb;
@@ -210,10 +212,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @return MutableEmbeddedDocument instance
    */
-  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName, final String mapKey) {
+  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName,
+      final String mapKey) {
     final Object old = get(propertyName);
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
+    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
+        embeddedTypeName);
 
     if (old == null) {
       final Map<String, EmbeddedDocument> embMap = new HashMap<>();
@@ -222,7 +226,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     } else if (old instanceof Map)
       ((Map<String, EmbeddedDocument>) old).put(mapKey, emb);
     else
-      throw new IllegalArgumentException("Property '" + propertyName + "' is '" + old.getClass() + "', but null or Map was expected");
+      throw new IllegalArgumentException(
+          "Property '" + propertyName + "' is '" + old.getClass() + "', but null or Map was expected");
 
     return emb;
   }
@@ -236,7 +241,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @return MutableEmbeddedDocument instance
    */
-  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName, final Object propertyMapKey) {
+  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName,
+      final Object propertyMapKey) {
     final Object old = get(propertyName);
 
     if (old == null)
@@ -246,9 +252,11 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       throw new IllegalArgumentException("Cannot store an embedded document in a map because a collection was found");
 
     if (!(old instanceof Map))
-      throw new IllegalArgumentException("Cannot store an embedded document in a map because another value was found instead of a Map");
+      throw new IllegalArgumentException(
+          "Cannot store an embedded document in a map because another value was found instead of a Map");
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
+    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
+        embeddedTypeName);
     ((Map<Object, EmbeddedDocument>) old).put(propertyMapKey, emb);
 
     return emb;
@@ -411,7 +419,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
                   final DocumentType schemaType = database.getSchema().getType(embType);
                   if (!schemaType.instanceOf(ofType))
                     throw new ValidationException(
-                        "Embedded type '" + embType + "' is not compatible with the type defined in the schema constraint '" + ofType + "'");
+                        "Embedded type '" + embType + "' is not compatible with the type defined in the schema constraint '"
+                            + ofType + "'");
                 }
               }
 
@@ -423,7 +432,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return Type.convert(database, value, javaImplementation, property);
       } catch (final Exception e) {
         throw new IllegalArgumentException(
-            "Cannot convert type '" + value.getClass() + "' to '" + property.getType().name() + "' found in property '" + name + "'", e);
+            "Cannot convert type '" + value.getClass() + "' to '" + property.getType().name() + "' found in property '" + name
+                + "'", e);
       }
 
     return value;
@@ -450,7 +460,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
-              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer, new EmbeddedModifierProperty(this, propertyName));
+              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
+                  new EmbeddedModifierProperty(this, propertyName));
           newRecord.buffer = null;
           newRecord.map = new LinkedHashMap<>();
           newRecord.dirty = true;
@@ -465,7 +476,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
-              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer, new EmbeddedModifierProperty(this, propertyName));
+              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
+                  new EmbeddedModifierProperty(this, propertyName));
           newRecord.buffer = null;
           newRecord.map = new LinkedHashMap<>();
           newRecord.dirty = true;

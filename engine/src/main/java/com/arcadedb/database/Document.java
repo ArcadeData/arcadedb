@@ -97,6 +97,8 @@ public interface Document extends Record {
    */
   Instant getInstant(String propertyName);
 
+  Map<String, Object> getMap(String propertyName);
+
   EmbeddedDocument getEmbedded(String propertyName);
 
   Set<String> getPropertyNames();

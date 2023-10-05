@@ -1,3 +1,5 @@
+var clusterRefreshTimer = null;
+
 function updateCluster( callback ){
   jQuery.ajax({
     type: "GET",
@@ -91,10 +93,8 @@ function updateCluster( callback ){
     if( callback )
       callback();
 
-    setTimeout(function() {
-      if( studioCurrentTab == "cluster" )
-        updateCluster();
-    }, 10000);
+    startClusterRefreshTimer();
+
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotifyError( jqXHR.responseText );
@@ -198,3 +198,26 @@ function executeServerCommand(command, successMessage) {
     globalNotify( "Error", jqXHR.responseJSON.detail, "danger");
   });
 }
+
+function startClusterRefreshTimer(userChange){
+  if( clusterRefreshTimer != null )
+    clearTimeout(clusterRefreshTimer);
+
+  const clusterRefreshTimeoutInSecs = $("#clusterRefreshTimeout").val();
+  if( clusterRefreshTimeoutInSecs > 0 ) {
+    clusterRefreshTimer = setTimeout( function(){
+      if( studioCurrentTab == "cluster" )
+        updateCluster();
+    }, clusterRefreshTimeoutInSecs * 1000 );
+  }
+
+  if( userChange )
+    globalSetCookie("clusterRefreshTimeoutInSecs", clusterRefreshTimeoutInSecs, 365);
+}
+
+document.addEventListener("DOMContentLoaded", function(event) {
+  let clusterRefreshTimeoutInSecs = globalGetCookie("clusterRefreshTimeoutInSecs");
+  if( clusterRefreshTimeoutInSecs == null )
+    serverRefreshTimeoutInSecs = 0;
+  $("#clusterRefreshTimeout").val(clusterRefreshTimeoutInSecs);
+});

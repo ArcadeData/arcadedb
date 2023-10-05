@@ -19,6 +19,7 @@
 package com.arcadedb.event;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -45,7 +46,8 @@ import java.util.concurrent.atomic.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RecordEncryptionTest extends TestHelper implements BeforeRecordCreateListener, AfterRecordReadListener, BeforeRecordUpdateListener {
+public class RecordEncryptionTest extends TestHelper
+    implements BeforeRecordCreateListener, AfterRecordReadListener, BeforeRecordUpdateListener {
   private final static String          password           = "JustAPassword";
   private final static String          PASSWORD_ALGORITHM = "PBKDF2WithHmacSHA256";
   private final static String          ALGORITHM          = "AES/CBC/PKCS5Padding";
@@ -73,13 +75,15 @@ public class RecordEncryptionTest extends TestHelper implements BeforeRecordCrea
   }
 
   @Test
-  public void testEncryptionAtRest() {
+  public void testEncryption() {
     database.transaction(() -> {
-      final MutableVertex v1 = database.newVertex("BackAccount").set("secret", "Nobody must know Elon and Zuck are brothers").save();
+      final MutableVertex v1 = database.newVertex("BackAccount").set("secret", "Nobody must know Elon and Zuck are brothers")
+          .save();
     });
 
     Assertions.assertEquals(1, creates.get());
 
+    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     database.transaction(() -> {
       final Vertex v1 = database.iterateType("BackAccount", true).next().asVertex();
       Assertions.assertEquals("Nobody must know Elon and Zuck are brothers", v1.getString("secret"));
@@ -140,8 +144,8 @@ public class RecordEncryptionTest extends TestHelper implements BeforeRecordCrea
   }
 
   public static String encrypt(String algorithm, String input, SecretKey key, IvParameterSpec iv)
-      throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException, BadPaddingException,
-      IllegalBlockSizeException {
+      throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException,
+      BadPaddingException, IllegalBlockSizeException {
     final Cipher cipher = Cipher.getInstance(algorithm);
     cipher.init(Cipher.ENCRYPT_MODE, key, iv);
     final byte[] cipherText = cipher.doFinal(input.getBytes());
@@ -149,8 +153,8 @@ public class RecordEncryptionTest extends TestHelper implements BeforeRecordCrea
   }
 
   public static String decrypt(String algorithm, String cipherText, SecretKey key, IvParameterSpec iv)
-      throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException, BadPaddingException,
-      IllegalBlockSizeException {
+      throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException,
+      BadPaddingException, IllegalBlockSizeException {
 
     final Cipher cipher = Cipher.getInstance(algorithm);
     cipher.init(Cipher.DECRYPT_MODE, key, iv);
@@ -158,7 +162,8 @@ public class RecordEncryptionTest extends TestHelper implements BeforeRecordCrea
     return new String(plainText);
   }
 
-  public static SecretKey getKeyFromPassword(final String password, final String salt) throws NoSuchAlgorithmException, InvalidKeySpecException {
+  public static SecretKey getKeyFromPassword(final String password, final String salt)
+      throws NoSuchAlgorithmException, InvalidKeySpecException {
     final SecretKeyFactory factory = SecretKeyFactory.getInstance(PASSWORD_ALGORITHM);
     final KeySpec spec = new PBEKeySpec(password.toCharArray(), salt.getBytes(), SALT_ITERATIONS, KEY_LENGTH);
     return new SecretKeySpec(factory.generateSecret(spec).getEncoded(), "AES");
