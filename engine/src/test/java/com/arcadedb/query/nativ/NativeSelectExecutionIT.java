@@ -19,10 +19,13 @@
 package com.arcadedb.query.nativ;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -171,6 +174,25 @@ public class NativeSelectExecutionIT extends TestHelper {
       Assertions.assertTrue(iter.next().getInteger("id") < 10);
     }
     Assertions.assertFalse(iter.hasNext());
+  }
+
+  @Test
+  public void errorTimeout() {
+    final NativeSelect select = database.select().fromType("Vertex")//
+        .where().property("id").lt().value(10)//
+        .and().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS);
+
+    expectingException(() -> {
+      final QueryIterator<Vertex> iter = select.vertices();
+      while (iter.hasNext()) {
+        Assertions.assertTrue(iter.next().getInteger("id") < 10);
+        try {
+          Thread.sleep(2);
+        } catch (InterruptedException e) {
+          // IGNORE IT
+        }
+      }
+    }, TimeoutException.class, "Timeout on iteration");
   }
 
   @Test

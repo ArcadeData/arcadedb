@@ -98,7 +98,7 @@ public enum NativeOperator {
   run("!", true, -1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return NativeSelectExecutor.evaluateValue(record, NativeSelectExecutor.evaluateValue(record, right));
+      return NativeSelectExecutor.evaluateValue(record, left);
     }
   };
 
