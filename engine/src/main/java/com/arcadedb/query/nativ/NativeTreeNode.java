@@ -45,23 +45,7 @@ public class NativeTreeNode {
   }
 
   public Object eval(final Document record) {
-    final Object leftValue;
-    if (left instanceof NativeTreeNode)
-      leftValue = ((NativeTreeNode) left).eval(record);
-    else if (left instanceof NativeRuntimeValue)
-      leftValue = ((NativeRuntimeValue) left).eval(record);
-    else
-      leftValue = left;
-
-    final Object rightValue;
-    if (right instanceof NativeTreeNode)
-      rightValue = ((NativeTreeNode) right).eval(record);
-    else if (right instanceof NativeRuntimeValue)
-      rightValue = ((NativeRuntimeValue) right).eval(record);
-    else
-      rightValue = right;
-
-    return operator.eval(leftValue, rightValue);
+    return operator.eval(record, left, right);
   }
 
   public void setRight(final NativeTreeNode right) {

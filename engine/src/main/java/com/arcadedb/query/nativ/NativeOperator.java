@@ -28,64 +28,77 @@ import java.util.concurrent.*;
 public enum NativeOperator {
   or("or", true, 0) {
     @Override
-    Boolean eval(final Object left, final Object right) {
-      return left == Boolean.TRUE || right == Boolean.TRUE;
+    Object eval(final Document record, final Object left, final Object right) {
+      final Boolean leftValue = (Boolean) NativeSelectExecutor.evaluateValue(record, left);
+      if (leftValue)
+        return true;
+
+      return NativeSelectExecutor.evaluateValue(record, right);
     }
   },
 
   and("and", true, 2) {
     @Override
-    Boolean eval(final Object left, final Object right) {
-      return left == Boolean.TRUE && right == Boolean.TRUE;
+    Object eval(final Document record, final Object left, final Object right) {
+      final Boolean leftValue = (Boolean) NativeSelectExecutor.evaluateValue(record, left);
+      if (!leftValue)
+        return false;
+
+      return NativeSelectExecutor.evaluateValue(record, right);
     }
   },
 
   not("not", true, 2) {
     @Override
-    Boolean eval(final Object left, final Object right) {
+    Object eval(final Document record, final Object left, final Object right) {
       return left == Boolean.FALSE;
     }
   },
 
   eq("=", false, 1) {
     @Override
-    Object eval(final Object left, final Object right) {
-      return BinaryComparator.equals(left, right);
+    Object eval(final Document record, final Object left, final Object right) {
+      return BinaryComparator.equals(NativeSelectExecutor.evaluateValue(record, left),
+          NativeSelectExecutor.evaluateValue(record, right));
     }
   },
 
   lt("<", false, 1) {
     @Override
-    Object eval(final Object left, final Object right) {
-      return BinaryComparator.compareTo(left, right) < 0;
+    Object eval(final Document record, final Object left, final Object right) {
+      return BinaryComparator.compareTo(NativeSelectExecutor.evaluateValue(record, left),
+          NativeSelectExecutor.evaluateValue(record, right)) < 0;
     }
   },
 
   le("<=", false, 1) {
     @Override
-    Object eval(final Object left, final Object right) {
-      return BinaryComparator.compareTo(left, right) <= 0;
+    Object eval(final Document record, final Object left, final Object right) {
+      return BinaryComparator.compareTo(NativeSelectExecutor.evaluateValue(record, left),
+          NativeSelectExecutor.evaluateValue(record, right)) <= 0;
     }
   },
 
   gt(">", false, 1) {
     @Override
-    Object eval(final Object left, final Object right) {
-      return BinaryComparator.compareTo(left, right) > 0;
+    Object eval(final Document record, final Object left, final Object right) {
+      return BinaryComparator.compareTo(NativeSelectExecutor.evaluateValue(record, left),
+          NativeSelectExecutor.evaluateValue(record, right)) > 0;
     }
   },
 
   ge(">=", false, 1) {
     @Override
-    Object eval(final Object left, final Object right) {
-      return BinaryComparator.compareTo(left, right) >= 0;
+    Object eval(final Document record, final Object left, final Object right) {
+      return BinaryComparator.compareTo(NativeSelectExecutor.evaluateValue(record, left),
+          NativeSelectExecutor.evaluateValue(record, right)) >= 0;
     }
   },
 
   run("!", true, -1) {
     @Override
-    Object eval(final Object left, final Object right) {
-      return left;
+    Object eval(final Document record, final Object left, final Object right) {
+      return NativeSelectExecutor.evaluateValue(record, NativeSelectExecutor.evaluateValue(record, right));
     }
   };
 
@@ -100,7 +113,7 @@ public enum NativeOperator {
     this.precedence = precedence;
   }
 
-  abstract Object eval(Object left, Object right);
+  abstract Object eval(final Document record, Object left, Object right);
 
   public static NativeOperator byName(final String name) {
     if (NAMES.isEmpty()) {

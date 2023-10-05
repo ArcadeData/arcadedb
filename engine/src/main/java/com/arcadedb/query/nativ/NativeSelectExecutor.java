@@ -96,6 +96,16 @@ public class NativeSelectExecutor {
     };
   }
 
+  public static Object evaluateValue(final Document record, final Object value) {
+    if (value == null)
+      return null;
+    else if (value instanceof NativeTreeNode)
+      return ((NativeTreeNode) value).eval(record);
+    else if (value instanceof NativeRuntimeValue)
+      return ((NativeRuntimeValue) value).eval(record);
+    return value;
+  }
+
   public long getEvaluatedRecords() {
     return evaluatedRecords;
   }
