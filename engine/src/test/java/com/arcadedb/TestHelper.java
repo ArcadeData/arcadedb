@@ -62,8 +62,6 @@ public abstract class TestHelper {
     database = factory.exists() ? factory.open() : factory.create();
     Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
 
-    database.async().setParallelLevel(PARALLEL_LEVEL);
-
     if (autoStartTx)
       database.begin();
   }

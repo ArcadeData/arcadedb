@@ -21,6 +21,9 @@ package com.arcadedb.query.nativ;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -39,7 +42,9 @@ public class NativeSelectExecutionIT extends TestHelper {
   @Override
   protected void beginTest() {
     database.getSchema().createDocumentType("Document");
-    database.getSchema().createVertexType("Vertex");
+    database.getSchema().createVertexType("Vertex")//
+        .createProperty("id", Type.INTEGER)//
+        .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
     database.getSchema().createEdgeType("Edge");
 
     database.transaction(() -> {
@@ -174,6 +179,20 @@ public class NativeSelectExecutionIT extends TestHelper {
       Assertions.assertTrue(iter.next().getInteger("id") < 10);
     }
     Assertions.assertFalse(iter.hasNext());
+  }
+
+  @Test
+  public void okUpdate() {
+    database.select().fromType("Vertex")//
+        .where().property("id").lt().value(10)//
+        .and().property("name").eq().value("Elon")//
+        .limit(10).vertices()//
+        .forEachRemaining(a -> a.modify().set("modified", true).save());
+
+    database.select().fromType("Vertex")//
+        .where().property("id").lt().value(10)//
+        .and().property("name").eq().value("Elon").limit(10).vertices()
+        .forEachRemaining(r -> Assertions.assertTrue(r.getInteger("id") < 10 && r.getBoolean("modified")));
   }
 
   @Test
