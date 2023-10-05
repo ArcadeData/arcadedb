@@ -16,6 +16,8 @@ package com.arcadedb.query.nativ;/*
 
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -25,11 +27,10 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class NativeTreeNode {
-  public       Object               left;
-  public final NativeOperator       operator;
-  private      Object               right;
-  private      NativeTreeNode       parent;
-  private      List<NativeTreeNode> children; // TODO: REMOVE IT?
+  public       Object         left;
+  public final NativeOperator operator;
+  private      Object         right;
+  private      NativeTreeNode parent;
 
   public NativeTreeNode(final Object left, final NativeOperator operator, final Object right) {
     this.left = left;
@@ -61,12 +62,6 @@ public class NativeTreeNode {
       rightValue = right;
 
     return operator.eval(leftValue, rightValue);
-  }
-
-  public void addChild(final NativeTreeNode child) {
-    if (children == null)
-      children = new ArrayList<>();
-    children.add(child);
   }
 
   public void setRight(final NativeTreeNode right) {
@@ -108,5 +103,29 @@ public class NativeTreeNode {
     buffer.append(right);
     buffer.append(" )");
     return buffer.toString();
+  }
+
+  public JSONArray toJSON() {
+    final JSONArray json = new JSONArray();
+
+    if (left instanceof NativeTreeNode)
+      json.put(((NativeTreeNode) left).toJSON());
+    else if (left instanceof NativePropertyValue || left instanceof NativeParameterValue)
+      json.put(left.toString());
+    else
+      json.put(left);
+
+    if (operator != NativeOperator.run)
+      json.put(operator.name);
+
+    if (right != null) {
+      if (right instanceof NativeTreeNode)
+        json.put(((NativeTreeNode) right).toJSON());
+      else if (right instanceof NativePropertyValue || right instanceof NativeParameterValue)
+        json.put(right.toString());
+      else
+        json.put(right);
+    }
+    return json;
   }
 }

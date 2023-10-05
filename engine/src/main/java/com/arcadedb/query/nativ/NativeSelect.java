@@ -16,12 +16,12 @@ package com.arcadedb.query.nativ;/*
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.utility.MultiIterator;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.stream.*;
@@ -34,22 +34,22 @@ import java.util.stream.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class NativeSelect {
-  private final DatabaseInternal database;
+  final DatabaseInternal database;
 
   enum STATE {DEFAULT, WHERE, COMPILED}
 
   Map<String, Object> parameters;
 
-  private NativeTreeNode     rootTreeElement;
-  private NativeTreeNode     lastTreeElement;
-  private DocumentType       fromType;
-  private List<Bucket>       fromBuckets;
-  private NativeOperator     operator;
-  private NativeRuntimeValue property;
-  private Object             propertyValue;
-  private boolean            polymorphic = true;
-  private int                limit       = -1;
-  private STATE              state       = STATE.DEFAULT;
+  NativeTreeNode     rootTreeElement;
+  DocumentType       fromType;
+  List<Bucket>       fromBuckets;
+  NativeOperator     operator;
+  NativeRuntimeValue property;
+  Object             propertyValue;
+  boolean            polymorphic = true;
+  int                limit       = -1;
+  private STATE          state = STATE.DEFAULT;
+  private NativeTreeNode lastTreeElement;
 
   public NativeSelect(final DatabaseInternal database) {
     this.database = database;
@@ -174,7 +174,94 @@ public class NativeSelect {
 
   public NativeSelect polymorphic(final boolean polymorphic) {
     checkNotCompiled();
+    if (fromType == null)
+      throw new IllegalArgumentException("FromType was not set");
     this.polymorphic = polymorphic;
+    return this;
+  }
+
+  public NativeSelect json(final JSONObject json) {
+    checkNotCompiled();
+    if (json.has("fromType")) {
+      fromType(json.getString("fromType"));
+      if (json.has("polymorphic"))
+        polymorphic(json.getBoolean("polymorphic"));
+    } else if (json.has("fromBuckets")) {
+      final JSONArray buckets = json.getJSONArray("fromBuckets");
+      fromBuckets(
+          buckets.toList().stream().map(b -> database.getSchema().getBucketByName(b.toString())).collect(Collectors.toList())
+              .toArray(new String[buckets.length()]));
+    }
+
+    if (json.has("where")) {
+      where();
+      parseJsonCondition(json.getJSONArray("where"));
+    }
+
+    if (json.has("limit"))
+      limit(json.getInt("limit"));
+
+    return null;
+  }
+
+  private void parseJsonCondition(final JSONArray condition) {
+    if (condition.length() != 3)
+      throw new IllegalArgumentException("Invalid condition " + condition);
+
+    final Object parsedLeft = condition.get(0);
+    if (parsedLeft instanceof JSONArray)
+      parseJsonCondition((JSONArray) parsedLeft);
+    else if (parsedLeft instanceof String && ((String) parsedLeft).startsWith(":"))
+      property(((String) parsedLeft).substring(1));
+    else if (parsedLeft instanceof String && ((String) parsedLeft).startsWith("#"))
+      parameter(((String) parsedLeft).substring(1));
+    else
+      throw new IllegalArgumentException("Unsupported value " + parsedLeft);
+
+    final NativeOperator parsedOperator = NativeOperator.byName(condition.getString(1));
+
+    if (parsedOperator.logicOperator)
+      setLogic(parsedOperator);
+    else
+      setOperator(parsedOperator);
+
+    final Object parsedRight = condition.get(2);
+    if (parsedRight instanceof JSONArray)
+      parseJsonCondition((JSONArray) parsedRight);
+    else if (parsedRight instanceof String && ((String) parsedRight).startsWith(":"))
+      property(((String) parsedRight).substring(1));
+    else if (parsedRight instanceof String && ((String) parsedRight).startsWith("#"))
+      parameter(((String) parsedRight).substring(1));
+    else
+      value(parsedRight);
+  }
+
+  public JSONObject json() {
+    final JSONObject json = new JSONObject();
+
+    if (fromType != null) {
+      json.put("fromType", fromType.getName());
+      if (!polymorphic)
+        json.put("polymorphic", polymorphic);
+    } else if (fromBuckets != null)
+      json.put("fromBuckets", fromBuckets.stream().map(b -> b.getName()).collect(Collectors.toList()));
+
+    if (rootTreeElement != null)
+      json.put("where", rootTreeElement.toJSON());
+
+    if (limit > -1)
+      json.put("limit", limit);
+
+    return json;
+  }
+
+  public NativeSelect parse() {
+    if (fromType == null && fromBuckets == null)
+      throw new IllegalArgumentException("from (type or buckets) has not been set");
+    if (state != STATE.COMPILED) {
+      setLogic(NativeOperator.run);
+      state = STATE.COMPILED;
+    }
     return this;
   }
 
@@ -191,75 +278,8 @@ public class NativeSelect {
   }
 
   private <T extends Document> QueryIterator<T> run() {
-    if (fromType == null && fromBuckets == null)
-      throw new IllegalArgumentException("from (type or buckets) has not been set");
-    if (state != STATE.COMPILED) {
-      setLogic(NativeOperator.run);
-      state = STATE.COMPILED;
-    }
-
-    final int[] returned = new int[] { 0 };
-    final Iterator<Record> iterator;
-
-    if (fromType != null)
-      iterator = database.iterateType(fromType.getName(), polymorphic);
-    else if (fromBuckets.size() == 1)
-      iterator = database.iterateBucket(fromBuckets.get(0).getName());
-    else {
-      final MultiIterator multiIterator = new MultiIterator<>();
-      for (Bucket b : fromBuckets)
-        multiIterator.addIterator(b.iterator());
-      iterator = multiIterator;
-    }
-
-    return new QueryIterator<>() {
-      private T next = null;
-
-      @Override
-      public boolean hasNext() {
-        if (limit > -1 && returned[0] >= limit)
-          return false;
-        if (next != null)
-          return true;
-        if (!iterator.hasNext())
-          return false;
-
-        next = fetchNext();
-        return next != null;
-      }
-
-      @Override
-      public T next() {
-        if (next == null && !hasNext())
-          throw new NoSuchElementException();
-        try {
-          return next;
-        } finally {
-          next = null;
-        }
-      }
-
-      private T fetchNext() {
-        do {
-          final Document record = iterator.next().asDocument();
-          if (evaluateWhere(record)) {
-            ++returned[0];
-            return (T) record;
-          }
-
-        } while (iterator.hasNext());
-
-        // NOT FOUND
-        return null;
-      }
-    };
-  }
-
-  private boolean evaluateWhere(final Document record) {
-    final Object result = rootTreeElement.eval(record);
-    if (result instanceof Boolean)
-      return (Boolean) result;
-    throw new IllegalArgumentException("A boolean result was expected but '" + result + "' was returned");
+    parse();
+    return new NativeSelectExecutor(this).execute();
   }
 
   private NativeSelect setLogic(final NativeOperator newLogicOperator) {
@@ -277,7 +297,7 @@ public class NativeSelect {
       if (newLogicOperator.equals(NativeOperator.run)) {
         // EXECUTION = LAST NODE: APPEND TO THE RIGHT OF THE LATEST
         lastTreeElement.getParent().setRight(newTreeElement);
-      } else if (lastTreeElement.getParent().operator.precedence > newLogicOperator.precedence) {
+      } else if (lastTreeElement.getParent().operator.precedence < newLogicOperator.precedence) {
         // AND+ OPERATOR
         final NativeTreeNode newNode = new NativeTreeNode(newTreeElement, newLogicOperator, null);
         lastTreeElement.getParent().setRight(newNode);

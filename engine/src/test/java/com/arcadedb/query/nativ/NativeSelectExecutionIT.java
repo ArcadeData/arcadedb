@@ -20,6 +20,7 @@ package com.arcadedb.query.nativ;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -186,6 +187,25 @@ public class NativeSelectExecutionIT extends TestHelper {
     final NativeSelect select = database.select().fromType("Vertex").where().property("id").eq().parameter("value");
     for (int i = 0; i < 100; i++)
       Assertions.assertEquals(i, select.parameter("value", i).vertices().nextOrNull().getInteger("id"));
+  }
+
+  @Test
+  public void okJSON() {
+    {
+      final NativeSelect select = database.select().fromType("Vertex")//
+          .where().property("id").eq().parameter("value")//
+          .and().property("name").eq().value("Elon2")//
+          .or().property("name").eq().value("Elon").parse();
+
+      final JSONObject json = select.json();
+      System.out.println(json.toString(2));
+
+      final NativeSelect select2 = database.select().json(json);
+      final JSONObject json2 = select.json();
+      System.out.println(json.toString(2));
+
+      Assertions.assertEquals(json, json2);
+    }
   }
 
   @Test

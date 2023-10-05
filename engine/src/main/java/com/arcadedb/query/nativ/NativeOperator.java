@@ -14,9 +14,11 @@ package com.arcadedb.query.nativ;/*
  * limitations under the License.
  */
 
+import com.arcadedb.database.Document;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Native condition with support for simple operators through inheritance.
@@ -24,78 +26,90 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public enum NativeOperator {
-  or("or", 0) {
+  or("or", true, 0) {
     @Override
     Boolean eval(final Object left, final Object right) {
       return left == Boolean.TRUE || right == Boolean.TRUE;
     }
   },
 
-  and("and", 2) {
+  and("and", true, 2) {
     @Override
     Boolean eval(final Object left, final Object right) {
       return left == Boolean.TRUE && right == Boolean.TRUE;
     }
   },
 
-  not("not", 2) {
+  not("not", true, 2) {
     @Override
     Boolean eval(final Object left, final Object right) {
       return left == Boolean.FALSE;
     }
   },
 
-  eq("==", 1) {
+  eq("=", false, 1) {
     @Override
     Object eval(final Object left, final Object right) {
       return BinaryComparator.equals(left, right);
     }
   },
 
-  lt("<", 1) {
+  lt("<", false, 1) {
     @Override
     Object eval(final Object left, final Object right) {
       return BinaryComparator.compareTo(left, right) < 0;
     }
   },
 
-  le("<=", 1) {
+  le("<=", false, 1) {
     @Override
     Object eval(final Object left, final Object right) {
       return BinaryComparator.compareTo(left, right) <= 0;
     }
   },
 
-  gt(">", 1) {
+  gt(">", false, 1) {
     @Override
     Object eval(final Object left, final Object right) {
       return BinaryComparator.compareTo(left, right) > 0;
     }
   },
 
-  ge(">=", 1) {
+  ge(">=", false, 1) {
     @Override
     Object eval(final Object left, final Object right) {
       return BinaryComparator.compareTo(left, right) >= 0;
     }
   },
 
-  run("!", -1) {
+  run("!", true, -1) {
     @Override
     Object eval(final Object left, final Object right) {
       return left;
     }
   };
 
-  NativeOperator(final String name, final int precedence) {
+  public final   String                      name;
+  public final   boolean                     logicOperator;
+  public final   int                         precedence;
+  private static Map<String, NativeOperator> NAMES = new ConcurrentHashMap<>();
+
+  NativeOperator(final String name, final boolean logicOperator, final int precedence) {
     this.name = name;
+    this.logicOperator = logicOperator;
     this.precedence = precedence;
   }
 
-  public final String name;
-  public final int    precedence;
-
   abstract Object eval(Object left, Object right);
+
+  public static NativeOperator byName(final String name) {
+    if (NAMES.isEmpty()) {
+      for (NativeOperator v : values())
+        NAMES.put(v.name, v);
+    }
+
+    return NAMES.get(name);
+  }
 
   @Override
   public String toString() {
