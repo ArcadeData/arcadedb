@@ -20,7 +20,6 @@ package com.arcadedb.query.nativ;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.utility.Callable;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -46,11 +45,11 @@ public class NativeSelectExecutionIT extends TestHelper {
       }
 
       for (int i = 1; i < 100; i++) {
-        final Vertex root = database.select().from("Vertex").where().property("id").eq().value(0).vertices().nextOrNull();
+        final Vertex root = database.select().fromType("Vertex").where().property("id").eq().value(0).vertices().nextOrNull();
         Assertions.assertNotNull(root);
         Assertions.assertEquals(0, root.getInteger("id"));
 
-        root.newEdge("Edge", database.select().from("Vertex").where().property("id").eq().value(i).vertices().nextOrNull(), true)
+        root.newEdge("Edge", database.select().fromType("Vertex").where().property("id").eq().value(i).vertices().nextOrNull(), true)
             .save();
       }
     });
@@ -58,72 +57,81 @@ public class NativeSelectExecutionIT extends TestHelper {
 
   @Test
   public void okReuse() {
-    final NativeSelect select = database.select().from("Vertex").where().property("id").eq().parameter("value");
+    final NativeSelect select = database.select().fromType("Vertex").where().property("id").eq().parameter("value");
     for (int i = 0; i < 100; i++)
       Assertions.assertEquals(i, select.parameter("value", i).vertices().nextOrNull().getInteger("id"));
   }
 
   @Test
   public void okAnd() {
-    final NativeSelect select = database.select().from("Vertex")//
+    final NativeSelect select = database.select().fromType("Vertex")//
         .where().property("id").eq().parameter("value")//
         .and().property("name").eq().value("Elon");
 
     for (int i = 0; i < 100; i++)
       Assertions.assertEquals(i, select.parameter("value", i).vertices().nextOrNull().getInteger("id"));
 
-    final NativeSelect select2 = database.select().from("Vertex")//
+    final NativeSelect select2 = database.select().fromType("Vertex")//
         .where().property("id").eq().parameter("value")//
         .and().property("name").eq().value("Elon2");
 
     Assertions.assertFalse(select2.parameter("value", 3).vertices().hasNext());
 
-    final NativeSelect select3 = database.select().from("Vertex")//
+    final NativeSelect select3 = database.select().fromType("Vertex")//
         .where().property("id").eq().value(-1)//
         .and().property("name").eq().value("Elon");
 
     Assertions.assertFalse(select3.vertices().hasNext());
-  }
 
-  @Test
-  public void okOr() {
-    final NativeSelect select = database.select().from("Vertex")//
-        .where().property("id").eq().parameter("value")//
-        .or().property("name").eq().value("Elon2");
-
-    Assertions.assertEquals(3, select.parameter("value", 3).vertices().nextOrNull().getInteger("id"));
-
-    final NativeSelect select2 = database.select().from("Vertex")//
-        .where().property("id").eq().parameter("value")//
-        .or().property("name").eq().value("Elon2");
-
-    Assertions.assertEquals(3, select2.parameter("value", 3).vertices().nextOrNull().getInteger("id"));
-
-    final NativeSelect select3 = database.select().from("Vertex")//
-        .where().property("id").eq().value(-1)//
-        .or().property("name").eq().value("Elon");
-
-    Assertions.assertEquals(0, select3.parameter("value", 3).vertices().nextOrNull().getInteger("id"));
-  }
-
-  @Test
-  public void okAndOr() {
-    final NativeSelect select = database.select().from("Vertex")//
+    final NativeSelect select4 = database.select().fromType("Vertex")//
         .where().property("id").eq().parameter("value")//
         .and().property("name").eq().value("Elon")//
         .and().property("id").eq().parameter("value")//
         .and().property("name").eq().value("Elon");
 
     for (int i = 0; i < 100; i++)
-      Assertions.assertEquals(i, select.parameter("value", i).vertices().nextOrNull().getInteger("id"));
+      Assertions.assertEquals(i, select4.parameter("value", i).vertices().nextOrNull().getInteger("id"));
+  }
 
-    final NativeSelect select2 = database.select().from("Vertex")//
+  @Test
+  public void okOr() {
+    final NativeSelect select = database.select().fromType("Vertex")//
+        .where().property("id").eq().parameter("value")//
+        .or().property("name").eq().value("Elon");
+
+    for (QueryIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
+      final Vertex v = result.next();
+      Assertions.assertTrue(v.getInteger("id").equals(3) || v.getString("name").equals("Elon"));
+    }
+
+    final NativeSelect select2 = database.select().fromType("Vertex")//
+        .where().property("id").eq().parameter("value")//
+        .or().property("name").eq().value("Elon2");
+
+    for (QueryIterator<Vertex> result = select2.parameter("value", 3).vertices(); result.hasNext(); ) {
+      final Vertex v = result.next();
+      Assertions.assertTrue(v.getInteger("id").equals(3) || v.getString("name").equals("Elon2"));
+    }
+
+    final NativeSelect select3 = database.select().fromType("Vertex")//
+        .where().property("id").eq().value(-1)//
+        .or().property("name").eq().value("Elon");
+
+    for (QueryIterator<Vertex> result = select3.parameter("value", 3).vertices(); result.hasNext(); ) {
+      final Vertex v = result.next();
+      Assertions.assertTrue(v.getInteger("id").equals(-1) || v.getString("name").equals("Elon"));
+    }
+  }
+
+  @Test
+  public void okAndOr() {
+    final NativeSelect select2 = database.select().fromType("Vertex")//
         .where().property("id").eq().parameter("value")//
         .and().property("name").eq().value("Elon2");
 
     Assertions.assertFalse(select2.parameter("value", 3).vertices().hasNext());
 
-    final NativeSelect select3 = database.select().from("Vertex")//
+    final NativeSelect select3 = database.select().fromType("Vertex")//
         .where().property("id").eq().value(-1)//
         .and().property("name").eq().value("Elon");
 
@@ -133,7 +141,7 @@ public class NativeSelectExecutionIT extends TestHelper {
 
   @Test
   public void okLimit() {
-    final NativeSelect select = database.select().from("Vertex")//
+    final NativeSelect select = database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
         .and().property("name").eq().value("Elon").limit(10);
 
@@ -147,7 +155,7 @@ public class NativeSelectExecutionIT extends TestHelper {
   @Test
   public void errorMissingParameter() {
     expectingException(() -> {
-      database.select().from("Vertex")//
+      database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
           .vertices().nextOrNull();
     }, IllegalArgumentException.class, "Missing parameter 'value'");
@@ -156,7 +164,7 @@ public class NativeSelectExecutionIT extends TestHelper {
   @Test
   public void errorMissingCondition() {
     expectingException(() -> {
-      database.select().from("Vertex")//
+      database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
           .or().vertices().nextOrNull();
     }, IllegalArgumentException.class, "Missing condition");

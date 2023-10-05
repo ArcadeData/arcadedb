@@ -15,6 +15,9 @@ package com.arcadedb.query.nativ;/*
  */
 
 import com.arcadedb.database.Document;
+import com.arcadedb.query.sql.parser.BooleanExpression;
+
+import java.util.*;
 
 /**
  * Native condition representation in a tree.
@@ -22,15 +25,22 @@ import com.arcadedb.database.Document;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class NativeTreeNode {
-  private final Object         left;
-  private final NativeOperator operator;
-  private       Object         right;
-  private       NativeTreeNode parent;
+  public       Object               left;
+  public final NativeOperator       operator;
+  private      Object               right;
+  private      NativeTreeNode       parent;
+  private      List<NativeTreeNode> children; // TODO: REMOVE IT?
 
   public NativeTreeNode(final Object left, final NativeOperator operator, final Object right) {
     this.left = left;
+    if (left instanceof NativeTreeNode)
+      ((NativeTreeNode) left).setParent(this);
+
     this.operator = operator;
+
     this.right = right;
+    if (right instanceof NativeTreeNode)
+      ((NativeTreeNode) right).setParent(this);
   }
 
   public Object eval(final Document record) {
@@ -53,16 +63,38 @@ public class NativeTreeNode {
     return operator.eval(leftValue, rightValue);
   }
 
+  public void addChild(final NativeTreeNode child) {
+    if (children == null)
+      children = new ArrayList<>();
+    children.add(child);
+  }
+
   public void setRight(final NativeTreeNode right) {
+    if (this.right != null)
+      throw new IllegalArgumentException("Cannot assign the right node because already assigned to " + this.right);
     this.right = right;
+    if (right.parent != null)
+      throw new IllegalArgumentException("Cannot assign the parent to the right node " + right);
+    right.parent = this;
   }
 
   public NativeTreeNode getParent() {
     return parent;
   }
 
-  public void setParent(final NativeTreeNode parent) {
-    this.parent = parent;
+  public void setParent(final NativeTreeNode newParent) {
+    if (this.parent == newParent)
+      return;
+
+    if (this.parent != null) {
+      if (this.parent.left == this) {
+        this.parent.left = newParent;
+      } else if (this.parent.right == this) {
+        this.parent.right = newParent;
+      }
+    }
+
+    this.parent = newParent;
   }
 
   @Override

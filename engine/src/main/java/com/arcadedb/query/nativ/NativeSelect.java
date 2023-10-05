@@ -17,11 +17,14 @@ package com.arcadedb.query.nativ;/*
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.MultiIterator;
 
 import java.util.*;
+import java.util.stream.*;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -38,8 +41,9 @@ public class NativeSelect {
   Map<String, Object> parameters;
 
   private NativeTreeNode     rootTreeElement;
-  private NativeTreeNode     treeElement;
-  private DocumentType       from;
+  private NativeTreeNode     lastTreeElement;
+  private DocumentType       fromType;
+  private List<Bucket>       fromBuckets;
   private NativeOperator     operator;
   private NativeRuntimeValue property;
   private Object             propertyValue;
@@ -51,12 +55,37 @@ public class NativeSelect {
     this.database = database;
   }
 
-  public NativeSelect from(final String from) {
+  public NativeSelect fromType(final String fromType) {
     checkNotCompiled();
-    if (this.from != null)
-      throw new IllegalArgumentException("From has already been set");
+    if (this.fromType != null)
+      throw new IllegalArgumentException("From type has already been set");
+    if (this.fromBuckets != null)
+      throw new IllegalArgumentException("From bucket(s) has already been set");
 
-    this.from = database.getSchema().getType(from);
+    this.fromType = database.getSchema().getType(fromType);
+    return this;
+  }
+
+  public NativeSelect fromBuckets(final String... fromBucketNames) {
+    checkNotCompiled();
+    if (this.fromType != null)
+      throw new IllegalArgumentException("From type has already been set");
+    if (this.fromBuckets != null)
+      throw new IllegalArgumentException("From bucket(s) has already been set");
+
+    this.fromBuckets = Arrays.stream(fromBucketNames).map(b -> database.getSchema().getBucketByName(b))
+        .collect(Collectors.toList());
+    return this;
+  }
+
+  public NativeSelect fromBuckets(final Integer... fromBucketIds) {
+    checkNotCompiled();
+    if (this.fromType != null)
+      throw new IllegalArgumentException("From type has already been set");
+    if (this.fromBuckets != null)
+      throw new IllegalArgumentException("From bucket(s) has already been set");
+
+    this.fromBuckets = Arrays.stream(fromBucketIds).map(b -> database.getSchema().getBucketById(b)).collect(Collectors.toList());
     return this;
   }
 
@@ -162,15 +191,27 @@ public class NativeSelect {
   }
 
   private <T extends Document> QueryIterator<T> run() {
-    if (from == null)
-      throw new IllegalArgumentException("from has not been set");
+    if (fromType == null && fromBuckets == null)
+      throw new IllegalArgumentException("from (type or buckets) has not been set");
     if (state != STATE.COMPILED) {
       setLogic(NativeOperator.run);
       state = STATE.COMPILED;
     }
 
     final int[] returned = new int[] { 0 };
-    final Iterator<Record> iterator = database.iterateType(from.getName(), polymorphic);
+    final Iterator<Record> iterator;
+
+    if (fromType != null)
+      iterator = database.iterateType(fromType.getName(), polymorphic);
+    else if (fromBuckets.size() == 1)
+      iterator = database.iterateBucket(fromBuckets.get(0).getName());
+    else {
+      final MultiIterator multiIterator = new MultiIterator<>();
+      for (Bucket b : fromBuckets)
+        multiIterator.addIterator(b.iterator());
+      iterator = multiIterator;
+    }
+
     return new QueryIterator<>() {
       private T next = null;
 
@@ -231,12 +272,28 @@ public class NativeSelect {
       // 1ST TIME ONLY
       rootTreeElement = new NativeTreeNode(newTreeElement, newLogicOperator, null);
       newTreeElement.setParent(rootTreeElement);
+      lastTreeElement = newTreeElement;
     } else {
-      final NativeTreeNode parent = new NativeTreeNode(newTreeElement, newLogicOperator, null);
-      // REPLACE THE NODE
-      treeElement.getParent().setRight(parent);
+      if (newLogicOperator.equals(NativeOperator.run)) {
+        // EXECUTION = LAST NODE: APPEND TO THE RIGHT OF THE LATEST
+        lastTreeElement.getParent().setRight(newTreeElement);
+      } else if (lastTreeElement.getParent().operator.precedence > newLogicOperator.precedence) {
+        // AND+ OPERATOR
+        final NativeTreeNode newNode = new NativeTreeNode(newTreeElement, newLogicOperator, null);
+        lastTreeElement.getParent().setRight(newNode);
+        lastTreeElement = newTreeElement;
+      } else {
+        // OR+ OPERATOR
+        final NativeTreeNode currentParent = lastTreeElement.getParent();
+        currentParent.setRight(newTreeElement);
+        final NativeTreeNode newNode = new NativeTreeNode(currentParent, newLogicOperator, null);
+        if (rootTreeElement.equals(currentParent))
+          rootTreeElement = newNode;
+        else
+          newNode.setParent(currentParent.getParent());
+        lastTreeElement = currentParent;
+      }
     }
-    treeElement = newTreeElement;
 
     operator = null;
     property = null;
