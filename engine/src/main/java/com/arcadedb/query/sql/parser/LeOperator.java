@@ -30,24 +30,26 @@ public class LeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean execute(final DatabaseInternal database, Object iLeft, Object iRight) {
-    if (iLeft == iRight)
+  public boolean execute(final DatabaseInternal database, Object left, Object right) {
+    if (left == right)
       return true;
 
-    if (iLeft == null || iRight == null)
+    if (left == null || right == null)
       return false;
 
-    if (iLeft.getClass() != iRight.getClass() && iLeft instanceof Number && iRight instanceof Number) {
-      final Number[] couple = Type.castComparableNumber((Number) iLeft, (Number) iRight);
-      iLeft = couple[0];
-      iRight = couple[1];
-    } else {
-      iRight = Type.convert(database, iRight, iLeft.getClass());
+    if (!left.getClass().equals(right.getClass())) {
+      if (left instanceof Number && right instanceof Number) {
+        final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
+        left = couple[0];
+        right = couple[1];
+      } else {
+        right = Type.convert(database, right, left.getClass());
+      }
     }
 
-    if (iRight == null)
+    if (right == null)
       return false;
-    return BinaryComparator.compareTo(iLeft, iRight) <= 0;
+    return BinaryComparator.compareTo(left, right) <= 0;
   }
 
   @Override

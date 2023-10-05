@@ -53,7 +53,8 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
             min = subitem;
         }
       } else {
-        if ((item instanceof Number) && (min instanceof Number)) {
+        if (!item.getClass().equals(min.getClass()) &&//
+            item instanceof Number && min instanceof Number) {
           final Number[] converted = Type.castComparableNumber((Number) item, (Number) min);
           item = converted[0];
           min = converted[1];
@@ -90,7 +91,8 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
 
   public boolean aggregateResults() {
     // LET definitions (contain $current) does not require results aggregation
-    return configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString().contains("$current"));
+    return configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString()
+        .contains("$current"));
   }
 
   public String getSyntax() {

@@ -35,12 +35,14 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
     if (left == null || right == null)
       return false;
 
-    if (left.getClass() != right.getClass() && left instanceof Number && right instanceof Number) {
-      final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
-      left = couple[0];
-      right = couple[1];
-    } else
-      right = Type.convert(database, right, left.getClass());
+    if (!left.getClass().equals(right.getClass())) {
+      if (left instanceof Number && right instanceof Number) {
+        final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
+        left = couple[0];
+        right = couple[1];
+      } else
+        right = Type.convert(database, right, left.getClass());
+    }
 
     if (right == null)
       return false;
