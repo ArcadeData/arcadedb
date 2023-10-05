@@ -201,7 +201,7 @@ public class NativeSelect {
     if (json.has("limit"))
       limit(json.getInt("limit"));
 
-    return null;
+    return this;
   }
 
   private void parseJsonCondition(final JSONArray condition) {
@@ -237,6 +237,9 @@ public class NativeSelect {
   }
 
   public JSONObject json() {
+    if (state != STATE.COMPILED)
+      parse();
+
     final JSONObject json = new JSONObject();
 
     if (fromType != null) {
