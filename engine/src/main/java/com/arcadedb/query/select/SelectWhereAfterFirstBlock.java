@@ -65,4 +65,8 @@ public class SelectWhereAfterFirstBlock {
   public Select timeout(final long timeoutValue, final TimeUnit timeoutUnit, final boolean exceptionOnTimeout) {
     return select.timeout(timeoutValue, timeoutUnit, exceptionOnTimeout);
   }
+
+  public Select orderBy(final String property, final boolean order) {
+    return select.orderBy(property, order);
+  }
 }

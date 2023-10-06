@@ -32,8 +32,6 @@ public interface IndexCursor extends Cursor {
 
   Identifiable getRecord();
 
-  int getScore();
-
   default void close() {
     // NO ACTIONS
   }

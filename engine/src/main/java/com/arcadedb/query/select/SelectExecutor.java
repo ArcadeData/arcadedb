@@ -17,10 +17,12 @@ package com.arcadedb.query.select;/*
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.utility.MultiIterator;
+import com.arcadedb.utility.Pair;
 
 import java.util.*;
 
@@ -31,17 +33,29 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SelectSelectExecutor {
-  final   Select select;
-  private long   evaluatedRecords = 0;
-  private int          indexesUsed      = 0;
+public class SelectExecutor {
+  final Select select;
+  long            evaluatedRecords = 0;
+  List<IndexInfo> usedIndexes      = null;
 
-  public SelectSelectExecutor(final Select select) {
+  class IndexInfo {
+    public final Index   index;
+    public final String  property;
+    public final boolean order;
+
+    IndexInfo(final Index index, final String property, final boolean order) {
+      this.index = index;
+      this.property = property;
+      this.order = order;
+    }
+  }
+
+  public SelectExecutor(final Select select) {
     this.select = select;
   }
 
   <T extends Identifiable> SelectIterator<T> execute() {
-    final Iterator<Identifiable> iteratorFromIndexes = lookForIndexes();
+    final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
 
     final Iterator<Identifiable> iterator;
 
@@ -61,10 +75,10 @@ public class SelectSelectExecutor {
     if (select.timeoutInMs > 0 && iterator instanceof MultiIterator)
       ((MultiIterator<Identifiable>) iterator).setTimeout(select.timeoutInMs, select.exceptionOnTimeout);
 
-    return new SelectIterator<>(this, iterator, iteratorFromIndexes != null);
+    return new SelectIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
   }
 
-  private Iterator<Identifiable> lookForIndexes() {
+  private MultiIndexCursor lookForIndexes() {
     if (select.fromType != null && select.rootTreeElement != null) {
       final List<IndexCursor> cursors = new ArrayList<>();
 
@@ -72,10 +86,8 @@ public class SelectSelectExecutor {
       boolean canUseIndexes = isTheNodeFullyIndexed(select.rootTreeElement);
 
       filterWithIndexes(select.rootTreeElement, cursors);
-      if (!cursors.isEmpty()) {
-        indexesUsed = cursors.size();
+      if (!cursors.isEmpty())
         return new MultiIndexCursor(cursors, select.limit, true);
-      }
     }
     return null;
   }
@@ -107,19 +119,35 @@ public class SelectSelectExecutor {
     else
       rightValue = node.right;
 
+    final String propertyName = ((SelectPropertyValue) node.left).propertyName;
+
+    boolean ascendingOrder = true; // DEFAULT
+
     final IndexCursor cursor;
     if (node.operator == SelectOperator.eq)
       cursor = node.index.get(new Object[] { rightValue });
-    else if (node.operator == SelectOperator.gt)
-      cursor = node.index.range(true, new Object[] { rightValue }, false, null, false);
-    else if (node.operator == SelectOperator.ge)
-      cursor = node.index.range(true, new Object[] { rightValue }, true, null, false);
-    else if (node.operator == SelectOperator.lt)
-      cursor = node.index.range(true, null, false, new Object[] { rightValue }, false);
-    else if (node.operator == SelectOperator.le)
-      cursor = node.index.range(true, null, false, new Object[] { rightValue }, true);
-    else
-      return;
+    else {
+      // RANGE
+      if (select.orderBy != null)
+        for (Pair<String, Boolean> entry : select.orderBy) {
+          if (propertyName.equals(entry.getFirst())) {
+            if (!entry.getSecond())
+              ascendingOrder = false;
+            break;
+          }
+        }
+
+      if (node.operator == SelectOperator.gt)
+        cursor = node.index.range(ascendingOrder, new Object[] { rightValue }, false, null, false);
+      else if (node.operator == SelectOperator.ge)
+        cursor = node.index.range(ascendingOrder, new Object[] { rightValue }, true, null, false);
+      else if (node.operator == SelectOperator.lt)
+        cursor = node.index.range(ascendingOrder, null, false, new Object[] { rightValue }, false);
+      else if (node.operator == SelectOperator.le)
+        cursor = node.index.range(ascendingOrder, null, false, new Object[] { rightValue }, true);
+      else
+        return;
+    }
 
     final SelectTreeNode parentNode = node.getParent();
     if (parentNode.operator == SelectOperator.and && parentNode.left == node) {
@@ -138,6 +166,10 @@ public class SelectSelectExecutor {
       }
     }
 
+    if (usedIndexes == null)
+      usedIndexes = new ArrayList<>();
+
+    usedIndexes.add(new IndexInfo(node.index, propertyName, ascendingOrder));
     cursors.add(cursor);
   }
 
@@ -184,7 +216,7 @@ public class SelectSelectExecutor {
   }
 
   public Map<String, Object> metrics() {
-    return Map.of("evaluatedRecords", evaluatedRecords, "indexesUsed", indexesUsed);
+    return Map.of("evaluatedRecords", evaluatedRecords, "usedIndexes", usedIndexes != null ? usedIndexes.size() : 0);
   }
 
   boolean evaluateWhere(final Document record) {

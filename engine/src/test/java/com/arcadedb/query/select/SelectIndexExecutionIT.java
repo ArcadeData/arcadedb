@@ -72,7 +72,7 @@ public class SelectIndexExecutionIT extends TestHelper {
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"), "With id " + i);
-        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
       }
     }
   }
@@ -93,7 +93,7 @@ public class SelectIndexExecutionIT extends TestHelper {
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         Assertions.assertEquals(i < 100 ? 100L : 101L, result.getMetrics().get("evaluatedRecords"), "" + finalI);
-        Assertions.assertEquals(2, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(2, result.getMetrics().get("usedIndexes"));
       }
     }
   }
@@ -114,7 +114,7 @@ public class SelectIndexExecutionIT extends TestHelper {
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
       }
     }
 
@@ -132,7 +132,7 @@ public class SelectIndexExecutionIT extends TestHelper {
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
       }
     }
   }
@@ -151,7 +151,7 @@ public class SelectIndexExecutionIT extends TestHelper {
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         Assertions.assertEquals(110L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(0, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(0, result.getMetrics().get("usedIndexes"));
       }
     }
 
@@ -167,7 +167,7 @@ public class SelectIndexExecutionIT extends TestHelper {
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         Assertions.assertEquals(110L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(0, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(0, result.getMetrics().get("usedIndexes"));
       }
     }
 
@@ -189,7 +189,7 @@ public class SelectIndexExecutionIT extends TestHelper {
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(2, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(2, result.getMetrics().get("usedIndexes"));
       }
     }
 
@@ -207,7 +207,7 @@ public class SelectIndexExecutionIT extends TestHelper {
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(109 - i, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") > finalI));
-        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
       }
     }
 
@@ -221,7 +221,7 @@ public class SelectIndexExecutionIT extends TestHelper {
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(110 - i, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") >= finalI));
-        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
       }
     }
 
@@ -235,7 +235,7 @@ public class SelectIndexExecutionIT extends TestHelper {
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(i, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") < finalI));
-        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
       }
     }
 
@@ -249,7 +249,7 @@ public class SelectIndexExecutionIT extends TestHelper {
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(i + 1, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") <= finalI));
-        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
       }
     }
 
@@ -263,7 +263,7 @@ public class SelectIndexExecutionIT extends TestHelper {
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(109, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") != finalI));
-        Assertions.assertEquals(0, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(0, result.getMetrics().get("usedIndexes"));
       }
     }
   }

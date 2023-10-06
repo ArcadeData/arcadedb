@@ -55,11 +55,6 @@ public class TempIndexCursor implements IndexCursor {
   }
 
   @Override
-  public int getScore() {
-    return current.score;
-  }
-
-  @Override
   public BinaryComparator getComparator() {
     return null;
   }

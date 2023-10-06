@@ -44,11 +44,6 @@ public class IndexCursorCollection implements IndexCursor {
   }
 
   @Override
-  public int getScore() {
-    return 0;
-  }
-
-  @Override
   public BinaryComparator getComparator() {
     return null;
   }

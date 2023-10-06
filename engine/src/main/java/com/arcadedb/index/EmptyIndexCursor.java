@@ -46,11 +46,6 @@ public class EmptyIndexCursor implements IndexCursor {
   }
 
   @Override
-  public int getScore() {
-    return 0;
-  }
-
-  @Override
   public BinaryComparator getComparator() {
     return null;
   }
@@ -62,7 +57,7 @@ public class EmptyIndexCursor implements IndexCursor {
 
   @Override
   public long estimateSize() {
-    return 0l;
+    return 0L;
   }
 
   @Override

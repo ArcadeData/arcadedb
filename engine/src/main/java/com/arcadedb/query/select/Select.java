@@ -22,6 +22,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Pair;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -39,18 +40,18 @@ public class Select {
 
   enum STATE {DEFAULT, WHERE, COMPILED}
 
-  Map<String, Object> parameters;
-
-  SelectTreeNode     rootTreeElement;
-  DocumentType       fromType;
-  List<Bucket>       fromBuckets;
-  SelectOperator     operator;
-  SelectRuntimeValue property;
-  Object             propertyValue;
-  boolean            polymorphic = true;
-  int                limit       = -1;
-  long               timeoutInMs = 0;
-  boolean            exceptionOnTimeout;
+  Map<String, Object>              parameters;
+  SelectTreeNode                   rootTreeElement;
+  DocumentType                     fromType;
+  List<Bucket>                     fromBuckets;
+  SelectOperator                   operator;
+  SelectRuntimeValue               property;
+  Object                           propertyValue;
+  boolean                          polymorphic = true;
+  int                              limit       = -1;
+  long                             timeoutInMs = 0;
+  boolean                          exceptionOnTimeout;
+  ArrayList<Pair<String, Boolean>> orderBy;
 
   STATE state = STATE.DEFAULT;
   private SelectTreeNode lastTreeElement;
@@ -163,6 +164,14 @@ public class Select {
     return this;
   }
 
+  public Select orderBy(final String property, final boolean ascending) {
+    checkNotCompiled();
+    if (this.orderBy == null)
+      this.orderBy = new ArrayList<>();
+    this.orderBy.add(new Pair<>(property, ascending));
+    return this;
+  }
+
   public Select json(final JSONObject json) {
     checkNotCompiled();
     if (json.has("fromType")) {
@@ -222,10 +231,10 @@ public class Select {
   public SelectCompiled compile() {
     if (fromType == null && fromBuckets == null)
       throw new IllegalArgumentException("from (type or buckets) has not been set");
-    if (state != STATE.COMPILED) {
+    if (state == STATE.WHERE) {
       setLogic(SelectOperator.run);
-      state = STATE.COMPILED;
     }
+    state = STATE.COMPILED;
     return new SelectCompiled(this);
   }
 
@@ -243,7 +252,7 @@ public class Select {
 
   <T extends Document> SelectIterator<T> run() {
     compile();
-    return new SelectSelectExecutor(this).execute();
+    return new SelectExecutor(this).execute();
   }
 
   SelectWhereLeftBlock setLogic(final SelectOperator newLogicOperator) {

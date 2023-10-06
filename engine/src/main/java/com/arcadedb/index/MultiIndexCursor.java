@@ -56,8 +56,8 @@ public class MultiIndexCursor implements IndexCursor {
     initCursors();
   }
 
-  public MultiIndexCursor(final List<IndexInternal> indexes, final Object[] fromKeys, final boolean ascendingOrder, final boolean includeFrom,
-      final int limit) {
+  public MultiIndexCursor(final List<IndexInternal> indexes, final Object[] fromKeys, final boolean ascendingOrder,
+      final boolean includeFrom, final int limit) {
     this.cursors = new ArrayList<>(indexes.size());
     this.limit = limit;
     for (final Index i : indexes) {
@@ -149,11 +149,6 @@ public class MultiIndexCursor implements IndexCursor {
   }
 
   @Override
-  public int getScore() {
-    return -1;
-  }
-
-  @Override
   public void close() {
     for (final IndexCursor cursor : cursors)
       cursor.close();
@@ -162,9 +157,16 @@ public class MultiIndexCursor implements IndexCursor {
   @Override
   public long estimateSize() {
     long tot = 0L;
-    for (final IndexCursor cursor : cursors)
+    for (final IndexCursor cursor : cursors) {
+      if (cursor.estimateSize() == -1)
+        return -1;
       tot += cursor.estimateSize();
+    }
     return tot;
+  }
+
+  public int getCursors() {
+    return cursors.size();
   }
 
   @Override

@@ -30,22 +30,22 @@ public enum SelectOperator {
   or("or", true, 0) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      final Boolean leftValue = (Boolean) SelectSelectExecutor.evaluateValue(record, left);
+      final Boolean leftValue = (Boolean) SelectExecutor.evaluateValue(record, left);
       if (leftValue)
         return true;
 
-      return SelectSelectExecutor.evaluateValue(record, right);
+      return SelectExecutor.evaluateValue(record, right);
     }
   },
 
   and("and", true, 2) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      final Boolean leftValue = (Boolean) SelectSelectExecutor.evaluateValue(record, left);
+      final Boolean leftValue = (Boolean) SelectExecutor.evaluateValue(record, left);
       if (!leftValue)
         return false;
 
-      return SelectSelectExecutor.evaluateValue(record, right);
+      return SelectExecutor.evaluateValue(record, right);
     }
   },
 
@@ -59,61 +59,61 @@ public enum SelectOperator {
   eq("=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.equals(SelectSelectExecutor.evaluateValue(record, left),
-          SelectSelectExecutor.evaluateValue(record, right));
+      return BinaryComparator.equals(SelectExecutor.evaluateValue(record, left),
+          SelectExecutor.evaluateValue(record, right));
     }
   },
 
   neq("<>", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return !BinaryComparator.equals(SelectSelectExecutor.evaluateValue(record, left),
-          SelectSelectExecutor.evaluateValue(record, right));
+      return !BinaryComparator.equals(SelectExecutor.evaluateValue(record, left),
+          SelectExecutor.evaluateValue(record, right));
     }
   },
 
   lt("<", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectSelectExecutor.evaluateValue(record, left),
-          SelectSelectExecutor.evaluateValue(record, right)) < 0;
+      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left),
+          SelectExecutor.evaluateValue(record, right)) < 0;
     }
   },
 
   le("<=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectSelectExecutor.evaluateValue(record, left),
-          SelectSelectExecutor.evaluateValue(record, right)) <= 0;
+      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left),
+          SelectExecutor.evaluateValue(record, right)) <= 0;
     }
   },
 
   gt(">", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectSelectExecutor.evaluateValue(record, left),
-          SelectSelectExecutor.evaluateValue(record, right)) > 0;
+      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left),
+          SelectExecutor.evaluateValue(record, right)) > 0;
     }
   },
 
   ge(">=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectSelectExecutor.evaluateValue(record, left),
-          SelectSelectExecutor.evaluateValue(record, right)) >= 0;
+      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left),
+          SelectExecutor.evaluateValue(record, right)) >= 0;
     }
   },
 
   like("like", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return QueryHelper.like((String) SelectSelectExecutor.evaluateValue(record, left),
-          (String) SelectSelectExecutor.evaluateValue(record, right));
+      return QueryHelper.like((String) SelectExecutor.evaluateValue(record, left),
+          (String) SelectExecutor.evaluateValue(record, right));
     }
   }, run("!", true, -1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return SelectSelectExecutor.evaluateValue(record, left);
+      return SelectExecutor.evaluateValue(record, left);
     }
   };
 
