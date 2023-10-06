@@ -16,6 +16,7 @@ package com.arcadedb.query.nativ;/*
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -28,7 +29,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public abstract class QueryIterator<T extends Document> implements Iterator<T> {
+public abstract class QueryIterator<T extends Identifiable> implements Iterator<T> {
   public T nextOrNull() {
     return hasNext() ? next() : null;
   }

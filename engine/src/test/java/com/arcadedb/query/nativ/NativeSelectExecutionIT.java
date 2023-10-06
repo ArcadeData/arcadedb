@@ -175,10 +175,12 @@ public class NativeSelectExecutionIT extends TestHelper {
         .and().property("name").eq().value("Elon").limit(10);
 
     final QueryIterator<Vertex> iter = select.vertices();
+    int browsed = 0;
     while (iter.hasNext()) {
       Assertions.assertTrue(iter.next().getInteger("id") < 10);
+      ++browsed;
     }
-    Assertions.assertFalse(iter.hasNext());
+    Assertions.assertEquals(10, browsed);
   }
 
   @Test
@@ -200,8 +202,7 @@ public class NativeSelectExecutionIT extends TestHelper {
     {
       expectingException(() -> {
         final QueryIterator<Vertex> iter = database.select().fromType("Vertex")//
-            .where().property("id").lt().value(10)//
-            .and().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS, true).vertices();
+            .where().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS, true).vertices();
 
         while (iter.hasNext()) {
           Assertions.assertTrue(iter.next().getInteger("id") < 10);

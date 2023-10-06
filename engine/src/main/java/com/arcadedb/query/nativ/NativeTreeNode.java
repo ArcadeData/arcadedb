@@ -29,7 +29,7 @@ import java.util.*;
 public class NativeTreeNode {
   public       Object         left;
   public final NativeOperator operator;
-  private      Object         right;
+  public       Object         right;
   private      NativeTreeNode parent;
 
   public NativeTreeNode(final Object left, final NativeOperator operator, final Object right) {

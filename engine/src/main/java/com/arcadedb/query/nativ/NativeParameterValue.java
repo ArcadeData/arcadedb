@@ -15,7 +15,6 @@ public class NativeParameterValue implements NativeRuntimeValue {
   public Object eval(final Document record) {
     if (select.parameters == null)
       throw new IllegalArgumentException("Missing parameter '" + parameterName + "'");
-
     if (!select.parameters.containsKey(parameterName))
       throw new IllegalArgumentException("Missing parameter '" + parameterName + "'");
     return select.parameters.get(parameterName);
