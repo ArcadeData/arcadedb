@@ -19,6 +19,8 @@
 package com.arcadedb.query.nativ;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.Component;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
@@ -28,7 +30,9 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -62,6 +66,31 @@ public class NativeSelectExecutionIT extends TestHelper {
             true).save();
       }
     });
+  }
+
+  @Test
+  public void okFromBuckets() {
+    {
+      final NativeSelect select = database.select().fromBuckets(
+              database.getSchema().getType("Vertex").getBuckets(true).stream().map(Component::getName).collect(Collectors.toList())
+                  .toArray(new String[database.getSchema().getType("Vertex").getBuckets(true).size()]))//
+          .where().property("id").eq().parameter("value")//
+          .and().property("name").eq().value("Elon");
+
+      for (int i = 0; i < 100; i++)
+        Assertions.assertEquals(i, select.parameter("value", i).vertices().nextOrNull().getInteger("id"));
+    }
+
+    {
+      final NativeSelect select = database.select().fromBuckets(
+              database.getSchema().getType("Vertex").getBuckets(true).stream().map(Bucket::getFileId).collect(Collectors.toList())
+                  .toArray(new Integer[database.getSchema().getType("Vertex").getBuckets(true).size()]))//
+          .where().property("id").eq().parameter("value")//
+          .and().property("name").eq().value("Elon");
+
+      for (int i = 0; i < 100; i++)
+        Assertions.assertEquals(i, select.parameter("value", i).vertices().nextOrNull().getInteger("id"));
+    }
   }
 
   @Test
@@ -219,6 +248,33 @@ public class NativeSelectExecutionIT extends TestHelper {
       final QueryIterator<Vertex> iter = database.select().fromType("Vertex")//
           .where().property("id").lt().value(10)//
           .and().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS, false).vertices();
+    }
+  }
+
+  @Test
+  public void okNeq() {
+    final NativeSelect select = database.select().fromType("Vertex")//
+        .where().property("id").neq().parameter("value");
+
+    for (int i = 0; i < 100; i++) {
+      final int finalI = i;
+      final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+      final List<Vertex> list = result.toList();
+      Assertions.assertEquals(99, list.size());
+      list.forEach(r -> Assertions.assertTrue(r.getInteger("id") != finalI));
+    }
+  }
+
+  @Test
+  public void okLike() {
+    final NativeSelect select = database.select().fromType("Vertex")//
+        .where().property("name").like().value("E%");
+
+    for (int i = 0; i < 100; i++) {
+      final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+      final List<Vertex> list = result.toList();
+      Assertions.assertEquals(100, list.size());
+      list.forEach(r -> Assertions.assertTrue(r.getString("name").startsWith("E")));
     }
   }
 

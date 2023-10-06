@@ -67,73 +67,96 @@ public class NativeSelectExecutor {
 
   private Iterator<Identifiable> lookForIndexes() {
     if (select.fromType != null && select.rootTreeElement != null) {
-      final List<IndexCursor> indexes = new ArrayList<>();
-      lookForIndexes(select.rootTreeElement, indexes);
-      if (!indexes.isEmpty()) {
-        indexesUsed = indexes.size();
-        return new MultiIndexCursor(indexes, select.limit, true);
+      final List<IndexCursor> cursors = new ArrayList<>();
+
+      // FIND AVAILABLE INDEXES
+      boolean canUseIndexes = isTheNodeFullyIndexed(select.rootTreeElement);
+
+      filterWithIndexes(select.rootTreeElement, cursors);
+      if (!cursors.isEmpty()) {
+        indexesUsed = cursors.size();
+        return new MultiIndexCursor(cursors, select.limit, true);
       }
     }
     return null;
   }
 
-  private void lookForIndexes(final NativeTreeNode node, final List<IndexCursor> indexes) {
+  private void filterWithIndexes(final NativeTreeNode node, final List<IndexCursor> cursors) {
     if (!(node.left instanceof NativeTreeNode))
-      lookForIndexesFinalNode(node, indexes);
+      filterWithIndexesFinalNode(node, cursors);
     else {
-      lookForIndexes((NativeTreeNode) node.left, indexes);
+      filterWithIndexes((NativeTreeNode) node.left, cursors);
       if (node.right != null)
-        lookForIndexes((NativeTreeNode) node.right, indexes);
+        filterWithIndexes((NativeTreeNode) node.right, cursors);
     }
   }
 
-  private void lookForIndexesFinalNode(final NativeTreeNode node, final List<IndexCursor> indexes) {
-    if (node.left instanceof NativePropertyValue) {
-      if (!(node.right instanceof NativePropertyValue)) {
-        final TypeIndex propertyIndex = select.fromType.getPolymorphicIndexByProperties(
-            ((NativePropertyValue) node.left).propertyName);
-        if (propertyIndex != null) {
-          if (node.getParent().operator == NativeOperator.or) {
-            if (node != node.getParent().right &&//
-                !isTheNodeFullyIndexed((NativeTreeNode) node.getParent().right))
-              // UNDER AN 'OR' OPERATOR BUT THE OTHER RIGHT VALUE IS NOT INDEXED: CANNOT USE THE CURRENT INDEX
-              return;
-          }
+  private void filterWithIndexesFinalNode(final NativeTreeNode node, final List<IndexCursor> cursors) {
+    if (node.index == null)
+      return;
 
-          final Object rightValue;
-          if (node.right instanceof NativeParameterValue)
-            rightValue = ((NativeParameterValue) node.right).eval(null);
-          else
-            rightValue = node.right;
+    if (node.getParent().operator == NativeOperator.or) {
+      if (node != node.getParent().right &&//
+          !isTheNodeFullyIndexed((NativeTreeNode) node.getParent().right))
+        // UNDER AN 'OR' OPERATOR BUT THE OTHER RIGHT VALUE IS NOT INDEXED: CANNOT USE THE CURRENT INDEX
+        return;
+    }
 
-          final IndexCursor cursor;
-          if (node.operator == NativeOperator.eq)
-            cursor = propertyIndex.get(new Object[] { rightValue });
-          else if (node.operator == NativeOperator.gt)
-            cursor = propertyIndex.range(true, new Object[] { rightValue }, false, null, false);
-          else if (node.operator == NativeOperator.ge)
-            cursor = propertyIndex.range(true, new Object[] { rightValue }, true, null, false);
-          else if (node.operator == NativeOperator.lt)
-            cursor = propertyIndex.range(true, null, false, new Object[] { rightValue }, false);
-          else if (node.operator == NativeOperator.le)
-            cursor = propertyIndex.range(true, null, false, new Object[] { rightValue }, true);
-          else
-            return;
+    final Object rightValue;
+    if (node.right instanceof NativeParameterValue)
+      rightValue = ((NativeParameterValue) node.right).eval(null);
+    else
+      rightValue = node.right;
 
-          indexes.add(cursor);
+    final IndexCursor cursor;
+    if (node.operator == NativeOperator.eq)
+      cursor = node.index.get(new Object[] { rightValue });
+    else if (node.operator == NativeOperator.gt)
+      cursor = node.index.range(true, new Object[] { rightValue }, false, null, false);
+    else if (node.operator == NativeOperator.ge)
+      cursor = node.index.range(true, new Object[] { rightValue }, true, null, false);
+    else if (node.operator == NativeOperator.lt)
+      cursor = node.index.range(true, null, false, new Object[] { rightValue }, false);
+    else if (node.operator == NativeOperator.le)
+      cursor = node.index.range(true, null, false, new Object[] { rightValue }, true);
+    else
+      return;
+
+    final NativeTreeNode parentNode = node.getParent();
+    if (parentNode.operator == NativeOperator.and && parentNode.left == node) {
+      if (!node.index.isUnique()) {
+        // CHECK IF THERE IS ANOTHER INDEXED NODE ON THE SIBLING THAT IS UNIQUE (TO PREFER TO THIS)
+        final TypeIndex rightIndex = ((NativeTreeNode) parentNode.right).index;
+        if (rightIndex != null && rightIndex.isUnique()) {
+          // DO NOT USE THIS INDEX (NOT UNIQUE), NOT WORTH IT
+          node.index = null;
+          return;
         }
+      } else {
+        // REMOVE THE INDEX ON THE SIBLING NODE
+        // TODO CALCULATE WHICH ONE IS FASTER AND REMOVE THE SLOWER ONE
+        ((NativeTreeNode) parentNode.right).index = null;
       }
     }
+
+    cursors.add(cursor);
   }
 
   /**
    * Considers a fully indexed node when both properties are indexed or only one with an AND operator.
    */
   private boolean isTheNodeFullyIndexed(final NativeTreeNode node) {
+    if (node == null)
+      return true;
+
     if (!(node.left instanceof NativeTreeNode)) {
       if (!(node.right instanceof NativePropertyValue)) {
         final TypeIndex propertyIndex = select.fromType.getPolymorphicIndexByProperties(
             ((NativePropertyValue) node.left).propertyName);
+
+        if (propertyIndex != null)
+          node.index = propertyIndex;
+
         return propertyIndex != null;
       }
     } else {

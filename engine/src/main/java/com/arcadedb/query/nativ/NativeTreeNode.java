@@ -15,6 +15,8 @@ package com.arcadedb.query.nativ;/*
  */
 
 import com.arcadedb.database.Document;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -31,6 +33,7 @@ public class NativeTreeNode {
   public final NativeOperator operator;
   public       Object         right;
   private      NativeTreeNode parent;
+  public       TypeIndex      index;
 
   public NativeTreeNode(final Object left, final NativeOperator operator, final Object right) {
     this.left = left;

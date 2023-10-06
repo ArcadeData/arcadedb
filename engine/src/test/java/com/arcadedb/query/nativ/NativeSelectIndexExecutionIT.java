@@ -58,7 +58,7 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
   }
 
   @Test
-  public void okBothIndexUsed() {
+  public void okOneOfTwoAvailableIndexes() {
     // EXPECTED TO USE BOTH INDEXES BECAUSE OF THE AND LOGIC OPERATOR
     {
       final NativeSelect select = database.select().fromType("Vertex")//
@@ -75,11 +75,14 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") == finalI && r.getString("name").equals("Elon")));
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(100L, result.getMetrics().get("evaluatedRecords"), "With id " + i);
-        Assertions.assertEquals(2, result.getMetrics().get("indexesUsed"));
+        Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"), "With id " + i);
+        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
       }
     }
+  }
 
+  @Test
+  public void okBothAvailableIndexes() {
     // EXPECTED TO USE BOTH INDEXES BECAUSE OF THE OR LOGIC OPERATOR AND EACH PROPERTY IS INDEXED
     {
       final NativeSelect select = database.select().fromType("Vertex")//
@@ -93,7 +96,7 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
         result.forEachRemaining(r -> Assertions.assertTrue(r.getInteger("id") == finalI || r.getString("name").equals("Elon")));
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(100L, result.getMetrics().get("evaluatedRecords"));
+        Assertions.assertEquals(i < 100 ? 100L : 101L, result.getMetrics().get("evaluatedRecords"), "" + finalI);
         Assertions.assertEquals(2, result.getMetrics().get("indexesUsed"));
       }
     }
@@ -194,5 +197,78 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
       }
     }
 
+  }
+
+  @Test
+  public void okRanges() {
+    {
+      final NativeSelect select = database.select().fromType("Vertex")//
+          .where().property("id").gt().parameter("value");
+
+      for (int i = 0; i < 110; i++) {
+        final int finalI = i;
+        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final List<Vertex> list = result.toList();
+        Assertions.assertEquals(109 - i, list.size());
+        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") > finalI));
+        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+      }
+    }
+
+    {
+      final NativeSelect select = database.select().fromType("Vertex")//
+          .where().property("id").ge().parameter("value");
+
+      for (int i = 0; i < 110; i++) {
+        final int finalI = i;
+        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final List<Vertex> list = result.toList();
+        Assertions.assertEquals(110 - i, list.size());
+        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") >= finalI));
+        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+      }
+    }
+
+    {
+      final NativeSelect select = database.select().fromType("Vertex")//
+          .where().property("id").lt().parameter("value");
+
+      for (int i = 0; i < 110; i++) {
+        final int finalI = i;
+        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final List<Vertex> list = result.toList();
+        Assertions.assertEquals(i, list.size());
+        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") < finalI));
+        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+      }
+    }
+
+    {
+      final NativeSelect select = database.select().fromType("Vertex")//
+          .where().property("id").le().parameter("value");
+
+      for (int i = 0; i < 110; i++) {
+        final int finalI = i;
+        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final List<Vertex> list = result.toList();
+        Assertions.assertEquals(i + 1, list.size());
+        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") <= finalI));
+        Assertions.assertEquals(1, result.getMetrics().get("indexesUsed"));
+      }
+    }
+
+    {
+      final NativeSelect select = database.select().fromType("Vertex")//
+          .where().property("id").neq().parameter("value");
+
+      for (int i = 0; i < 110; i++) {
+        final int finalI = i;
+        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final List<Vertex> list = result.toList();
+        Assertions.assertEquals(109, list.size());
+        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") != finalI));
+        Assertions.assertEquals(0, result.getMetrics().get("indexesUsed"));
+      }
+    }
   }
 }

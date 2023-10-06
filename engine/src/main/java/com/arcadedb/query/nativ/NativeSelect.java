@@ -98,6 +98,10 @@ public class NativeSelect {
     return setOperator(NativeOperator.eq);
   }
 
+  public NativeSelect neq() {
+    return setOperator(NativeOperator.neq);
+  }
+
   public NativeSelect lt() {
     return setOperator(NativeOperator.lt);
   }
@@ -112,6 +116,10 @@ public class NativeSelect {
 
   public NativeSelect ge() {
     return setOperator(NativeOperator.ge);
+  }
+
+  public NativeSelect like() {
+    return setOperator(NativeOperator.like);
   }
 
   public NativeSelect and() {

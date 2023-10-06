@@ -15,6 +15,7 @@ package com.arcadedb.query.nativ;/*
  */
 
 import com.arcadedb.database.Document;
+import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.*;
@@ -63,6 +64,14 @@ public enum NativeOperator {
     }
   },
 
+  neq("<>", false, 1) {
+    @Override
+    Object eval(final Document record, final Object left, final Object right) {
+      return !BinaryComparator.equals(NativeSelectExecutor.evaluateValue(record, left),
+          NativeSelectExecutor.evaluateValue(record, right));
+    }
+  },
+
   lt("<", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
@@ -95,7 +104,13 @@ public enum NativeOperator {
     }
   },
 
-  run("!", true, -1) {
+  like("like", false, 1) {
+    @Override
+    Object eval(final Document record, final Object left, final Object right) {
+      return QueryHelper.like((String) NativeSelectExecutor.evaluateValue(record, left),
+          (String) NativeSelectExecutor.evaluateValue(record, right));
+    }
+  }, run("!", true, -1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return NativeSelectExecutor.evaluateValue(record, left);
