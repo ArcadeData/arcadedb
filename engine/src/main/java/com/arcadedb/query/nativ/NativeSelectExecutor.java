@@ -21,7 +21,6 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.utility.MultiIterator;
-import org.eclipse.collections.impl.lazy.parallel.set.sorted.SelectSortedSetBatch;
 
 import java.util.*;
 
@@ -33,17 +32,15 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class NativeSelectExecutor {
-  private final NativeSelect select;
-  private       long         browsed     = 0;
-  private       int          indexesUsed = 0;
+  final   NativeSelect select;
+  private long         evaluatedRecords = 0;
+  private int          indexesUsed      = 0;
 
   public NativeSelectExecutor(final NativeSelect select) {
     this.select = select;
   }
 
   <T extends Identifiable> QueryIterator<T> execute() {
-    final int[] returned = new int[] { 0 };
-
     final Iterator<Identifiable> iteratorFromIndexes = lookForIndexes();
 
     final Iterator<Identifiable> iterator;
@@ -65,47 +62,7 @@ public class NativeSelectExecutor {
       ((MultiIterator<Identifiable>) iterator).setTimeout(select.timeoutUnit.toMillis(select.timeoutValue),
           select.exceptionOnTimeout);
 
-    return new QueryIterator<>() {
-      private T next = null;
-
-      @Override
-      public boolean hasNext() {
-        if (select.limit > -1 && returned[0] >= select.limit)
-          return false;
-        if (next != null)
-          return true;
-        if (!iterator.hasNext())
-          return false;
-
-        next = fetchNext();
-        return next != null;
-      }
-
-      @Override
-      public T next() {
-        if (next == null && !hasNext())
-          throw new NoSuchElementException();
-        try {
-          return next;
-        } finally {
-          next = null;
-        }
-      }
-
-      private T fetchNext() {
-        do {
-          final Document record = iterator.next().asDocument();
-          if (evaluateWhere(record)) {
-            ++returned[0];
-            return (T) record;
-          }
-
-        } while (iterator.hasNext());
-
-        // NOT FOUND
-        return null;
-      }
-    };
+    return new QueryIterator<>(this, iterator, iteratorFromIndexes != null);
   }
 
   private Iterator<Identifiable> lookForIndexes() {
@@ -133,11 +90,12 @@ public class NativeSelectExecutor {
   private void lookForIndexesFinalNode(final NativeTreeNode node, final List<IndexCursor> indexes) {
     if (node.left instanceof NativePropertyValue) {
       if (!(node.right instanceof NativePropertyValue)) {
-        final List<TypeIndex> propertyIndexes = select.fromType.getIndexesByProperties(
+        final TypeIndex propertyIndex = select.fromType.getPolymorphicIndexByProperties(
             ((NativePropertyValue) node.left).propertyName);
-        if (!propertyIndexes.isEmpty()) {
+        if (propertyIndex != null) {
           if (node.getParent().operator == NativeOperator.or) {
-            if (!isLeftPropertyIndexed((NativeTreeNode) node.getParent().right))
+            if (node != node.getParent().right &&//
+                !isTheNodeFullyIndexed((NativeTreeNode) node.getParent().right))
               // UNDER AN 'OR' OPERATOR BUT THE OTHER RIGHT VALUE IS NOT INDEXED: CANNOT USE THE CURRENT INDEX
               return;
           }
@@ -148,37 +106,47 @@ public class NativeSelectExecutor {
           else
             rightValue = node.right;
 
-          for (TypeIndex idx : propertyIndexes) {
-            final IndexCursor cursor;
-            if (node.operator == NativeOperator.eq)
-              cursor = idx.get(new Object[] { rightValue });
-            else if (node.operator == NativeOperator.gt)
-              cursor = idx.range(true, new Object[] { rightValue }, false, null, false);
-            else if (node.operator == NativeOperator.ge)
-              cursor = idx.range(true, new Object[] { rightValue }, true, null, false);
-            else if (node.operator == NativeOperator.lt)
-              cursor = idx.range(true, null, false, new Object[] { rightValue }, false);
-            else if (node.operator == NativeOperator.le)
-              cursor = idx.range(true, null, false, new Object[] { rightValue }, true);
-            else
-              continue;
+          final IndexCursor cursor;
+          if (node.operator == NativeOperator.eq)
+            cursor = propertyIndex.get(new Object[] { rightValue });
+          else if (node.operator == NativeOperator.gt)
+            cursor = propertyIndex.range(true, new Object[] { rightValue }, false, null, false);
+          else if (node.operator == NativeOperator.ge)
+            cursor = propertyIndex.range(true, new Object[] { rightValue }, true, null, false);
+          else if (node.operator == NativeOperator.lt)
+            cursor = propertyIndex.range(true, null, false, new Object[] { rightValue }, false);
+          else if (node.operator == NativeOperator.le)
+            cursor = propertyIndex.range(true, null, false, new Object[] { rightValue }, true);
+          else
+            return;
 
-            indexes.add(cursor);
-          }
+          indexes.add(cursor);
         }
       }
     }
   }
 
-  private boolean isLeftPropertyIndexed(final NativeTreeNode node) {
-    if (node.left instanceof NativePropertyValue) {
+  /**
+   * Considers a fully indexed node when both properties are indexed or only one with an AND operator.
+   */
+  private boolean isTheNodeFullyIndexed(final NativeTreeNode node) {
+    if (!(node.left instanceof NativeTreeNode)) {
       if (!(node.right instanceof NativePropertyValue)) {
-        final List<TypeIndex> propertyIndexes = select.fromType.getIndexesByProperties(
+        final TypeIndex propertyIndex = select.fromType.getPolymorphicIndexByProperties(
             ((NativePropertyValue) node.left).propertyName);
-        if (!propertyIndexes.isEmpty()) {
-          return true;
-        }
+        return propertyIndex != null;
       }
+    } else {
+      final boolean leftIsIndexed = isTheNodeFullyIndexed((NativeTreeNode) node.left);
+      final boolean rightIsIndexed = isTheNodeFullyIndexed((NativeTreeNode) node.right);
+
+      if (node.operator.equals(NativeOperator.and))
+        // AND: ONE OR BOTH MEANS INDEXED
+        return leftIsIndexed || rightIsIndexed;
+      else if (node.operator.equals(NativeOperator.or))
+        return leftIsIndexed || rightIsIndexed;
+      else if (node.operator.equals(NativeOperator.not))
+        return leftIsIndexed;
     }
     return false;
   }
@@ -194,11 +162,11 @@ public class NativeSelectExecutor {
   }
 
   public Map<String, Object> metrics() {
-    return Map.of("browsed", browsed, "indexesUsed", indexesUsed);
+    return Map.of("evaluatedRecords", evaluatedRecords, "indexesUsed", indexesUsed);
   }
 
-  private boolean evaluateWhere(final Document record) {
-    ++browsed;
+  boolean evaluateWhere(final Document record) {
+    ++evaluatedRecords;
     final Object result = select.rootTreeElement.eval(record);
     if (result instanceof Boolean)
       return (Boolean) result;

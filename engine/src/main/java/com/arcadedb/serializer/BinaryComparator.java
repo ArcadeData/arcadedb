@@ -374,7 +374,11 @@ public class BinaryComparator {
   }
 
   public static boolean equals(final Object a, final Object b) {
-    if (a instanceof String && b instanceof String)
+    if (a == b)
+      return true;
+    else if (a == null || b == null)
+      return false;
+    else if (a instanceof String && b instanceof String)
       return equalsString((String) a, (String) b);
     else if (a instanceof byte[] && b instanceof byte[])
       return equalsBytes((byte[]) a, (byte[]) b);

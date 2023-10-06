@@ -14,13 +14,9 @@ package com.arcadedb.query.nativ;/*
  * limitations under the License.
  */
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.Record;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.Vertex;
-import com.arcadedb.schema.DocumentType;
+import com.arcadedb.database.RID;
 
 import java.util.*;
 
@@ -29,7 +25,67 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public abstract class QueryIterator<T extends Identifiable> implements Iterator<T> {
+public class QueryIterator<T extends Identifiable> implements Iterator<T> {
+  private final NativeSelectExecutor   executor;
+  private final Iterator<Identifiable> iterator;
+  private       HashSet<RID>           filterOutRecords;
+  private       T                      next     = null;
+  private       long                   returned = 0;
+
+  protected QueryIterator(final NativeSelectExecutor executor, final Iterator<Identifiable> iterator, final boolean uniqueResult) {
+    this.executor = executor;
+    this.iterator = iterator;
+    if (uniqueResult)
+      this.filterOutRecords = new HashSet<>();
+  }
+
+  @Override
+  public boolean hasNext() {
+    if (executor.select.limit > -1 && returned >= executor.select.limit)
+      return false;
+    if (next != null)
+      return true;
+    if (!iterator.hasNext())
+      return false;
+
+    next = fetchNext();
+    return next != null;
+  }
+
+  @Override
+  public T next() {
+    if (next == null && !hasNext())
+      throw new NoSuchElementException();
+    try {
+      return next;
+    } finally {
+      next = null;
+    }
+  }
+
+  private T fetchNext() {
+    do {
+      final Document record = iterator.next().asDocument();
+
+      if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
+        // ALREADY RETURNED, AVOID DUPLICATES IN THE RESULTSET
+        continue;
+
+      if (executor.evaluateWhere(record)) {
+        ++returned;
+
+        if (filterOutRecords != null)
+          filterOutRecords.add(record.getIdentity());
+
+        return (T) record;
+      }
+
+    } while (iterator.hasNext());
+
+    // NOT FOUND
+    return null;
+  }
+
   public T nextOrNull() {
     return hasNext() ? next() : null;
   }
@@ -39,5 +95,9 @@ public abstract class QueryIterator<T extends Identifiable> implements Iterator<
     while (hasNext())
       result.add(next());
     return result;
+  }
+
+  public Map<String, Object> getMetrics() {
+    return executor.metrics();
   }
 }
