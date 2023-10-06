@@ -1,4 +1,4 @@
-package com.arcadedb.query.nativ;/*
+package com.arcadedb.query.select;/*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,14 +25,14 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class QueryIterator<T extends Identifiable> implements Iterator<T> {
-  private final NativeSelectExecutor   executor;
+public class SelectIterator<T extends Identifiable> implements Iterator<T> {
+  private final SelectSelectExecutor   executor;
   private final Iterator<Identifiable> iterator;
   private       HashSet<RID>           filterOutRecords;
   private       T                      next     = null;
   private       long                   returned = 0;
 
-  protected QueryIterator(final NativeSelectExecutor executor, final Iterator<Identifiable> iterator, final boolean uniqueResult) {
+  protected SelectIterator(final SelectSelectExecutor executor, final Iterator<Identifiable> iterator, final boolean uniqueResult) {
     this.executor = executor;
     this.iterator = iterator;
     if (uniqueResult)

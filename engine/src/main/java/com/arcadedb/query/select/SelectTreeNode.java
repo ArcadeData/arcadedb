@@ -1,4 +1,4 @@
-package com.arcadedb.query.nativ;/*
+package com.arcadedb.query.select;/*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,43 +15,38 @@ package com.arcadedb.query.nativ;/*
  */
 
 import com.arcadedb.database.Document;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
-
-import java.util.*;
 
 /**
  * Native condition representation in a tree.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class NativeTreeNode {
+public class SelectTreeNode {
   public       Object         left;
-  public final NativeOperator operator;
+  public final SelectOperator operator;
   public       Object         right;
-  private      NativeTreeNode parent;
+  private      SelectTreeNode parent;
   public       TypeIndex      index;
 
-  public NativeTreeNode(final Object left, final NativeOperator operator, final Object right) {
+  public SelectTreeNode(final Object left, final SelectOperator operator, final Object right) {
     this.left = left;
-    if (left instanceof NativeTreeNode)
-      ((NativeTreeNode) left).setParent(this);
+    if (left instanceof SelectTreeNode)
+      ((SelectTreeNode) left).setParent(this);
 
     this.operator = operator;
 
     this.right = right;
-    if (right instanceof NativeTreeNode)
-      ((NativeTreeNode) right).setParent(this);
+    if (right instanceof SelectTreeNode)
+      ((SelectTreeNode) right).setParent(this);
   }
 
   public Object eval(final Document record) {
     return operator.eval(record, left, right);
   }
 
-  public void setRight(final NativeTreeNode right) {
+  public void setRight(final SelectTreeNode right) {
     if (this.right != null)
       throw new IllegalArgumentException("Cannot assign the right node because already assigned to " + this.right);
     this.right = right;
@@ -60,11 +55,11 @@ public class NativeTreeNode {
     right.parent = this;
   }
 
-  public NativeTreeNode getParent() {
+  public SelectTreeNode getParent() {
     return parent;
   }
 
-  public void setParent(final NativeTreeNode newParent) {
+  public void setParent(final SelectTreeNode newParent) {
     if (this.parent == newParent)
       return;
 
@@ -95,20 +90,20 @@ public class NativeTreeNode {
   public JSONArray toJSON() {
     final JSONArray json = new JSONArray();
 
-    if (left instanceof NativeTreeNode)
-      json.put(((NativeTreeNode) left).toJSON());
-    else if (left instanceof NativePropertyValue || left instanceof NativeParameterValue)
+    if (left instanceof SelectTreeNode)
+      json.put(((SelectTreeNode) left).toJSON());
+    else if (left instanceof SelectPropertyValue || left instanceof SelectParameterValue)
       json.put(left.toString());
     else
       json.put(left);
 
-    if (operator != NativeOperator.run)
+    if (operator != SelectOperator.run)
       json.put(operator.name);
 
     if (right != null) {
-      if (right instanceof NativeTreeNode)
-        json.put(((NativeTreeNode) right).toJSON());
-      else if (right instanceof NativePropertyValue || right instanceof NativeParameterValue)
+      if (right instanceof SelectTreeNode)
+        json.put(((SelectTreeNode) right).toJSON());
+      else if (right instanceof SelectPropertyValue || right instanceof SelectParameterValue)
         json.put(right.toString());
       else
         json.put(right);

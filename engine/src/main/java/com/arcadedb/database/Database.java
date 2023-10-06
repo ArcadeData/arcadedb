@@ -28,7 +28,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.nativ.NativeSelect;
+import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 
@@ -56,7 +56,7 @@ public interface Database extends BasicDatabase {
    */
   String getCurrentUserName();
 
-  NativeSelect select();
+  Select select();
 
   /**
    * Executes a command by specifying the language and arguments in a map.

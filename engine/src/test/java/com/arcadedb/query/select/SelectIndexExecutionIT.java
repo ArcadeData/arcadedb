@@ -16,28 +16,24 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.nativ;
+package com.arcadedb.query.select;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.index.Index;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
-import java.util.concurrent.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class NativeSelectIndexExecutionIT extends TestHelper {
+public class SelectIndexExecutionIT extends TestHelper {
 
-  public NativeSelectIndexExecutionIT() {
+  public SelectIndexExecutionIT() {
     autoStartTx = true;
   }
 
@@ -61,13 +57,13 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
   public void okOneOfTwoAvailableIndexes() {
     // EXPECTED TO USE BOTH INDEXES BECAUSE OF THE AND LOGIC OPERATOR
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
+      final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon");
+          .and().property("name").eq().value("Elon").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(i < 100 ? 1 : 0, list.size());
@@ -85,13 +81,13 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
   public void okBothAvailableIndexes() {
     // EXPECTED TO USE BOTH INDEXES BECAUSE OF THE OR LOGIC OPERATOR AND EACH PROPERTY IS INDEXED
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
+      final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .or().property("name").eq().value("Elon");
+          .or().property("name").eq().value("Elon").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
         result.forEachRemaining(r -> Assertions.assertTrue(r.getInteger("id") == finalI || r.getString("name").equals("Elon")));
 
@@ -106,13 +102,13 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
   public void okOneIndexUsed() {
     // EXPECTED TO USE ONLY ONE INDEX
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
+      final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .and().property("unknown").eq().value(null);
+          .and().property("unknown").eq().value(null).compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
         result.forEachRemaining(r -> Assertions.assertEquals((int) r.getInteger("id"), finalI));
 
@@ -124,13 +120,13 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
 
     // EXPECTED TO USE ONLY ONE INDEX
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
+      final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("unknown").eq().value(null)//
-          .and().property("id").eq().parameter("value");
+          .and().property("id").eq().parameter("value").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
         result.forEachRemaining(r -> Assertions.assertEquals((int) r.getInteger("id"), finalI));
 
@@ -145,12 +141,12 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
   public void okNoIndexUsed() {
     // EXPECTED NO INDEXES IS USED BECAUSE NO INDEXES WERE DEFINED ON ANY OF THE PROPERTIES
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
+      final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("unknown").eq().value(null)//
-          .and().property("unknown").eq().value(null);
+          .and().property("unknown").eq().value(null).compile();
 
       for (int i = 0; i < 110; i++) {
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         result.toList();
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
@@ -161,12 +157,12 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
 
     // EXPECTED NO INDEXES IS USED BECAUSE THE OR OPERATOR ONLY ONE ONE PROPERTY
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
+      final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .or().property("unknown").eq().value(null);
+          .or().property("unknown").eq().value(null).compile();
 
       for (int i = 0; i < 110; i++) {
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         result.toList();
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
@@ -177,14 +173,14 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
 
     // EXPECTED NO INDEXES IS USED BECAUSE THE OR OPERATOR ONLY ONE ONE PROPERTY
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
+      final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .or().property("unknown").eq().value(null).and().property("id").eq().parameter("value");
+          .or().property("unknown").eq().value(null).and().property("id").eq().parameter("value").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
 
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(1, list.size());
@@ -202,12 +198,12 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
   @Test
   public void okRanges() {
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
-          .where().property("id").gt().parameter("value");
+      final SelectCompiled select = database.select().fromType("Vertex")//
+          .where().property("id").gt().parameter("value").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(109 - i, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") > finalI));
@@ -216,12 +212,12 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
     }
 
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
-          .where().property("id").ge().parameter("value");
+      final SelectCompiled select = database.select().fromType("Vertex")//
+          .where().property("id").ge().parameter("value").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(110 - i, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") >= finalI));
@@ -230,12 +226,12 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
     }
 
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
-          .where().property("id").lt().parameter("value");
+      final SelectCompiled select = database.select().fromType("Vertex")//
+          .where().property("id").lt().parameter("value").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(i, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") < finalI));
@@ -244,12 +240,12 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
     }
 
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
-          .where().property("id").le().parameter("value");
+      final SelectCompiled select = database.select().fromType("Vertex")//
+          .where().property("id").le().parameter("value").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(i + 1, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") <= finalI));
@@ -258,12 +254,12 @@ public class NativeSelectIndexExecutionIT extends TestHelper {
     }
 
     {
-      final NativeSelect select = database.select().fromType("Vertex")//
-          .where().property("id").neq().parameter("value");
+      final SelectCompiled select = database.select().fromType("Vertex")//
+          .where().property("id").neq().parameter("value").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
-        final QueryIterator<Vertex> result = select.parameter("value", i).vertices();
+        final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
         Assertions.assertEquals(109, list.size());
         list.forEach(r -> Assertions.assertTrue(r.getInteger("id") != finalI));

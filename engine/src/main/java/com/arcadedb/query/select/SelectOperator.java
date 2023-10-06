@@ -1,4 +1,4 @@
-package com.arcadedb.query.nativ;/*
+package com.arcadedb.query.select;/*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,26 +26,26 @@ import java.util.concurrent.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public enum NativeOperator {
+public enum SelectOperator {
   or("or", true, 0) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      final Boolean leftValue = (Boolean) NativeSelectExecutor.evaluateValue(record, left);
+      final Boolean leftValue = (Boolean) SelectSelectExecutor.evaluateValue(record, left);
       if (leftValue)
         return true;
 
-      return NativeSelectExecutor.evaluateValue(record, right);
+      return SelectSelectExecutor.evaluateValue(record, right);
     }
   },
 
   and("and", true, 2) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      final Boolean leftValue = (Boolean) NativeSelectExecutor.evaluateValue(record, left);
+      final Boolean leftValue = (Boolean) SelectSelectExecutor.evaluateValue(record, left);
       if (!leftValue)
         return false;
 
-      return NativeSelectExecutor.evaluateValue(record, right);
+      return SelectSelectExecutor.evaluateValue(record, right);
     }
   },
 
@@ -59,70 +59,70 @@ public enum NativeOperator {
   eq("=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.equals(NativeSelectExecutor.evaluateValue(record, left),
-          NativeSelectExecutor.evaluateValue(record, right));
+      return BinaryComparator.equals(SelectSelectExecutor.evaluateValue(record, left),
+          SelectSelectExecutor.evaluateValue(record, right));
     }
   },
 
   neq("<>", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return !BinaryComparator.equals(NativeSelectExecutor.evaluateValue(record, left),
-          NativeSelectExecutor.evaluateValue(record, right));
+      return !BinaryComparator.equals(SelectSelectExecutor.evaluateValue(record, left),
+          SelectSelectExecutor.evaluateValue(record, right));
     }
   },
 
   lt("<", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(NativeSelectExecutor.evaluateValue(record, left),
-          NativeSelectExecutor.evaluateValue(record, right)) < 0;
+      return BinaryComparator.compareTo(SelectSelectExecutor.evaluateValue(record, left),
+          SelectSelectExecutor.evaluateValue(record, right)) < 0;
     }
   },
 
   le("<=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(NativeSelectExecutor.evaluateValue(record, left),
-          NativeSelectExecutor.evaluateValue(record, right)) <= 0;
+      return BinaryComparator.compareTo(SelectSelectExecutor.evaluateValue(record, left),
+          SelectSelectExecutor.evaluateValue(record, right)) <= 0;
     }
   },
 
   gt(">", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(NativeSelectExecutor.evaluateValue(record, left),
-          NativeSelectExecutor.evaluateValue(record, right)) > 0;
+      return BinaryComparator.compareTo(SelectSelectExecutor.evaluateValue(record, left),
+          SelectSelectExecutor.evaluateValue(record, right)) > 0;
     }
   },
 
   ge(">=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(NativeSelectExecutor.evaluateValue(record, left),
-          NativeSelectExecutor.evaluateValue(record, right)) >= 0;
+      return BinaryComparator.compareTo(SelectSelectExecutor.evaluateValue(record, left),
+          SelectSelectExecutor.evaluateValue(record, right)) >= 0;
     }
   },
 
   like("like", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return QueryHelper.like((String) NativeSelectExecutor.evaluateValue(record, left),
-          (String) NativeSelectExecutor.evaluateValue(record, right));
+      return QueryHelper.like((String) SelectSelectExecutor.evaluateValue(record, left),
+          (String) SelectSelectExecutor.evaluateValue(record, right));
     }
   }, run("!", true, -1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return NativeSelectExecutor.evaluateValue(record, left);
+      return SelectSelectExecutor.evaluateValue(record, left);
     }
   };
 
   public final   String                      name;
   public final   boolean                     logicOperator;
   public final   int                         precedence;
-  private static Map<String, NativeOperator> NAMES = new ConcurrentHashMap<>();
+  private static Map<String, SelectOperator> NAMES = new ConcurrentHashMap<>();
 
-  NativeOperator(final String name, final boolean logicOperator, final int precedence) {
+  SelectOperator(final String name, final boolean logicOperator, final int precedence) {
     this.name = name;
     this.logicOperator = logicOperator;
     this.precedence = precedence;
@@ -130,9 +130,9 @@ public enum NativeOperator {
 
   abstract Object eval(final Document record, Object left, Object right);
 
-  public static NativeOperator byName(final String name) {
+  public static SelectOperator byName(final String name) {
     if (NAMES.isEmpty()) {
-      for (NativeOperator v : values())
+      for (SelectOperator v : values())
         NAMES.put(v.name, v);
     }
 

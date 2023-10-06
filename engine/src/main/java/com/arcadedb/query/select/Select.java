@@ -1,4 +1,4 @@
-package com.arcadedb.query.nativ;/*
+package com.arcadedb.query.select;/*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,33 +34,32 @@ import java.util.stream.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class NativeSelect {
+public class Select {
   final DatabaseInternal database;
 
   enum STATE {DEFAULT, WHERE, COMPILED}
 
   Map<String, Object> parameters;
 
-  NativeTreeNode     rootTreeElement;
+  SelectTreeNode     rootTreeElement;
   DocumentType       fromType;
   List<Bucket>       fromBuckets;
-  NativeOperator     operator;
-  NativeRuntimeValue property;
+  SelectOperator     operator;
+  SelectRuntimeValue property;
   Object             propertyValue;
   boolean            polymorphic = true;
   int                limit       = -1;
-  long               timeoutValue;
-  TimeUnit           timeoutUnit;
+  long               timeoutInMs = 0;
   boolean            exceptionOnTimeout;
 
-  private STATE          state = STATE.DEFAULT;
-  private NativeTreeNode lastTreeElement;
+  STATE state = STATE.DEFAULT;
+  private SelectTreeNode lastTreeElement;
 
-  public NativeSelect(final DatabaseInternal database) {
+  public Select(final DatabaseInternal database) {
     this.database = database;
   }
 
-  public NativeSelect fromType(final String fromType) {
+  public Select fromType(final String fromType) {
     checkNotCompiled();
     if (this.fromType != null)
       throw new IllegalArgumentException("From type has already been set");
@@ -71,7 +70,7 @@ public class NativeSelect {
     return this;
   }
 
-  public NativeSelect fromBuckets(final String... fromBucketNames) {
+  public Select fromBuckets(final String... fromBucketNames) {
     checkNotCompiled();
     if (this.fromType != null)
       throw new IllegalArgumentException("From type has already been set");
@@ -83,7 +82,7 @@ public class NativeSelect {
     return this;
   }
 
-  public NativeSelect fromBuckets(final Integer... fromBucketIds) {
+  public Select fromBuckets(final Integer... fromBucketIds) {
     checkNotCompiled();
     if (this.fromType != null)
       throw new IllegalArgumentException("From type has already been set");
@@ -94,53 +93,17 @@ public class NativeSelect {
     return this;
   }
 
-  public NativeSelect eq() {
-    return setOperator(NativeOperator.eq);
-  }
-
-  public NativeSelect neq() {
-    return setOperator(NativeOperator.neq);
-  }
-
-  public NativeSelect lt() {
-    return setOperator(NativeOperator.lt);
-  }
-
-  public NativeSelect le() {
-    return setOperator(NativeOperator.le);
-  }
-
-  public NativeSelect gt() {
-    return setOperator(NativeOperator.gt);
-  }
-
-  public NativeSelect ge() {
-    return setOperator(NativeOperator.ge);
-  }
-
-  public NativeSelect like() {
-    return setOperator(NativeOperator.like);
-  }
-
-  public NativeSelect and() {
-    return setLogic(NativeOperator.and);
-  }
-
-  public NativeSelect or() {
-    return setLogic(NativeOperator.or);
-  }
-
-  public NativeSelect property(final String name) {
+  public Select property(final String name) {
     checkNotCompiled();
     if (property != null)
       throw new IllegalArgumentException("Property has already been set");
     if (state != STATE.WHERE)
       throw new IllegalArgumentException("No context was provided for the parameter");
-    this.property = new NativePropertyValue(name);
+    this.property = new SelectPropertyValue(name);
     return this;
   }
 
-  public NativeSelect value(final Object value) {
+  public Select value(final Object value) {
     checkNotCompiled();
     if (property == null)
       throw new IllegalArgumentException("Property has not been set");
@@ -158,42 +121,41 @@ public class NativeSelect {
     return this;
   }
 
-  public NativeSelect where() {
+  public SelectWhereLeftBlock where() {
     checkNotCompiled();
     if (rootTreeElement != null)
       throw new IllegalArgumentException("Where has already been set");
     state = STATE.WHERE;
-    return this;
+    return new SelectWhereLeftBlock(this);
   }
 
-  public NativeSelect parameter(final String parameterName) {
+  public Select parameter(final String parameterName) {
     checkNotCompiled();
-    this.propertyValue = new NativeParameterValue(this, parameterName);
+    this.propertyValue = new SelectParameterValue(this, parameterName);
     return this;
   }
 
-  public NativeSelect parameter(final String paramName, final Object paramValue) {
+  public Select parameter(final String paramName, final Object paramValue) {
     if (parameters == null)
       parameters = new HashMap<>();
     parameters.put(paramName, paramValue);
     return this;
   }
 
-  public NativeSelect limit(final int limit) {
+  public Select limit(final int limit) {
     checkNotCompiled();
     this.limit = limit;
     return this;
   }
 
-  public NativeSelect timeout(final long timeoutValue, final TimeUnit timeoutUnit, final boolean exceptionOnTimeout) {
+  public Select timeout(final long timeoutValue, final TimeUnit timeoutUnit, final boolean exceptionOnTimeout) {
     checkNotCompiled();
-    this.timeoutValue = timeoutValue;
-    this.timeoutUnit = timeoutUnit;
+    this.timeoutInMs = timeoutUnit.toMillis(timeoutValue);
     this.exceptionOnTimeout = exceptionOnTimeout;
     return this;
   }
 
-  public NativeSelect polymorphic(final boolean polymorphic) {
+  public Select polymorphic(final boolean polymorphic) {
     checkNotCompiled();
     if (fromType == null)
       throw new IllegalArgumentException("FromType was not set");
@@ -201,7 +163,7 @@ public class NativeSelect {
     return this;
   }
 
-  public NativeSelect json(final JSONObject json) {
+  public Select json(final JSONObject json) {
     checkNotCompiled();
     if (json.has("fromType")) {
       fromType(json.getString("fromType"));
@@ -239,7 +201,7 @@ public class NativeSelect {
     else
       throw new IllegalArgumentException("Unsupported value " + parsedLeft);
 
-    final NativeOperator parsedOperator = NativeOperator.byName(condition.getString(1));
+    final SelectOperator parsedOperator = SelectOperator.byName(condition.getString(1));
 
     if (parsedOperator.logicOperator)
       setLogic(parsedOperator);
@@ -257,80 +219,58 @@ public class NativeSelect {
       value(parsedRight);
   }
 
-  public JSONObject json() {
-    if (state != STATE.COMPILED)
-      parse();
-
-    final JSONObject json = new JSONObject();
-
-    if (fromType != null) {
-      json.put("fromType", fromType.getName());
-      if (!polymorphic)
-        json.put("polymorphic", polymorphic);
-    } else if (fromBuckets != null)
-      json.put("fromBuckets", fromBuckets.stream().map(b -> b.getName()).collect(Collectors.toList()));
-
-    if (rootTreeElement != null)
-      json.put("where", rootTreeElement.toJSON());
-
-    if (limit > -1)
-      json.put("limit", limit);
-
-    return json;
-  }
-
-  public NativeSelect parse() {
+  public SelectCompiled compile() {
     if (fromType == null && fromBuckets == null)
       throw new IllegalArgumentException("from (type or buckets) has not been set");
     if (state != STATE.COMPILED) {
-      setLogic(NativeOperator.run);
+      setLogic(SelectOperator.run);
       state = STATE.COMPILED;
     }
-    return this;
+    return new SelectCompiled(this);
   }
 
-  public QueryIterator<Vertex> vertices() {
+  public SelectIterator<Vertex> vertices() {
     return run();
   }
 
-  public QueryIterator<Edge> edges() {
+  public SelectIterator<Edge> edges() {
     return run();
   }
 
-  public QueryIterator<Document> documents() {
+  public SelectIterator<Document> documents() {
     return run();
   }
 
-  private <T extends Document> QueryIterator<T> run() {
-    parse();
-    return new NativeSelectExecutor(this).execute();
+  <T extends Document> SelectIterator<T> run() {
+    compile();
+    return new SelectSelectExecutor(this).execute();
   }
 
-  private NativeSelect setLogic(final NativeOperator newLogicOperator) {
+  SelectWhereLeftBlock setLogic(final SelectOperator newLogicOperator) {
     checkNotCompiled();
     if (operator == null)
       throw new IllegalArgumentException("Missing condition");
 
-    final NativeTreeNode newTreeElement = new NativeTreeNode(property, operator, propertyValue);
+    final SelectTreeNode newTreeElement = new SelectTreeNode(property, operator, propertyValue);
     if (rootTreeElement == null) {
       // 1ST TIME ONLY
-      rootTreeElement = new NativeTreeNode(newTreeElement, newLogicOperator, null);
+      rootTreeElement = new SelectTreeNode(newTreeElement, newLogicOperator, null);
       newTreeElement.setParent(rootTreeElement);
       lastTreeElement = newTreeElement;
     } else {
-      if (newLogicOperator.equals(NativeOperator.run)) {
+      if (newLogicOperator.equals(SelectOperator.run)) {
         // EXECUTION = LAST NODE: APPEND TO THE RIGHT OF THE LATEST
         lastTreeElement.getParent().setRight(newTreeElement);
       } else if (lastTreeElement.getParent().operator.precedence < newLogicOperator.precedence) {
         // AND+ OPERATOR
-        final NativeTreeNode newNode = new NativeTreeNode(newTreeElement, newLogicOperator, null);
+        final SelectTreeNode newNode = new SelectTreeNode(newTreeElement, newLogicOperator, null);
         lastTreeElement.getParent().setRight(newNode);
         lastTreeElement = newTreeElement;
       } else {
         // OR+ OPERATOR
-        final NativeTreeNode currentParent = lastTreeElement.getParent();
+        final SelectTreeNode currentParent = lastTreeElement.getParent();
         currentParent.setRight(newTreeElement);
-        final NativeTreeNode newNode = new NativeTreeNode(currentParent, newLogicOperator, null);
+        final SelectTreeNode newNode = new SelectTreeNode(currentParent, newLogicOperator, null);
         if (rootTreeElement.equals(currentParent))
           rootTreeElement = newNode;
         else
@@ -342,19 +282,19 @@ public class NativeSelect {
     operator = null;
     property = null;
     propertyValue = null;
-    return this;
+    return new SelectWhereLeftBlock(this);
   }
 
-  private NativeSelect setOperator(final NativeOperator nativeOperator) {
+  void checkNotCompiled() {
+    if (state == STATE.COMPILED)
+      throw new IllegalArgumentException("Cannot modify the structure of a select what has been already compiled");
+  }
+
+  SelectWhereRightBlock setOperator(final SelectOperator selectOperator) {
     checkNotCompiled();
     if (operator != null)
       throw new IllegalArgumentException("Operator has already been set (" + operator + ")");
-    operator = nativeOperator;
-    return this;
-  }
-
-  private void checkNotCompiled() {
-    if (state == STATE.COMPILED)
-      throw new IllegalArgumentException("Cannot modify the structure of a select what has been already compiled");
+    operator = selectOperator;
+    return new SelectWhereRightBlock(this);
   }
 }

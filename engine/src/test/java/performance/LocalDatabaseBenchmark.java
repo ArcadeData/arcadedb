@@ -23,15 +23,12 @@ package performance;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.query.nativ.NativeSelect;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.select.SelectCompiled;
 import org.junit.jupiter.api.Assertions;
 
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 public class LocalDatabaseBenchmark {
@@ -133,7 +130,7 @@ public class LocalDatabaseBenchmark {
 
   private void queryNative() {
     final long begin = System.currentTimeMillis();
-    final NativeSelect cached = database.select().fromType("User").where()//
+    final SelectCompiled cached = database.select().fromType("User").where()//
         .property("id").eq().parameter("id").and()//
         .property("id").eq().parameter("id").and()//
         .property("id").eq().parameter("id").and()//
@@ -144,7 +141,7 @@ public class LocalDatabaseBenchmark {
         .property("id").eq().parameter("id").and()//
         .property("id").eq().parameter("id").and()//
         .property("id").eq().parameter("id")//
-        ;
+        .compile();
     for (int i = 0; i < TOTAL * CONCURRENT_THREADS; i++) {
       Assertions.assertEquals(1, cached.parameter("id", i).vertices().toList().size());
     }

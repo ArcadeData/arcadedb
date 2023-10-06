@@ -1,11 +1,11 @@
-package com.arcadedb.query.nativ;
+package com.arcadedb.query.select;
 
 import com.arcadedb.database.Document;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public interface NativeRuntimeValue {
+public interface SelectRuntimeValue {
 
   Object eval(final Document record);
 }

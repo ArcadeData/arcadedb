@@ -56,7 +56,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.nativ.NativeSelect;
+import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
@@ -360,7 +360,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public NativeSelect select() {
+  public Select select() {
     return proxied.select();
   }
 

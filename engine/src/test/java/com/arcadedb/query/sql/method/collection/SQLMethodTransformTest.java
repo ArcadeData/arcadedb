@@ -49,7 +49,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.nativ.NativeSelect;
+import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -353,7 +353,7 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public NativeSelect select() {
+      public Select select() {
         return null;
       }
 

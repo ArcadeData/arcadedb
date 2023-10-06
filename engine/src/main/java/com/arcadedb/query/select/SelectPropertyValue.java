@@ -1,11 +1,11 @@
-package com.arcadedb.query.nativ;
+package com.arcadedb.query.select;
 
 import com.arcadedb.database.Document;
 
-public class NativePropertyValue implements NativeRuntimeValue {
+public class SelectPropertyValue implements SelectRuntimeValue {
   public final String propertyName;
 
-  public NativePropertyValue(final String propertyName) {
+  public SelectPropertyValue(final String propertyName) {
     this.propertyName = propertyName;
   }
 

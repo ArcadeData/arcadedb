@@ -1,12 +1,12 @@
-package com.arcadedb.query.nativ;
+package com.arcadedb.query.select;
 
 import com.arcadedb.database.Document;
 
-public class NativeParameterValue implements NativeRuntimeValue {
-  public final  String       parameterName;
-  private final NativeSelect select;
+public class SelectParameterValue implements SelectRuntimeValue {
+  public final  String parameterName;
+  private final Select select;
 
-  public NativeParameterValue(final NativeSelect select, final String parameterName) {
+  public SelectParameterValue(final Select select, final String parameterName) {
     this.select = select;
     this.parameterName = parameterName;
   }
