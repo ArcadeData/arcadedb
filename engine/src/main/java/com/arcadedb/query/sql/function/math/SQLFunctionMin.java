@@ -53,8 +53,8 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
             min = subitem;
         }
       } else {
-        if (!item.getClass().equals(min.getClass()) &&//
-            item instanceof Number && min instanceof Number) {
+        if (item instanceof Number && min instanceof Number &&//
+            !item.getClass().equals(min.getClass())) {
           final Number[] converted = Type.castComparableNumber((Number) item, (Number) min);
           item = converted[0];
           min = converted[1];

@@ -52,8 +52,8 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
             max = subitem;
         }
       } else {
-        if (!item.getClass().equals(max.getClass()) &&//
-            item instanceof Number && max instanceof Number) {
+        if (item instanceof Number && max instanceof Number &&//
+            !item.getClass().equals(max.getClass())) {
           final Number[] converted = Type.castComparableNumber((Number) item, (Number) max);
           item = converted[0];
           max = converted[1];
