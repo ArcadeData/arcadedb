@@ -41,4 +41,3 @@ jobs:
         run: mvn clean install -DskipTests -Pnative
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
