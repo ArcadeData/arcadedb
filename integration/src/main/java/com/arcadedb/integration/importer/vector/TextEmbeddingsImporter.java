@@ -23,12 +23,15 @@ package com.arcadedb.integration.importer.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.index.vector.HnswVectorIndexRAM;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
@@ -71,7 +74,7 @@ public class TextEmbeddingsImporter {
   private volatile long             verticesCreated      = 0L;
   private volatile long             verticesConnected    = 0L;
 
-  public TextEmbeddingsImporter(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings) throws ClassNotFoundException {
+  public TextEmbeddingsImporter(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings) {
     this.settings = settings;
     this.database = database;
     this.databasePath = database.getDatabasePath();
@@ -80,7 +83,8 @@ public class TextEmbeddingsImporter {
 
     if (settings.options.containsKey("distanceFunction")) {
       this.distanceFunctionName = settings.options.get("distanceFunction");
-      this.distanceFunctionName = Character.toUpperCase(this.distanceFunctionName.charAt(0)) + this.distanceFunctionName.substring(1).toLowerCase();
+      this.distanceFunctionName =
+          Character.toUpperCase(this.distanceFunctionName.charAt(0)) + this.distanceFunctionName.substring(1).toLowerCase();
     }
 
     if (settings.options.containsKey("vectorType")) {
@@ -115,7 +119,8 @@ public class TextEmbeddingsImporter {
     if (!createDatabase())
       return null;
 
-    final DistanceFunction distanceFunction = DistanceFunctionFactory.getImplementationByName(vectorTypeName + distanceFunctionName);
+    final DistanceFunction distanceFunction = DistanceFunctionFactory.getImplementationByName(
+        vectorTypeName + distanceFunctionName);
 
     beginTime = System.currentTimeMillis();
 
@@ -131,8 +136,8 @@ public class TextEmbeddingsImporter {
 
       logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions in RAM", texts.size(), dimensions);
 
-      final HnswVectorIndexRAM<String, float[], TextFloatsEmbedding, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions, distanceFunction,
-          texts.size()).withM(m).withEf(ef).withEfConstruction(efConstruction).build();
+      final HnswVectorIndexRAM<String, float[], TextFloatsEmbedding, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions,
+          distanceFunction, texts.size()).withM(m).withEf(ef).withEfConstruction(efConstruction).build();
 
       hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
 
@@ -152,11 +157,9 @@ public class TextEmbeddingsImporter {
         throw new IllegalArgumentException("Type '" + vectorTypeName + "' not supported");
 
       hnswIndex.createPersistentIndex(database)//
-          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName).withVectorProperty(vectorPropertyName, vectorPropertyType)
-          .withIdProperty(idPropertyName)//
+          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName)
+          .withVectorProperty(vectorPropertyName, vectorPropertyType).withIdProperty(idPropertyName)//
           .withDeletedProperty(deletedPropertyName)//
-          .withVertexCreationCallback((record, item, total) -> ++verticesCreated)//
-          .withCallback((record, total) -> ++verticesConnected)//
           .withBatchSize(1000).create();
     }
 
@@ -244,6 +247,8 @@ public class TextEmbeddingsImporter {
 
       final AtomicInteger vectorSize = new AtomicInteger(301);
 
+      final DocumentType recordType = database.getSchema().getType(settings.vertexTypeName);
+
       return parser.map(line -> {
         ++embeddingsParsed;
 
@@ -261,7 +266,12 @@ public class TextEmbeddingsImporter {
           // FOR INNER PRODUCT SEARCH NORMALIZE VECTORS
           vector = VectorUtils.normalize(vector);
 
-        return new TextFloatsEmbedding(word, vector);
+        final MutableDocument record = recordType.newRecord();
+        record.set(idPropertyName, word);
+        record.set(vectorPropertyName, vector);
+        record.save();
+
+        return new TextFloatsEmbedding(record.getIdentity(), vector);
       }).collect(Collectors.toList());
     }
   }

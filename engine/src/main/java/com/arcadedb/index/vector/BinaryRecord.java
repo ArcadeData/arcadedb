@@ -19,39 +19,42 @@
  * under the License.
  */
 
-package com.arcadedb.integration.importer.vector;
+package com.arcadedb.index.vector;
 
+import com.arcadedb.database.BaseRecord;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.github.jelmerk.knn.Item;
+import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+/**
+ * Binary implementation of record.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class BinaryRecord extends BaseRecord {
+  public final static byte RECORD_TYPE = 4;
 
-public class TextShortsEmbedding implements Item<RID, short[]> {
-  private final RID     rid;
-  private final short[] vector;
+  public BinaryRecord(final Database database, final Binary buffer) {
+    super(database, null, buffer);
+  }
 
-  public TextShortsEmbedding(final RID rid, final short[] vector) {
-    this.rid = rid;
-    this.vector = vector;
+  public BinaryRecord(final Database database) {
+    super(database, null, new Binary());
+  }
+
+  public BinaryRecord(final Database database, final RID rid) {
+    super(database, rid, new Binary());
   }
 
   @Override
-  public RID id() {
-    return rid;
+  public byte getRecordType() {
+    return RECORD_TYPE;
   }
 
   @Override
-  public short[] vector() {
-    return vector;
+  public JSONObject toJSON(boolean includeMetadata) {
+    return null;
   }
 
-  @Override
-  public int dimensions() {
-    return vector.length;
-  }
-
-  @Override
-  public String toString() {
-    return "IndexedText{" + "id='" + rid + '\'' + ", vector=" + Arrays.toString(vector) + '}';
-  }
 }

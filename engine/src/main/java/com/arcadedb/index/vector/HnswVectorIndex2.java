@@ -23,55 +23,42 @@ import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 
 /**
- * This work is derived from the excellent work made by Jelmer Kuperus on https://github.com/jelmerk/hnswlib. We forked the entire class only because it was
- * not extensible (private members).
+ * This work is derived from the excellent work made by Jelmer Kuperus on https://github.com/jelmerk/hnswlib.
  * <p>
  * Implementation of {@link Index} that implements the hnsw algorithm.
+ * TODO: Check if the global lock interferes with ArcadeDB's tx approach
  *
- * @param <TId>       Type of the external identifier of an item
- * @param <TVector>   Type of the vector to perform distance calculation on
- * @param <TItem>     Type of items stored in the index
- * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
- *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  * @see <a href="https://arxiv.org/abs/1603.09320">
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
-public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, TDistance>
+public class HnswVectorIndex2<TId, TVector, TItem extends Item<TId, TVector>, TDistance>
     implements Index<TId, TVector, TItem, TDistance> {
 
-  private static final byte VERSION_1 = 0x01;
+  private static final byte                                 VERSION_1        = 0x01;
+  private static final long                                 serialVersionUID = 1L;
+  private static final int                                  NO_NODE_ID       = -1;
+  private              DistanceFunction<TVector, TDistance> distanceFunction;
+  private              Comparator<TDistance>                distanceComparator;
+  private              MaxValueComparator<TDistance>        maxValueDistanceComparator;
+  private              int                                  dimensions;
+  private              int                                  maxItemCount;
+  private              int                                  m;
+  private              int                                  maxM;
+  private              int                                  maxM0;
+  private              double                               levelLambda;
+  private              int                                  ef;
+  private              int                                  efConstruction;
+  private              int                                  nodeCount;
+  protected volatile   Node<TItem>                          entryPoint;
+  private              AtomicReferenceArray<Node<TItem>>    nodes;
+  private              MutableObjectIntMap<TId>             lookup;
+  private              Map<TId, Object>                     locks;
+  private              ReentrantLock                        globalLock;
+  private              GenericObjectPool<ArrayBitSet>       visitedBitSetPool;
+  private              ArrayBitSet                          excludedCandidates;
 
-  private static final long serialVersionUID = 1L;
-
-  private static final int NO_NODE_ID = -1;
-
-  private DistanceFunction<TVector, TDistance> distanceFunction;
-  private Comparator<TDistance>                distanceComparator;
-  private MaxValueComparator<TDistance>        maxValueDistanceComparator;
-
-  private int    dimensions;
-  private int    maxItemCount;
-  private int    m;
-  private int    maxM;
-  private int    maxM0;
-  private double levelLambda;
-  private int    ef;
-  private int    efConstruction;
-  int nodeCount;
-
-  protected volatile Node<TItem> entryPoint;
-
-  private AtomicReferenceArray<Node<TItem>> nodes;
-  private MutableObjectIntMap<TId>          lookup;
-  private Map<TId, Object>                  locks;
-
-  private ReentrantLock globalLock;
-
-  private GenericObjectPool<ArrayBitSet> visitedBitSetPool;
-
-  private ArrayBitSet excludedCandidates;
-
-  private HnswVectorIndexRAM(final Builder<TId, TVector, TItem, TDistance> builder) {
+  private HnswVectorIndex2(final Builder<TId, TVector, TItem, TDistance> builder) {
     this.dimensions = builder.dimensions;
     this.maxItemCount = builder.maxItemCount;
     this.distanceFunction = builder.distanceFunction;
@@ -136,7 +123,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     try {
       List<TItem> results = new ArrayList<>(size());
 
-      Iterator<TItem> iter = new HnswVectorIndexRAM.ItemIterator();
+      Iterator<TItem> iter = new HnswVectorIndex2.ItemIterator();
 
       while (iter.hasNext()) {
         results.add(iter.next());
@@ -149,7 +136,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
   }
 
   public ItemIterator iterateNodes() {
-    return new HnswVectorIndexRAM.ItemIterator();
+    return new HnswVectorIndex2.ItemIterator();
   }
 
   /**
@@ -673,7 +660,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
   }
 
   /**
-   * Restores a {@link HnswVectorIndexRAM} from a File.
+   * Restores a {@link HnswVectorIndex2} from a File.
    *
    * @param file        File to restore the index from
    * @param <TId>       Type of the external identifier of an item
@@ -685,13 +672,13 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @throws IOException in case of an I/O exception
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndex2<TId, TVector, TItem, TDistance> load(
       File file) throws IOException {
     return load(new FileInputStream(file));
   }
 
   /**
-   * Restores a {@link HnswVectorIndexRAM} from a File.
+   * Restores a {@link HnswVectorIndex2} from a File.
    *
    * @param file        File to restore the index from
    * @param classLoader the classloader to use
@@ -704,13 +691,13 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @throws IOException in case of an I/O exception
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndex2<TId, TVector, TItem, TDistance> load(
       File file, ClassLoader classLoader) throws IOException {
     return load(new FileInputStream(file), classLoader);
   }
 
   /**
-   * Restores a {@link HnswVectorIndexRAM} from a Path.
+   * Restores a {@link HnswVectorIndex2} from a Path.
    *
    * @param path        Path to restore the index from
    * @param <TId>       Type of the external identifier of an item
@@ -722,13 +709,13 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @throws IOException in case of an I/O exception
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndex2<TId, TVector, TItem, TDistance> load(
       Path path) throws IOException {
     return load(Files.newInputStream(path));
   }
 
   /**
-   * Restores a {@link HnswVectorIndexRAM} from a Path.
+   * Restores a {@link HnswVectorIndex2} from a Path.
    *
    * @param path        Path to restore the index from
    * @param classLoader the classloader to use
@@ -741,13 +728,13 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @throws IOException in case of an I/O exception
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndex2<TId, TVector, TItem, TDistance> load(
       Path path, ClassLoader classLoader) throws IOException {
     return load(Files.newInputStream(path), classLoader);
   }
 
   /**
-   * Restores a {@link HnswVectorIndexRAM} from an InputStream.
+   * Restores a {@link HnswVectorIndex2} from an InputStream.
    *
    * @param inputStream InputStream to restore the index from
    * @param <TId>       Type of the external identifier of an item
@@ -760,13 +747,13 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    * @throws IOException              in case of an I/O exception
    * @throws IllegalArgumentException in case the file cannot be read
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndex2<TId, TVector, TItem, TDistance> load(
       InputStream inputStream) throws IOException {
     return load(inputStream, Thread.currentThread().getContextClassLoader());
   }
 
   /**
-   * Restores a {@link HnswVectorIndexRAM} from an InputStream.
+   * Restores a {@link HnswVectorIndex2} from an InputStream.
    *
    * @param inputStream InputStream to restore the index from
    * @param classLoader the classloader to use
@@ -781,11 +768,11 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    * @throws IllegalArgumentException in case the file cannot be read
    */
   @SuppressWarnings("unchecked")
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndex2<TId, TVector, TItem, TDistance> load(
       InputStream inputStream, ClassLoader classLoader) throws IOException {
 
     try (ObjectInputStream ois = new ClassLoaderObjectInputStream(classLoader, inputStream)) {
-      return (HnswVectorIndexRAM<TId, TVector, TItem, TDistance>) ois.readObject();
+      return (HnswVectorIndex2<TId, TVector, TItem, TDistance>) ois.readObject();
     } catch (ClassNotFoundException e) {
       throw new IllegalArgumentException("Could not read input file.", e);
     }
@@ -865,15 +852,15 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
 
     @Override
     public boolean hasNext() {
-      return done < HnswVectorIndexRAM.this.size();
+      return done < HnswVectorIndex2.this.size();
     }
 
     @Override
     public Node<TItem> next() {
-      HnswVectorIndexRAM.Node<TItem> node;
+      HnswVectorIndex2.Node<TItem> node;
 
       do {
-        node = HnswVectorIndexRAM.this.nodes.get(index++);
+        node = HnswVectorIndex2.this.nodes.get(index++);
       } while (node == null || node.deleted);
 
       done++;
@@ -949,7 +936,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
   }
 
   /**
-   * Builder for initializing an {@link HnswVectorIndexRAM} instance.
+   * Builder for initializing an {@link HnswVectorIndex2} instance.
    *
    * @param <TVector>   Type of the vector to perform distance calculation on
    * @param <TDistance> Type of distance between items (expect any numeric type: float, double, int, ..)
@@ -1039,8 +1026,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
      *
      * @return the hnsw index instance
      */
-    public HnswVectorIndexRAM<TId, TVector, TItem, TDistance> build() {
-      return new HnswVectorIndexRAM<>(this);
+    public HnswVectorIndex2<TId, TVector, TItem, TDistance> build() {
+      return new HnswVectorIndex2<>(this);
     }
   }
 }

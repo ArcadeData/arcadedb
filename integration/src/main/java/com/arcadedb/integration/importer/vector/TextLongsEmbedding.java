@@ -21,22 +21,23 @@
 
 package com.arcadedb.integration.importer.vector;
 
+import com.arcadedb.database.RID;
 import com.github.jelmerk.knn.Item;
 
 import java.util.*;
 
-public class TextLongsEmbedding implements Item<String, long[]> {
-  private final String id;
+public class TextLongsEmbedding implements Item<RID, long[]> {
+  private final RID    rid;
   private final long[] vector;
 
-  public TextLongsEmbedding(String id, long[] vector) {
-    this.id = id;
+  public TextLongsEmbedding(final RID rid, final long[] vector) {
+    this.rid = rid;
     this.vector = vector;
   }
 
   @Override
-  public String id() {
-    return id;
+  public RID id() {
+    return rid;
   }
 
   @Override
@@ -51,6 +52,6 @@ public class TextLongsEmbedding implements Item<String, long[]> {
 
   @Override
   public String toString() {
-    return "IndexedText{" + "id='" + id + '\'' + ", vector=" + Arrays.toString(vector) + '}';
+    return "IndexedText{" + "id='" + rid + '\'' + ", vector=" + Arrays.toString(vector) + '}';
   }
 }

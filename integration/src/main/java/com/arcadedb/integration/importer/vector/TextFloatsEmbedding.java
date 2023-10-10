@@ -21,22 +21,23 @@
 
 package com.arcadedb.integration.importer.vector;
 
+import com.arcadedb.database.RID;
 import com.github.jelmerk.knn.Item;
 
 import java.util.*;
 
-public class TextFloatsEmbedding implements Item<String, float[]> {
-  private final String  id;
+public class TextFloatsEmbedding implements Item<RID, float[]> {
+  private final RID     rid;
   private final float[] vector;
 
-  public TextFloatsEmbedding(String id, float[] vector) {
-    this.id = id;
+  public TextFloatsEmbedding(final RID rid, final float[] vector) {
+    this.rid = rid;
     this.vector = vector;
   }
 
   @Override
-  public String id() {
-    return id;
+  public RID id() {
+    return rid;
   }
 
   @Override
@@ -51,6 +52,6 @@ public class TextFloatsEmbedding implements Item<String, float[]> {
 
   @Override
   public String toString() {
-    return "IndexedText{" + "id='" + id + '\'' + ", vector=" + Arrays.toString(vector) + '}';
+    return "IndexedText{" + "id='" + rid + '\'' + ", vector=" + Arrays.toString(vector) + '}';
   }
 }

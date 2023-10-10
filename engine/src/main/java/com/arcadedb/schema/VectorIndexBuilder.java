@@ -46,22 +46,21 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   public static final  int DEFAULT_EF_CONSTRUCTION = 200;
   private static final int CURRENT_VERSION         = 1;
 
-  int                                      dimensions;
-  DistanceFunction                         distanceFunction;
-  Comparator                               distanceComparator;
-  int                                      maxItemCount;
-  int                                      m                  = DEFAULT_M;
-  int                                      ef                 = DEFAULT_EF;
-  int                                      efConstruction     = DEFAULT_EF_CONSTRUCTION;
-  String                                   vertexType;
-  String                                   edgeType;
-  String                                   vectorPropertyName;
-  Type                                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
-  String                                   idPropertyName;
-  String                                   deletedPropertyName;
-  Map<RID, Vertex>                         cache;
-  HnswVectorIndexRAM                       origin;
-  HnswVectorIndex.BuildVectorIndexCallback vertexCreationCallback;
+  int                dimensions;
+  DistanceFunction   distanceFunction;
+  Comparator         distanceComparator;
+  int                maxItemCount;
+  int                m                  = DEFAULT_M;
+  int                ef                 = DEFAULT_EF;
+  int                efConstruction     = DEFAULT_EF_CONSTRUCTION;
+  String             vertexType;
+  String             edgeType;
+  String             vectorPropertyName;
+  Type               vectorPropertyType = Type.ARRAY_OF_FLOATS;
+  String             idPropertyName;
+  String             deletedPropertyName;
+  Map<RID, Vertex>   cache;
+  HnswVectorIndexRAM origin;
 
   VectorIndexBuilder(final DatabaseInternal database) {
     super(database, HnswVectorIndex.class);
@@ -97,8 +96,9 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     if (deletedPropertyName == null)
       throw new IndexException("Vertex deleted property name is missing from vector index declaration");
 
-    filePath = database.getDatabasePath() + File.separator + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_" + System.nanoTime() + "."
-        + database.getFileManager().newFileId() + ".v" + HnswVectorIndex.CURRENT_VERSION + "." + HnswVectorIndex.FILE_EXT;
+    filePath = database.getDatabasePath() + File.separator + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_"
+        + System.nanoTime() + "." + database.getFileManager().newFileId() + ".v" + HnswVectorIndex.CURRENT_VERSION + "."
+        + HnswVectorIndex.FILE_EXT;
 
     final EmbeddedSchema schema = database.getSchema().getEmbedded();
     if (ignoreIfExists) {
@@ -120,7 +120,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     schema.registerFile(index.getComponent());
     schema.indexMap.put(index.getName(), index);
 
-    index.build(origin, EmbeddedSchema.BUILD_TX_BATCH_SIZE, vertexCreationCallback, callback);
+    index.build(origin, EmbeddedSchema.BUILD_TX_BATCH_SIZE);
 
     return index;
   }
@@ -206,8 +206,9 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   }
 
   public VectorIndexBuilder withVectorProperty(final String vectorPropertyName, final Type vectorPropertyType) {
-    if (vectorPropertyType != Type.ARRAY_OF_SHORTS && vectorPropertyType != Type.ARRAY_OF_INTEGERS && vectorPropertyType != Type.ARRAY_OF_LONGS
-        && vectorPropertyType != Type.ARRAY_OF_FLOATS && vectorPropertyType != Type.ARRAY_OF_DOUBLES)
+    if (vectorPropertyType != Type.ARRAY_OF_SHORTS && vectorPropertyType != Type.ARRAY_OF_INTEGERS
+        && vectorPropertyType != Type.ARRAY_OF_LONGS && vectorPropertyType != Type.ARRAY_OF_FLOATS
+        && vectorPropertyType != Type.ARRAY_OF_DOUBLES)
       throw new IllegalArgumentException("Vector property type '" + vectorPropertyType + "' not compatible with vectors");
 
     this.vectorPropertyName = vectorPropertyName;
@@ -227,11 +228,6 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
   public VectorIndexBuilder withCache(final Map<RID, Vertex> cache) {
     this.cache = cache;
-    return this;
-  }
-
-  public VectorIndexBuilder withVertexCreationCallback(final HnswVectorIndex.BuildVectorIndexCallback callback) {
-    this.vertexCreationCallback = callback;
     return this;
   }
 
@@ -265,18 +261,6 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
   public String getVertexType() {
     return vertexType;
-  }
-
-  public String getIdPropertyName() {
-    return idPropertyName;
-  }
-
-  public String getDeletedPropertyName() {
-    return deletedPropertyName;
-  }
-
-  public String getEdgeType() {
-    return edgeType;
   }
 
   public String getVectorPropertyName() {
