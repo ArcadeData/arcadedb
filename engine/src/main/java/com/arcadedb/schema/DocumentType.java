@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
@@ -65,6 +66,10 @@ public class DocumentType {
 
   public String getName() {
     return name;
+  }
+
+  public MutableDocument newRecord() {
+    return schema.getDatabase().newDocument(name);
   }
 
   public byte getType() {
