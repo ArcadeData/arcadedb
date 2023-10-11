@@ -21,9 +21,11 @@
 
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
@@ -36,6 +38,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.log.LogManager;
@@ -64,7 +67,11 @@ import java.util.stream.*;
 /**
  * This work is derived from the excellent work made by Jelmer Kuperus on https://github.com/jelmerk/hnswlib.
  * <p>
- * Implementation of {@link Index} that implements the hnsw algorithm.
+ * Implementation of {@link Index} that implements the HNSW Vector ANN algorithm. This implementation relies on user records to store
+ * the key and embeddings, so they can be easily reindex with a different algorithm in the future. The HNSW edges are stored in
+ * compressed form into a bucket. This allows to manage HNSE entries like normal records, so operations against the index is still
+ * ACID without any special implementation because it uses the page manager from the bucket.
+ * </p>
  * TODO: Check if the global lock interferes with ArcadeDB's tx approach
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -103,9 +110,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   private final   String                               deletedPropertyName;
   private final   Map<RID, Vertex>                     cache;
   private final   String                               indexName;
-  private         TypeIndex                            underlyingIndex;
+  private         LSMTreeIndex                         underlyingIndex;
   public volatile RID                                  entryPointRIDToLoad;
   public volatile Vertex                               entryPoint;
+  private final   Bucket                               bucket;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -113,7 +121,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       if (!(builder instanceof VectorIndexBuilder))
         throw new IndexException("Expected VectorIndexBuilder but received " + builder);
 
-      return new HnswVectorIndex<>((VectorIndexBuilder) builder);
+      try {
+        return new HnswVectorIndex<>((VectorIndexBuilder) builder);
+      } catch (IOException e) {
+        throw new IndexException("Error on creating new HNSW index " + builder.getIndexName(), e);
+      }
     }
   }
 
@@ -125,8 +137,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     }
   }
 
-  protected HnswVectorIndex(final VectorIndexBuilder builder) {
-    super(builder.getDatabase(), builder.getFilePath(), builder.getDatabase().getFileManager().newFileId(), CURRENT_VERSION,
+  protected HnswVectorIndex(final VectorIndexBuilder builder) throws IOException {
+    super(builder.getDatabase(), builder.getIndexName(), builder.getDatabase().getFileManager().newFileId(), CURRENT_VERSION,
         builder.getFilePath());
 
     this.dimensions = builder.getDimensions();
@@ -150,20 +162,20 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     this.cache = builder.getCache();
 
-    this.underlyingIndex = builder.getDatabase().getSchema()
-        .buildTypeIndex(builder.getVertexType(), new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
+    this.bucket = builder.getDatabase().getSchema().createBucket(builder.getIndexName());
+
+    this.underlyingIndex = (LSMTreeIndex) builder.getDatabase().getSchema()
+        .buildManualIndex(bucket.getName(), new Type[] { Type.STRING }).withUnique(true).withIgnoreIfExists(true)
         .withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
     this.underlyingIndex.setAssociatedIndex(this);
 
     this.globalLock = new ReentrantLock();
-    this.indexName = builder.getIndexName() != null ?
-        builder.getIndexName() :
-        vertexType + "[" + idPropertyName + "," + vectorPropertyName + "]";
+    this.indexName = builder.getIndexName();
   }
 
   /**
-   * Load time.
+   * Called at load time.
    */
   protected HnswVectorIndex(final DatabaseInternal database, final String indexName, final String filePath, final int id,
       final int version) throws IOException {
@@ -202,12 +214,13 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     this.globalLock = new ReentrantLock();
     this.cache = null;
     this.indexName = json.getString("indexName");
+    this.bucket = database.getSchema().getBucketByName(indexName);
   }
 
   @Override
   public void onAfterSchemaLoad() {
     try {
-      this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName })
+      this.underlyingIndex = (LSMTreeIndex) database.getSchema().buildManualIndex(bucket.getName(), new Type[] { Type.STRING })
           .withIgnoreIfExists(true).withUnique(true).withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
       this.underlyingIndex.setAssociatedIndex(this);
@@ -507,7 +520,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     }
   }
 
-  public TypeIndex getUnderlyingIndex() {
+  public LSMTreeIndex getUnderlyingIndex() {
     return underlyingIndex;
   }
 
@@ -743,10 +756,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     if (ignoreVertexCallback != null)
       return ignoreVertexCallback.ignoreVertex(vertex);
     return false;
-  }
-
-  public int getDimensionFromVertex(final Vertex vertex) {
-    return Array.getLength(getVectorFromVertex(vertex));
   }
 
   public String getEdgeType(final int level) {
@@ -1024,10 +1033,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return componentName.equals(((HnswVectorIndex) obj).componentName) && underlyingIndex.equals(obj);
   }
 
-  public List<IndexInternal> getSubIndexes() {
-    return underlyingIndex.getSubIndexes();
-  }
-
   @Override
   public int hashCode() {
     return Objects.hash(componentName, underlyingIndex.hashCode());
@@ -1078,22 +1083,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   @Override
   public int getAssociatedBucketId() {
     return -1;
-  }
-
-  public void addIndexOnBucket(final IndexInternal index) {
-    underlyingIndex.addIndexOnBucket(index);
-  }
-
-  public void removeIndexOnBucket(final IndexInternal index) {
-    underlyingIndex.removeIndexOnBucket(index);
-  }
-
-  public IndexInternal[] getIndexesOnBuckets() {
-    return underlyingIndex.getIndexesOnBuckets();
-  }
-
-  public List<? extends com.arcadedb.index.Index> getIndexesByKeys(final Object[] keys) {
-    return underlyingIndex.getIndexesByKeys(keys);
   }
 
   public IndexCursor iterator(final boolean ascendingOrder) {

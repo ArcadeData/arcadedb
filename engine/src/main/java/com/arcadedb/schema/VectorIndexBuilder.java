@@ -97,8 +97,8 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     if (deletedPropertyName == null)
       throw new IndexException("Vertex deleted property name is missing from vector index declaration");
 
-    filePath = database.getDatabasePath() + File.separator + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_" + System.nanoTime() + "."
-        + database.getFileManager().newFileId() + ".v" + HnswVectorIndex.CURRENT_VERSION + "." + HnswVectorIndex.FILE_EXT;
+    indexName = "hnsw-" + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_" + System.nanoTime();
+    filePath = database.getDatabasePath() + File.separator + indexName;
 
     final EmbeddedSchema schema = database.getSchema().getEmbedded();
     if (ignoreIfExists) {
@@ -206,8 +206,9 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   }
 
   public VectorIndexBuilder withVectorProperty(final String vectorPropertyName, final Type vectorPropertyType) {
-    if (vectorPropertyType != Type.ARRAY_OF_SHORTS && vectorPropertyType != Type.ARRAY_OF_INTEGERS && vectorPropertyType != Type.ARRAY_OF_LONGS
-        && vectorPropertyType != Type.ARRAY_OF_FLOATS && vectorPropertyType != Type.ARRAY_OF_DOUBLES)
+    if (vectorPropertyType != Type.ARRAY_OF_SHORTS && vectorPropertyType != Type.ARRAY_OF_INTEGERS
+        && vectorPropertyType != Type.ARRAY_OF_LONGS && vectorPropertyType != Type.ARRAY_OF_FLOATS
+        && vectorPropertyType != Type.ARRAY_OF_DOUBLES)
       throw new IllegalArgumentException("Vector property type '" + vectorPropertyType + "' not compatible with vectors");
 
     this.vectorPropertyName = vectorPropertyName;

@@ -46,7 +46,6 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
   private final DocumentType        type;
   private       boolean             valid            = true;
-  private       IndexInternal       associatedIndex;
 
   public TypeIndex(final String logicName, final DocumentType type) {
     this.logicName = logicName;
@@ -81,8 +80,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public IndexCursor range(final boolean ascending, final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys,
-      final boolean endKeysInclusive) {
+  public IndexCursor range(final boolean ascending, final Object[] beginKeys, final boolean beginKeysInclusive,
+      final Object[] endKeys, final boolean endKeysInclusive) {
     checkIsValid();
     if (!supportsOrderedIterations())
       throw new UnsupportedOperationException("Index '" + getName() + "' does not support ordered iterations");
@@ -235,7 +234,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         // NOT AVAILABLE, RESET ACQUIRED STATUSES
         for (LSMTreeIndex i : acquired)
           i.setStatus(LSMTreeIndex.INDEX_STATUS.UNAVAILABLE, LSMTreeIndex.INDEX_STATUS.AVAILABLE);
-        throw new NeedRetryException("Cannot drop index '" + getName() + "' because one or more underlying files are not available");
+        throw new NeedRetryException(
+            "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
 
     for (final Index index : new ArrayList<>(indexesOnBuckets))
@@ -402,15 +402,6 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public IndexInternal getAssociatedIndex() {
-    return associatedIndex;
-  }
-
-  public void setAssociatedIndex(final IndexInternal associatedIndex) {
-    this.associatedIndex = associatedIndex;
-  }
-
-  @Override
   public int getAssociatedBucketId() {
     return -1;
   }
@@ -445,7 +436,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // USE THE SHARDED INDEX
       final List<String> propNames = getPropertyNames();
 
-      List<IndexInternal> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
+      List<IndexInternal> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(
+          type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
 
       final List<DocumentType> subTypes = type.getSubTypes();
       if (!subTypes.isEmpty()) {
@@ -453,7 +445,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         polymorphicIndexesOnKeys = new ArrayList<>(polymorphicIndexesOnKeys);
 
         for (DocumentType s : subTypes) {
-          final List<IndexInternal> subIndexes = s.getPolymorphicBucketIndexByBucketId(s.getBuckets(false).get(bucketIndex).getFileId(), propNames);
+          final List<IndexInternal> subIndexes = s.getPolymorphicBucketIndexByBucketId(
+              s.getBuckets(false).get(bucketIndex).getFileId(), propNames);
           polymorphicIndexesOnKeys.addAll(subIndexes);
 
         }

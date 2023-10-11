@@ -25,11 +25,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
@@ -75,12 +75,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   protected            LSMTreeIndexMutable           mutable;
   protected final      AtomicReference<INDEX_STATUS> status             = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
   private              boolean                       valid              = true;
+  private              IndexInternal                 associatedIndex;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder builder) {
-      return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(), ComponentFile.MODE.READ_WRITE,
-          builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
+      return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
+          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
     }
   }
 
@@ -109,8 +110,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   /**
    * Called at creation time.
    */
-  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final ComponentFile.MODE mode,
-      final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath,
+      final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     try {
       this.name = name;
       this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
@@ -330,8 +332,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public IndexCursor range(final boolean ascendingOrder, final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys,
-      final boolean endKeysInclusive) {
+  public IndexCursor range(final boolean ascendingOrder, final Object[] beginKeys, final boolean beginKeysInclusive,
+      final Object[] endKeys, final boolean endKeysInclusive) {
     checkIsValid();
     return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
   }
@@ -492,13 +494,6 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public IndexInternal getAssociatedIndex() {
-    if (typeIndex != null)
-      return typeIndex.getAssociatedIndex();
-    return null;
-  }
-
-  @Override
   public String toString() {
     return name;
   }
@@ -542,7 +537,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         newMutableIndex.setPageCount(1);
 
         for (int i = 0; i < mutable.getTotalPages() - startingFromPage; ++i) {
-          final BasePage currentPage = database.getTransaction().getPage(new PageId(mutable.getFileId(), i + startingFromPage), pageSize);
+          final BasePage currentPage = database.getTransaction()
+              .getPage(new PageId(mutable.getFileId(), i + startingFromPage), pageSize);
 
 // COPY THE ENTIRE PAGE TO THE NEW INDEX
           final MutablePage newPage = newMutableIndex.createNewPage();
@@ -585,6 +581,15 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         // RELEASE THE DELETED FILE ONLY IF THE LOCK WAS ACQUIRED HERE
         database.getTransactionManager().unlockFile(fileId);
     }
+  }
+
+  @Override
+  public IndexInternal getAssociatedIndex() {
+    return associatedIndex;
+  }
+
+  public void setAssociatedIndex(final IndexInternal associatedIndex) {
+    this.associatedIndex = associatedIndex;
   }
 
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {

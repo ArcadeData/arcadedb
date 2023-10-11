@@ -67,5 +67,7 @@ public interface IndexInternal extends Index {
 
   JSONObject toJSON();
 
-  IndexInternal getAssociatedIndex();
+  default IndexInternal getAssociatedIndex() {
+    return null;
+  }
 }
