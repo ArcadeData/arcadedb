@@ -36,7 +36,8 @@ import java.util.concurrent.locks.*;
  * @see <a href="https://arxiv.org/abs/1603.09320">
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
-public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, TDistance> implements Index<TId, TVector, TItem, TDistance> {
+public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, TDistance>
+    implements Index<TId, TVector, TItem, TDistance> {
 
   private static final byte VERSION_1 = 0x01;
 
@@ -91,7 +92,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
 
     this.globalLock = new ReentrantLock();
 
-    this.visitedBitSetPool = new GenericObjectPool<>(() -> new ArrayBitSet(this.maxItemCount), Runtime.getRuntime().availableProcessors());
+    this.visitedBitSetPool = new GenericObjectPool<>(() -> new ArrayBitSet(this.maxItemCount),
+        Runtime.getRuntime().availableProcessors());
 
     this.excludedCandidates = new ArrayBitSet(this.maxItemCount);
   }
@@ -280,7 +282,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
               }
 
               for (int level = Math.min(randomLevel, entryPointCopy.maxLevel()); level >= 0; level--) {
-                PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, item.vector(), efConstruction, level);
+                PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, item.vector(), efConstruction,
+                    level);
 
                 if (entryPointCopy.deleted) {
                   TDistance distance = distanceFunction.distance(item.vector(), entryPointCopy.item.vector());
@@ -317,7 +320,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     }
   }
 
-  private void mutuallyConnectNewElement(Node<TItem> newNode, PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates, int level) {
+  private void mutuallyConnectNewElement(Node<TItem> newNode, PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates,
+      int level) {
 
     int bestN = level == 0 ? this.maxM0 : this.maxM;
 
@@ -401,7 +405,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
       boolean good = true;
       for (NodeIdAndDistance<TDistance> secondPair : returnList) {
 
-        TDistance curdist = distanceFunction.distance(nodes.get(secondPair.nodeId).item.vector(), nodes.get(currentPair.nodeId).item.vector());
+        TDistance curdist = distanceFunction.distance(nodes.get(secondPair.nodeId).item.vector(),
+            nodes.get(currentPair.nodeId).item.vector());
 
         if (lt(curdist, distToQuery)) {
           good = false;
@@ -484,7 +489,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     try {
       this.maxItemCount = newSize;
 
-      this.visitedBitSetPool = new GenericObjectPool<>(() -> new ArrayBitSet(this.maxItemCount), Runtime.getRuntime().availableProcessors());
+      this.visitedBitSetPool = new GenericObjectPool<>(() -> new ArrayBitSet(this.maxItemCount),
+          Runtime.getRuntime().availableProcessors());
 
       AtomicReferenceArray<Node<TItem>> newNodes = new AtomicReferenceArray<>(newSize);
       for (int i = 0; i < this.nodes.length(); i++) {
@@ -498,12 +504,14 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     }
   }
 
-  private PriorityQueue<NodeIdAndDistance<TDistance>> searchBaseLayer(Node<TItem> entryPointNode, TVector destination, int k, int layer) {
+  private PriorityQueue<NodeIdAndDistance<TDistance>> searchBaseLayer(Node<TItem> entryPointNode, TVector destination, int k,
+      int layer) {
 
     ArrayBitSet visitedBitSet = visitedBitSetPool.borrowObject();
 
     try {
-      PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = new PriorityQueue<>(Comparator.<NodeIdAndDistance<TDistance>>naturalOrder().reversed());
+      PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = new PriorityQueue<>(
+          Comparator.<NodeIdAndDistance<TDistance>>naturalOrder().reversed());
       PriorityQueue<NodeIdAndDistance<TDistance>> candidateSet = new PriorityQueue<>();
 
       TDistance lowerBound;
@@ -552,7 +560,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
 
               if (topCandidates.size() < k || gt(lowerBound, candidateDistance)) {
 
-                NodeIdAndDistance<TDistance> candidatePair = new NodeIdAndDistance<>(candidateId, candidateDistance, maxValueDistanceComparator);
+                NodeIdAndDistance<TDistance> candidatePair = new NodeIdAndDistance<>(candidateId, candidateDistance,
+                    maxValueDistanceComparator);
 
                 candidateSet.add(candidatePair);
 
@@ -676,8 +685,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @throws IOException in case of an I/O exception
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(File file)
-      throws IOException {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+      File file) throws IOException {
     return load(new FileInputStream(file));
   }
 
@@ -695,8 +704,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @throws IOException in case of an I/O exception
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(File file,
-      ClassLoader classLoader) throws IOException {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+      File file, ClassLoader classLoader) throws IOException {
     return load(new FileInputStream(file), classLoader);
   }
 
@@ -713,8 +722,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @throws IOException in case of an I/O exception
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(Path path)
-      throws IOException {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+      Path path) throws IOException {
     return load(Files.newInputStream(path));
   }
 
@@ -732,8 +741,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @throws IOException in case of an I/O exception
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(Path path,
-      ClassLoader classLoader) throws IOException {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+      Path path, ClassLoader classLoader) throws IOException {
     return load(Files.newInputStream(path), classLoader);
   }
 
@@ -751,8 +760,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    * @throws IOException              in case of an I/O exception
    * @throws IllegalArgumentException in case the file cannot be read
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(InputStream inputStream)
-      throws IOException {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+      InputStream inputStream) throws IOException {
     return load(inputStream, Thread.currentThread().getContextClassLoader());
   }
 
@@ -772,8 +781,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    * @throws IllegalArgumentException in case the file cannot be read
    */
   @SuppressWarnings("unchecked")
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(InputStream inputStream,
-      ClassLoader classLoader) throws IOException {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> HnswVectorIndexRAM<TId, TVector, TItem, TDistance> load(
+      InputStream inputStream, ClassLoader classLoader) throws IOException {
 
     try (ObjectInputStream ois = new ClassLoaderObjectInputStream(classLoader, inputStream)) {
       return (HnswVectorIndexRAM<TId, TVector, TItem, TDistance>) ois.readObject();
@@ -813,8 +822,9 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
    *
    * @return a builder
    */
-  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> Builder<TId, TVector, TItem, TDistance> newBuilder(final int dimensions,
-      final DistanceFunction<TVector, TDistance> distanceFunction, final Comparator<TDistance> distanceComparator, final int maxItemCount) {
+  public static <TId, TVector, TItem extends Item<TId, TVector>, TDistance> Builder<TId, TVector, TItem, TDistance> newBuilder(
+      final int dimensions, final DistanceFunction<TVector, TDistance> distanceFunction,
+      final Comparator<TDistance> distanceComparator, final int maxItemCount) {
 
     return new Builder<>(dimensions, distanceFunction, distanceComparator, maxItemCount);
   }
@@ -966,7 +976,8 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
      * @param distanceFunction the distance function
      * @param maxItemCount     the maximum number of elements in the index
      */
-    Builder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, Comparator<TDistance> distanceComparator, int maxItemCount) {
+    Builder(int dimensions, DistanceFunction<TVector, TDistance> distanceFunction, Comparator<TDistance> distanceComparator,
+        int maxItemCount) {
       this.dimensions = dimensions;
       this.distanceFunction = distanceFunction;
       this.distanceComparator = distanceComparator;

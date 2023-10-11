@@ -22,10 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.SchemaException;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.BinaryRecord;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.HnswVectorIndexRAM;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -46,22 +45,20 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   public static final  int DEFAULT_EF_CONSTRUCTION = 200;
   private static final int CURRENT_VERSION         = 1;
 
-  int                                      dimensions;
-  DistanceFunction                         distanceFunction;
-  Comparator                               distanceComparator;
-  int                                      maxItemCount;
-  int                                      m                  = DEFAULT_M;
-  int                                      ef                 = DEFAULT_EF;
-  int                                      efConstruction     = DEFAULT_EF_CONSTRUCTION;
-  String                                   vertexType;
-  String                                   edgeType;
-  String                                   vectorPropertyName;
-  Type                                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
-  String                                   idPropertyName;
-  String                                   deletedPropertyName;
-  Map<RID, Vertex>                         cache;
-  HnswVectorIndexRAM                       origin;
-  HnswVectorIndex.BuildVectorIndexCallback vertexCreationCallback;
+  int                dimensions;
+  DistanceFunction   distanceFunction;
+  Comparator         distanceComparator;
+  int                maxItemCount;
+  int                m                  = DEFAULT_M;
+  int                ef                 = DEFAULT_EF;
+  int                efConstruction     = DEFAULT_EF_CONSTRUCTION;
+  String             vertexType;
+  String             edgeType;
+  String             vectorPropertyName;
+  Type               vectorPropertyType = Type.ARRAY_OF_FLOATS;
+  String             idPropertyName;
+  String             deletedPropertyName;
+  HnswVectorIndexRAM origin;
 
   VectorIndexBuilder(final DatabaseInternal database) {
     super(database, HnswVectorIndex.class);
@@ -120,7 +117,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     schema.registerFile(index.getComponent());
     schema.indexMap.put(index.getName(), index);
 
-    index.build(origin, EmbeddedSchema.BUILD_TX_BATCH_SIZE, vertexCreationCallback, callback);
+    index.build(origin, EmbeddedSchema.BUILD_TX_BATCH_SIZE, callback);
 
     return index;
   }
@@ -226,16 +223,6 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     return this;
   }
 
-  public VectorIndexBuilder withCache(final Map<RID, Vertex> cache) {
-    this.cache = cache;
-    return this;
-  }
-
-  public VectorIndexBuilder withVertexCreationCallback(final HnswVectorIndex.BuildVectorIndexCallback callback) {
-    this.vertexCreationCallback = callback;
-    return this;
-  }
-
   public int getDimensions() {
     return dimensions;
   }
@@ -264,7 +251,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     return maxItemCount;
   }
 
-  public String getVertexType() {
+  public String getIndexedType() {
     return vertexType;
   }
 
@@ -282,9 +269,5 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
   public String getVectorPropertyName() {
     return vectorPropertyName;
-  }
-
-  public Map<RID, Vertex> getCache() {
-    return cache;
   }
 }

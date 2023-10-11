@@ -21,8 +21,9 @@
 
 package com.arcadedb.index.vector;
 
-import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
@@ -47,12 +48,13 @@ import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VectorIndexBuilder;
+import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
-import com.github.jelmerk.knn.Item;
 import com.github.jelmerk.knn.SearchResult;
 import com.github.jelmerk.knn.util.Murmur3;
 import org.eclipse.collections.api.list.primitive.MutableIntList;
@@ -79,10 +81,6 @@ import java.util.stream.*;
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
 public class HnswVectorIndex<TId, TVector, TDistance> extends Component implements com.arcadedb.index.Index, IndexInternal {
-  public interface BuildVectorIndexCallback<TId, TVector> {
-    void onVertexIndexed(Vertex document, Item<TId, TVector> item, long totalIndexed);
-  }
-
   public interface IgnoreVertexCallback {
     boolean ignoreVertex(Vertex v);
   }
@@ -103,17 +101,15 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   private final   int                                  efConstruction;
   private final   ReentrantLock                        globalLock;
   private final   Set<RID>                             excludedCandidates = new HashSet<>();
-  private final   String                               vertexType;
-  private final   String                               edgeType;
+  private final   String                               recordType;
   private final   String                               vectorPropertyName;
   private final   String                               idPropertyName;
-  private final   String                               deletedPropertyName;
-  private final   Map<RID, Vertex>                     cache;
   private final   String                               indexName;
   private         LSMTreeIndex                         underlyingIndex;
   public volatile RID                                  entryPointRIDToLoad;
-  public volatile Vertex                               entryPoint;
+  public volatile BinaryRecord                         entryPoint;
   private final   Bucket                               bucket;
+  private final   BinarySerializer                     serializer;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -154,13 +150,9 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     this.efConstruction = Math.max(builder.getEfConstruction(), m);
     this.ef = builder.getEf();
 
-    this.vertexType = builder.getVertexType();
-    this.edgeType = builder.getEdgeType();
+    this.recordType = builder.getIndexedType();
     this.vectorPropertyName = builder.getVectorPropertyName();
     this.idPropertyName = builder.getIdPropertyName();
-    this.deletedPropertyName = builder.getDeletedPropertyName();
-
-    this.cache = builder.getCache();
 
     this.bucket = builder.getDatabase().getSchema().createBucket(builder.getIndexName());
 
@@ -172,6 +164,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     this.globalLock = new ReentrantLock();
     this.indexName = builder.getIndexName();
+    this.serializer = getDatabase().getSerializer();
   }
 
   /**
@@ -205,16 +198,14 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     } else
       this.entryPointRIDToLoad = null;
 
-    this.vertexType = json.getString("vertexType");
-    this.edgeType = json.getString("edgeType");
+    this.recordType = json.getString("vertexType");
     this.idPropertyName = json.getString("idPropertyName");
     this.vectorPropertyName = json.getString("vectorPropertyName");
-    this.deletedPropertyName = json.has("deletedPropertyName") ? json.getString("deletedPropertyName") : "deleted";
 
     this.globalLock = new ReentrantLock();
-    this.cache = null;
     this.indexName = json.getString("indexName");
     this.bucket = database.getSchema().getBucketByName(indexName);
+    this.serializer = getDatabase().getSerializer();
   }
 
   @Override
@@ -228,7 +219,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       // AFTER THE WHOLE SCHEMA IS LOADED INITIALIZE THE INDEX
       if (this.entryPointRIDToLoad != null) {
         try {
-          this.entryPoint = this.entryPointRIDToLoad.asVertex();
+          this.entryPoint = new BinaryRecord(database, entryPointRIDToLoad, bucket.getRecord(entryPointRIDToLoad));
         } catch (RecordNotFoundException e) {
           // ENTRYPOINT DELETED, DROP THE INDEX
           LogManager.instance()
@@ -260,31 +251,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return findNeighborsFromId(id, k, null);
   }
 
-  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromId(final TId id, final int k,
-      IgnoreVertexCallback ignoreVertexCallback) {
-    final Vertex start = get(id);
-    if (start == null)
-      return Collections.emptyList();
-
-    return findNeighborsFromVertex(start, k, ignoreVertexCallback);
-  }
-
-  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVertex(final Vertex start, final int k,
-      final IgnoreVertexCallback ignoreVertexCallback) {
-    final RID startRID = start.getIdentity();
-    final TVector vector = getVectorFromVertex(start);
-
-    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(vector, k + 1, ignoreVertexCallback).stream()//
-        .filter(result -> !result.item().getIdentity().equals(startRID))//
-        .limit(k)//
-        .collect(Collectors.toList());
-
-    final List<Pair<Identifiable, ? extends Number>> result = new ArrayList<>(neighbors.size());
-    for (SearchResult<Vertex, TDistance> neighbor : neighbors)
-      result.add(new Pair(neighbor.item(), neighbor.distance()));
-    return result;
-  }
-
   public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVector(final TVector vector, final int k) {
     return findNeighborsFromVector(vector, k, null);
   }
@@ -300,93 +266,69 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return result;
   }
 
-  public void addAll(final List<Item<TId, TVector>> embeddings, final BuildVectorIndexCallback callback) {
-    int indexed = 0;
-    for (Item<TId, TVector> embedding : embeddings) {
-      final IndexCursor existent = underlyingIndex.get(new Object[] { embedding.id() });
-      MutableVertex vertex;
-      if (existent.hasNext()) {
-        vertex = existent.next().asVertex().modify();
-        final Boolean deleted = vertex.getBoolean(deletedPropertyName);
-        if (deleted != null && deleted)
-          vertex.remove(deletedPropertyName);
-      } else
-        vertex = database.newVertex(vertexType);
-
-      vertex.set(idPropertyName, embedding.id()).set(vectorPropertyName, embedding.vector()).save();
-
-      add(vertex);
-
-      callback.onVertexIndexed(vertex, embedding, ++indexed);
-    }
-  }
-
-  public boolean add(Vertex vertex) {
-    final TVector vertexVector = getVectorFromVertex(vertex);
+  public boolean add(final Document userDocument) {
+    final TVector vertexVector = (TVector) userDocument.get(vectorPropertyName);
     if (Array.getLength(vertexVector) != dimensions)
       throw new IllegalArgumentException(
           "Item has dimensionality of " + Array.getLength(vertexVector) + " but the index was defined with " + dimensions
               + " dimensions");
 
-    final TId vertexId = getIdFromVertex(vertex);
-    final int vertexMaxLevel = getMaxLevelFromVertex(vertex);
+    final TId vertexId = (TId) userDocument.get(idPropertyName);
+    return add(vertexId, vertexVector, userDocument.getIdentity());
+  }
 
-    final int randomLevel = assignLevel(vertexId, this.levelLambda);
-
+  public boolean add(final TId vertexId, final TVector vertexVector, final RID rid) {
     globalLock.lock();
     try {
-      final Boolean deleted = vertex.getBoolean(deletedPropertyName);
-      if (deleted != null && deleted) {
-        vertex = vertex.modify();
-        ((MutableVertex) vertex).remove(deletedPropertyName);
-        ((MutableVertex) vertex).save();
-      }
-
-      final long totalEdges = vertex.countEdges(Vertex.DIRECTION.OUT, getEdgeType(0));
-      if (totalEdges > 0)
+      // TODO: CHECK IF DELETED
+      final IndexCursor existent = underlyingIndex.get(new Object[] { vertexId });
+      if (existent.hasNext()) {
         // ALREADY INSERTED
         return true;
-
-      vertex = vertex.modify().set("vectorMaxLevel", randomLevel).save();
-
-      if (cache != null)
-        cache.put(vertex.getIdentity(), vertex);
-
-      final RID vertexRID = vertex.getIdentity();
-      synchronized (excludedCandidates) {
-        excludedCandidates.add(vertexRID);
       }
 
-      final Vertex entryPointCopy = entryPoint;
+      final int randomLevel = assignLevel(vertexId, this.levelLambda);
+
+      final BinaryRecord record = new BinaryRecord(database);
+      serializer.serializeValue(database, record.getBuffer(), BinaryTypes.TYPE_BOOLEAN, true);  // VALID
+      serializer.serializeValue(database, record.getBuffer(), BinaryTypes.TYPE_COMPRESSED_RID, rid);
+      serializer.serializeValue(database, record.getBuffer(), BinaryTypes.TYPE_INT, randomLevel);
+      final RID newRecordRID = bucket.createRecord(record, false);
+
+      synchronized (excludedCandidates) {
+        excludedCandidates.add(newRecordRID);
+      }
+
+      final BinaryRecord entryPointCopy = entryPoint;
       try {
-        if (entryPoint != null && randomLevel <= getMaxLevelFromVertex(entryPoint)) {
+        if (entryPoint != null && randomLevel <= getMaxLevelFromRecord(entryPoint)) {
           globalLock.unlock();
         }
 
-        Vertex currObj = entryPointCopy;
-        final int entryPointCopyMaxLevel = getMaxLevelFromVertex(entryPointCopy);
+        BinaryRecord currObj = entryPointCopy;
+        final int entryPointCopyMaxLevel = getMaxLevelFromRecord(entryPointCopy);
 
         if (currObj != null) {
-          if (vertexMaxLevel < entryPointCopyMaxLevel) {
-            final TVector vector = getVectorFromVertex(currObj);
+          if (randomLevel < entryPointCopyMaxLevel) {
+            final TVector vector = getVectorFromRecord(currObj);
             if (vector == null) {
               LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", currObj);
               throw new IndexException("Embeddings not found in object " + currObj);
             }
 
             TDistance curDist = distanceFunction.distance(vertexVector, vector);
-            for (int activeLevel = entryPointCopyMaxLevel; activeLevel > vertexMaxLevel; activeLevel--) {
+            for (int activeLevel = entryPointCopyMaxLevel; activeLevel > randomLevel; activeLevel--) {
               boolean changed = true;
 
               while (changed) {
                 changed = false;
 
                 synchronized (currObj) {
-                  final Iterator<Vertex> candidateConnections = getConnectionsFromVertex(currObj, activeLevel);
+                  final Iterator<Vertex> candidateConnections = getConnectionsFromRecord(currObj, activeLevel);
                   while (candidateConnections.hasNext()) {
                     final Vertex candidateNode = candidateConnections.next();
 
-                    final TVector candidateNodeVector = getVectorFromVertex(candidateNode);
+                    final TVector candidateNodeVector = getVectorFromRecord(candidateNode);
                     if (candidateNodeVector == null) {
                       // INVALID
                       LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", candidateNode);
@@ -410,9 +352,9 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
             final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, vertexVector, efConstruction,
                 level, null);
 
-            final boolean entryPointDeleted = isDeletedFromVertex(entryPointCopy);
+            final boolean entryPointDeleted = isDeletedFromBinaryRecord(entryPointCopy);
             if (entryPointDeleted) {
-              TDistance distance = distanceFunction.distance(vertexVector, getVectorFromVertex(entryPointCopy));
+              TDistance distance = distanceFunction.distance(vertexVector, getVectorFromRecord(entryPointCopy));
               topCandidates.add(new NodeIdAndDistance<>(entryPointCopy.getIdentity(), distance, maxValueDistanceComparator));
 
               if (topCandidates.size() > efConstruction)
@@ -424,7 +366,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         }
 
         // zoom out to the highest level
-        if (entryPoint == null || vertexMaxLevel > entryPointCopyMaxLevel)
+        if (entryPoint == null || randomLevel > entryPointCopyMaxLevel)
           // this is thread safe because we get the global lock when we add a level
           this.entryPoint = vertex;
 
@@ -432,7 +374,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
       } finally {
         synchronized (excludedCandidates) {
-          excludedCandidates.remove(vertexRID);
+          excludedCandidates.remove(newRecordRID);
         }
       }
     } finally {
@@ -442,7 +384,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     }
   }
 
-  private Iterator<Vertex> getConnectionsFromVertex(final Vertex vertex, final int level) {
+  private Iterator<Vertex> getConnectionsFromRecord(final RID rid, final int level) {
+
     return vertex.getVertices(Vertex.DIRECTION.OUT, edgeType + level).iterator();
   }
 
@@ -450,30 +393,21 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return (int) vertex.countEdges(Vertex.DIRECTION.OUT, edgeType + level);
   }
 
-  private int getMaxLevelFromVertex(final Vertex vertex) {
-    if (vertex == null)
+  private int getMaxLevelFromRecord(final BinaryRecord record) {
+    if (record == null)
       return 0;
-    final Integer vectorMaxLevel = vertex.getInteger("vectorMaxLevel");
-    return vectorMaxLevel != null ? vectorMaxLevel : 0;
-  }
 
-  private Vertex loadVertexFromRID(final Identifiable rid) {
-    if (rid instanceof Vertex)
-      return (Vertex) rid;
-
-    Vertex vertex = null;
-    if (cache != null)
-      vertex = cache.get(rid);
-    if (vertex == null)
-      vertex = rid.asVertex();
-    return vertex;
+    // TODO: GET THE MAX LEVEL FROM THE BINARY RECORD
+    serializer.deserializeValue(database, record.getBuffer(), BinaryTypes.TYPE_BOOLEAN, null);  // VALID
+    serializer.deserializeValue(database, record.getBuffer(), BinaryTypes.TYPE_COMPRESSED_RID, null);
+    return (int) serializer.deserializeValue(database, record.getBuffer(), BinaryTypes.TYPE_INT, null);
   }
 
   private void mutuallyConnectNewElement(final Vertex newNode, final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates,
       final int level) {
     final int bestN = level == 0 ? this.maxM0 : this.maxM;
     final RID newNodeId = newNode.getIdentity();
-    final TVector newItemVector = getVectorFromVertex(newNode);
+    final TVector newItemVector = getVectorFromRecord(newNode);
 
     getNeighborsByHeuristic2(topCandidates, m);
 
@@ -492,9 +426,9 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       newNode.newEdge(edgeTypeName, selectedNeighbourId, false);
 
       final Vertex neighbourNode = loadVertexFromRID(selectedNeighbourId);
-      final TVector neighbourVector = getVectorFromVertex(neighbourNode);
+      final TVector neighbourVector = getVectorFromRecord(neighbourNode);
       final int neighbourConnectionsAtLevelTotal = countConnectionsFromVertex(neighbourNode, level);
-      final Iterator<Vertex> neighbourConnectionsAtLevel = getConnectionsFromVertex(neighbourNode, level);
+      final Iterator<Vertex> neighbourConnectionsAtLevel = getConnectionsFromRecord(neighbourNode, level);
 
       if (neighbourConnectionsAtLevelTotal < bestN) {
         neighbourNode.newEdge(edgeTypeName, newNode, false);
@@ -507,7 +441,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         candidates.add(new NodeIdAndDistance<>(newNodeId, dMax, maxValueDistanceComparator));
 
         neighbourConnectionsAtLevel.forEachRemaining(neighbourConnection -> {
-          final TDistance dist = distanceFunction.distance(neighbourVector, getVectorFromVertex(neighbourConnection));
+          final TDistance dist = distanceFunction.distance(neighbourVector, getVectorFromRecord(neighbourConnection));
           candidates.add(new NodeIdAndDistance<>(neighbourConnection.getIdentity(), dist, maxValueDistanceComparator));
         });
 
@@ -520,10 +454,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     }
   }
 
-  public LSMTreeIndex getUnderlyingIndex() {
-    return underlyingIndex;
-  }
-
   public List<SearchResult<Vertex, TDistance>> findNearest(final TVector destination, final int k,
       final IgnoreVertexCallback ignoreVertexCallback) {
     if (entryPoint == null)
@@ -532,7 +462,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     final Vertex entryPointCopy = entryPoint;
     Vertex currObj = entryPointCopy;
 
-    final TVector vector = getVectorFromVertex(currObj);
+    final TVector vector = getVectorFromRecord(currObj);
     if (vector == null) {
       LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", currObj);
       return Collections.emptyList();
@@ -540,17 +470,17 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     TDistance curDist = distanceFunction.distance(destination, vector);
 
-    for (int activeLevel = getMaxLevelFromVertex(entryPointCopy); activeLevel > 0; activeLevel--) {
+    for (int activeLevel = getMaxLevelFromRecord(entryPointCopy); activeLevel > 0; activeLevel--) {
       boolean changed = true;
       while (changed) {
         changed = false;
 
-        final Iterator<Vertex> candidateConnections = getConnectionsFromVertex(currObj, activeLevel);
+        final Iterator<Vertex> candidateConnections = getConnectionsFromRecord(currObj, activeLevel);
 
         while (candidateConnections.hasNext()) {
           final Vertex candidateNode = candidateConnections.next();
 
-          TDistance candidateDistance = distanceFunction.distance(destination, getVectorFromVertex(candidateNode));
+          TDistance candidateDistance = distanceFunction.distance(destination, getVectorFromRecord(candidateNode));
           if (lt(candidateDistance, curDist)) {
             curDist = candidateDistance;
             currObj = candidateNode;
@@ -588,7 +518,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     TDistance lowerBound;
 
     if (!ignoreVertex(entryPointNode, ignoreVertexCallback)) {
-      final TVector entryPointVector = getVectorFromVertex(entryPointNode);
+      final TVector entryPointVector = getVectorFromRecord(entryPointNode);
       final TDistance distance = distanceFunction.distance(destination, entryPointVector);
       final NodeIdAndDistance<TDistance> pair = new NodeIdAndDistance<>(entryPointNode.getIdentity(), distance,
           maxValueDistanceComparator);
@@ -611,16 +541,14 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       if (gt(currentPair.distance, lowerBound))
         break;
 
-      final Vertex node = loadVertexFromRID(currentPair.nodeId);
-
-      final Iterator<Vertex> candidates = getConnectionsFromVertex(node, layer);
+      final Iterator<Vertex> candidates = getConnectionsFromRecord(currentPair.nodeId, layer);
       while (candidates.hasNext()) {
         final Vertex candidateNode = candidates.next();
 
         if (!visitedNodes.contains(candidateNode.getIdentity())) {
           visitedNodes.add(candidateNode.getIdentity());
 
-          final TVector vector = getVectorFromVertex(candidateNode);
+          final TVector vector = getVectorFromRecord(candidateNode);
           if (vector == null) {
             // INVALID
             LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", candidateNode);
@@ -713,12 +641,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return maxItemCount;
   }
 
-  public void save(OutputStream out) throws IOException {
-    try (ObjectOutputStream oos = new ObjectOutputStream(out)) {
-      oos.writeObject(this);
-    }
-  }
-
   private int assignLevel(final TId value, final double lambda) {
     // by relying on the external id to come up with the level, the graph construction should be a lot more stable
     // see : https://github.com/nmslib/hnswlib/issues/28
@@ -737,29 +659,30 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return maxValueDistanceComparator.compare(x, y) > 0;
   }
 
-  public <TId> TId getIdFromVertex(final Vertex vertex) {
-    return (TId) vertex.get(idPropertyName);
+  public <TVector> TVector getVectorFromRecord(final BinaryRecord record) {
+    return (TVector) getUserDocument(record.getBuffer()).get(vectorPropertyName);
   }
 
-  public <TVector> TVector getVectorFromVertex(final Vertex vertex) {
-    return (TVector) vertex.get(vectorPropertyName);
+  public Document getUserDocument(final RID rid) {
+    return getUserDocument(bucket.getRecord(rid));
   }
 
-  public boolean isDeletedFromVertex(final Vertex vertex) {
-    final Boolean deleted = vertex.getBoolean(deletedPropertyName);
-    return deleted != null && deleted;
+  public Document getUserDocument(final Binary recordContent) {
+    serializer.deserializeValue(database, recordContent, BinaryTypes.TYPE_BOOLEAN, null);
+    final RID userRID = (RID) serializer.deserializeValue(database, recordContent, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    return userRID.asDocument();
   }
 
-  public boolean ignoreVertex(final Vertex vertex, final IgnoreVertexCallback ignoreVertexCallback) {
-    if (isDeletedFromVertex(vertex))
+  public boolean isDeletedFromBinaryRecord(final BinaryRecord record) {
+    return (boolean) serializer.deserializeValue(database, record.getBuffer(), BinaryTypes.TYPE_BOOLEAN, null);
+  }
+
+  public boolean ignoreVertex(final Document userRecord, final IgnoreVertexCallback ignoreVertexCallback) {
+    if (isDeletedFromBinaryRecord(vertex))
       return true;
     if (ignoreVertexCallback != null)
       return ignoreVertexCallback.ignoreVertex(vertex);
     return false;
-  }
-
-  public String getEdgeType(final int level) {
-    return edgeType + level;
   }
 
   static class NodeIdAndDistance<TDistance> implements Comparable<NodeIdAndDistance<TDistance>> {
@@ -825,7 +748,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     json.put("levelLambda", levelLambda);
     json.put("entryPoint", entryPoint == null ? "" : entryPoint.getIdentity().toString());
 
-    json.put("vertexType", vertexType);
+    json.put("vertexType", recordType);
     json.put("edgeType", edgeType);
     json.put("idPropertyName", idPropertyName);
     json.put("vectorPropertyName", vectorPropertyName);
@@ -851,7 +774,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
               final Identifiable next = it.next();
               if (next != null) {
                 final Vertex vertex = next.asVertex();
-                for (int level = 0; level < getMaxLevelFromVertex(vertex); level++) {
+                for (int level = 0; level < getMaxLevelFromRecord(vertex); level++) {
                   try {
                     for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
                       e.delete();
@@ -915,8 +838,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     return underlyingIndex.build(buildIndexBatchSize, callback);
   }
 
-  public long build(final HnswVectorIndexRAM origin, final int buildIndexBatchSize,
-      final BuildVectorIndexCallback vertexCreationCallback, final BuildIndexCallback edgeCallback) {
+  public long build(final HnswVectorIndexRAM origin, final int buildIndexBatchSize, final BuildIndexCallback edgeCallback) {
     if (origin != null) {
       // IMPORT FROM RAM Index
       final RID[] pointersToRIDMapping = new RID[origin.nodeCount];
@@ -942,7 +864,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
             vertex.remove(deletedPropertyName);
 
         } else
-          vertex = database.newVertex(vertexType);
+          vertex = database.newVertex(recordType);
 
         vertex.set(idPropertyName, node.item.id()).set(vectorPropertyName, node.item.vector());
 
@@ -951,9 +873,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
           vertex.set("vectorMaxLevel", nodeMaxLevel);
 
         vertex.save();
-
-        if (vertexCreationCallback != null)
-          vertexCreationCallback.onVertexIndexed(vertex, node.item, totalVertices);
 
         pointersToRIDMapping[node.id] = vertex.getIdentity();
 
@@ -1187,7 +1106,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public String getTypeName() {
-    return vertexType;
+    return recordType;
   }
 
   @Override
@@ -1235,8 +1154,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       for (NodeIdAndDistance<TDistance> secondPair : returnList) {
 
         final TDistance curdist = distanceFunction.distance(//
-            getVectorFromVertex(loadVertexFromRID(secondPair.nodeId)),//
-            getVectorFromVertex(loadVertexFromRID(currentPair.nodeId)));
+            getVectorFromRecord(getUserDocument(secondPair.nodeId)),//
+            getVectorFromRecord(getUserDocument(currentPair.nodeId)));
 
         if (lt(curdist, distToQuery)) {
           good = false;
