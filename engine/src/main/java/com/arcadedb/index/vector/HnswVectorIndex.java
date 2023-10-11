@@ -50,8 +50,10 @@ import com.github.jelmerk.knn.DistanceFunction;
 import com.github.jelmerk.knn.Index;
 import com.github.jelmerk.knn.Item;
 import com.github.jelmerk.knn.SearchResult;
+import com.github.jelmerk.knn.hnsw.SizeLimitExceededException;
 import com.github.jelmerk.knn.util.Murmur3;
 import org.eclipse.collections.api.list.primitive.MutableIntList;
+import org.eclipse.collections.impl.list.mutable.primitive.IntArrayList;
 
 import java.io.*;
 import java.lang.reflect.*;
@@ -76,7 +78,7 @@ import static com.arcadedb.serializer.BinaryTypes.TYPE_RID;
  * @see <a href="https://arxiv.org/abs/1603.09320">
  * Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs</a>
  */
-public class HnswVectorIndex<TId, TVector, TDistance> extends Bucket implements com.arcadedb.index.Index, IndexInternal {
+public class HnswVectorIndex<TVector, TDistance> extends Bucket implements com.arcadedb.index.Index, IndexInternal {
   public static final String FILE_EXT        = "hnswidx";
   public static final int    CURRENT_VERSION = 0;
 
@@ -103,22 +105,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Bucket implements 
   private final   BinarySerializer                     serializer;
   private         LSMTreeIndexAbstract.NULL_STRATEGY   nullStrategy;
   private final   RID                                  structureRecordRID;
-
-  private class Node {
-    public final int     id;
-    public final RID     rid;
-    public final int     maxLevel;
-    public final boolean deleted;
-    public final TVector vector;
-
-    private Node(final int id, final RID rid, final int maxLevel, final boolean deleted, final TVector vector) {
-      this.id = id;
-      this.rid = rid;
-      this.maxLevel = maxLevel;
-      this.deleted = deleted;
-      this.vector = vector;
-    }
-  }
 
   public interface IgnoreVertexCallback {
     boolean ignoreVertex(Vertex v);
@@ -226,22 +212,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Bucket implements 
     return indexName;
   }
 
-  public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVertex(final Vertex start, final int k,
-      final IgnoreVertexCallback ignoreVertexCallback) {
-    final RID startRID = start.getIdentity();
-    final TVector vector = getVectorFromNode(start);
-
-    final List<SearchResult<Vertex, TDistance>> neighbors = findNearest(vector, k + 1, ignoreVertexCallback).stream()//
-        .filter(result -> !result.item().getIdentity().equals(startRID))//
-        .limit(k)//
-        .collect(Collectors.toList());
-
-    final List<Pair<Identifiable, ? extends Number>> result = new ArrayList<>(neighbors.size());
-    for (SearchResult<Vertex, TDistance> neighbor : neighbors)
-      result.add(new Pair(neighbor.item(), neighbor.distance()));
-    return result;
-  }
-
   public List<Pair<Identifiable, ? extends Number>> findNeighborsFromVector(final TVector vector, final int k) {
     return findNeighborsFromVector(vector, k, null);
   }
@@ -257,133 +227,142 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Bucket implements 
     return result;
   }
 
-  public void addAll(final List<Item<TId, TVector>> embeddings) {
-    int indexed = 0;
-    for (Item<TId, TVector> embedding : embeddings) {
-      final IndexCursor existent = underlyingIndex.get(new Object[] { embedding.id() });
-      MutableVertex vertex;
-      if (existent.hasNext()) {
-        vertex = existent.next().asVertex().modify();
-        final Boolean deleted = vertex.getBoolean(deletedPropertyName);
-        if (deleted != null && deleted)
-          vertex.remove(deletedPropertyName);
-      } else
-        vertex = database.newVertex(recordType);
+  @Override
+  public void put(final Object[] keys, RID[] rid) {
+    if (keys == null || keys.length == 0)
+      throw new IllegalArgumentException("key is null");
+    if (keys.length > 1)
+      throw new IllegalArgumentException("HNSW index allows only one key as a vector");
 
-      vertex.set(idPropertyName, embedding.id()).set(vectorPropertyName, embedding.vector()).save();
-
-      add(vertex);
-    }
-  }
-
-  public boolean add(final Document record) {
-    final TVector vertexVector = getVectorFromNode(record);
+    final TVector vertexVector = (TVector) keys[0];
     if (Array.getLength(vertexVector) != dimensions)
       throw new IllegalArgumentException(
           "Item has dimensionality of " + Array.getLength(vertexVector) + " but the index was defined with " + dimensions
               + " dimensions");
 
-    final int vertexMaxLevel = loadNodeFromId(record).maxLevel;
+    final int randomLevel = assignLevel(vertexVector, this.levelLambda);
 
-    final int randomLevel = assignLevel(vertexId, this.levelLambda);
+    final IntArrayList[] connections = new IntArrayList[randomLevel + 1];
+
+    for (int level = 0; level <= randomLevel; level++) {
+      int levelM = level == 0 ? maxM0 : maxM;
+      connections[level] = new IntArrayList(levelM);
+    }
 
     globalLock.lock();
+
     try {
-      final Boolean deleted = record.getBoolean(deletedPropertyName);
-      if (deleted != null && deleted) {
-        record = record.modify();
-        ((MutableVertex) record).remove(deletedPropertyName);
-        ((MutableVertex) record).save();
-      }
+      int existingNodeId = lookup.getIfAbsent(item.id(), NO_NODE_ID);
 
-      final long totalEdges = record.countEdges(Vertex.DIRECTION.OUT, getEdgeType(0));
-      if (totalEdges > 0)
-        // ALREADY INSERTED
-        return true;
+      if (existingNodeId != NO_NODE_ID) {
+        HnswVectorIndexRAM.Node<TItem> node = nodes.get(existingNodeId);
 
-      record = record.modify().set("vectorMaxLevel", randomLevel).save();
+        if (item.version() < node.item.version())
+          return false;
 
-      final RID vertexRID = record.getIdentity();
-      synchronized (excludedCandidates) {
-        excludedCandidates.add(vertexRID);
-      }
-
-      final int entryPointCopy = entryPoint;
-      try {
-        if (entryPoint > -1 && randomLevel <= getMaxLevelFromNode(entryPoint)) {
-          globalLock.unlock();
+        if (Objects.deepEquals(node.item.vector(), item.vector())) {
+          node.item = item;
+          return true;
+        } else {
+          remove(item.id(), item.version());
         }
+      }
 
-        Vertex currObj = entryPointCopy;
-        final int entryPointCopyMaxLevel = getMaxLevelFromNode(entryPointCopy);
+      if (nodeCount >= this.maxItemCount) {
+        throw new SizeLimitExceededException("The number of elements exceeds the specified limit.");
+      }
 
-        if (currObj != null) {
-          if (vertexMaxLevel < entryPointCopyMaxLevel) {
-            final TVector vector = getVectorFromNode(currObj);
-            if (vector == null) {
-              LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", currObj);
-              throw new IndexException("Embeddings not found in object " + currObj);
+      int newNodeId = nodeCount++;
+
+      synchronized (excludedCandidates) {
+        excludedCandidates.add(newNodeId);
+      }
+
+      HnswVectorIndexRAM.Node<TItem> newNode = new HnswVectorIndexRAM.Node<>(newNodeId, connections, item, false);
+
+      nodes.set(newNodeId, newNode);
+      lookup.put(item.id(), newNodeId);
+
+      Object lock = locks.computeIfAbsent(item.id(), k -> new Object());
+
+      HnswVectorIndexRAM.Node<TItem> entryPointCopy = entryPoint;
+
+      try {
+        synchronized (lock) {
+          synchronized (newNode) {
+
+            if (entryPoint != null && randomLevel <= entryPoint.maxLevel()) {
+              globalLock.unlock();
             }
 
-            TDistance curDist = distanceFunction.distance(vertexVector, vector);
-            for (int activeLevel = entryPointCopyMaxLevel; activeLevel > vertexMaxLevel; activeLevel--) {
-              boolean changed = true;
+            HnswVectorIndexRAM.Node<TItem> currObj = entryPointCopy;
 
-              while (changed) {
-                changed = false;
+            if (currObj != null) {
 
-                synchronized (currObj) {
-                  final Iterator<Vertex> candidateConnections = getConnectionsFromVertex(currObj, activeLevel);
-                  while (candidateConnections.hasNext()) {
-                    final Vertex candidateNode = candidateConnections.next();
+              if (newNode.maxLevel() < entryPointCopy.maxLevel()) {
 
-                    final TVector candidateNodeVector = getVectorFromNode(candidateNode);
-                    if (candidateNodeVector == null) {
-                      // INVALID
-                      LogManager.instance().log(this, Level.WARNING, "Vector not found in vertex %s", candidateNode);
-                      continue;
-                    }
+                TDistance curDist = distanceFunction.distance(item.vector(), currObj.item.vector());
 
-                    final TDistance candidateDistance = distanceFunction.distance(vertexVector, candidateNodeVector);
+                for (int activeLevel = entryPointCopy.maxLevel(); activeLevel > newNode.maxLevel(); activeLevel--) {
 
-                    if (lt(candidateDistance, curDist)) {
-                      curDist = candidateDistance;
-                      currObj = candidateNode;
-                      changed = true;
+                  boolean changed = true;
+
+                  while (changed) {
+                    changed = false;
+
+                    synchronized (currObj) {
+                      MutableIntList candidateConnections = currObj.connections[activeLevel];
+
+                      for (int i = 0; i < candidateConnections.size(); i++) {
+
+                        int candidateId = candidateConnections.get(i);
+
+                        HnswVectorIndexRAM.Node<TItem> candidateNode = nodes.get(candidateId);
+
+                        TDistance candidateDistance = distanceFunction.distance(item.vector(), candidateNode.item.vector());
+
+                        if (lt(candidateDistance, curDist)) {
+                          curDist = candidateDistance;
+                          currObj = candidateNode;
+                          changed = true;
+                        }
+                      }
                     }
                   }
                 }
               }
+
+              for (int level = Math.min(randomLevel, entryPointCopy.maxLevel()); level >= 0; level--) {
+                PriorityQueue<HnswVectorIndexRAM.NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj,
+                    item.vector(), efConstruction, level);
+
+                if (entryPointCopy.deleted) {
+                  TDistance distance = distanceFunction.distance(item.vector(), entryPointCopy.item.vector());
+                  topCandidates.add(
+                      new HnswVectorIndexRAM.NodeIdAndDistance<>(entryPointCopy.id, distance, maxValueDistanceComparator));
+
+                  if (topCandidates.size() > efConstruction) {
+                    topCandidates.poll();
+                  }
+                }
+
+                mutuallyConnectNewElement(newNode, topCandidates, level);
+
+              }
             }
-          }
 
-          for (int level = Math.min(randomLevel, entryPointCopyMaxLevel); level >= 0; level--) {
-            final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates = searchBaseLayer(currObj, vertexVector, efConstruction,
-                level, null);
-
-            final boolean entryPointDeleted = isNodeDeleted(entryPointCopy);
-            if (entryPointDeleted) {
-              TDistance distance = distanceFunction.distance(vertexVector, getVectorFromNode(entryPointCopy));
-              topCandidates.add(new NodeIdAndDistance<>(entryPointCopy.getIdentity(), distance, maxValueDistanceComparator));
-
-              if (topCandidates.size() > efConstruction)
-                topCandidates.poll();
+            // zoom out to the highest level
+            if (entryPoint == null || entryPointCopy == null || newNode.maxLevel() > entryPointCopy.maxLevel()) {
+              // this is thread safe because we get the global lock when we add a level
+              this.entryPoint = newNode;
             }
 
-            mutuallyConnectNewElement(record, topCandidates, level);
+            return true;
           }
         }
-
-        // zoom out to the highest level
-        if (entryPoint == null || vertexMaxLevel > entryPointCopyMaxLevel)
-          // this is thread safe because we get the global lock when we add a level
-          this.entryPoint = record;
-
-        return true;
-
       } finally {
         synchronized (excludedCandidates) {
-          excludedCandidates.remove(vertexRID);
+          excludedCandidates.remove(newNodeId);
         }
       }
     } finally {
@@ -661,7 +640,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Bucket implements 
     return maxItemCount;
   }
 
-  private int assignLevel(final TId value, final double lambda) {
+  private int assignLevel(final Object value, final double lambda) {
     // by relying on the external id to come up with the level, the graph construction should be a lot more stable
     // see : https://github.com/nmslib/hnswlib/issues/28
     final int hashCode = value.hashCode();
@@ -1002,11 +981,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Bucket implements 
   }
 
   @Override
-  public void put(final Object[] keys, RID[] rid) {
-    underlyingIndex.put(keys, rid);
-  }
-
-  @Override
   public void remove(final Object[] keys) {
     globalLock.lock();
     try {
@@ -1045,32 +1019,32 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Bucket implements 
 
   @Override
   public long countEntries() {
-    return underlyingIndex.countEntries();
+    return super.count();
   }
 
   @Override
   public boolean compact() throws IOException, InterruptedException {
-    return underlyingIndex.compact();
+    return false;
   }
 
   @Override
   public boolean isCompacting() {
-    return underlyingIndex.isCompacting();
+    return false;
   }
 
   @Override
   public boolean isValid() {
-    return underlyingIndex.isValid();
+    return true;
   }
 
   @Override
   public boolean scheduleCompaction() {
-    return underlyingIndex.scheduleCompaction();
+    return false;
   }
 
   @Override
   public String getMostRecentFileName() {
-    return underlyingIndex.getMostRecentFileName();
+    return filePath;
   }
 
   @Override
@@ -1086,24 +1060,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Bucket implements 
   @Override
   public List<String> getPropertyNames() {
     return List.of(vectorPropertyName);
-  }
-
-  @Override
-  public void close() {
-    underlyingIndex.close();
-  }
-
-  private Vertex get(final Object id) {
-    globalLock.lock();
-    try {
-      final IndexCursor cursor = underlyingIndex.get(new Object[] { id });
-      if (!cursor.hasNext())
-        return null;
-
-      return loadNodeFromId(cursor.next());
-    } finally {
-      globalLock.unlock();
-    }
   }
 
   private void getNeighborsByHeuristic2(final PriorityQueue<NodeIdAndDistance<TDistance>> topCandidates, final int m) {

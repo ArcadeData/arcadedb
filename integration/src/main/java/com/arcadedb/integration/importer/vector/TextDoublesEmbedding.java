@@ -21,21 +21,22 @@
 
 package com.arcadedb.integration.importer.vector;
 
+import com.arcadedb.database.RID;
 import com.github.jelmerk.knn.Item;
 
 import java.util.*;
 
-public class TextDoublesEmbedding implements Item<String, double[]> {
-  private final String   id;
+public class TextDoublesEmbedding implements Item<RID, double[]> {
+  private final RID      id;
   private final double[] vector;
 
-  public TextDoublesEmbedding(String id, double[] vector) {
+  public TextDoublesEmbedding(final RID id, final double[] vector) {
     this.id = id;
     this.vector = vector;
   }
 
   @Override
-  public String id() {
+  public RID id() {
     return id;
   }
 
