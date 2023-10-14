@@ -422,7 +422,6 @@
                                 <buildArg>--initialize-at-run-time=io.netty.channel.epoll</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.handler.ssl</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.channel.unix"</buildArg>
-                                <buildArg>--language:js</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--enable-url-protocols=https</buildArg>
                                 <buildArg>-H:IncludeResources=.*.*$</buildArg>
