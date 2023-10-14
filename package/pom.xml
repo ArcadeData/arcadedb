@@ -118,8 +118,11 @@
                                 <argument>
                                     -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
                                 </argument>
+<!--                                <argument>-->
+<!--                                    -Darcadedb.server.plugins=Redis:com.arcadedb.redis.RedisProtocolPlugin,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin,Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin-->
+<!--                                </argument>-->
                                 <argument>
-                                    -Darcadedb.server.plugins=Redis:com.arcadedb.redis.RedisProtocolPlugin,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin,Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin
+                                    -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin
                                 </argument>
                                 <argument>-classpath</argument>
                                 <classpath/>
@@ -419,7 +422,7 @@
                                 <buildArg>--initialize-at-build-time=org.slf4j.impl.StaticLoggerBinder</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.util.internal.logging.Log4JLogger</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.util.AbstractReferenceCounted</buildArg>
-                                <buildArg>--initialize-at-run-time=io.netty.channel.epoll</buildArg>
+                                  <buildArg>--initialize-at-run-time=io.netty.channel.epoll</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.handler.ssl</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.channel.unix"</buildArg>
                                 <buildArg>--verbose</buildArg>
