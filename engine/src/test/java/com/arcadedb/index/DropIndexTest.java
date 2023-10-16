@@ -49,9 +49,11 @@ public class DropIndexTest extends TestHelper {
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
 
-    final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final Index typeIndex = database.getSchema()
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index typeIndex2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {
@@ -93,7 +95,8 @@ public class DropIndexTest extends TestHelper {
         } catch (final SchemaException e) {
         }
 
-      final Index typeIndex3 = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final Index typeIndex3 = database.getSchema()
+          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       Assertions.assertEquals(TOT + 1, database.countType(TYPE_NAME, true));
       Assertions.assertEquals(TOT, database.countType(TYPE_NAME2, false));
@@ -122,18 +125,24 @@ public class DropIndexTest extends TestHelper {
     Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
-    final DocumentType type2 = database.getSchema().buildDocumentType().withName(TYPE_NAME2).withTotalBuckets(3).create();
-    type2.addSuperType(type);
+    final DocumentType type2 = database.getSchema().buildDocumentType().withName(TYPE_NAME2).withTotalBuckets(3)
+        .withSuperType(type.getName()).create();
 
-    final DocumentType type3 = database.getSchema().buildDocumentType().withName(TYPE_NAME3).withTotalBuckets(3).create();
-    type3.addSuperType(type2);
+    Assertions.assertEquals(type.getName(), type2.getSuperTypes().get(0).getName());
+
+    final DocumentType type3 = database.getSchema().buildDocumentType().withName(TYPE_NAME3).withTotalBuckets(3)
+        .withSuperType(type2.getName()).create();
+
+    Assertions.assertEquals(type.getName(), type2.getSuperTypes().get(0).getName());
 
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
 
-    final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final Index typeIndex = database.getSchema()
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index typeIndex2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
     type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
     type2.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
@@ -232,7 +241,8 @@ public class DropIndexTest extends TestHelper {
       database.begin();
 
       database.getSchema().dropIndex(typeIndex.getName());
-      final Index typeIndex3 = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final Index typeIndex3 = database.getSchema()
+          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v2 = database.newDocument(TYPE_NAME2);
