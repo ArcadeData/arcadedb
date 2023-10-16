@@ -18,11 +18,17 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.Edge;
 
 public class EdgeType extends DocumentType {
   public EdgeType(final EmbeddedSchema schema, final String name) {
     super(schema, name);
+  }
+
+  @Override
+  public MutableDocument newRecord() {
+    throw new UnsupportedOperationException();
   }
 
   public byte getType() {

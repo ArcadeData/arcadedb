@@ -60,6 +60,6 @@ public class SQLFunctionDecode extends SQLFunctionAbstract {
 
   @Override
   public String getSyntax() {
-    return "decode(<binaryfield>, <format>)";
+    return "decode(<value>, <format>)";
   }
 }

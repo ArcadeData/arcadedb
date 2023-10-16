@@ -19,7 +19,9 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 
 import java.util.*;
@@ -29,6 +31,11 @@ public class VertexType extends DocumentType {
 
   public VertexType(final EmbeddedSchema schema, final String name) {
     super(schema, name);
+  }
+
+  @Override
+  public MutableVertex newRecord() {
+    return schema.getDatabase().newVertex(name);
   }
 
   public byte getType() {

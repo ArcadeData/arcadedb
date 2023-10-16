@@ -64,14 +64,13 @@ public class SQLFunctionEncode extends SQLFunctionAbstract {
       }
     }
 
-    if (data == null) {
+    if (data == null)
       return null;
-    }
 
     if (FORMAT_BASE64.equalsIgnoreCase(format)) {
       return Base64.getEncoder().encodeToString(data);
     } else if (FORMAT_BASE64URL.equalsIgnoreCase(format)) {
-      return Base64.getEncoder().withoutPadding().encodeToString(data).replace('+','-').replace('/','_');
+      return Base64.getEncoder().withoutPadding().encodeToString(data).replace('+', '-').replace('/', '_');
     } else {
       throw new CommandSQLParsingException("Unknown format :" + format);
     }
@@ -79,6 +78,6 @@ public class SQLFunctionEncode extends SQLFunctionAbstract {
 
   @Override
   public String getSyntax() {
-    return "encode(<binaryfield>, <format>)";
+    return "encode(<value|rid>, <format>)";
   }
 }
