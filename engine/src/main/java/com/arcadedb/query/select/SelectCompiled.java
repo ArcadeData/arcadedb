@@ -58,6 +58,8 @@ public class SelectCompiled {
 
     if (select.limit > -1)
       json.put("limit", select.limit);
+    if (select.skip > -1)
+      json.put("skip", select.skip);
     if (select.timeoutInMs > 0) {
       json.put("timeoutInMs", select.timeoutInMs);
       json.put("exceptionOnTimeout", select.exceptionOnTimeout);

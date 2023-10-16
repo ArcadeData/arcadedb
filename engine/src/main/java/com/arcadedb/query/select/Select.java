@@ -49,6 +49,7 @@ public class Select {
   Object                           propertyValue;
   boolean                          polymorphic = true;
   int                              limit       = -1;
+  int                              skip        = 0;
   long                             timeoutInMs = 0;
   boolean                          exceptionOnTimeout;
   ArrayList<Pair<String, Boolean>> orderBy;
@@ -149,6 +150,12 @@ public class Select {
     return this;
   }
 
+  public Select skip(final int skip) {
+    checkNotCompiled();
+    this.skip = skip;
+    return this;
+  }
+
   public Select timeout(final long timeoutValue, final TimeUnit timeoutUnit, final boolean exceptionOnTimeout) {
     checkNotCompiled();
     this.timeoutInMs = timeoutUnit.toMillis(timeoutValue);
@@ -192,6 +199,8 @@ public class Select {
 
     if (json.has("limit"))
       limit(json.getInt("limit"));
+    if (json.has("skip"))
+      skip(json.getInt("skip"));
 
     return this;
   }

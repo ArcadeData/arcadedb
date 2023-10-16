@@ -212,6 +212,45 @@ public class SelectExecutionIT extends TestHelper {
   }
 
   @Test
+  public void okSkip() {
+    SelectCompiled select = database.select().fromType("Vertex")//
+        .where().property("id").lt().value(10)//
+        .and().property("name").eq().value("Elon").skip(10).compile();
+
+    SelectIterator<Vertex> iter = select.vertices();
+    int browsed = 0;
+    while (iter.hasNext()) {
+      Assertions.assertTrue(iter.next().getInteger("id") < 10);
+      ++browsed;
+    }
+    Assertions.assertEquals(0, browsed);
+
+    select = database.select().fromType("Vertex")//
+        .where().property("id").lt().value(10)//
+        .and().property("name").eq().value("Elon").skip(0).compile();
+
+    iter = select.vertices();
+    browsed = 0;
+    while (iter.hasNext()) {
+      Assertions.assertTrue(iter.next().getInteger("id") < 10);
+      ++browsed;
+    }
+    Assertions.assertEquals(10, browsed);
+
+    select = database.select().fromType("Vertex")//
+        .where().property("id").lt().value(10)//
+        .and().property("name").eq().value("Elon").skip(2).compile();
+
+    iter = select.vertices();
+    browsed = 0;
+    while (iter.hasNext()) {
+      Assertions.assertTrue(iter.next().getInteger("id") < 10);
+      ++browsed;
+    }
+    Assertions.assertEquals(8, browsed);
+  }
+
+  @Test
   public void okUpdate() {
     database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
@@ -288,8 +327,7 @@ public class SelectExecutionIT extends TestHelper {
 
   @Test
   public void okReuse() {
-    final SelectCompiled select = database.select().fromType("Vertex").where().property("id").eq().parameter("value")
-        .compile();
+    final SelectCompiled select = database.select().fromType("Vertex").where().property("id").eq().parameter("value").compile();
     for (int i = 0; i < 100; i++)
       Assertions.assertEquals(i, select.parameter("value", i).vertices().nextOrNull().getInteger("id"));
   }

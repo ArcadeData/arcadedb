@@ -50,6 +50,12 @@ public class SelectIterator<T extends Identifiable> implements Iterator<T> {
       this.filterOutRecords = new HashSet<>();
 
     fetchResultInCaseOfOrderBy();
+
+    for (int i = 0; i < executor.select.skip; i++) {
+      // CONSUME UNTIL THE SKIP THRESHOLD IS LIMIT
+      if (hasNext())
+        next();
+    }
   }
 
   @Override

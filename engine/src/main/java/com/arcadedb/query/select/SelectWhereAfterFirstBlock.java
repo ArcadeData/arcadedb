@@ -62,6 +62,10 @@ public class SelectWhereAfterFirstBlock {
     return select.limit(limit);
   }
 
+  public Select skip(final int skip) {
+    return select.skip(skip);
+  }
+
   public Select timeout(final long timeoutValue, final TimeUnit timeoutUnit, final boolean exceptionOnTimeout) {
     return select.timeout(timeoutValue, timeoutUnit, exceptionOnTimeout);
   }
