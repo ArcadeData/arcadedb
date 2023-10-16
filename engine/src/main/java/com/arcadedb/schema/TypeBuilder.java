@@ -37,11 +37,12 @@ import java.util.logging.*;
 public class TypeBuilder<T> {
   final DatabaseInternal database;
   final Class<T>         type;
-  boolean      ignoreIfExists  = false;
-  String       typeName;
-  List<Bucket> bucketInstances = Collections.emptyList();
-  int          buckets;
-  int          pageSize;
+  boolean            ignoreIfExists  = false;
+  String             typeName;
+  List<DocumentType> superTypes;
+  List<Bucket>       bucketInstances = Collections.emptyList();
+  int                buckets;
+  int                pageSize;
 
   protected TypeBuilder(final DatabaseInternal database, final Class<T> type) {
     this.database = database;
@@ -108,6 +109,10 @@ public class TypeBuilder<T> {
           c.addBucket(bucket);
       }
 
+      if (superTypes != null)
+        for (DocumentType sup : superTypes)
+          c.addSuperType(sup);
+
       schema.saveConfiguration();
       schema.updateSecurity();
 
@@ -117,6 +122,13 @@ public class TypeBuilder<T> {
 
   public TypeBuilder<T> withName(final String typeName) {
     this.typeName = typeName;
+    return this;
+  }
+
+  public TypeBuilder<T> withSuperType(final String superType) {
+    if (superTypes == null)
+      superTypes = new ArrayList<>();
+    superTypes.add(database.getSchema().getType(superType));
     return this;
   }
 
