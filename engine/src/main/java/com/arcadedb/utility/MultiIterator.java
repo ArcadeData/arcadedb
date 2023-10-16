@@ -31,13 +31,14 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   private Iterator<?>  sourcesIterator;
   private Iterator<T>  partialIterator;
 
-  private       long    browsed   = 0L;
-  private       long    skip      = -1L;
-  private       long    limit     = -1L;
-  private       long    timeout   = -1L;
-  private       boolean embedded  = false;
-  private       int     skipped   = 0;
-  private final long    beginTime = System.currentTimeMillis();
+  private       long    browsed            = 0L;
+  private       long    skip               = -1L;
+  private       long    limit              = -1L;
+  private       long    timeout            = -1L;
+  private       boolean exceptionOnTimeout = false;
+  private       boolean embedded           = false;
+  private       int     skipped            = 0;
+  private final long    beginTime          = System.currentTimeMillis();
 
   public MultiIterator() {
     sources = new ArrayList<>();
@@ -61,8 +62,9 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   }
 
   private boolean hasNextInternal() {
-    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
+    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout) {
       throw new TimeoutException("Timeout on iteration");
+    }
 
     if (sourcesIterator == null) {
       if (sources == null || sources.isEmpty())
@@ -125,8 +127,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
     long size = 0;
     final int totSources = sources.size();
     for (int i = 0; i < totSources; ++i) {
-      if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
-        throw new TimeoutException("Timeout on iteration");
+      if (checkForTimeout())
+        break;
 
       final Object o = sources.get(i);
 
@@ -163,8 +165,9 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
     this.limit = limit;
   }
 
-  public void setTimeout(final long readTimeout) {
+  public void setTimeout(final long readTimeout, final boolean exceptionOnTimeout) {
     this.timeout = readTimeout;
+    this.exceptionOnTimeout = exceptionOnTimeout;
   }
 
   public long getSkip() {
@@ -193,8 +196,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
 
   @SuppressWarnings("unchecked")
   protected boolean getNextPartial() {
-    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
-      throw new TimeoutException("Timeout on iteration");
+    if (checkForTimeout())
+      return false;
 
     if (sourcesIterator != null)
       while (sourcesIterator.hasNext()) {
@@ -230,6 +233,15 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
         }
       }
 
+    return false;
+  }
+
+  private boolean checkForTimeout() {
+    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
+      if (exceptionOnTimeout)
+        throw new TimeoutException("Timeout on iteration");
+      else
+        return true;
     return false;
   }
 

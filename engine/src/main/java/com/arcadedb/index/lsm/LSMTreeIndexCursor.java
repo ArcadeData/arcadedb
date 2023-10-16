@@ -59,8 +59,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
     this(index, ascendingOrder, null, true, null, true);
   }
 
-  public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder, final Object[] fromKeys, final boolean beginKeysInclusive,
-      final Object[] toKeys, final boolean endKeysInclusive) throws IOException {
+  public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder, final Object[] fromKeys,
+      final boolean beginKeysInclusive, final Object[] toKeys, final boolean endKeysInclusive) throws IOException {
     this.index = index;
     this.ascendingOrder = ascendingOrder;
     this.binaryKeyTypes = index.getBinaryKeyTypes();
@@ -118,13 +118,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       if (serializedFromKeys != null) {
         // SEEK FOR THE FROM RANGE
-        final BasePage currentPage = index.getDatabase().getTransaction().getPage(new PageId(index.getFileId(), pageId), index.getPageSize());
+        final BasePage currentPage = index.getDatabase().getTransaction()
+            .getPage(new PageId(index.getFileId(), pageId), index.getPageSize());
         final Binary currentPageBuffer = new Binary(currentPage.slice());
         final int count = index.getCount(currentPage);
 
         if (count > 0) {
-          final LSMTreeIndexMutable.LookupResult lookupResult = index.lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer,
-              serializedFromKeys, ascendingOrder ? 2 : 3);
+          final LSMTreeIndexMutable.LookupResult lookupResult = index.lookupInPage(currentPage.getPageId().getPageNumber(), count,
+              currentPageBuffer, serializedFromKeys, ascendingOrder ? 2 : 3);
 
           if (!lookupResult.outside) {
             pageCursors[cursorIdx] = index.newPageIterator(pageId, lookupResult.keyIndex, ascendingOrder);
@@ -148,7 +149,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (ascendingOrder) {
           pageCursors[cursorIdx] = index.newPageIterator(pageId, -1, true);
         } else {
-          final BasePage currentPage = index.getDatabase().getTransaction().getPage(new PageId(index.getFileId(), pageId), index.getPageSize());
+          final BasePage currentPage = index.getDatabase().getTransaction()
+              .getPage(new PageId(index.getFileId(), pageId), index.getPageSize());
           pageCursors[cursorIdx] = index.newPageIterator(pageId, index.getCount(currentPage), false);
         }
 
@@ -249,9 +251,11 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (cursor == null)
         buffer.append(String.format("%n- Cursor[%d] = null", i));
       else {
-        buffer.append(String.format("%n- Cursor[%d] %s=%s index=%s compacted=%s totalKeys=%d ascending=%s keyTypes=%s currentPageId=%s currentPosInPage=%d", i,
-            Arrays.toString(cursorKeys[i]), Arrays.toString(cursor.getValue()), cursor.index, cursor instanceof LSMTreeIndexUnderlyingCompactedSeriesCursor,
-            cursor.totalKeys, cursor.ascendingOrder, Arrays.toString(cursor.keyTypes), cursor.getCurrentPageId(), cursor.getCurrentPositionInPage()));
+        buffer.append(String.format(
+            "%n- Cursor[%d] %s=%s index=%s compacted=%s totalKeys=%d ascending=%s keyTypes=%s currentPageId=%s currentPosInPage=%d",
+            i, Arrays.toString(cursorKeys[i]), Arrays.toString(cursor.getValue()), cursor.index,
+            cursor instanceof LSMTreeIndexUnderlyingCompactedSeriesCursor, cursor.totalKeys, cursor.ascendingOrder,
+            Arrays.toString(cursor.keyTypes), cursor.getCurrentPageId(), cursor.getCurrentPositionInPage()));
       }
     }
 
@@ -391,8 +395,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
           if (serializedToKeys != null) {
             final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[minorKeyIndex], toKeys);
 
-            if ((ascendingOrder && ((toKeysInclusive && compare > 0) || (!toKeysInclusive && compare >= 0))) || (!ascendingOrder && (
-                (toKeysInclusive && compare < 0) || (!toKeysInclusive && compare <= 0)))) {
+            if ((ascendingOrder && ((toKeysInclusive && compare > 0) || (!toKeysInclusive && compare >= 0))) || (!ascendingOrder
+                && ((toKeysInclusive && compare < 0) || (!toKeysInclusive && compare <= 0)))) {
               currentCursor.close();
               pageCursors[minorKeyIndex] = null;
               cursorKeys[minorKeyIndex] = null;
@@ -420,8 +424,9 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (txCursor == null || !txCursor.hasNext())
         getClosestEntryInTx(currentKeys != null ? currentKeys : fromKeys, false);
 
-    } while ((currentValues == null || currentValues.length == 0 || (currentValueIndex < currentValues.length && index.isDeletedEntry(
-        currentValues[currentValueIndex]))) && hasNext());
+    } while (
+        (currentValues == null || currentValues.length == 0 || (currentValueIndex < currentValues.length && index.isDeletedEntry(
+            currentValues[currentValueIndex]))) && hasNext());
 
     return currentValues == null || currentValueIndex >= currentValues.length ? null : currentValues[currentValueIndex++];
   }
@@ -451,7 +456,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
             entry = indexChanges.lowerEntry(new TransactionIndexContext.ComparableKey(keys));
         }
 
-        final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values = entry != null ? entry.getValue() : null;
+        final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values =
+            entry != null ? entry.getValue() : null;
         if (values != null) {
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
@@ -500,11 +506,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
         return value;
     }
     return null;
-  }
-
-  @Override
-  public int getScore() {
-    return 1;
   }
 
   @Override

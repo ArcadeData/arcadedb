@@ -23,17 +23,18 @@ package performance;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.select.SelectCompiled;
 import org.junit.jupiter.api.Assertions;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
 public class LocalDatabaseBenchmark {
-  private static final int                 TOTAL                = 10_000_000;
-  private static final int                 BATCH_TX             = 200;
+  private static final int TOTAL    = 1_000;
+  private static final int BATCH_TX = 200;
+
   private static final int                 PRINT_EVERY_MS       = 1_000;
   private static final int                 BUCKETS              = 7;
   private static final int                 CONCURRENT_THREADS   = BUCKETS;
@@ -120,7 +121,41 @@ public class LocalDatabaseBenchmark {
 
     Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, database.countType("User", true));
 
+//    queryNative();
+//    querySQL();
+//    queryNative();
+
     database.close();
+  }
+
+  private void queryNative() {
+    final long begin = System.currentTimeMillis();
+    final SelectCompiled cached = database.select().fromType("User").where()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id").and()//
+        .property("id").eq().parameter("id")//
+        .compile();
+    for (int i = 0; i < TOTAL * CONCURRENT_THREADS; i++) {
+      Assertions.assertEquals(1, cached.parameter("id", i).vertices().toList().size());
+    }
+    System.out.println("NATIVE " + (System.currentTimeMillis() - begin) + "ms");
+  }
+
+  private void querySQL() {
+    long begin = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL * CONCURRENT_THREADS; i++) {
+      Assertions.assertEquals(1, database.query("sql",
+          "select from User where id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ?",
+          i, i, i, i, i, i, i, i, i, i).toVertices().size());
+    }
+    System.out.println("SQL " + (System.currentTimeMillis() - begin) + "ms");
   }
 
   private List<Long> checkRecordSequence(final Database database) {
@@ -185,7 +220,7 @@ public class LocalDatabaseBenchmark {
     } catch (Throwable t) {
       incrementError(t);
     } finally {
-      mergeStats(((DatabaseInternal) database).getStats());
+      mergeStats(database.getStats());
     }
   }
 
@@ -201,12 +236,12 @@ public class LocalDatabaseBenchmark {
       final long delta = now - beginTime;
       beginTime = System.currentTimeMillis();
       System.out.println(
-          ((globalCounter.get() - lastCounter.get()) * PRINT_EVERY_MS / (float) delta) + " req/sec (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS
-              * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors=" + errors.get() + ")");
+          ((globalCounter.get() - lastCounter.get()) * PRINT_EVERY_MS / (float) delta) + " req/sec (counter=" + globalCounter.get()
+              + "/" + (CONCURRENT_THREADS * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors=" + errors.get()
+              + ")");
     } else {
-      System.out.println(
-          "COMPLETED (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS * TOTAL) + ", conflicts=" + concurrentExceptions.get() + ", errors="
-              + errors.get() + ")");
+      System.out.println("COMPLETED (counter=" + globalCounter.get() + "/" + (CONCURRENT_THREADS * TOTAL) + ", conflicts="
+          + concurrentExceptions.get() + ", errors=" + errors.get() + ")");
     }
     lastCounter.set(globalCounter.get());
 

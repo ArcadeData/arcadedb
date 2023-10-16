@@ -49,6 +49,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
@@ -110,6 +111,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public Select select() {
+    return wrapped.select();
+  }
+
+  @Override
   public Map<String, Object> alignToReplicas() {
     throw new UnsupportedOperationException("Align Database not supported");
   }
@@ -164,7 +170,8 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback, final ErrorRecordCallback errorRecordCallback) {
+  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback,
+      final ErrorRecordCallback errorRecordCallback) {
     wrapped.scanType(typeName, polymorphic, callback, errorRecordCallback);
   }
 
@@ -337,7 +344,8 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int attempts, final OkCallback ok, final ErrorCallback error) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int attempts, final OkCallback ok,
+      final ErrorCallback error) {
     return wrapped.transaction(txBlock, joinCurrentTx, attempts, ok, error);
   }
 
@@ -378,19 +386,20 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames, final Object[] sourceVertexKeyValues,
-      final String destinationVertexType, final String[] destinationVertexKeyNames, final Object[] destinationVertexKeyValues,
-      final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional, final Object... properties) {
-    return wrapped.newEdgeByKeys(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationVertexType, destinationVertexKeyNames,
-        destinationVertexKeyValues, createVertexIfNotExist, edgeType, bidirectional, properties);
+  public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames,
+      final Object[] sourceVertexKeyValues, final String destinationVertexType, final String[] destinationVertexKeyNames,
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
+      final boolean bidirectional, final Object... properties) {
+    return wrapped.newEdgeByKeys(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationVertexType,
+        destinationVertexKeyNames, destinationVertexKeyValues, createVertexIfNotExist, edgeType, bidirectional, properties);
   }
 
   @Override
   public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType, final String[] destinationVertexKeyNames,
-      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional,
-      final Object... properties) {
-    return wrapped.newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues, createVertexIfNotExist, edgeType,
-        bidirectional, properties);
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
+      final boolean bidirectional, final Object... properties) {
+    return wrapped.newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,
+        createVertexIfNotExist, edgeType, bidirectional, properties);
   }
 
   @Override
@@ -437,7 +446,8 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Object... args) {
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
+      final Object... args) {
     return wrapped.command(language, query, configuration, args);
   }
 
@@ -452,7 +462,8 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Map<String, Object> args) {
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
+      final Map<String, Object> args) {
     return wrapped.command(language, query, configuration, args);
   }
 

@@ -56,6 +56,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
@@ -117,8 +118,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
               replicateTx(tx, phase1, bufferChanges);
             else {
               // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-              final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, getTransactionIsolationLevel(), tx.getBucketRecordDelta(),
-                  bufferChanges, tx.getIndexChanges().toMap());
+              final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, getTransactionIsolationLevel(),
+                  tx.getBucketRecordDelta(), bufferChanges, tx.getIndexChanges().toMap());
               server.getHA().forwardCommandToLeader(command, timeout * 2);
               tx.reset();
             }
@@ -144,7 +145,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
     });
   }
 
-  public void replicateTx(final TransactionContext tx, final TransactionContext.TransactionPhase1 phase1, final Binary bufferChanges) {
+  public void replicateTx(final TransactionContext tx, final TransactionContext.TransactionPhase1 phase1,
+      final Binary bufferChanges) {
     final int configuredServers = server.getHA().getConfiguredServers();
 
     final int reqQuorum;
@@ -358,6 +360,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public Select select() {
+    return proxied.select();
+  }
+
+  @Override
   public ContextConfiguration getConfiguration() {
     return proxied.getConfiguration();
   }
@@ -428,7 +435,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback, final ErrorRecordCallback errorRecordCallback) {
+  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback,
+      final ErrorRecordCallback errorRecordCallback) {
     proxied.scanType(typeName, polymorphic, callback, errorRecordCallback);
   }
 
@@ -504,11 +512,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType, final String[] destinationVertexKeyNames,
-      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional,
-      final Object... properties) {
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
+      final boolean bidirectional, final Object... properties) {
 
-    return proxied.newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues, createVertexIfNotExist, edgeType,
-        bidirectional, properties);
+    return proxied.newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,
+        createVertexIfNotExist, edgeType, bidirectional, properties);
   }
 
   @Override
@@ -517,12 +525,13 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames, final Object[] sourceVertexKeyValues,
-      final String destinationVertexType, final String[] destinationVertexKeyNames, final Object[] destinationVertexKeyValues,
-      final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional, final Object... properties) {
+  public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames,
+      final Object[] sourceVertexKeyValues, final String destinationVertexType, final String[] destinationVertexKeyNames,
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
+      final boolean bidirectional, final Object... properties) {
 
-    return proxied.newEdgeByKeys(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationVertexType, destinationVertexKeyNames,
-        destinationVertexKeyValues, createVertexIfNotExist, edgeType, bidirectional, properties);
+    return proxied.newEdgeByKeys(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationVertexType,
+        destinationVertexKeyNames, destinationVertexKeyValues, createVertexIfNotExist, edgeType, bidirectional, properties);
   }
 
   @Override
@@ -551,7 +560,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int retries, final OkCallback ok, final ErrorCallback error) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int retries, final OkCallback ok,
+      final ErrorCallback error) {
     return proxied.transaction(txBlock, joinCurrentTx, retries, ok, error);
   }
 
@@ -586,7 +596,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Object... args) {
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
+      final Object... args) {
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getInstance(language, this);
       if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
@@ -611,7 +622,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet command(final String language, final String query, final ContextConfiguration configuration, final Map<String, Object> args) {
+  public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
+      final Map<String, Object> args) {
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getInstance(language, this);
       if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
@@ -811,7 +823,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
             fileSizes.put(file.getFileId(), file.getSize());
           }
 
-        final DatabaseAlignRequest request = new DatabaseAlignRequest(getName(), getSchema().getEmbedded().toJSON().toString(), fileChecksums, fileSizes);
+        final DatabaseAlignRequest request = new DatabaseAlignRequest(getName(), getSchema().getEmbedded().toJSON().toString(),
+            fileChecksums, fileSizes);
         final List<Object> responsePayloads = ha.sendCommandToReplicasWithQuorum(request, quorum, 120_000);
 
         if (responsePayloads != null) {
