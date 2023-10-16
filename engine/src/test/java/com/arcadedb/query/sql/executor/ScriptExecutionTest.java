@@ -30,12 +30,9 @@ public class ScriptExecutionTest extends TestHelper {
       super(NAME);
     }
 
-    public Object execute(Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
+    public Object execute(Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+        CommandContext iContext) {
       throw new ConcurrentModificationException("" + iParams[0]);
-    }
-
-    public boolean aggregateResults(final Object[] configuredParameters) {
-      return false;
     }
 
     public String getSyntax() {
@@ -53,7 +50,8 @@ public class ScriptExecutionTest extends TestHelper {
     String className = "testTwoInserts";
     database.getSchema().createDocumentType(className);
     database.transaction(() -> {
-      database.execute("sqlscript", "INSERT INTO " + className + " SET name = 'foo';INSERT INTO " + className + " SET name = 'bar';");
+      database.execute("sqlscript",
+          "INSERT INTO " + className + " SET name = 'foo';INSERT INTO " + className + " SET name = 'bar';");
     });
     ResultSet rs = database.query("sql", "SELECT count(*) as count from " + className);
     Assertions.assertEquals((Object) 2L, rs.next().getProperty("count"));
@@ -242,8 +240,8 @@ public class ScriptExecutionTest extends TestHelper {
 
     database.async().waitCompletion();
 
-    ImmutablePage page = ((EmbeddedDatabase) database).getPageManager()
-        .getImmutablePage(new PageId(2, 0), ((PaginatedComponentFile) ((EmbeddedDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
+    ImmutablePage page = ((EmbeddedDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
+        ((PaginatedComponentFile) ((EmbeddedDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
     Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
   }
@@ -297,8 +295,8 @@ public class ScriptExecutionTest extends TestHelper {
 
     database.async().waitCompletion();
 
-    ImmutablePage page = ((EmbeddedDatabase) database).getPageManager()
-        .getImmutablePage(new PageId(2, 0), ((PaginatedComponentFile) ((EmbeddedDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
+    ImmutablePage page = ((EmbeddedDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
+        ((PaginatedComponentFile) ((EmbeddedDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
     Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
 
