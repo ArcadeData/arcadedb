@@ -238,9 +238,9 @@ public class TransactionIsolationTest extends TestHelper {
           }
         });
 
-        sem2.countDown();
-
         database.transaction(() -> {
+          sem2.countDown();
+
           try {
             Assertions.assertEquals(2, database.countType("Node", true));
 
