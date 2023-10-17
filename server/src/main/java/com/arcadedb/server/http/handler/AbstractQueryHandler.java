@@ -159,8 +159,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     case "record": {
       final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false)
           .setUseCollectionSizeForEdges(false);
-      final JSONArray result = new JSONArray(
-          qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
+      final JSONArray result = new JSONArray(limit > -1 ?
+          qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()) :
+          qResult.stream().map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
       response.put("result", result);
       break;
     }
@@ -168,8 +169,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     default: {
       final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false)
           .setUseCollectionSizeForEdges(false);
-      final JSONArray result = new JSONArray(
-          qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
+      final JSONArray result = new JSONArray(limit > -1 ?
+          qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()) :
+          qResult.stream().map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
       response.put("result", result);
     }
     }
