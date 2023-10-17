@@ -59,48 +59,54 @@ public enum SelectOperator {
   eq("=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.equals(SelectExecutor.evaluateValue(record, left),
-          SelectExecutor.evaluateValue(record, right));
+      return BinaryComparator.equals(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right));
     }
   },
 
   neq("<>", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return !BinaryComparator.equals(SelectExecutor.evaluateValue(record, left),
-          SelectExecutor.evaluateValue(record, right));
+      return !BinaryComparator.equals(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right));
     }
   },
 
   lt("<", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left),
-          SelectExecutor.evaluateValue(record, right)) < 0;
+      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right))
+          < 0;
     }
   },
 
   le("<=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left),
-          SelectExecutor.evaluateValue(record, right)) <= 0;
+      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right))
+          <= 0;
     }
   },
 
   gt(">", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left),
-          SelectExecutor.evaluateValue(record, right)) > 0;
+      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right))
+          > 0;
     }
   },
 
   ge(">=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left),
-          SelectExecutor.evaluateValue(record, right)) >= 0;
+      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right))
+          >= 0;
+    }
+  },
+
+  ilike("ilike", false, 1) {
+    @Override
+    Object eval(final Document record, final Object left, final Object right) {
+      return QueryHelper.like(((String) SelectExecutor.evaluateValue(record, left)).toLowerCase(),
+          ((String) SelectExecutor.evaluateValue(record, right)).toLowerCase());
     }
   },
 
@@ -110,7 +116,9 @@ public enum SelectOperator {
       return QueryHelper.like((String) SelectExecutor.evaluateValue(record, left),
           (String) SelectExecutor.evaluateValue(record, right));
     }
-  }, run("!", true, -1) {
+  },
+
+  run("!", true, -1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return SelectExecutor.evaluateValue(record, left);

@@ -316,6 +316,20 @@ public class SelectExecutionIT extends TestHelper {
     }
   }
 
+
+  @Test
+  public void okILike() {
+    final SelectCompiled select = database.select().fromType("Vertex")//
+        .where().property("name").ilike().value("e%").compile();
+
+    for (int i = 0; i < 100; i++) {
+      final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
+      final List<Vertex> list = result.toList();
+      Assertions.assertEquals(100, list.size());
+      list.forEach(r -> Assertions.assertTrue(r.getString("name").startsWith("E")));
+    }
+  }
+
   @Test
   public void errorMissingParameter() {
     expectingException(() -> {

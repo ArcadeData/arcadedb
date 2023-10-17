@@ -55,4 +55,7 @@ public class SelectWhereOperatorBlock {
   public SelectWhereRightBlock like() {
     return select.setOperator(SelectOperator.like);
   }
+  public SelectWhereRightBlock ilike() {
+    return select.setOperator(SelectOperator.ilike);
+  }
 }

@@ -25,12 +25,11 @@ public class QueryHelper {
   protected static final char WILDCARD_ANY     = '%';
 
   public static boolean like(String currentValue, String value) {
-    if (currentValue == null || currentValue.length() == 0 || value == null || value.length() == 0)
+    if (currentValue == null || currentValue.isEmpty() || value == null || value.isEmpty())
       // EMPTY/NULL PARAMETERS
       return false;
 
     value = convertForRegExp(value);
-
     return currentValue.matches(value);
   }
 
