@@ -272,7 +272,7 @@ public class ScriptExecutionTest extends TestHelper {
     ResultSet result = database.query("sql", "select from " + className + " where id = 0");
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
-    Assertions.assertTrue((Integer) item.getProperty("attempt") < TOTAL);
+    Assertions.assertTrue((Integer) item.getProperty("attempt") < TOTAL, "Found attempts = " + item.getProperty("attempt"));
     Assertions.assertFalse(result.hasNext());
     result.close();
 
