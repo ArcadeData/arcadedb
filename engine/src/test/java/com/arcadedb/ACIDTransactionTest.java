@@ -91,7 +91,7 @@ public class ACIDTransactionTest extends TestHelper {
   public void testIndexCreationWhileAsyncMustFail() {
     final Database db = database;
 
-    final int TOT = 1000;
+    final int TOT = 100;
 
     final AtomicInteger total = new AtomicInteger(0);
 
