@@ -38,10 +38,10 @@ import java.util.*;
 import java.util.logging.*;
 
 public abstract class TestHelper {
-  private static final int             PARALLEL_LEVEL = 4;
-  protected final      DatabaseFactory factory;
-  protected            Database        database;
-  protected            boolean         autoStartTx    = false;
+  protected static final int             PARALLEL_LEVEL = 4;
+  protected final        DatabaseFactory factory;
+  protected              Database        database;
+  protected              boolean         autoStartTx    = false;
 
   public interface DatabaseTest<PAR> {
     void call(PAR iArgument) throws Exception;
@@ -192,7 +192,8 @@ public abstract class TestHelper {
     return "default";
   }
 
-  public static void expectException(final CallableNoReturn callback, final Class<? extends Throwable> expectedException) throws Exception {
+  public static void expectException(final CallableNoReturn callback, final Class<? extends Throwable> expectedException)
+      throws Exception {
     try {
       callback.call();
       Assertions.fail();
@@ -225,7 +226,8 @@ public abstract class TestHelper {
     final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
 
     if (!activeDatabases.isEmpty())
-      LogManager.instance().log(TestHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
+      LogManager.instance()
+          .log(TestHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
 
     for (final Database db : activeDatabases)
       db.close();

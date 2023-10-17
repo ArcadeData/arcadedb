@@ -20,25 +20,31 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.*;
+import java.util.logging.*;
 
 public class RetryStep extends AbstractExecutionStep {
   public        List<Statement>       body;
   public        List<Statement>       elseBody;
   public        boolean               elseFail;
   private final int                   retries;
+  private final int                   retryDelay;
   private       ExecutionStepInternal finalResult = null;
 
-  public RetryStep(List<Statement> statements, int retries, List<Statement> elseStatements, Boolean elseFail, CommandContext ctx, boolean enableProfiling) {
+  public RetryStep(List<Statement> statements, int retries, List<Statement> elseStatements, Boolean elseFail, CommandContext ctx,
+      boolean enableProfiling) {
     super(ctx, enableProfiling);
     this.body = statements;
     this.retries = retries;
     this.elseBody = elseStatements;
     this.elseFail = !(Boolean.FALSE.equals(elseFail));
+    this.retryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
   }
 
   @Override
@@ -80,6 +86,8 @@ public class RetryStep extends AbstractExecutionStep {
             return new InternalResultSet();
           }
         }
+
+        delayBetweenRetries();
       }
     }
 
@@ -96,5 +104,19 @@ public class RetryStep extends AbstractExecutionStep {
       plan.chain(stm.createExecutionPlan(subCtx1, profilingEnabled), profilingEnabled);
 
     return plan;
+  }
+
+  private void delayBetweenRetries() {
+    if (retryDelay > 0) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Wait %d ms before the next retry for transaction commit (threadId=%d)", retryDelay,
+              Thread.currentThread().getId());
+
+      try {
+        Thread.sleep(1 + new Random().nextInt(retryDelay));
+      } catch (InterruptedException ex) {
+        Thread.currentThread().interrupt();
+      }
+    }
   }
 }

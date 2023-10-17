@@ -28,7 +28,7 @@ public class BatchTest extends TestHelper {
   @Test
   public void testReturnArrayOnDeprecated() {
     database.transaction(() -> {
-      final ResultSet rs = database.execute("SQL", "let a = select 1 as result;let b = select 2 as result;return [$a,$b];");
+      final ResultSet rs = database.command("SQLSCRIPT", "let a = select 1 as result;let b = select 2 as result;return [$a,$b];");
 
       Assertions.assertTrue(rs.hasNext());
       Result record = rs.next();

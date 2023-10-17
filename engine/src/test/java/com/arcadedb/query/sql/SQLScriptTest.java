@@ -30,7 +30,7 @@ public class SQLScriptTest extends TestHelper {
     script.append("let $a = select from foo;\n");
     script.append("commit;\n");
     script.append("return $a;\n");
-    ResultSet qResult = database.execute("sql", script.toString());
+    ResultSet qResult = database.command("sqlscript", script.toString());
 
     Assertions.assertEquals(3, CollectionUtils.countEntries(qResult));
   }

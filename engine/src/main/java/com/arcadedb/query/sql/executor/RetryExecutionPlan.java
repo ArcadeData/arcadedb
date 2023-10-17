@@ -29,17 +29,4 @@ public class RetryExecutionPlan extends UpdateExecutionPlan {
   public RetryExecutionPlan(CommandContext ctx) {
     super(ctx);
   }
-
-  public boolean containsReturn() {
-    for (ExecutionStep step : getSteps()) {
-      if (step instanceof ForEachStep) {
-        return ((ForEachStep) step).containsReturn();
-      }
-      if (step instanceof WhileStep) {
-        return ((WhileStep) step).containsReturn();
-      }
-    }
-
-    return false;
-  }
 }
