@@ -9,12 +9,6 @@
         <version>23.10.1-SNAPSHOT</version>
     </parent>
 
-    <artifactId>web</artifactId>
-
-    <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
+    <artifactId>arcadedb-web</artifactId>
 
 </project>
