@@ -272,26 +272,6 @@
                 <plugin>
                     <artifactId>maven-assembly-plugin</artifactId>
                     <version>${maven-assembly-plugin.version}</version>
-                    <executions>
-                        <execution>
-                            <id>distribution-package</id>
-                            <phase>package</phase>
-                            <goals>
-                                <goal>single</goal>
-                            </goals>
-                            <configuration>
-                                <appendAssemblyId>false</appendAssemblyId>
-                                <descriptors>
-                                    <descriptor>./src/main/assembly/archive.xml</descriptor>
-                                </descriptors>
-                                <filters>
-                                    <filter></filter>
-                                </filters>
-                                <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
-                                <tarLongFileMode>gnu</tarLongFileMode>
-                            </configuration>
-                        </execution>
-                    </executions>
                 </plugin>
 
                 <plugin>

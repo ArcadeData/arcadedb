@@ -47,16 +47,32 @@
                 <version>${maven-assembly-plugin.version}</version>
                 <executions>
                     <execution>
-                        <id>distribution-package</id>
+                        <id>full-package</id>
                         <phase>package</phase>
                         <goals>
                             <goal>single</goal>
                         </goals>
                         <configuration>
                             <appendAssemblyId>false</appendAssemblyId>
-                            <finalName>arcadedb-${project.version}</finalName>
+                            <finalName>arcadedb-full-${project.version}</finalName>
                             <descriptors>
-                                <descriptor>./src/main/assembly/archive.xml</descriptor>
+                                <descriptor>./src/main/assembly/full.xml</descriptor>
+                            </descriptors>
+                            <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
+                            <tarLongFileMode>gnu</tarLongFileMode>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>minimal-package</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <finalName>arcadedb-minimal-${project.version}</finalName>
+                            <descriptors>
+                                <descriptor>./src/main/assembly/minimal.xml</descriptor>
                             </descriptors>
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
                             <tarLongFileMode>gnu</tarLongFileMode>
@@ -227,5 +243,4 @@
             </build>
         </profile>
     </profiles>
-
 </project>
