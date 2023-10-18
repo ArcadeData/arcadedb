@@ -236,7 +236,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
-        Assertions.assertTrue(response.contains("#1:0"));
+        Assertions.assertTrue(response.contains("#1:0"), response);
       } finally {
         connection.disconnect();
       }

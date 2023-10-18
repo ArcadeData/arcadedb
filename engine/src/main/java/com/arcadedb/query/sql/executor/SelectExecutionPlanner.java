@@ -672,7 +672,7 @@ public class SelectExecutionPlanner {
       final Identifier alias = entry.getKey();
       final Statement query = entry.getValue();
       if (query.refersToParent()) {
-        addRecordLevelLet(info, alias, query, j++);
+        addRecordLevelLet(info, alias, query, -1);
       } else {
         addGlobalLet(info, alias, query, i++);
       }
