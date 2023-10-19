@@ -197,13 +197,53 @@
                         <version>${maven-resources-plugin.version}</version>
                         <executions>
                             <execution>
-                                <id>copy-resources</id>
+                                <id>copy-resources-full</id>
                                 <phase>validate</phase>
                                 <goals>
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}.dir
+                                    <outputDirectory>${project.build.directory}/arcadedb-full-${project.version}.dir
+                                    </outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>src/main/docker</directory>
+                                            <includes>
+                                                <include>Dockerfile</include>
+                                            </includes>
+                                            <filtering>false</filtering>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>copy-resources-minimal</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/arcadedb-minimal-${project.version}.dir
+                                    </outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>src/main/docker</directory>
+                                            <includes>
+                                                <include>Dockerfile</include>
+                                            </includes>
+                                            <filtering>false</filtering>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>copy-resources-headless</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/arcadedb-headless-${project.version}.dir
                                     </outputDirectory>
                                     <resources>
                                         <resource>
@@ -244,7 +284,39 @@
                                 <image>
                                     <name>arcadedata/arcadedb</name>
                                     <build>
-                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
+                                        <contextDir>${project.build.directory}/arcadedb-full-${project.version}.dir
+                                        </contextDir>
+                                        <buildx>
+                                            <platforms>
+                                                <platform>${docker-maven-plugin.platform}</platform>
+                                            </platforms>
+                                        </buildx>
+                                        <tags>
+                                            <tag>latest</tag>
+                                            <tag>${project.version}</tag>
+                                        </tags>
+                                    </build>
+                                </image>
+                                <image>
+                                    <name>arcadedata/arcadedb-minimal</name>
+                                    <build>
+                                        <contextDir>${project.build.directory}/arcadedb-minimal-${project.version}.dir
+                                        </contextDir>
+                                        <buildx>
+                                            <platforms>
+                                                <platform>${docker-maven-plugin.platform}</platform>
+                                            </platforms>
+                                        </buildx>
+                                        <tags>
+                                            <tag>latest</tag>
+                                            <tag>${project.version}</tag>
+                                        </tags>
+                                    </build>
+                                </image>
+                                <image>
+                                    <name>arcadedata/arcadedb-headless</name>
+                                    <build>
+                                        <contextDir>${project.build.directory}/arcadedb-headless-${project.version}.dir
                                         </contextDir>
                                         <buildx>
                                             <platforms>
