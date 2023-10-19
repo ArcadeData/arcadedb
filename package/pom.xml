@@ -78,6 +78,22 @@
                             <tarLongFileMode>gnu</tarLongFileMode>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>headless-package</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <finalName>arcadedb-headless-${project.version}</finalName>
+                            <descriptors>
+                                <descriptor>./src/main/assembly/headless.xml</descriptor>
+                            </descriptors>
+                            <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
+                            <tarLongFileMode>gnu</tarLongFileMode>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>
@@ -96,6 +112,11 @@
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-web</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>

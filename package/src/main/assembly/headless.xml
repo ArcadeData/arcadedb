@@ -16,9 +16,10 @@
     limitations under the License.
 
 -->
-<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.1.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.1.0 https://maven.apache.org/xsd/assembly-2.1.0.xsd">
-    <id>distribution</id>
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 https://maven.apache.org/xsd/assembly-2.2.0.xsd">
+
+    <id>minimal</id>
 
     <formats>
         <format>dir</format>
@@ -55,11 +56,15 @@
         </fileSet>
         <fileSet> <!-- Create empty directory -->
             <outputDirectory>databases</outputDirectory>
-            <excludes><exclude>**/*</exclude></excludes>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
         </fileSet>
         <fileSet> <!-- Create empty directory -->
             <outputDirectory>log</outputDirectory>
-            <excludes><exclude>**/*</exclude></excludes>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
         </fileSet>
 
     </fileSets>
@@ -86,6 +91,13 @@
             <includes>
                 <include>*:jar:*</include>
             </includes>
+            <excludes>
+                <exclude>com.arcadedb:arcadedb-gremlin</exclude>
+                <exclude>com.arcadedb:arcadedb-redisw</exclude>
+                <exclude>com.arcadedb:arcadedb-mongodbw</exclude>
+                <exclude>com.arcadedb:arcadedb-graphql</exclude>
+                <exclude>com.arcadedb:arcadedb-web</exclude>
+            </excludes>
         </dependencySet>
     </dependencySets>
 
