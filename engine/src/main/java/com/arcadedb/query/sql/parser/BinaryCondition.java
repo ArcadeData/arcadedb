@@ -46,7 +46,7 @@ public class BinaryCondition extends BooleanExpression {
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     final Object leftVal = left.execute(currentRecord, context);
     final Object rightVal = right.execute(currentRecord, context);
-    return operator.execute(context.getDatabase(), leftVal, rightVal);
+    return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
