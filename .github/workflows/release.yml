@@ -1,9 +1,12 @@
-name: docker
+name: release
 
 on:
-  push:
-    branches:
-      - dev 
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+        description: "Tag to be released, without leading 'v' (will be added for git tag but omitted from image tag).  Ex: 1.0.0-rc1, 1.0.0"
 
 env:
   GHCR_REGISTRY: ghcr.io
@@ -11,10 +14,9 @@ env:
   SSF_REGISTRY: nexus.ssf.sclzdev.net
   SSF_IMAGE: raft/arcadedb
   IB_REGISTRY: registry1.dso.mil
-  TAG: dev
 
 jobs:
-  docker:
+  release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -54,5 +56,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE }}:${{ env.TAG }}
-            ${{ env.SSF_REGISTRY }}/${{ env.SSF_IMAGE }}:${{ env.TAG }}
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE }}:${{ inputs.tag }}
+            ${{ env.SSF_REGISTRY }}/${{ env.SSF_IMAGE }}:${{ inputs.tag }}
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          generateReleaseNotes: true
+          tag: v${{ inputs.tag }}
