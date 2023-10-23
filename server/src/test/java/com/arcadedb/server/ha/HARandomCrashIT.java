@@ -45,6 +45,11 @@ public class HARandomCrashIT extends ReplicationServerIT {
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
   }
 
+  @Override
+  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
+    return HAServer.SERVER_ROLE.ANY;
+  }
+
   @Test
   public void testReplication() {
     checkDatabases();
@@ -71,8 +76,9 @@ public class HARandomCrashIT extends ReplicationServerIT {
             try {
               final long count = db.countType(VERTEX1_TYPE_NAME, true);
               if (count > (getTxs() * getVerticesPerTx()) * 9 / 10) {
-                LogManager.instance().log(this, Level.FINE, "TEST: Skip stop of server because it's close to the end of the test (%d/%d)", null, count,
-                    getTxs() * getVerticesPerTx());
+                LogManager.instance()
+                    .log(this, Level.FINE, "TEST: Skip stop of server because it's close to the end of the test (%d/%d)", null,
+                        count, getTxs() * getVerticesPerTx());
                 return;
               }
             } catch (final Exception e) {
@@ -123,10 +129,11 @@ public class HARandomCrashIT extends ReplicationServerIT {
     final String server1Address = getServer(0).getHttpServer().getListeningAddress();
     final String[] server1AddressParts = server1Address.split(":");
 
-    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]),
+        getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    LogManager.instance().log(this, Level.FINE, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    LogManager.instance()
+        .log(this, Level.FINE, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     long counter = 0;
 
@@ -138,7 +145,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
           for (int i = 0; i < getVerticesPerTx(); ++i) {
 
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter, "distributed-test");
+            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
+                "distributed-test");
 
             Assertions.assertTrue(resultSet.hasNext());
             final Result result = resultSet.next();
@@ -160,7 +168,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
           break;
 
         } catch (final TransactionException | NeedRetryException | RemoteException e) {
-          LogManager.instance().log(this, Level.FINE, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
+          LogManager.instance()
+              .log(this, Level.FINE, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
           if (retry >= getMaxRetry() - 1)
             throw e;
           counter = lastGoodCounter;

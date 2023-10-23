@@ -32,6 +32,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -42,6 +43,7 @@ import java.net.*;
 import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 /**
@@ -54,9 +56,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   protected static final String EDGE2_TYPE_NAME   = "E2";
   private static final   int    PARALLEL_LEVEL    = 4;
 
-  protected static RID              root;
-  private          ArcadeDBServer[] servers;
-  private          Database[]       databases;
+  protected static   RID              root;
+  private            ArcadeDBServer[] servers;
+  private            Database[]       databases;
+  protected volatile boolean          serversSynchronized = false;
 
   protected interface Callback {
     void call(int serverIndex) throws Exception;
@@ -166,10 +169,12 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         for (int i = servers.length - 1; i > -1; --i) {
           if (servers[i] != null && !servers[i].isStarted()) {
             testLog(" Restarting server %d to force re-alignment", i);
-            final int oldPort = servers[i].getHttpServer().getPort();
-            servers[i].getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, oldPort);
-            servers[i].start();
-            anyServerRestarted = true;
+            if (servers[i].getHttpServer() != null) {
+              final int oldPort = servers[i].getHttpServer().getPort();
+              servers[i].getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, oldPort);
+              servers[i].start();
+              anyServerRestarted = true;
+            }
           }
         }
       }
@@ -184,11 +189,11 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         }
       }
     } finally {
-
       try {
         LogManager.instance().log(this, Level.FINE, "END OF THE TEST: Check DBS are identical...");
         checkDatabasesAreIdentical();
       } finally {
+        GlobalConfiguration.resetAll();
 
         LogManager.instance().log(this, Level.FINE, "TEST: Stopping servers...");
         stopServers();
@@ -254,6 +259,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "localhost");
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
       config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
+      config.setValue(GlobalConfiguration.HA_SERVER_ROLE, getServerRole(i));
       //config.setValue(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT, 2000);
 
       onServerConfiguration(config);
@@ -269,12 +275,16 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     waitAllReplicasAreConnected();
   }
 
+  protected HAServer.SERVER_ROLE getServerRole(final int serverIndex) {
+    return serverIndex == 1 ? HAServer.SERVER_ROLE.REPLICA : HAServer.SERVER_ROLE.ANY;
+  }
+
   protected void waitAllReplicasAreConnected() {
     final int serverCount = getServerCount();
 
     int lastTotalConnectedReplica = 0;
     final long beginTime = System.currentTimeMillis();
-    while (System.currentTimeMillis() - beginTime < 5_000) {
+    while (System.currentTimeMillis() - beginTime < 10_000) {
       for (int i = 0; i < serverCount; ++i) {
         if (servers[i].getHA() != null && servers[i].getHA().isLeader()) {
           lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
@@ -290,7 +300,11 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         }
       }
     }
-    LogManager.instance().log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica, serverCount);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica,
+            serverCount);
+
+    serversSynchronized = true;
   }
 
   protected void stopServers() {
@@ -303,8 +317,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     }
   }
 
-  protected void formatPayload(final HttpURLConnection connection, final String language, final String payloadCommand, final String serializer,
-      final Map<String, Object> params) throws Exception {
+  protected void formatPayload(final HttpURLConnection connection, final String language, final String payloadCommand,
+      final String serializer, final Map<String, Object> params) throws Exception {
     if (payloadCommand != null) {
       final JSONObject jsonRequest = new JSONObject();
       jsonRequest.put("language", language);
@@ -467,13 +481,16 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       if (db1 == null || db2 == null)
         continue;
 
-      LogManager.instance().log(this, Level.FINE, "TEST: Comparing databases '%s' and '%s' are identical...", db1.getDatabasePath(), db2.getDatabasePath());
+      LogManager.instance().log(this, Level.FINE, "TEST: Comparing databases '%s' and '%s' are identical...", db1.getDatabasePath(),
+          db2.getDatabasePath());
       try {
         new DatabaseComparator().compare(db1, db2);
-        LogManager.instance().log(this, Level.FINE, "TEST: OK databases '%s' and '%s' are identical", db1.getDatabasePath(), db2.getDatabasePath());
+        LogManager.instance()
+            .log(this, Level.FINE, "TEST: OK databases '%s' and '%s' are identical", db1.getDatabasePath(), db2.getDatabasePath());
       } catch (final RuntimeException e) {
         LogManager.instance()
-            .log(this, Level.FINE, "ERROR on comparing databases '%s' and '%s': %s", db1.getDatabasePath(), db2.getDatabasePath(), e.getMessage());
+            .log(this, Level.FINE, "ERROR on comparing databases '%s' and '%s': %s", db1.getDatabasePath(), db2.getDatabasePath(),
+                e.getMessage());
         throw e;
       }
     }
@@ -481,13 +498,16 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   protected void testEachServer(final Callback callback) throws Exception {
     for (int i = 0; i < getServerCount(); i++) {
-      LogManager.instance().log(this, Level.FINE, "***********************************************************************************");
+      LogManager.instance()
+          .log(this, Level.FINE, "***********************************************************************************");
       LogManager.instance().log(this, Level.FINE, "EXECUTING TEST ON SERVER %d/%d...", i, getServerCount());
-      LogManager.instance().log(this, Level.FINE, "***********************************************************************************");
+      LogManager.instance()
+          .log(this, Level.FINE, "***********************************************************************************");
       try {
         callback.call(i);
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on executing test %s on server %d/%d", e, getClass().getName(), i + 1, getServerCount());
+        LogManager.instance().log(this, Level.SEVERE, "Error on executing test %s on server %d/%d", e, getClass().getName(), i + 1,
+            getServerCount());
         throw e;
       }
     }
@@ -499,42 +519,15 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       db.close();
 
     if (!activeDatabases.isEmpty())
-      LogManager.instance().log(this, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
 
     //Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
   }
 
-  protected String createRecord(final int serverIndex, final String payload) throws IOException {
-    final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
-    connection.setRequestMethod("POST");
-    connection.setRequestMethod("POST");
-    connection.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-    connection.setDoOutput(true);
-
-    connection.connect();
-
-    final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
-    pw.write(payload);
-    pw.close();
-
-    try {
-      final String response = readResponse(connection);
-
-      Assertions.assertEquals(200, connection.getResponseCode());
-      Assertions.assertEquals("OK", connection.getResponseMessage());
-      LogManager.instance().log(this, Level.FINE, "TEST: Response: %s", response);
-      Assertions.assertTrue(response.contains("#"));
-
-      return response;
-
-    } finally {
-      connection.disconnect();
-    }
-  }
-
   protected String command(final int serverIndex, final String command) throws Exception {
-    final HttpURLConnection initialConnection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+    final HttpURLConnection initialConnection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
     try {
 
       initialConnection.setRequestMethod("POST");
@@ -559,7 +552,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected JSONObject executeCommand(final int serverIndex, final String language, final String payloadCommand) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

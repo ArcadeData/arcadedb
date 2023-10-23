@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server;
 
-public interface TestCallback {
+public interface ReplicationCallback {
     enum TYPE {
         SERVER_STARTING,
         SERVER_UP,

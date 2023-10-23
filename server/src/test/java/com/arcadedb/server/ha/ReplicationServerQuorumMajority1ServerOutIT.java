@@ -18,10 +18,9 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.TestCallback;
+import com.arcadedb.server.ReplicationCallback;
 
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
@@ -29,16 +28,15 @@ import java.util.logging.*;
 public class ReplicationServerQuorumMajority1ServerOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
-  public ReplicationServerQuorumMajority1ServerOutIT() {
-    GlobalConfiguration.HA_QUORUM.setValue("Majority");
-  }
-
   @Override
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_2"))
-      server.registerTestEventListener(new TestCallback() {
+      server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+          if (!serversSynchronized)
+            return;
+
           if (type == TYPE.REPLICA_MSG_RECEIVED) {
             if (messages.incrementAndGet() > 100) {
               LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 2...");
@@ -50,15 +48,11 @@ public class ReplicationServerQuorumMajority1ServerOutIT extends ReplicationServ
   }
 
   protected int[] getServerToCheck() {
-    final int[] result = new int[getServerCount() - 1];
-    for (int i = 0; i < result.length; ++i)
-      result[i] = i;
-    return result;
+    return new int[] { 0, 1 };
   }
 
   @Override
   protected int getTxs() {
     return 300;
   }
-
 }

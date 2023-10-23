@@ -18,29 +18,11 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
 public class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
-  public void setTestConfiguration() {
-    super.setTestConfiguration();
-    GlobalConfiguration.HA_QUORUM.setValue("Majority");
-  }
-
-  @Override
-  protected int getServerCount() {
-    return 3;
-  }
-
   @Test
   public void testReplication() {
-    // WAIT THE LEADERSHIP HAS BEEN DETERMINED
-    try {
-      Thread.sleep(3000);
-    } catch (final InterruptedException e) {
-      e.printStackTrace();
-    }
-
     testReplication(1);
   }
 

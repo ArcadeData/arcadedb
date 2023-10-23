@@ -21,7 +21,7 @@ package com.arcadedb.server.ha;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.TestCallback;
+import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 
@@ -59,7 +59,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
 
   @Override
   protected void onBeforeStarting(final ArcadeDBServer server) {
-    server.registerTestEventListener(new TestCallback() {
+    server.registerTestEventListener(new ReplicationCallback() {
       @Override
       public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) throws IOException {
         if (type == TYPE.NETWORK_CONNECTION && split) {
@@ -96,7 +96,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
     if (server.getServerName().equals("ArcadeDB_4"))
       server.registerTestEventListener((type, object, server1) -> {
         if (!split) {
-          if (type == TestCallback.TYPE.REPLICA_MSG_RECEIVED) {
+          if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
             messages.incrementAndGet();
             if (messages.get() > 10) {
               split = true;

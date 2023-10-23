@@ -26,6 +26,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.logging.*;
@@ -39,7 +40,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void testServerInfo() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -61,7 +63,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
       final String response = command(serverIndex, "create vertex type VertexType" + serverIndex);
-      Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
+      Assertions.assertTrue(response.contains("VertexType" + serverIndex),
+          "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
     });
 
     Thread.sleep(300);
@@ -95,35 +98,6 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void checkRecordLoading() throws Exception {
-    testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + BaseGraphServerTest.root.getIdentity().toString().substring(1)).openConnection();
-
-      connection.setRequestMethod("GET");
-      connection.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      connection.connect();
-
-      try {
-        final String response = readResponse(connection);
-        LogManager.instance().log(this, Level.FINE, "TEST: Response: %s", null, response);
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
-        Assertions.assertTrue(response.contains("V1"));
-
-      } finally {
-        connection.disconnect();
-      }
-    });
-  }
-
-  @Test
-  public void checkRecordCreate() throws Exception {
-    testEachServer((serverIndex) -> createRecord(serverIndex, "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}"));
-  }
-
-  @Test
   public void checkDeleteGraphElements() throws Exception {
 
     Thread.sleep(3000);
@@ -131,7 +105,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "TESTS SERVER " + serverIndex);
 
-      final String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
+      final String v1 = new JSONObject(
+          command(serverIndex, "create vertex V1 content {\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getJSONArray(
+          "result").getJSONObject(0).getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -146,7 +122,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
         }
       });
 
-      final String v2 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getString("result");
+      final String v2 = new JSONObject(
+          command(serverIndex, "create vertex V1 content {\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getJSONArray(
+          "result").getJSONObject(0).getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -161,8 +139,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
         }
       });
 
-      final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0)
-          .getString("@rid");
+      final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result")
+          .getJSONObject(0).getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -177,8 +155,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
         }
       });
 
-      final String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString(
-          "result");
+      final String v3 = new JSONObject(
+          command(serverIndex, "create vertex V1 content {\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getJSONArray(
+          "result").getJSONObject(0).getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -193,8 +172,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
         }
       });
 
-      final String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0)
-          .getString("@rid");
+      final String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result")
+          .getJSONObject(0).getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -216,13 +195,17 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(),
-              "executed on server " + serverIndex + " checking on server " + serverIndex);
-          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(),
-              "executed on server " + serverIndex + " checking on server " + serverIndex);
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on checking for right deletion on server " + checkServer);
-          throw e;
+          new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result");
+          Assertions.fail("executed on server " + serverIndex + " checking on server " + serverIndex);
+        } catch (FileNotFoundException e) {
+          //  EXPECTED
+        }
+
+        try {
+          new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result");
+          Assertions.fail("executed on server " + serverIndex + " checking on server " + serverIndex);
+        } catch (FileNotFoundException e) {
+          //  EXPECTED
         }
       });
     });
@@ -231,7 +214,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void testHAConfiguration() {
     for (ArcadeDBServer server : getServers()) {
-      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
       Assertions.assertNotNull(database.getLeaderAddress());
       Assertions.assertFalse(database.getReplicaAddresses().isEmpty());
     }

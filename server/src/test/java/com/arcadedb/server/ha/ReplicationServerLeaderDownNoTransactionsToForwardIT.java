@@ -26,7 +26,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.TestCallback;
+import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +41,11 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
+  }
+
+  @Override
+  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
+    return HAServer.SERVER_ROLE.ANY;
   }
 
   @Test
@@ -114,7 +119,7 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_2"))
       server.registerTestEventListener((type, object, server1) -> {
-        if (type == TestCallback.TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
           if (messages.incrementAndGet() > 10 && getServer(0).isStarted()) {
             testLog("TEST: Stopping the Leader...");
 

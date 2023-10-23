@@ -23,7 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.TestCallback;
+import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -40,7 +40,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
   @Override
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_1"))
-      server.registerTestEventListener(new TestCallback() {
+      server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
           if (type == TYPE.REPLICA_MSG_RECEIVED) {
@@ -53,7 +53,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
       });
 
     if (server.getServerName().equals("ArcadeDB_2"))
-      server.registerTestEventListener(new TestCallback() {
+      server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
           if (type == TYPE.REPLICA_MSG_RECEIVED) {
@@ -80,15 +80,15 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     return new int[] {};
   }
 
-  protected void checkEntriesOnServer(final int s) {
-    final Database db = getServerDatabase(s, getDatabaseName());
+  protected void checkEntriesOnServer(final int serverIndex) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
     db.begin();
     try {
-      Assertions.assertTrue(1 + getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + s);
+      Assertions.assertTrue(1 + getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + serverIndex);
 
     } catch (final Exception e) {
       e.printStackTrace();
-      Assertions.fail("Error on checking on server" + s);
+      Assertions.fail("Error on checking on server" + serverIndex);
     }
   }
 

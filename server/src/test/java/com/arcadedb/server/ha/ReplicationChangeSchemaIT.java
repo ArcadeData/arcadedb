@@ -184,12 +184,9 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
         first = entry.getValue();
       else
         Assertions.assertEquals(first, entry.getValue(),
-            "Server " + entry.getKey() + " has different schema saved:\nFIRST SERVER:\n" + first + "\n" + entry.getKey() + " SERVER:\n" + entry.getValue());
+            "Server " + entry.getKey() + " has different schema saved:\nFIRST SERVER:\n" + first + "\n" + entry.getKey()
+                + " SERVER:\n" + entry.getValue());
     }
-  }
-
-  protected int getServerCount() {
-    return 3;
   }
 
   @Override

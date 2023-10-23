@@ -21,7 +21,7 @@ package com.arcadedb.server.ha;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.TestCallback;
+import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.Assertions;
 
 import java.util.concurrent.atomic.*;
@@ -49,7 +49,7 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
   @Override
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_2"))
-      server.registerTestEventListener(new TestCallback() {
+      server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
           if (slowDown) {
@@ -76,7 +76,7 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
       });
 
     if (server.getServerName().equals("ArcadeDB_0"))
-      server.registerTestEventListener(new TestCallback() {
+      server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
           // SLOW DOWN A SERVER

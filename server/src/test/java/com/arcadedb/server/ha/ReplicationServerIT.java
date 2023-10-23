@@ -68,7 +68,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     Assertions.assertEquals(1, db.countType(VERTEX1_TYPE_NAME, true), "TEST: Check for vertex count for server" + 0);
 
-    LogManager.instance().log(this, Level.FINE, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    LogManager.instance()
+        .log(this, Level.FINE, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     final long total = getTxs() * getVerticesPerTx();
     long counter = 0;
@@ -89,7 +90,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           break;
 
         } catch (final TransactionException | NeedRetryException e) {
-          LogManager.instance().log(this, Level.FINE, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
+          LogManager.instance()
+              .log(this, Level.FINE, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
           if (retry >= getMaxRetry() - 1)
             throw e;
           counter = lastGoodCounter;
@@ -110,7 +112,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
-    Assertions.assertEquals(1 + (long) getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + 0);
+    Assertions.assertEquals(1 + (long) getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true),
+        "Check for vertex count for server" + 0);
 
     try {
       Thread.sleep(1000);
@@ -155,8 +158,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     return false;
   }
 
-  protected void checkEntriesOnServer(final int s) {
-    final Database db = getServerDatabase(s, getDatabaseName());
+  protected void checkEntriesOnServer(final int serverIndex) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
 
     // RESET ANY PREVIOUS TRANSACTION IN TL. IN CASE OF STOP/CRASH THE TL COULD HAVE AN OLD INSTANCE THAT POINT TO AN OLD SERVER
     DatabaseContext.INSTANCE.init((DatabaseInternal) db);
@@ -165,7 +168,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
       try {
         final long recordInDb = db.countType(VERTEX1_TYPE_NAME, true);
         Assertions.assertTrue(recordInDb <= 1 + getTxs() * getVerticesPerTx(),
-            "TEST: Check for vertex count for server" + s + " found " + recordInDb + " not less than " + (1 + getTxs() * getVerticesPerTx()));
+            "TEST: Check for vertex count for server" + serverIndex + " found " + recordInDb + " not less than " + (1
+                + getTxs() * getVerticesPerTx()));
 
         final TypeIndex index = db.getSchema().getType(VERTEX1_TYPE_NAME).getPolymorphicIndexByProperties("id");
         long total = 0;
@@ -175,7 +179,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           ++total;
         }
 
-        LogManager.instance().log(this, Level.FINE, "TEST: Entries in the index (%d) >= records in database (%d)", null, total, recordInDb);
+        LogManager.instance()
+            .log(this, Level.FINE, "TEST: Entries in the index (%d) >= records in database (%d)", null, total, recordInDb);
 
         final Map<RID, Set<String>> ridsFoundInIndex = new HashMap<>();
         long total2 = 0;
@@ -201,19 +206,21 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           }
 
           if (record == null) {
-            LogManager.instance().log(this, Level.FINE, "TEST: - Cannot find record %s in database even if it's present in the index (null)", null, rid);
+            LogManager.instance()
+                .log(this, Level.FINE, "TEST: - Cannot find record %s in database even if it's present in the index (null)", null,
+                    rid);
             missingsCount++;
           }
-
         }
 
-        Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(), "TEST: Found " + missingsCount + " missing records");
+        Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(),
+            "TEST: Found " + missingsCount + " missing records on server " + serverIndex);
         Assertions.assertEquals(0, missingsCount);
         Assertions.assertEquals(total, total2);
 
       } catch (final Exception e) {
         e.printStackTrace();
-        Assertions.fail("TEST: Error on checking on server" + s);
+        Assertions.fail("TEST: Error on checking on server" + serverIndex);
       }
     });
   }
