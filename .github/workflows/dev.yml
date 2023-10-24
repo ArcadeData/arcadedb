@@ -14,7 +14,7 @@ env:
   TAG: dev
 
 jobs:
-  docker:
+  dev:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
