@@ -40,6 +40,9 @@ public class DatabaseComparator {
   }
 
   public void compare(final Database db1, final Database db2) {
+    DatabaseContext.INSTANCE.init((DatabaseInternal) db1);
+    DatabaseContext.INSTANCE.init((DatabaseInternal) db2);
+
     compareTypes(db1, db2);
     compareBuckets((DatabaseInternal) db1, (DatabaseInternal) db2);
     compareIndexes(db1, db2);
@@ -71,12 +74,12 @@ public class DatabaseComparator {
       final Bucket bucket2 = types2Map.get(bucket1.getName());
 
       if (bucket1.getPageSize() != bucket2.getPageSize())
-        throw new DatabaseAreNotIdentical("Bucket '%s' has different page size in two databases. DB1 %d <> DB2 %d", bucket2.getName(), bucket1.getPageSize(),
-            bucket2.getPageSize());
+        throw new DatabaseAreNotIdentical("Bucket '%s' has different page size in two databases. DB1 %d <> DB2 %d",
+            bucket2.getName(), bucket1.getPageSize(), bucket2.getPageSize());
 
       if (bucket1.getTotalPages() != bucket2.getTotalPages())
-        throw new DatabaseAreNotIdentical("Bucket '%s' has different page count in two databases. DB1 %d <> DB2 %d", bucket2.getName(), bucket1.getTotalPages(),
-            bucket2.getTotalPages());
+        throw new DatabaseAreNotIdentical("Bucket '%s' has different page count in two databases. DB1 %d <> DB2 %d",
+            bucket2.getName(), bucket1.getTotalPages(), bucket2.getTotalPages());
 
       // AT THIS POINT BOTH BUCKETS HAVE THE SAME PAGES
       final int pageSize = bucket1.getPageSize();
@@ -89,20 +92,22 @@ public class DatabaseComparator {
         try {
           page1 = db1.getPageManager().getImmutablePage(pageId, pageSize, false, true);
         } catch (final IOException e) {
-          throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB1 (cause=%s)", pageId, bucket1.getName(), e.toString());
+          throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB1 (cause=%s)", pageId, bucket1.getName(),
+              e.toString());
         }
 
         try {
           page2 = db2.getPageManager().getImmutablePage(pageId, pageSize, false, true);
         } catch (final IOException e) {
-          throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB2 (cause=%s)", pageId, bucket2.getName(), e.toString());
+          throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB2 (cause=%s)", pageId, bucket2.getName(),
+              e.toString());
         }
 
         final boolean sameContent = Arrays.equals(page1.getContent().array(), page2.getContent().array());
 
         if (page1.getVersion() != page2.getVersion())
-          throw new DatabaseAreNotIdentical("Page %s has different versions on databases. DB1 %d <> DB2 %d (sameContent=%s)", pageId, page1.getVersion(),
-              page2.getVersion(), sameContent);
+          throw new DatabaseAreNotIdentical("Page %s has different versions on databases. DB1 %d <> DB2 %d (sameContent=%s)",
+              pageId, page1.getVersion(), page2.getVersion(), sameContent);
 
         if (!sameContent)
           throw new DatabaseAreNotIdentical("Page %s has different content on databases", pageId);
@@ -138,8 +143,8 @@ public class DatabaseComparator {
     for (final DocumentType entry1 : types1) {
       final DocumentType entry2 = types2Map.get(entry1.getName());
       if (!entry1.isTheSameAs(entry2))
-        throw new DatabaseAreNotIdentical("Types '%s' is configured differently in two databases 1:\n%s\n2:\n%s", entry2.getName(), entry1.toJSON(),
-            entry2.toJSON());
+        throw new DatabaseAreNotIdentical("Types '%s' is configured differently in two databases 1:\n%s\n2:\n%s", entry2.getName(),
+            entry1.toJSON(), entry2.toJSON());
     }
   }
 

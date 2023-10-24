@@ -82,22 +82,26 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
     if (isCreateDatabases()) {
       databases = new Database[getServerCount()];
-      for (int i = 0; i < getServerCount(); ++i) {
-        GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
-        databases[i] = new DatabaseFactory(getDatabasePath(i)).create();
-        databases[i].async().setParallelLevel(PARALLEL_LEVEL);
+
+      GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
+      databases[0] = new DatabaseFactory(getDatabasePath(0)).create();
+      databases[0].async().setParallelLevel(PARALLEL_LEVEL);
+      populateDatabase();
+      databases[0].close();
+
+      for (int i = 1; i < getServerCount(); ++i) {
+        try {
+          FileUtils.copyDirectory(new File(getDatabasePath(0)), new File(getDatabasePath(i)));
+        } catch (IOException e) {
+          throw new RuntimeException(e);
+        }
       }
 
-      populateDatabase();
     } else
       databases = new Database[0];
 
-    // CLOSE ALL DATABASES BEFORE STARTING THE SERVERS
-    LogManager.instance().log(this, Level.FINE, "TEST: Closing databases before starting");
-    for (int i = 0; i < databases.length; ++i) {
-      databases[i].close();
-      databases[i] = null;
-    }
+    if (databases[0] != null && databases[0].isOpen())
+      databases[0].close();
 
     startServers();
   }
@@ -288,9 +292,11 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       for (int i = 0; i < serverCount; ++i) {
         if (servers[i].getHA() != null && servers[i].getHA().isLeader()) {
           lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
-          if (lastTotalConnectedReplica >= serverCount - 1)
+          if (lastTotalConnectedReplica >= serverCount - 1) {
             // ALL CONNECTED
+            serversSynchronized = true;
             return;
+          }
 
           try {
             Thread.sleep(300);
@@ -303,8 +309,6 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     LogManager.instance()
         .log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica,
             serverCount);
-
-    serversSynchronized = true;
   }
 
   protected void stopServers() {

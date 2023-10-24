@@ -22,4 +22,8 @@ public class TimeoutException extends ArcadeDBException {
   public TimeoutException(final String message) {
     super(message);
   }
+
+  public TimeoutException(final String message, final Throwable cause) {
+    super(message, cause);
+  }
 }

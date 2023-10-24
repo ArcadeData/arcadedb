@@ -90,6 +90,13 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             Assertions.assertEquals(counter, (int) result.getProperty("id"));
             Assertions.assertTrue(props.contains("name"));
             Assertions.assertEquals("distributed-test", result.getProperty("name"));
+
+            if (counter % 100 == 0) {
+              LogManager.instance().log(this, Level.SEVERE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
+              if (isPrintingConfigurationAtEveryStep())
+                getLeaderServer().getHA().printClusterConfiguration();
+            }
+
           }
 
         } catch (final DuplicatedKeyException | NeedRetryException | TimeoutException | TransactionException e) {
@@ -110,20 +117,14 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
         } catch (final Exception e) {
           // IGNORE IT
-          LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", null, e.getMessage());
+          LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", e, e.getMessage());
         }
 
         break;
       }
-
-      if (counter % 1000 == 0) {
-        LogManager.instance().log(this, Level.FINE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
-        if (isPrintingConfigurationAtEveryStep())
-          getLeaderServer().getHA().printClusterConfiguration();
-      }
     }
 
-    LogManager.instance().log(this, Level.FINE, "Done");
+    LogManager.instance().log(this, Level.SEVERE, "Done");
 
     try {
       Thread.sleep(1000);
@@ -147,6 +148,9 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
     server.registerTestEventListener(new ReplicationCallback() {
       @Override
       public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+        if (!serversSynchronized)
+          return;
+
         if (type == TYPE.REPLICA_MSG_RECEIVED) {
           if (!(((Pair) object).getSecond() instanceof TxRequest))
             return;
@@ -192,7 +196,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
   @Override
   protected int getTxs() {
-    return 5000;
+    return 5_000;
   }
 
   @Override
