@@ -39,6 +39,7 @@ public abstract class StaticBaseServerTest {
     GlobalConfiguration.TEST.setValue(true);
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
+    GlobalConfiguration.SERVER_HTTP_IO_THREADS.setValue(2);
   }
 
   @BeforeEach
@@ -58,8 +59,10 @@ public abstract class StaticBaseServerTest {
   }
 
   protected static void testLog(final String msg, final Object... args) {
-    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "***********************************************************************************");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE,
+        "***********************************************************************************");
     LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "TEST: " + msg, args);
-    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "***********************************************************************************");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE,
+        "***********************************************************************************");
   }
 }

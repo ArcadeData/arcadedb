@@ -78,13 +78,14 @@ public enum GlobalConfiguration {
       String.class, "default", new Callable<>() {
     @Override
     public Object call(final Object value) {
+      final int cores = Runtime.getRuntime().availableProcessors();
+
       final String v = value.toString();
       if (v.equalsIgnoreCase("default")) {
         // NOT MUCH TO DO HERE, THIS IS THE DEFAULT OPTION
       } else if (v.equalsIgnoreCase("high-performance")) {
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("fast");
 
-        final int cores = Runtime.getRuntime().availableProcessors();
         if (cores > 1)
           // USE ONLY HALF OF THE CORES MINUS ONE
           ASYNC_WORKER_THREADS.setValue((cores / 2) - 1);
@@ -102,10 +103,12 @@ public enum GlobalConfiguration {
         SQL_STATEMENT_CACHE.setValue(16);
         HA_REPLICATION_QUEUE_SIZE.setValue(8);
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
+        SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
 
       } else if (v.equalsIgnoreCase("low-cpu")) {
         ASYNC_WORKER_THREADS.setValue(1);
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
+        SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
       } else
         throw new IllegalArgumentException("Profile '" + v + "' not available");
 
@@ -324,6 +327,10 @@ public enum GlobalConfiguration {
       "TCP/IP port number used for incoming HTTPS connections. Specify a single port or a range `<from-<to>`. Default is 2490-2499 to accept a range of ports in case they are occupied.",
       String.class, "2490-2499"),
 
+  SERVER_HTTP_IO_THREADS("arcadedb.server.httpsIoThreads", SCOPE.SERVER,
+      "Number of threads to use in the HTTP servers. The default number for most of the use cases is 2 threads per cpus (or 1 per virtual core)",
+      Integer.class, 0, null, (value) -> Runtime.getRuntime().availableProcessors()),
+
   SERVER_HTTP_TX_EXPIRE_TIMEOUT("arcadedb.server.httpTxExpireTimeout", SCOPE.SERVER,
       "Timeout in seconds for a HTTP transaction to expire. This timeout is computed from the latest command against the transaction",
       Long.class, 30),
@@ -485,7 +492,10 @@ public enum GlobalConfiguration {
    * Reset the configuration to the default value.
    */
   public void reset() {
-    value = defValue;
+    if (callbackIfNoSet != null)
+      value = callbackIfNoSet.call(null);
+    else
+      value = defValue;
   }
 
   public static void dumpConfiguration(final PrintStream out) {
