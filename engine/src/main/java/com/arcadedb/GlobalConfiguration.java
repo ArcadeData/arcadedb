@@ -282,7 +282,7 @@ public enum GlobalConfiguration {
       String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
-      "development", Set.of((Object[]) new String[] { "development", "test", "production" })),
+      "development", Set.of(new String[] { "development", "test", "production" })),
 
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
 

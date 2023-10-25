@@ -100,8 +100,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     } else
       databases = new Database[0];
 
-    if (databases[0] != null && databases[0].isOpen())
-      databases[0].close();
+    if (databases != null)
+      for (Database db : databases)
+        if (db != null && db.isOpen())
+          databases[0].close();
 
     startServers();
   }

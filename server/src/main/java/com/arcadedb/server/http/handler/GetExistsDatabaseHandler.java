@@ -26,7 +26,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
 
-public class GetExistsDatabaseHandler extends AbstractHandler {
+public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
   public GetExistsDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }

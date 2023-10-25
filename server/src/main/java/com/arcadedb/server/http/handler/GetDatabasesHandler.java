@@ -27,7 +27,7 @@ import io.undertow.server.HttpServerExchange;
 import java.util.*;
 
 @Deprecated
-public class GetDatabasesHandler extends AbstractHandler {
+public class GetDatabasesHandler extends AbstractServerHttpHandler {
   public GetDatabasesHandler(final HttpServer httpServer) {
     super(httpServer);
   }

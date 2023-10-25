@@ -19,9 +19,6 @@
 package com.arcadedb.remote;
 
 public class RemoteException extends RuntimeException {
-  public RemoteException() {
-  }
-
   public RemoteException(final String message) {
     super(message);
   }
@@ -30,11 +27,4 @@ public class RemoteException extends RuntimeException {
     super(message, cause);
   }
 
-  public RemoteException(final Throwable cause) {
-    super(cause);
-  }
-
-  public RemoteException(final String message, final Throwable cause, final boolean enableSuppression, final boolean writableStackTrace) {
-    super(message, cause, enableSuppression, writableStackTrace);
-  }
 }

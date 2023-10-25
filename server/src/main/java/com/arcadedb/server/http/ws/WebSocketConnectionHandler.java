@@ -19,7 +19,7 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.http.handler.AbstractHandler;
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -28,7 +28,7 @@ import io.undertow.websockets.WebSocketProtocolHandshakeHandler;
 
 import java.util.*;
 
-public class WebSocketConnectionHandler extends AbstractHandler {
+public class WebSocketConnectionHandler extends AbstractServerHttpHandler {
   private final WebSocketEventBus webSocketEventBus;
 
   public WebSocketConnectionHandler(final HttpServer httpServer, final WebSocketEventBus webSocketEventBus) {

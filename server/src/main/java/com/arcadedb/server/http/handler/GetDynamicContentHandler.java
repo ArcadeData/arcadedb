@@ -32,7 +32,7 @@ import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 
-public class GetDynamicContentHandler extends AbstractHandler {
+public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
   public GetDynamicContentHandler(final HttpServer httpServer) {
     super(httpServer);

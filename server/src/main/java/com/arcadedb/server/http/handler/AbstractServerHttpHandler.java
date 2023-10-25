@@ -45,11 +45,11 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public abstract class AbstractHandler implements HttpHandler {
+public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String     AUTHORIZATION_BASIC = "Basic";
   protected final      HttpServer httpServer;
 
-  public AbstractHandler(final HttpServer httpServer) {
+  public AbstractServerHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
   }
 

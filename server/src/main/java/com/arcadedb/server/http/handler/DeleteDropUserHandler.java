@@ -31,7 +31,7 @@ import java.util.*;
  * @Deprecated Use the generic @see PostServerCommandHandler
  */
 @Deprecated
-public class DeleteDropUserHandler extends AbstractHandler {
+public class DeleteDropUserHandler extends AbstractServerHttpHandler {
   public DeleteDropUserHandler(final HttpServer httpServer) {
     super(httpServer);
   }

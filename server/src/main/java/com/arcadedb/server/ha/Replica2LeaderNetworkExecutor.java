@@ -150,6 +150,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", reqId, shutdown,
                 getName(), e.toString());
         reconnect(e);
+      } finally {
+        //DatabaseContext.INSTANCE.clear();
       }
     }
 
@@ -433,7 +435,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   public void requestInstallDatabase(final Binary buffer, final String db) throws IOException {
     sendCommandToLeader(buffer, new DatabaseStructureRequest(db), -1);
     final DatabaseStructureResponse dbStructure = (DatabaseStructureResponse) receiveCommandFromLeaderDuringJoin(buffer);
-    final DatabaseInternal database = (DatabaseInternal) server.getServer().getOrCreateDatabase(db);
+    final DatabaseInternal database = server.getServer().getOrCreateDatabase(db);
     installDatabase(buffer, db, dbStructure, database);
   }
 

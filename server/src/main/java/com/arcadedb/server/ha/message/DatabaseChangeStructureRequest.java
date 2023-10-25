@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
@@ -101,11 +102,13 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
     try {
-      final DatabaseInternal db = (DatabaseInternal) server.getServer().getDatabase(databaseName);
+      final DatabaseInternal db = server.getServer().getDatabase(databaseName);
 
       updateFiles(db);
 
       // RELOAD SCHEMA
+      DatabaseContext.INSTANCE.init(db);
+
       db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
       return new DatabaseChangeStructureResponse();
 

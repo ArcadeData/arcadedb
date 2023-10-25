@@ -44,7 +44,7 @@ import java.io.*;
 import java.rmi.*;
 import java.util.*;
 
-public class PostServerCommandHandler extends AbstractHandler {
+public class PostServerCommandHandler extends AbstractServerHttpHandler {
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
   }

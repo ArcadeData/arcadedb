@@ -37,7 +37,7 @@ import java.net.*;
 import java.util.*;
 import java.util.logging.*;
 
-public class GetServerHandler extends AbstractHandler {
+public class GetServerHandler extends AbstractServerHttpHandler {
   public GetServerHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -106,7 +106,7 @@ public class GetServerHandler extends AbstractHandler {
       final JSONArray databases = new JSONArray();
 
       for (String dbName : httpServer.getServer().getDatabaseNames()) {
-        final ServerDatabase db = (ServerDatabase) httpServer.getServer().getDatabase(dbName);
+        final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
         final ReplicatedDatabase rdb = ((ReplicatedDatabase) db.getWrappedDatabaseInstance());
 
         final JSONObject databaseJSON = new JSONObject();

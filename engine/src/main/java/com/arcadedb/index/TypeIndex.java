@@ -35,6 +35,9 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.*;
 import java.util.*;
 
+import static com.arcadedb.index.lsm.LSMTreeIndex.INDEX_STATUS.AVAILABLE;
+import static com.arcadedb.index.lsm.LSMTreeIndex.INDEX_STATUS.UNAVAILABLE;
+
 /**
  * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
  * work concurrently and lock-free.
@@ -81,8 +84,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public IndexCursor range(final boolean ascending, final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys,
-      final boolean endKeysInclusive) {
+  public IndexCursor range(final boolean ascending, final Object[] beginKeys, final boolean beginKeysInclusive,
+      final Object[] endKeys, final boolean endKeysInclusive) {
     checkIsValid();
     if (!supportsOrderedIterations())
       throw new UnsupportedOperationException("Index '" + getName() + "' does not support ordered iterations");
@@ -229,13 +232,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     final List<LSMTreeIndex> acquired = new ArrayList<>(indexesOnBuckets.size());
     for (final Index index : new ArrayList<>(indexesOnBuckets))
-      if (((LSMTreeIndex) index).setStatus(LSMTreeIndex.INDEX_STATUS.AVAILABLE, LSMTreeIndex.INDEX_STATUS.UNAVAILABLE))
+      if (((LSMTreeIndex) index).setStatus(new LSMTreeIndex.INDEX_STATUS[] { AVAILABLE, UNAVAILABLE }, UNAVAILABLE))
         acquired.add((LSMTreeIndex) index);
       else {
         // NOT AVAILABLE, RESET ACQUIRED STATUSES
         for (LSMTreeIndex i : acquired)
-          i.setStatus(LSMTreeIndex.INDEX_STATUS.UNAVAILABLE, LSMTreeIndex.INDEX_STATUS.AVAILABLE);
-        throw new NeedRetryException("Cannot drop index '" + getName() + "' because one or more underlying files are not available");
+          i.setStatus(new LSMTreeIndex.INDEX_STATUS[] { UNAVAILABLE }, AVAILABLE);
+        throw new NeedRetryException(
+            "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
 
     for (final Index index : new ArrayList<>(indexesOnBuckets))
@@ -330,9 +334,20 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     for (int i = 0; i < indexesOnBuckets.size(); ++i) {
       final Index bIdx1 = indexesOnBuckets.get(i);
-      final Index bIdx2 = index2.indexesOnBuckets.get(i);
 
-      if (bIdx1.getAssociatedBucketId() != bIdx2.getAssociatedBucketId())
+      boolean found = false;
+      for (int j = 0; j < index2.indexesOnBuckets.size(); j++) {
+        final Index bIdx2 = index2.indexesOnBuckets.get(j);
+        if (bIdx2.getName().equals(bIdx1.getName())) {
+          found = true;
+          if (bIdx1.getAssociatedBucketId() != bIdx2.getAssociatedBucketId())
+            return false;
+
+          break;
+        }
+      }
+
+      if (!found)
         return false;
     }
 
@@ -445,7 +460,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // USE THE SHARDED INDEX
       final List<String> propNames = getPropertyNames();
 
-      List<IndexInternal> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
+      List<IndexInternal> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(
+          type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
 
       final List<DocumentType> subTypes = type.getSubTypes();
       if (!subTypes.isEmpty()) {
@@ -453,7 +469,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         polymorphicIndexesOnKeys = new ArrayList<>(polymorphicIndexesOnKeys);
 
         for (DocumentType s : subTypes) {
-          final List<IndexInternal> subIndexes = s.getPolymorphicBucketIndexByBucketId(s.getBuckets(false).get(bucketIndex).getFileId(), propNames);
+          final List<IndexInternal> subIndexes = s.getPolymorphicBucketIndexByBucketId(
+              s.getBuckets(false).get(bucketIndex).getFileId(), propNames);
           polymorphicIndexesOnKeys.addAll(subIndexes);
 
         }

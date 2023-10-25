@@ -79,8 +79,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder builder) {
-      return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(), ComponentFile.MODE.READ_WRITE,
-          builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
+      return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
+          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
     }
   }
 
@@ -109,8 +109,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   /**
    * Called at creation time.
    */
-  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final ComponentFile.MODE mode,
-      final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath,
+      final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     try {
       this.name = name;
       this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
@@ -258,8 +259,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return valid;
   }
 
-  public boolean setStatus(final INDEX_STATUS expectedStatus, final INDEX_STATUS newStatus) {
-    return this.status.compareAndSet(expectedStatus, newStatus);
+  public boolean setStatus(final INDEX_STATUS[] expectedStatuses, final INDEX_STATUS newStatus) {
+    for (INDEX_STATUS expectedStatus : expectedStatuses)
+      if (this.status.compareAndSet(expectedStatus, newStatus))
+        return true;
+    return false;
   }
 
   @Override
@@ -330,8 +334,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public IndexCursor range(final boolean ascendingOrder, final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys,
-      final boolean endKeysInclusive) {
+  public IndexCursor range(final boolean ascendingOrder, final Object[] beginKeys, final boolean beginKeysInclusive,
+      final Object[] endKeys, final boolean endKeysInclusive) {
     checkIsValid();
     return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
   }
@@ -542,7 +546,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         newMutableIndex.setPageCount(1);
 
         for (int i = 0; i < mutable.getTotalPages() - startingFromPage; ++i) {
-          final BasePage currentPage = database.getTransaction().getPage(new PageId(mutable.getFileId(), i + startingFromPage), pageSize);
+          final BasePage currentPage = database.getTransaction()
+              .getPage(new PageId(mutable.getFileId(), i + startingFromPage), pageSize);
 
 // COPY THE ENTIRE PAGE TO THE NEW INDEX
           final MutablePage newPage = newMutableIndex.createNewPage();

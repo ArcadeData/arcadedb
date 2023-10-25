@@ -38,7 +38,7 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public abstract class DatabaseAbstractHandler extends AbstractHandler {
+public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler {
   private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
 
   protected DatabaseAbstractHandler(final HttpServer httpServer) {

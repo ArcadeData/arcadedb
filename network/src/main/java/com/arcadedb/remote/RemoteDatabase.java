@@ -597,7 +597,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
           break;
 
         if (!reloadClusterConfiguration())
-          throw new TimeoutException("Error on executing remote operation " + operation + ", no server available", e);
+          throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
 
         final Pair<String, Integer> currentConnectToServer = connectToServer;
 

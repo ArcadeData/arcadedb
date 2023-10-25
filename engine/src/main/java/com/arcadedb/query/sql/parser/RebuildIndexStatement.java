@@ -91,7 +91,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
       if (all) {
         for (final Index idx : database.getSchema().getIndexes()) {
-          if (idx.isAutomatic()) {
+          if (idx.isAutomatic() && !(idx instanceof TypeIndex)) {
             indexName = idx.getName();
             buildIndex(maxAttempts, database, callback, idx, batchSize);
             indexList.add(idx.getName());
@@ -117,17 +117,21 @@ public class RebuildIndexStatement extends DDLStatement {
     return rs;
   }
 
-  private static void buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx, final int batchSize) {
+  private static void buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx,
+      final int batchSize) {
     if (idx == null)
       throw new CommandExecutionException("Index '" + idx.getName() + "' not found");
 
     if (!idx.isAutomatic())
-      throw new CommandExecutionException("Cannot rebuild index '" + idx.getName() + "' because it's manual and there aren't indications of what to index");
+      throw new CommandExecutionException(
+          "Cannot rebuild index '" + idx.getName() + "' because it's manual and there aren't indications of what to index");
 
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         if (!((IndexInternal) idx).isValid()) {
-          LogManager.instance().log(RebuildIndexStatement.class, Level.SEVERE, "Error on rebuild invalid index '%s'. The index will be removed", idx.getName());
+          LogManager.instance()
+              .log(RebuildIndexStatement.class, Level.SEVERE, "Error on rebuild invalid index '%s'. The index will be removed",
+                  idx.getName());
           return;
         }
 
@@ -145,14 +149,17 @@ public class RebuildIndexStatement extends DDLStatement {
           database.getSchema().dropIndex(idx.getName());
 
           if (typeName != null && idx instanceof TypeIndex) {
-            database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
-                .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)//
+            database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
+                .withUnique(unique).withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize)
+                .withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)//
                 .create();
 
           } else {
-            database.getSchema().buildBucketIndex(typeName, database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
-                    propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique).withPageSize(pageSize).withCallback(callback)
-                .withBatchSize(batchSize).withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)//
+            database.getSchema()
+                .buildBucketIndex(typeName, database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
+                    propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
+                .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
+                .withNullStrategy(nullStrategy)//
                 .create();
           }
           return null;
