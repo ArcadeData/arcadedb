@@ -387,7 +387,7 @@ public class PageManager extends LockContext {
     // ORDER PAGES BY LAST ACCESS + SIZE
     long oldestPagesRAM = 0;
     final TreeSet<CachedPage> oldestPages = new TreeSet<>((o1, o2) -> {
-      final int lastAccessed = Long.compare(o1.getLastAccessed(), o2.getLastAccessed());
+      final int lastAccessed = - Long.compare(o1.getLastAccessed(), o2.getLastAccessed());
       if (lastAccessed != 0)
         return lastAccessed;
 
