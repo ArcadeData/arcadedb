@@ -178,12 +178,15 @@ public class HARandomCrashIT extends ReplicationServerIT {
           }
           break;
 
-        } catch (final DuplicatedKeyException | TransactionException | NeedRetryException | RemoteException | TimeoutException e) {
+        } catch (final TransactionException | NeedRetryException | RemoteException | TimeoutException e) {
           LogManager.instance()
               .log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
           if (retry >= getMaxRetry() - 1)
             throw e;
           counter = lastGoodCounter;
+        } catch (final DuplicatedKeyException e) {
+          // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
+          LogManager.instance().log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s (IGNORE IT)", null, e.toString());
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "TEST: - RECEIVED UNKNOWN ERROR: %s", e, e.toString());
           throw e;

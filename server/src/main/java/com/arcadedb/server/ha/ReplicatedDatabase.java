@@ -741,37 +741,46 @@ public class ReplicatedDatabase implements DatabaseInternal {
     final AtomicReference<Object> result = new AtomicReference<>();
 
     // ACQUIRE A DATABASE WRITE LOCK. THE LOCK IS REENTRANT, SO THE ACQUISITION DOWN THE LINE IS GOING TO PASS BECAUSE ALREADY ACQUIRED HERE
-    final DatabaseChangeStructureRequest command = proxied.executeInWriteLock(() -> {
-      if (!ha.isLeader()) {
-        // NOT THE LEADER: NOT RESPONSIBLE TO SEND CHANGES TO OTHER SERVERS
-        // TODO: Issue #118SchemaException
-        throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server", ha.getLeaderName());
+    final AtomicReference<DatabaseChangeStructureRequest> command = new AtomicReference<>();
+
+    try {
+      proxied.executeInWriteLock(() -> {
+        if (!ha.isLeader()) {
+          // NOT THE LEADER: NOT RESPONSIBLE TO SEND CHANGES TO OTHER SERVERS
+          // TODO: Issue #118SchemaException
+          throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
+              ha.getLeaderName());
 //        result.set(callback.call());
 //        return null;
+        }
+
+        if (!proxied.getFileManager().startRecordingChanges()) {
+          // ALREADY RECORDING
+          result.set(callback.call());
+          return null;
+        }
+
+        final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
+
+        try {
+          result.set(callback.call());
+
+          return null;
+
+        } finally {
+          // EVEN IN CASE OF EXCEPTION PROPAGATE THE CHANGE OF STRUCTURE IF ANY.
+          // THIS IS TYPICAL ON INDEX CREATION THAT FAIL (DUPLICATED KEYS)
+          command.set(getChangeStructure(schemaVersionBefore));
+          proxied.getFileManager().stopRecordingChanges();
+        }
+      });
+
+    } finally {
+      if (command.get() != null) {
+        // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
+        final int quorum = ha.getConfiguredServers();
+        ha.sendCommandToReplicasWithQuorum(command.get(), quorum, timeout);
       }
-
-      if (!proxied.getFileManager().startRecordingChanges()) {
-        // ALREADY RECORDING
-        result.set(callback.call());
-        return null;
-      }
-
-      final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
-
-      try {
-        result.set(callback.call());
-
-        return getChangeStructure(schemaVersionBefore);
-
-      } finally {
-        proxied.getFileManager().stopRecordingChanges();
-      }
-    });
-
-    if (command != null) {
-      // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
-      final int quorum = ha.getConfiguredServers();
-      ha.sendCommandToReplicasWithQuorum(command, quorum, timeout);
     }
 
     return (RET) result.get();

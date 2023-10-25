@@ -104,11 +104,11 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
     try {
       final DatabaseInternal db = server.getServer().getDatabase(databaseName);
 
+      DatabaseContext.INSTANCE.init(db);
+
       updateFiles(db);
 
       // RELOAD SCHEMA
-      DatabaseContext.INSTANCE.init(db);
-
       db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
       return new DatabaseChangeStructureResponse();
 

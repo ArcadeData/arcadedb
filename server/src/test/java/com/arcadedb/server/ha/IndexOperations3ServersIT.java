@@ -159,7 +159,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
 
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");
-      // CREATE 2M RECORD WITH ID DUPLICATED
+      // CREATE RECORDS WITH DUPLICATED IDS
       database.transaction(() -> {
         insertRecords(database);
         insertRecords(database);

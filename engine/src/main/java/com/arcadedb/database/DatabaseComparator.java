@@ -152,7 +152,8 @@ public class DatabaseComparator {
     final Index[] indexes1 = db1.getSchema().getIndexes();
     final Index[] indexes2 = db2.getSchema().getIndexes();
     if (indexes1.length != indexes2.length)
-      throw new DatabaseAreNotIdentical("Indexes: DB1 %d <> DB2 %d", indexes1.length, indexes2.length);
+      throw new DatabaseAreNotIdentical("Indexes: DB1 %d:" + Arrays.toString(indexes1) + " <> DB2 %d:" + Arrays.toString(indexes2),
+          indexes1.length, indexes2.length);
 
     final HashMap<String, Index> indexes1Map = new HashMap<>(indexes1.length);
     final HashMap<String, Index> indexes2Map = new HashMap<>(indexes2.length);

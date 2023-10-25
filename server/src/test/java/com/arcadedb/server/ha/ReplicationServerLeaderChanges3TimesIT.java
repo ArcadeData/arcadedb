@@ -99,7 +99,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
           }
 
-        } catch (final DuplicatedKeyException | NeedRetryException | TimeoutException | TransactionException e) {
+        } catch (final NeedRetryException | TimeoutException | TransactionException e) {
           if (e instanceof TimeoutException) {
             if (++timeouts > 3)
               throw e;
@@ -115,6 +115,9 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
           continue;
 
+        } catch (final DuplicatedKeyException e) {
+          // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
+          LogManager.instance().log(this, Level.SEVERE, "Error: %s (IGNORE IT)", null, e.toString());
         } catch (final Exception e) {
           // IGNORE IT
           LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", e, e.getMessage());
