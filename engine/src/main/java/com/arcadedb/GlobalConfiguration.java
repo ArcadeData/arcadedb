@@ -96,7 +96,7 @@ public enum GlobalConfiguration {
         MAX_PAGE_RAM.setValue(16); // 16 MB OF RAM FOR PAGE CACHE
         INDEX_COMPACTION_RAM_MB.setValue(16);
         INITIAL_PAGE_CACHE_SIZE.setValue(256);
-        FREE_PAGE_RAM.setValue(100);
+        FREE_PAGE_RAM.setValue(80);
         ASYNC_OPERATIONS_QUEUE_SIZE.setValue(8);
         ASYNC_TX_BATCH_SIZE.setValue(8);
         PAGE_FLUSH_QUEUE.setValue(8);
@@ -114,7 +114,7 @@ public enum GlobalConfiguration {
 
       return value;
     }
-  }),
+  }, null, Set.of("default", "high-performance", "low-ram", "low-cpu")),
 
   TEST("arcadedb.test", SCOPE.JVM,
       "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose ", Boolean.class, false),

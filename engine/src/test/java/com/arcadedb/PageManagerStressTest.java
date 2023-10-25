@@ -33,7 +33,7 @@ import performance.PerformanceTest;
 import java.util.*;
 
 public class PageManagerStressTest {
-  private static final int    TOT       = 100_000;
+  private static final int    TOT       = 1_000_000;
   private static final String TYPE_NAME = "Device";
 
   @Test
