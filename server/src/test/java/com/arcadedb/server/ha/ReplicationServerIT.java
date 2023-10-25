@@ -112,14 +112,16 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
+    while (getServer(0).getHA().getMessagesInQueue() > 0)
+      try {
+        Thread.sleep(200);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+
     Assertions.assertEquals(1 + (long) getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true),
         "Check for vertex count for server" + 0);
-
-    try {
-      Thread.sleep(1000);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck()) {
@@ -220,8 +222,12 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
       } catch (final Exception e) {
         e.printStackTrace();
-        Assertions.fail("TEST: Error on checking on server" + serverIndex);
+        Assertions.fail("TEST: Error on checking on server" + serverIndex + ": " + e.getMessage());
       }
     });
+  }
+
+  protected static Level getErrorLevel() {
+    return Level.INFO;
   }
 }

@@ -37,7 +37,6 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
   private          boolean    fullResync              = false;
 
   public ReplicationServerReplicaRestartForceDbInstallIT() {
-    GlobalConfiguration.HA_QUORUM.setValue("MAJORITY");
     GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(10);
   }
 
@@ -60,7 +59,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
             // SLOW DOWN A SERVER AFTER 5TH MESSAGE
             if (totalMessages.incrementAndGet() > 5) {
               try {
-                LogManager.instance().log(this, Level.FINE, "TEST: Slowing down response from replica server 2...");
+                LogManager.instance().log(this, getErrorLevel(), "TEST: Slowing down response from replica server 2...");
                 Thread.sleep(10_000);
               } catch (final InterruptedException e) {
                 // IGNORE IT
@@ -70,10 +69,10 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
             }
           } else {
             if (type == TYPE.REPLICA_HOT_RESYNC) {
-              LogManager.instance().log(this, Level.FINE, "TEST: Received hot resync request");
+              LogManager.instance().log(this, getErrorLevel(), "TEST: Received hot resync request");
               hotResync = true;
             } else if (type == TYPE.REPLICA_FULL_RESYNC) {
-              LogManager.instance().log(this, Level.FINE, "TEST: Received full resync request");
+              LogManager.instance().log(this, getErrorLevel(), "TEST: Received full resync request");
               fullResync = true;
             }
           }
@@ -96,7 +95,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
 
             executeAsynchronously(() -> {
               getServer(2).stop();
-              GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(512);
+              GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.reset();
               try {
                 Thread.sleep(1000);
               } catch (final InterruptedException e) {
@@ -105,6 +104,9 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
               }
               Assertions.assertTrue(new File("./target/replication/replication_ArcadeDB_2.rlog.0").exists());
               new File("./target/replication/replication_ArcadeDB_2.rlog.0").delete();
+
+              LogManager.instance().log(this, Level.SEVERE, "TEST: Restarting Replica 2...");
+
               getServer(2).start();
               return null;
             });

@@ -38,11 +38,13 @@ import java.util.logging.*;
 public class TxRequest extends TxRequestAbstract {
   private boolean                        waitForResponse;
   public  DatabaseChangeStructureRequest changeStructure;
+  public  long                           installDatabaseLastLogNumber = -1;
 
   public TxRequest() {
   }
 
-  public TxRequest(final String dbName, final Map<Integer, Integer> bucketRecordDelta, final Binary bufferChanges, final boolean waitForResponse) {
+  public TxRequest(final String dbName, final Map<Integer, Integer> bucketRecordDelta, final Binary bufferChanges,
+      final boolean waitForResponse) {
     super(dbName, bucketRecordDelta, bufferChanges);
     this.waitForResponse = waitForResponse;
   }
@@ -72,7 +74,7 @@ public class TxRequest extends TxRequestAbstract {
 
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    final DatabaseInternal db = (DatabaseInternal) server.getServer().getDatabase(databaseName);
+    final DatabaseInternal db = server.getServer().getDatabase(databaseName);
     if (!db.isOpen())
       throw new ReplicationException("Database '" + databaseName + "' is closed");
 
@@ -91,14 +93,19 @@ public class TxRequest extends TxRequestAbstract {
     final WALFile.WALTransaction walTx = readTxFromBuffer();
 
     try {
-      LogManager.instance().log(this, Level.FINE, "Applying tx %d from server %s (modifiedPages=%d)...", walTx.txId, remoteServerName, walTx.pages.length);
+      LogManager.instance()
+          .log(this, Level.FINE, "Applying tx %d from server %s (modifiedPages=%d)...", walTx.txId, remoteServerName,
+              walTx.pages.length);
 
-      db.getTransactionManager().applyChanges(walTx, bucketRecordDelta, false);
+      final boolean ignoreErrors = installDatabaseLastLogNumber > -1 && messageNumber <= installDatabaseLastLogNumber;
+
+      db.getTransactionManager().applyChanges(walTx, bucketRecordDelta, ignoreErrors);
 
     } catch (final WALException e) {
       if (e.getCause() instanceof ClosedChannelException) {
         // CLOSE THE ENTIRE DB
-        LogManager.instance().log(this, Level.SEVERE, "Closed file during transaction, closing the entire database (error=%s)", e.toString());
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Closed file during transaction, closing the entire database (error=%s)", e.toString());
         db.getEmbedded().close();
       }
       throw e;

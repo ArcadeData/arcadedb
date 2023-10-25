@@ -156,12 +156,10 @@ public class HAServer implements ServerPlugin {
     final String fileName = replicationPath + "/replication_" + server.getServerName() + ".rlog";
     try {
       replicationLogFile = new ReplicationLogFile(fileName);
-      final ReplicationMessage lastMessage = replicationLogFile.getLastMessage();
-      if (lastMessage != null) {
-        lastDistributedOperationNumber.set(lastMessage.messageNumber);
-        LogManager.instance()
-            .log(this, Level.FINE, "Found an existent replication log. Starting messages from %d", lastMessage.messageNumber);
-      }
+      lastDistributedOperationNumber.set(replicationLogFile.getLastMessageNumber());
+      if (lastDistributedOperationNumber.get() > -1)
+        LogManager.instance().log(this, Level.FINE, "Found an existent replication log. Starting messages from %d",
+            lastDistributedOperationNumber.get());
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on creating replication file '%s' for remote server '%s'", fileName,
           server.getServerName());
@@ -679,7 +677,7 @@ public class HAServer implements ServerPlugin {
       for (final Leader2ReplicaNetworkExecutor replicaConnection : replicas) {
         // STARTING FROM THE SECOND SERVER, COPY THE BUFFER
         try {
-          replicaConnection.enqueueMessage(buffer.slice(0));
+          replicaConnection.enqueueMessage(-1, buffer.slice(0));
         } catch (final ReplicationException e) {
           // REMOVE THE REPLICA
           LogManager.instance().log(this, Level.SEVERE, "Replica '%s' does not respond, setting it as OFFLINE",
@@ -731,7 +729,7 @@ public class HAServer implements ServerPlugin {
           for (final Leader2ReplicaNetworkExecutor replicaConnection : replicas) {
             try {
 
-              if (replicaConnection.enqueueMessage(buffer.slice(0)))
+              if (replicaConnection.enqueueMessage(opNumber, buffer.slice(0)))
                 ++sent;
               else {
                 if (quorumMessage != null)
@@ -798,6 +796,14 @@ public class HAServer implements ServerPlugin {
     }
 
     return responsePayloads;
+  }
+
+  public int getMessagesInQueue() {
+    int total = 0;
+    for (Leader2ReplicaNetworkExecutor r : replicaConnections.values())
+      total += r.getMessagesInQueue();
+
+    return total;
   }
 
   public void setReplicasHTTPAddresses(final String replicasHTTPAddresses) {

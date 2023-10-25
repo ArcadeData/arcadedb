@@ -45,9 +45,11 @@ public class ReplicationLogFile extends LockContext {
   private              FileChannel                   lastChunkChannel;
   private              FileChannel                   searchChannel        = null;
   private              long                          searchChannelChunkId = -1;
-  private static final int                           BUFFER_HEADER_SIZE   = Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
+  private static final int                           BUFFER_HEADER_SIZE   =
+      Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
   private final        ByteBuffer                    bufferHeader         = ByteBuffer.allocate(BUFFER_HEADER_SIZE);
-  private static final int                           BUFFER_FOOTER_SIZE   = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+  private static final int                           BUFFER_FOOTER_SIZE   =
+      Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
   private final        ByteBuffer                    bufferFooter         = ByteBuffer.allocate(BUFFER_FOOTER_SIZE);
   private static final long                          MAGIC_NUMBER         = 93719829258702L;
   private              long                          lastMessageNumber    = -1L;
@@ -80,7 +82,7 @@ public class ReplicationLogFile extends LockContext {
     }
   }
 
-  public ReplicationLogFile(final String filePath ) throws FileNotFoundException {
+  public ReplicationLogFile(final String filePath) throws FileNotFoundException {
     this.filePath = filePath;
 
     final File f = new File(filePath);
@@ -135,7 +137,8 @@ public class ReplicationLogFile extends LockContext {
         final int entrySize = BUFFER_HEADER_SIZE + content.length + BUFFER_FOOTER_SIZE;
 
         if (entrySize > CHUNK_SIZE)
-          throw new IllegalArgumentException("Cannot store in replication file messages bigger than " + FileUtils.getSizeAsString(CHUNK_SIZE));
+          throw new IllegalArgumentException(
+              "Cannot store in replication file messages bigger than " + FileUtils.getSizeAsString(CHUNK_SIZE));
 
         if (lastChunkChannel.size() + entrySize > CHUNK_SIZE)
           archiveChunk();
@@ -226,24 +229,8 @@ public class ReplicationLogFile extends LockContext {
     });
   }
 
-  private boolean openChunk(final long chunkId) throws IOException {
-    if (chunkId != searchChannelChunkId) {
-      if (searchChannel != null)
-        searchChannel.close();
-
-      final File chunkFile = new File(filePath + "." + chunkId);
-      if (!chunkFile.exists()) {
-        // CHUNK NOT FOUND (= NOT AVAILABLE, PROBABLY DELETED BECAUSE TOO OLD)
-        searchChannel = null;
-        searchChannelChunkId = -1L;
-        LogManager.instance().log(this, Level.WARNING, "Replication log chunk file %d was not found", null, chunkId);
-        return false;
-      }
-
-      searchChannel = new RandomAccessFile(chunkFile, "rw").getChannel();
-      searchChannelChunkId = chunkId;
-    }
-    return true;
+  public void setLastMessageNumber(final long lastMessageNumber) {
+    this.lastMessageNumber = lastMessageNumber;
   }
 
   public Pair<ReplicationMessage, Long> getMessage(final long positionInFile) {
@@ -301,13 +288,15 @@ public class ReplicationLogFile extends LockContext {
   public boolean checkMessageOrder(final ReplicationMessage message) {
     if (lastMessageNumber > -1) {
       if (message.messageNumber < lastMessageNumber) {
-        LogManager.instance().log(this, Level.WARNING, "Wrong sequence in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
+        LogManager.instance().log(this, Level.WARNING,
+            "Wrong sequence in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
             lastMessageNumber, message.messageNumber, Thread.currentThread().getId());
         return false;
       }
 
       if (message.messageNumber != lastMessageNumber + 1) {
-        LogManager.instance().log(this, Level.WARNING, "Found a jump (%d) in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
+        LogManager.instance().log(this, Level.WARNING,
+            "Found a jump (%d) in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
             (message.messageNumber - lastMessageNumber), lastMessageNumber, message.messageNumber, Thread.currentThread().getId());
 
         return false;
@@ -328,7 +317,8 @@ public class ReplicationLogFile extends LockContext {
 
       if (pos < BUFFER_HEADER_SIZE + BUFFER_FOOTER_SIZE) {
         // TODO: SCAN FROM THE HEAD
-        throw new ReplicationLogException("Invalid position (" + pos + ") in replication log file of size " + lastChunkChannel.size());
+        throw new ReplicationLogException(
+            "Invalid position (" + pos + ") in replication log file of size " + lastChunkChannel.size());
       }
 
       // READ THE FOOTER
@@ -365,7 +355,9 @@ public class ReplicationLogFile extends LockContext {
         try {
           return lastChunkChannel.size() + (chunkNumber * CHUNK_SIZE);
         } catch (final IOException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on computing file size for last chunk (%d) in replication log '%s'", e, chunkNumber, filePath);
+          LogManager.instance()
+              .log(this, Level.SEVERE, "Error on computing file size for last chunk (%d) in replication log '%s'", e, chunkNumber,
+                  filePath);
           return 0L;
         }
       }
@@ -440,7 +432,8 @@ public class ReplicationLogFile extends LockContext {
       try {
         archiveChunkCallback.archiveChunk(archivedFile, (int) chunkNumber);
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Error in replication log archive callback invoked on file '%s'", e, archivedFile);
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error in replication log archive callback invoked on file '%s'", e, archivedFile);
       }
     }
 
@@ -455,5 +448,25 @@ public class ReplicationLogFile extends LockContext {
     final File f = new File(filePath + "." + (chunkNumber + 1));
     lastChunkChannel = new RandomAccessFile(f, "rw").getChannel();
     ++chunkNumber;
+  }
+
+  private boolean openChunk(final long chunkId) throws IOException {
+    if (chunkId != searchChannelChunkId) {
+      if (searchChannel != null)
+        searchChannel.close();
+
+      final File chunkFile = new File(filePath + "." + chunkId);
+      if (!chunkFile.exists()) {
+        // CHUNK NOT FOUND (= NOT AVAILABLE, PROBABLY DELETED BECAUSE TOO OLD)
+        searchChannel = null;
+        searchChannelChunkId = -1L;
+        LogManager.instance().log(this, Level.WARNING, "Replication log chunk file %d was not found", null, chunkId);
+        return false;
+      }
+
+      searchChannel = new RandomAccessFile(chunkFile, "rw").getChannel();
+      searchChannelChunkId = chunkId;
+    }
+    return true;
   }
 }

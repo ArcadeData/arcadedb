@@ -107,6 +107,7 @@ public class FileContentRequest extends HAAbstractCommand {
 
   @Override
   public String toString() {
-    return "file(" + databaseName + " fileId=" + fileId + " fromPageInclusive=" + fromPageInclusive + " fromPageInclusive" + toPageInclusive + ")";
+    return "file(" + databaseName + " fileId=" + fileId + " fromPageInclusive=" + fromPageInclusive + " fromPageInclusive"
+        + toPageInclusive + ")";
   }
 }

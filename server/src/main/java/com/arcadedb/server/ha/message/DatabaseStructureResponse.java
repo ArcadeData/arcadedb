@@ -27,13 +27,15 @@ import java.util.*;
 public class DatabaseStructureResponse extends HAAbstractCommand {
   private String               schemaJson;
   private Map<Integer, String> fileNames;
+  private long                 currentLogNumber;
 
   public DatabaseStructureResponse() {
   }
 
-  public DatabaseStructureResponse(final String schemaJson, final Map<Integer, String> fileNames) {
+  public DatabaseStructureResponse(final String schemaJson, final Map<Integer, String> fileNames, final long currentLogNumber) {
     this.schemaJson = schemaJson;
     this.fileNames = fileNames;
+    this.currentLogNumber = currentLogNumber;
   }
 
   public Map<Integer, String> getFileNames() {
@@ -44,9 +46,14 @@ public class DatabaseStructureResponse extends HAAbstractCommand {
     return schemaJson;
   }
 
+  public long getCurrentLogNumber() {
+    return currentLogNumber;
+  }
+
   @Override
   public void toStream(final Binary stream) {
     stream.putString(schemaJson);
+    stream.putLong(currentLogNumber);
 
     stream.putUnsignedNumber(fileNames.size());
     for (final Map.Entry<Integer, String> file : fileNames.entrySet()) {
@@ -60,6 +67,7 @@ public class DatabaseStructureResponse extends HAAbstractCommand {
   @Override
   public void fromStream(final ArcadeDBServer server, final Binary stream) {
     schemaJson = stream.getString();
+    currentLogNumber = stream.getLong();
 
     fileNames = new HashMap<>();
     final int fileCount = (int) stream.getUnsignedNumber();
@@ -80,6 +88,6 @@ public class DatabaseStructureResponse extends HAAbstractCommand {
 
   @Override
   public String toString() {
-    return "dbstructure=" + fileNames;
+    return "dbstructure=" + fileNames + " initialLogNumber=" + currentLogNumber;
   }
 }

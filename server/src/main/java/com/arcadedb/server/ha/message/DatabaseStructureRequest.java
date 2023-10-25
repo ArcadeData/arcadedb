@@ -42,7 +42,7 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
 
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    final DatabaseInternal db = (DatabaseInternal) server.getServer().getOrCreateDatabase(databaseName);
+    final DatabaseInternal db = server.getServer().getOrCreateDatabase(databaseName);
 
     final File file = new File(db.getDatabasePath() + File.separator + EmbeddedSchema.SCHEMA_FILE_NAME);
     try {
@@ -59,7 +59,9 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
         if (f != null)
           fileNames.put(f.getFileId(), f.getFileName());
 
-      return new DatabaseStructureResponse(schemaJson, fileNames);
+      final long lastLogNumber = server.getReplicationLogFile().getLastMessageNumber();
+
+      return new DatabaseStructureResponse(schemaJson, fileNames, lastLogNumber);
 
     } catch (final IOException e) {
       throw new NetworkProtocolException("Error on reading schema json file", e);

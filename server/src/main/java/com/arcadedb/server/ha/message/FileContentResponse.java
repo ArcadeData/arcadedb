@@ -47,8 +47,8 @@ public class FileContentResponse extends HAAbstractCommand {
   public FileContentResponse() {
   }
 
-  public FileContentResponse(final String databaseName, final int fileId, final String fileName, final int pageFromInclusive, final Binary pagesContent,
-      final int totalPages, final boolean last) {
+  public FileContentResponse(final String databaseName, final int fileId, final String fileName, final int pageFromInclusive,
+      final Binary pagesContent, final int totalPages, final boolean last) {
     this.databaseName = databaseName;
     this.fileId = fileId;
     this.fileName = fileName;
@@ -77,7 +77,8 @@ public class FileContentResponse extends HAAbstractCommand {
     final PageManager pageManager = database.getPageManager();
 
     try {
-      final ComponentFile file = database.getFileManager().getOrCreateFile(fileId, database.getDatabasePath() + File.separator + fileName);
+      final ComponentFile file = database.getFileManager()
+          .getOrCreateFile(fileId, database.getDatabasePath() + File.separator + fileName);
 
       if (totalPages == 0)
         return null;
@@ -87,8 +88,10 @@ public class FileContentResponse extends HAAbstractCommand {
         final int pageSize = pFile.getPageSize();
 
         if (pagesContent.size() != totalPages * pageSize) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on received chunk for file '%s': size=%s, expected=%s (totalPages=%d)", file.getFileName(),
-              FileUtils.getSizeAsString(pagesContent.size()), FileUtils.getSizeAsString((long) totalPages * pageSize), totalPages);
+          LogManager.instance()
+              .log(this, Level.SEVERE, "Error on received chunk for file '%s': size=%s, expected=%s (totalPages=%d)",
+                  file.getFileName(), FileUtils.getSizeAsString(pagesContent.size()),
+                  FileUtils.getSizeAsString((long) totalPages * pageSize), totalPages);
           throw new ReplicationException("Invalid file chunk");
         }
 

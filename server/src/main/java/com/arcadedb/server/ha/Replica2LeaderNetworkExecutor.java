@@ -19,7 +19,6 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.Constants;
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
@@ -31,8 +30,8 @@ import com.arcadedb.network.binary.ConnectionException;
 import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.EmbeddedSchema;
-import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ReplicationCallback;
+import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.message.DatabaseStructureRequest;
 import com.arcadedb.server.ha.message.DatabaseStructureResponse;
 import com.arcadedb.server.ha.message.FileContentRequest;
@@ -41,6 +40,7 @@ import com.arcadedb.server.ha.message.HACommand;
 import com.arcadedb.server.ha.message.ReplicaConnectFullResyncResponse;
 import com.arcadedb.server.ha.message.ReplicaConnectRequest;
 import com.arcadedb.server.ha.message.ReplicaReadyRequest;
+import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
@@ -53,12 +53,13 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   private final    HAServer            server;
   private          String              host;
   private          int                 port;
-  private          String              leaderServerName  = "?";
+  private          String              leaderServerName             = "?";
   private          String              leaderServerHTTPAddress;
   private          ChannelBinaryClient channel;
-  private volatile boolean             shutdown          = false;
-  private final    Object              channelOutputLock = new Object();
-  private final    Object              channelInputLock  = new Object();
+  private volatile boolean             shutdown                     = false;
+  private final    Object              channelOutputLock            = new Object();
+  private final    Object              channelInputLock             = new Object();
+  private          long                installDatabaseLastLogNumber = -1;
 
   public Replica2LeaderNetworkExecutor(final HAServer ha, final String host, final int port) {
     this.server = ha;
@@ -123,6 +124,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           }
         }
 
+        if (installDatabaseLastLogNumber > -1 && request.getSecond() instanceof TxRequest)
+          ((TxRequest) request.getSecond()).installDatabaseLastLogNumber = installDatabaseLastLogNumber;
+
         // TODO: LOG THE TX BEFORE EXECUTING TO RECOVER THE DB IN CASE OF CRASH
 
         final HACommand response = request.getSecond().execute(server, leaderServerName, reqId);
@@ -184,9 +188,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         return;
       }
 
-      LogManager.instance().log(this, Level.SEVERE,
-          "Error on communication between current replica and the Leader ('%s'), reconnecting... (error=%s)", getRemoteServerName(),
-          e);
+      LogManager.instance()
+          .log(this, Level.FINE, "Error on communication between current replica and the Leader ('%s'), reconnecting... (error=%s)",
+              getRemoteServerName(), e);
 
       if (!shutdown) {
         try {
@@ -394,8 +398,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     final Binary buffer = new Binary(8192);
     buffer.setAllocationChunkSize(1024);
 
-    final ReplicationMessage lastMessage = server.getReplicationLogFile().getLastMessage();
-    final long lastLogNumber = lastMessage != null ? lastMessage.messageNumber - 1 : -1;
+    final long lastLogNumber = server.getReplicationLogFile().getLastMessageNumber();
 
     LogManager.instance().log(this, Level.INFO, "Requesting install of databases...");
 
@@ -415,6 +418,12 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         for (final String db : databases)
           requestInstallDatabase(buffer, db);
 
+//        if (server.getReplicationLogFile().getLastMessageNumber() > -1) {
+//          // RECURSIVE CALL TO EXECUTE A DELTA SYNC FORM THE LATEST LOG NUMBER RECEIVED
+//          installDatabases();
+//          return;
+//        }
+
         sendCommandToLeader(buffer, new ReplicaReadyRequest(), -1);
 
       } else {
@@ -427,7 +436,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       shutdown();
-      LogManager.instance().log(this, Level.SEVERE, "Error starting HA service (error=%s)", e);
+      LogManager.instance().log(this, Level.SEVERE, "Error starting HA service (error=%s)", e, e.getMessage());
       throw new ServerException("Cannot start HA service", e);
     }
   }
@@ -435,12 +444,11 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   public void requestInstallDatabase(final Binary buffer, final String db) throws IOException {
     sendCommandToLeader(buffer, new DatabaseStructureRequest(db), -1);
     final DatabaseStructureResponse dbStructure = (DatabaseStructureResponse) receiveCommandFromLeaderDuringJoin(buffer);
-    final DatabaseInternal database = server.getServer().getOrCreateDatabase(db);
-    installDatabase(buffer, db, dbStructure, database);
-  }
 
-  private void installDatabase(final Binary buffer, final String db, final DatabaseStructureResponse dbStructure,
-      final DatabaseInternal database) throws IOException {
+    // REQUEST A DELTA BACKUP FROM THE LAST LOG NUMBER
+    server.getReplicationLogFile().setLastMessageNumber(dbStructure.getCurrentLogNumber());
+
+    final DatabaseInternal database = server.getServer().getOrCreateDatabase(db);
 
     // WRITE THE SCHEMA
     try (final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + File.separator + EmbeddedSchema.SCHEMA_FILE_NAME,
@@ -462,6 +470,11 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         throw new ReplicationException("Error on installing database '" + db + "'", e);
       }
     }
+
+    // GET THE LATEST LOG NUMBER
+    sendCommandToLeader(buffer, new DatabaseStructureRequest(db), -1);
+    final DatabaseStructureResponse lastStructure = (DatabaseStructureResponse) receiveCommandFromLeaderDuringJoin(buffer);
+    this.installDatabaseLastLogNumber = lastStructure.getCurrentLogNumber();
 
     // RELOAD THE SCHEMA
     database.getSchema().getEmbedded().close();
