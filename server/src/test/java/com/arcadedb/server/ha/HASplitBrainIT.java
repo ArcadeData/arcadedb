@@ -58,6 +58,11 @@ public class HASplitBrainIT extends ReplicationServerIT {
   }
 
   @Override
+  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
+    return HAServer.SERVER_ROLE.ANY;
+  }
+
+  @Override
   protected void onBeforeStarting(final ArcadeDBServer server) {
     server.registerTestEventListener(new ReplicationCallback() {
       @Override
@@ -73,21 +78,25 @@ public class HASplitBrainIT extends ReplicationServerIT {
             if (port == 2424 || port == 2425 || port == 2426) {
               if (!rejoining) {
                 testLog("SIMULATING CONNECTION ERROR TO CONNECT TO THE LEADER FROM " + server);
-                throw new IOException("Simulating an IO Exception on reconnecting from server '" + server.getServerName() + "' to " + connectTo);
+                throw new IOException(
+                    "Simulating an IO Exception on reconnecting from server '" + server.getServerName() + "' to " + connectTo);
               } else
                 testLog("AFTER REJOINING -> ALLOWED CONNECTION TO THE ADDRESS " + connectTo + "  FROM " + server);
             } else
-              LogManager.instance().log(this, Level.FINE, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
+              LogManager.instance()
+                  .log(this, Level.FINE, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
           } else {
             // SERVERS 0-2
             if (port == 2427 || port == 2428) {
               if (!rejoining) {
                 testLog("SIMULATING CONNECTION ERROR TO SERVERS " + connectTo + " FROM " + server);
-                throw new IOException("Simulating an IO Exception on reconnecting from server '" + server.getServerName() + "' to " + connectTo);
+                throw new IOException(
+                    "Simulating an IO Exception on reconnecting from server '" + server.getServerName() + "' to " + connectTo);
               } else
                 testLog("AFTER REJOINING -> ALLOWED CONNECTION TO THE ADDRESS " + connectTo + "  FROM " + server);
             } else
-              LogManager.instance().log(this, Level.FINE, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
+              LogManager.instance()
+                  .log(this, Level.FINE, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
           }
         }
       }

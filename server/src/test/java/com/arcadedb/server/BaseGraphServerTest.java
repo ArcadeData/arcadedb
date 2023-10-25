@@ -166,6 +166,16 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     root = v1.getIdentity();
   }
 
+  protected void waitAllForReplication(final int serverNumber) {
+    while (getServer(serverNumber).getHA().getMessagesInQueue() > 0) {
+      try {
+        Thread.sleep(500);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+    }
+  }
+
   @AfterEach
   public void endTest() {
     boolean anyServerRestarted = false;

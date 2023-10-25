@@ -112,13 +112,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
-    while (getServer(0).getHA().getMessagesInQueue() > 0)
-      try {
-        Thread.sleep(200);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        break;
-      }
+    waitAllForReplication(0);
 
     Assertions.assertEquals(1 + (long) getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true),
         "Check for vertex count for server" + 0);
