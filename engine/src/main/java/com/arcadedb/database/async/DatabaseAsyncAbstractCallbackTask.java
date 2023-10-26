@@ -23,7 +23,7 @@ import java.util.concurrent.*;
 public abstract class DatabaseAsyncAbstractCallbackTask implements DatabaseAsyncTask {
   private final CountDownLatch semaphore = new CountDownLatch(1);
 
-  public boolean waitForCompetition(final long timeoutInMs) throws InterruptedException {
+  public boolean waitCompletion(final long timeoutInMs) throws InterruptedException {
     return semaphore.await(timeoutInMs, TimeUnit.MILLISECONDS);
   }
 

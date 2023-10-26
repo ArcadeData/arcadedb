@@ -21,9 +21,9 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -75,8 +75,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       if (builder.isUnique())
         throw new IllegalArgumentException("Full text index cannot be unique");
 
-      return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(), ComponentFile.MODE.READ_WRITE,
-          builder.getPageSize(), builder.getNullStrategy());
+      return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
+          ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy());
     }
   }
 
@@ -92,8 +92,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   /**
    * Creation time.
    */
-  public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode, final int pageSize,
-      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath,
+      final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     analyzer = new StandardAnalyzer();
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
   }
@@ -101,8 +101,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   /**
    * Loading time.
    */
-  public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final int fileId, final ComponentFile.MODE mode,
-      final int pageSize, final int version) {
+  public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final int fileId,
+      final ComponentFile.MODE mode, final int pageSize, final int version) {
     try {
       underlyingIndex = new LSMTreeIndex(database, name, false, filePath, fileId, mode, pageSize, version);
     } catch (final IOException e) {
@@ -215,6 +215,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
     underlyingIndex.setMetadata(name, propertyNames, associatedBucketId);
+  }
+
+  @Override
+  public boolean setStatus(final INDEX_STATUS[] expectedStatuses, final INDEX_STATUS newStatus) {
+    return underlyingIndex.setStatus(expectedStatuses, newStatus);
   }
 
   @Override

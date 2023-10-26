@@ -1043,6 +1043,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
+  public boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus) {
+    return false;
+  }
+
+  @Override
   public Component getComponent() {
     return this;
   }

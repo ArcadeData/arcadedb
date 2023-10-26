@@ -700,8 +700,8 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
                   if (threadInserted % 1000 == 0)
                     LogManager.instance()
-                        .log(this, Level.FINE, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(), Thread.currentThread().getId(), i,
-                            threadInserted, crossThreadsInserted.get());
+                        .log(this, Level.FINE, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(),
+                            Thread.currentThread().getId(), i, threadInserted, crossThreadsInserted.get());
 
                   keyPresent = true;
 
@@ -714,20 +714,23 @@ public class TypeLSMTreeIndexTest extends TestHelper {
                   keyPresent = true;
                   Assertions.assertFalse(database.isTransactionActive());
                 } catch (final Exception e) {
-                  LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().getId());
+                  LogManager.instance()
+                      .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().getId());
                   Assertions.assertFalse(database.isTransactionActive());
                   return;
                 }
               }
 
               if (!keyPresent)
-                LogManager.instance().log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
-                    Thread.currentThread().getId(), i, maxRetries, crossThreadsInserted.get());
+                LogManager.instance()
+                    .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
+                        Thread.currentThread().getId(), i, maxRetries, crossThreadsInserted.get());
 
             }
 
             LogManager.instance()
-                .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(), threadInserted);
+                .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(),
+                    threadInserted);
 
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().getId());
@@ -749,8 +752,8 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     }
 
     LogManager.instance()
-        .log(this, Level.FINE, "%s Completed (inserted=%d needRetryExceptions=%d duplicatedExceptions=%d)", null, getClass(), crossThreadsInserted.get(),
-            needRetryExceptions.get(), duplicatedExceptions.get());
+        .log(this, Level.FINE, "%s Completed (inserted=%d needRetryExceptions=%d duplicatedExceptions=%d)", null, getClass(),
+            crossThreadsInserted.get(), needRetryExceptions.get(), duplicatedExceptions.get());
 
     if (total != crossThreadsInserted.get()) {
       LogManager.instance().log(this, Level.FINE, "DUMP OF INSERTED RECORDS (ORDERED BY ID)");
@@ -860,7 +863,8 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
-      final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final Index typeIndex = database.getSchema()
+          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);

@@ -63,8 +63,6 @@ import java.util.logging.*;
  * LSM-Tree index implementation. It relies on a mutable index and its underlying immutable, compacted index.
  */
 public class LSMTreeIndex implements RangeIndex, IndexInternal {
-  public enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
-
   private static final IndexCursor                   EMPTY_CURSOR       = new EmptyIndexCursor();
   private final        String                        name;
   private final        RWLockContext                 lock               = new RWLockContext();
@@ -259,6 +257,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return valid;
   }
 
+  @Override
   public boolean setStatus(final INDEX_STATUS[] expectedStatuses, final INDEX_STATUS newStatus) {
     for (INDEX_STATUS expectedStatus : expectedStatuses)
       if (this.status.compareAndSet(expectedStatus, newStatus))

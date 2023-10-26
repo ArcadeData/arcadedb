@@ -35,9 +35,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.*;
 import java.util.*;
 
-import static com.arcadedb.index.lsm.LSMTreeIndex.INDEX_STATUS.AVAILABLE;
-import static com.arcadedb.index.lsm.LSMTreeIndex.INDEX_STATUS.UNAVAILABLE;
-
 /**
  * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
  * work concurrently and lock-free.
@@ -228,16 +225,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public void drop() {
     checkIsValid();
 
-    final DocumentType t = type.getSchema().getType(getTypeName());
-
-    final List<LSMTreeIndex> acquired = new ArrayList<>(indexesOnBuckets.size());
-    for (final Index index : new ArrayList<>(indexesOnBuckets))
-      if (((LSMTreeIndex) index).setStatus(new LSMTreeIndex.INDEX_STATUS[] { AVAILABLE, UNAVAILABLE }, UNAVAILABLE))
-        acquired.add((LSMTreeIndex) index);
+    final List<IndexInternal> acquired = new ArrayList<>(indexesOnBuckets.size());
+    for (final IndexInternal index : new ArrayList<>(indexesOnBuckets))
+      if (index.setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.UNAVAILABLE))
+        acquired.add(index);
       else {
         // NOT AVAILABLE, RESET ACQUIRED STATUSES
-        for (LSMTreeIndex i : acquired)
-          i.setStatus(new LSMTreeIndex.INDEX_STATUS[] { UNAVAILABLE }, AVAILABLE);
+        for (IndexInternal i : acquired)
+          i.setStatus(new INDEX_STATUS[] { INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.AVAILABLE);
         throw new NeedRetryException(
             "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
@@ -374,6 +369,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
     throw new UnsupportedOperationException("setMetadata");
+  }
+
+  @Override
+  public boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus) {
+    return false;
   }
 
   @Override

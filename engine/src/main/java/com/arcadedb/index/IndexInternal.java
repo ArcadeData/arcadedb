@@ -29,11 +29,15 @@ import java.util.*;
  * Internal Index interface.
  */
 public interface IndexInternal extends Index {
+  public enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
+
   long build(int buildIndexBatchSize, BuildIndexCallback callback);
 
   boolean compact() throws IOException, InterruptedException;
 
   void setMetadata(String name, String[] propertyNames, int associatedBucketId);
+
+  boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus);
 
   void close();
 
