@@ -75,9 +75,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public class AsyncThread extends Thread {
     public final    BlockingQueue<DatabaseAsyncTask> queue;
     public final    DatabaseInternal                 database;
-    public final    AtomicBoolean                    executingTask = new AtomicBoolean(false);
     public volatile boolean                          shutdown      = false;
     public volatile boolean                          forceShutdown = false;
+    public volatile boolean                          executingTask = false;
     public          long                             count         = 0;
 
     private AsyncThread(final DatabaseInternal database, final int id) {
@@ -125,7 +125,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             if (message == FORCE_EXIT) {
               break;
             } else {
-              executingTask.set(true);
+              executingTask = true;
               try {
 
                 if (message.requiresActiveTx() && !database.isTransactionActive())
@@ -148,7 +148,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                 try {
                   message.completed();
                 } finally {
-                  executingTask.set(false);
+                  executingTask = false;
                 }
               }
             }
@@ -183,7 +183,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
 
     public boolean isExecutingTask() {
-      return executingTask.get();
+      return executingTask;
     }
   }
 
