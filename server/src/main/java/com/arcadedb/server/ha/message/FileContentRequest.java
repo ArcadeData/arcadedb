@@ -30,6 +30,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
 import java.io.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class FileContentRequest extends HAAbstractCommand {
@@ -51,7 +52,7 @@ public class FileContentRequest extends HAAbstractCommand {
 
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    final DatabaseInternal db = (DatabaseInternal) server.getServer().getDatabase(databaseName);
+    final DatabaseInternal db = server.getServer().getDatabase(databaseName);
     final ComponentFile file = db.getFileManager().getFile(fileId);
 
     if (file instanceof PaginatedComponentFile) {
@@ -62,27 +63,33 @@ public class FileContentRequest extends HAAbstractCommand {
 
         final Binary pagesContent = new Binary();
 
-        int pages = 0;
+        final AtomicInteger pages = new AtomicInteger(0);
 
         if (toPageInclusive == -1)
           toPageInclusive = totalPages - 1;
 
-        for (int i = fromPageInclusive; i <= toPageInclusive && pages < CHUNK_MAX_PAGES; ++i) {
-          final PageId pageId = new PageId(fileId, i);
-          final ImmutablePage page = db.getPageManager().getImmutablePage(pageId, pageSize, false, false);
-          pagesContent.putByteArray(page.getContent().array(), pageSize);
+//        db.getPageManager().suspendFlushAndExecute(() -> {
+          for (int i = fromPageInclusive; i <= toPageInclusive && pages.get() < CHUNK_MAX_PAGES; ++i) {
+            final PageId pageId = new PageId(fileId, i);
+            final ImmutablePage page = db.getPageManager().getImmutablePage(pageId, pageSize, false, false);
+            pagesContent.putByteArray(page.getContent().array(), pageSize);
 
-          ++pages;
-        }
+            pages.incrementAndGet();
+          }
+//        });
 
-        final boolean last = pages > toPageInclusive;
+        final boolean last = pages.get() > toPageInclusive;
 
         pagesContent.flip();
 
-        return new FileContentResponse(databaseName, fileId, file.getFileName(), fromPageInclusive, pagesContent, pages, last);
+        return new FileContentResponse(databaseName, fileId, file.getFileName(), fromPageInclusive, pagesContent, pages.get(),
+            last);
 
       } catch (final IOException e) {
         throw new NetworkProtocolException("Cannot load pages", e);
+//      } catch (InterruptedException e) {
+//        Thread.currentThread().interrupt();
+//        throw new NetworkProtocolException("Cannot load pages", e);
       }
     }
     LogManager.instance().log(this, Level.SEVERE, "Cannot read not paginated file %s from the leader", file.getFileName());

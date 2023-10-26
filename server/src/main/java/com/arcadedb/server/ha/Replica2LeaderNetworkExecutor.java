@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryClient;
@@ -31,6 +32,7 @@ import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.server.ReplicationCallback;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.message.DatabaseStructureRequest;
 import com.arcadedb.server.ha.message.DatabaseStructureResponse;
@@ -417,18 +419,15 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         for (final String db : databases)
           requestInstallDatabase(buffer, db);
-
+//
 //        if (server.getReplicationLogFile().getLastMessageNumber() > -1) {
 //          // RECURSIVE CALL TO EXECUTE A DELTA SYNC FORM THE LATEST LOG NUMBER RECEIVED
 //          installDatabases();
 //          return;
 //        }
 
-        sendCommandToLeader(buffer, new ReplicaReadyRequest(), -1);
-
       } else {
         LogManager.instance().log(this, Level.INFO, "Receiving hot resync (from=%d)...", lastLogNumber);
-
         server.getServer().lifecycleEvent(ReplicationCallback.TYPE.REPLICA_HOT_RESYNC, null);
       }
 

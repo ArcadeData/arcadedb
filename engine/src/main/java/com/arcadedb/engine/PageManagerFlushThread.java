@@ -39,7 +39,8 @@ public class PageManagerFlushThread extends Thread {
   private volatile boolean                               running   = true;
   private final    AtomicBoolean                         suspended = new AtomicBoolean(false); // USED DURING BACKUP
 
-  public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration, final String databaseName) {
+  public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration,
+      final String databaseName) {
     super("ArcadeDB AsyncFlush " + databaseName);
     setDaemon(false);
     this.pageManager = pageManager;
@@ -74,7 +75,7 @@ public class PageManagerFlushThread extends Thread {
           continue;
         }
 
-        flushPagesFromQueueToDisk();
+        flushPagesFromQueueToDisk(1_000);
 
       } catch (final InterruptedException e) {
         running = false;
@@ -84,8 +85,8 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
-  protected void flushPagesFromQueueToDisk() throws InterruptedException, IOException {
-    final List<MutablePage> pages = queue.poll(1000L, TimeUnit.MILLISECONDS);
+  protected void flushPagesFromQueueToDisk(final long timeout) throws InterruptedException, IOException {
+    final List<MutablePage> pages = queue.poll(timeout, TimeUnit.MILLISECONDS);
 
     if (pages != null) {
       if (pages.isEmpty())

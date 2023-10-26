@@ -108,14 +108,23 @@ public class HASplitBrainIT extends ReplicationServerIT {
           if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
             messages.incrementAndGet();
             if (messages.get() > 10) {
+
+              final Leader2ReplicaNetworkExecutor replica3 = getServer(0).getHA().getReplica("ArcadeDB_3");
+              final Leader2ReplicaNetworkExecutor replica4 = getServer(0).getHA().getReplica("ArcadeDB_4");
+
+              if (replica3 == null || replica4 == null) {
+                testLog("REPLICA 4 and 5 NOT STARTED YET");
+                return;
+              }
+
               split = true;
 
               testLog("SHUTTING DOWN NETWORK CONNECTION BETWEEN SERVER 0 (THE LEADER) and SERVER 4TH and 5TH...");
               getServer(3).getHA().getLeader().closeChannel();
-              getServer(0).getHA().getReplica("ArcadeDB_3").closeChannel();
+              replica3.closeChannel();
 
               getServer(4).getHA().getLeader().closeChannel();
-              getServer(0).getHA().getReplica("ArcadeDB_4").closeChannel();
+              replica4.closeChannel();
               testLog("SHUTTING DOWN NETWORK CONNECTION COMPLETED");
 
               timer.schedule(new TimerTask() {

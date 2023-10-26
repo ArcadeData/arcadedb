@@ -19,6 +19,8 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
@@ -96,16 +98,21 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
             executeAsynchronously(() -> {
               getServer(2).stop();
               GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.reset();
-              try {
-                Thread.sleep(1000);
-              } catch (final InterruptedException e) {
-                LogManager.instance().log(this, Level.SEVERE, "TEST: ArcadeDB_0 HA event listener thread interrupted");
-                Thread.currentThread().interrupt();
-              }
+
               Assertions.assertTrue(new File("./target/replication/replication_ArcadeDB_2.rlog.0").exists());
               new File("./target/replication/replication_ArcadeDB_2.rlog.0").delete();
 
               LogManager.instance().log(this, Level.SEVERE, "TEST: Restarting Replica 2...");
+
+              final Database db = getServerDatabase(0, getDatabaseName());
+              db.transaction(() -> {
+                LogManager.instance().log(this, Level.SEVERE, "TEST: Found %d records in V1 before starting the Replica 2",
+                    db.countType("V1", true));
+                for (Bucket b : db.getSchema().getType("V1").getBuckets(true))
+                  LogManager.instance().log(this, Level.SEVERE, "TEST: - %d records in bucket %d (%s) totalPages=%d",//
+                      b.count(), b.getFileId(), b.getName(), b.getTotalPages());
+
+              });
 
               getServer(2).start();
               return null;

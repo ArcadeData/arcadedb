@@ -106,9 +106,6 @@ public class ComponentFile {
     Files.delete(Paths.get(getFilePath()));
   }
 
-  public void flush() throws IOException {
-  }
-
   public String getFileName() {
     return fileName;
   }

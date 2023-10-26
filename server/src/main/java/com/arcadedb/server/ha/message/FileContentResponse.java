@@ -20,10 +20,12 @@ package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
@@ -32,6 +34,7 @@ import com.arcadedb.server.ha.ReplicationException;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
+import java.util.*;
 import java.util.logging.*;
 
 public class FileContentResponse extends HAAbstractCommand {
@@ -73,7 +76,7 @@ public class FileContentResponse extends HAAbstractCommand {
 
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    final DatabaseInternal database = (DatabaseInternal) server.getServer().getDatabase(databaseName);
+    final DatabaseInternal database = server.getServer().getDatabase(databaseName);
     final PageManager pageManager = database.getPageManager();
 
     try {
@@ -106,6 +109,21 @@ public class FileContentResponse extends HAAbstractCommand {
           LogManager.instance().log(this, Level.FINE, "Overwritten page %s v%d from the leader", null,//
               pageId, page.getVersion());
         }
+
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(file.getFileId());
+//
+//        final int lastPageNumber = pageFromInclusive + totalPages;
+//        if (lastPageNumber > component.getTotalPages()) {
+//          component.setPageCount(lastPageNumber);
+//          database.getFileManager().setVirtualFileSize(file.getFileId(),
+//              (long) component.getTotalPages() * ((PaginatedComponentFile) database.getFileManager()
+//                  .getFile(file.getFileId())).getPageSize());
+//        }
+
+        if (component instanceof Bucket)
+          // RESET CACHED RECORD COUNT
+          ((Bucket) component).setCachedRecordCount(-1);
+
       } else
         LogManager.instance().log(this, Level.SEVERE, "Cannot write not paginated file %s from the leader", fileName);
 

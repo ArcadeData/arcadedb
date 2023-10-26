@@ -129,11 +129,8 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
     LogManager.instance().log(this, Level.SEVERE, "Done");
 
-    try {
-      Thread.sleep(1000);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck()) {

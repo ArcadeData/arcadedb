@@ -65,11 +65,6 @@ public class PaginatedComponentFile extends ComponentFile {
     return channel.size();
   }
 
-  @Override
-  public void flush() throws IOException {
-    channel.force(true);
-  }
-
   public long getTotalPages() throws IOException {
     return channel.size() / pageSize;
   }

@@ -604,9 +604,8 @@ public class EmbeddedSchema implements Schema {
 
       for (Map.Entry<String, Object> entry : json.toMap().entrySet()) {
         final Bucket bucket = bucketMap.get(entry.getKey());
-        if (bucket != null) {
+        if (bucket != null)
           bucket.setCachedRecordCount(((Number) entry.getValue()).longValue());
-        }
       }
 
     } catch (Throwable e) {

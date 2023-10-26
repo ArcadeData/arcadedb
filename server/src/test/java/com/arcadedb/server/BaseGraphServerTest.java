@@ -43,7 +43,6 @@ import java.net.*;
 import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 /**
@@ -166,7 +165,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     root = v1.getIdentity();
   }
 
-  protected void waitAllForReplication(final int serverNumber) {
+  protected void waitForReplicationIsCompleted(final int serverNumber) {
     while (getServer(serverNumber).getHA().getMessagesInQueue() > 0) {
       try {
         Thread.sleep(500);

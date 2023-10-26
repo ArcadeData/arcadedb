@@ -112,15 +112,15 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
-    waitAllForReplication(0);
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
     Assertions.assertEquals(1 + (long) getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true),
         "Check for vertex count for server" + 0);
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (final int s : getServerToCheck()) {
+    for (final int s : getServerToCheck())
       checkEntriesOnServer(s);
-    }
 
     onAfterTest();
   }
