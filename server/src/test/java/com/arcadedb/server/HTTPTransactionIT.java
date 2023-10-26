@@ -36,7 +36,8 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   public void simpleTx() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
-      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -56,24 +57,17 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
         connection.disconnect();
       }
 
+      final JSONObject payload = new JSONObject("{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
+
       // CREATE DOCUMENT
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-
-      final JSONObject payload = new JSONObject("{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
-
-      connection.setRequestMethod("POST");
-      connection.setDoOutput(true);
-
+      formatPayload(connection, "sql", "insert into Person content " + payload, null, new HashMap<>());
       connection.connect();
-
-      final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
-      pw.write(payload.toString());
-      pw.close();
 
       final String rid;
       try {
@@ -84,7 +78,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         final JSONObject responseAsJson = new JSONObject(response);
         Assertions.assertTrue(responseAsJson.has("result"));
-        rid = responseAsJson.getString("result");
+        rid = responseAsJson.getJSONArray("result").getJSONObject(0).getString("@rid");
         Assertions.assertTrue(rid.contains("#"));
       } finally {
         connection.disconnect();
@@ -170,7 +164,8 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   public void checkUnique() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
-      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -228,13 +223,15 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     });
   }
 
-  private void checkDocumentWasCreated(final int serverIndex, final JSONObject payload, final String rid, final String sessionId) throws IOException {
+  private void checkDocumentWasCreated(final int serverIndex, final JSONObject payload, final String rid, final String sessionId)
+      throws IOException {
+
+    // QUERY IN GET
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + rid.substring(1)).openConnection();
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20%23" + rid.substring(1)).openConnection();
 
     connection.setRequestMethod("GET");
-    if (sessionId != null)
-      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+    connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     connection.connect();
@@ -244,7 +241,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
       final JSONObject responseAsJson = new JSONObject(response);
       Assertions.assertTrue(responseAsJson.has("result"));
-      final JSONObject object = responseAsJson.getJSONObject("result");
+      final JSONObject object = responseAsJson.getJSONArray("result").getJSONObject(0);
       Assertions.assertEquals(200, connection.getResponseCode());
       Assertions.assertEquals("OK", connection.getResponseMessage());
       Assertions.assertEquals(rid, object.remove("@rid").toString());
