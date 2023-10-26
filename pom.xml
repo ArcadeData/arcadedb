@@ -183,8 +183,8 @@
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                     </systemPropertyVariables>
                     <argLine>
-                        --add-exports=java.management/sun.management=ALL-UNNAMED
-                        --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+                        --add-exports java.management/sun.management=ALL-UNNAMED
+                        --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
                     </argLine>
                 </configuration>
             </plugin>
@@ -218,6 +218,10 @@
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                     </systemPropertyVariables>
+                    <argLine>
+                        --add-exports java.management/sun.management=ALL-UNNAMED
+                        --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
+                    </argLine>
                 </configuration>
             </plugin>
             <plugin>
