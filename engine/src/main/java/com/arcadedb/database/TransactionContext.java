@@ -647,7 +647,9 @@ public class TransactionContext implements Transaction {
       // UPDATE RECORD COUNT
       for (Map.Entry<Integer, AtomicInteger> entry : bucketRecordDelta.entrySet()) {
         final Bucket bucket = database.getSchema().getBucketById(entry.getKey());
-        bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue().get());
+        if (bucket.getCachedRecordCount() > -1)
+          // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
+          bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue().get());
       }
 
       for (final Record r : modifiedRecordsCache.values())

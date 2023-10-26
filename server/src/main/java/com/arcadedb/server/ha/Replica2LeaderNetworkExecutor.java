@@ -419,12 +419,6 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         for (final String db : databases)
           requestInstallDatabase(buffer, db);
-//
-//        if (server.getReplicationLogFile().getLastMessageNumber() > -1) {
-//          // RECURSIVE CALL TO EXECUTE A DELTA SYNC FORM THE LATEST LOG NUMBER RECEIVED
-//          installDatabases();
-//          return;
-//        }
 
       } else {
         LogManager.instance().log(this, Level.INFO, "Receiving hot resync (from=%d)...", lastLogNumber);

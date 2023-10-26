@@ -373,7 +373,9 @@ public class TransactionManager {
 
     for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
       final Bucket bucket = database.getSchema().getBucketById(entry.getKey());
-      bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
+      if (bucket.getCachedRecordCount() > -1)
+        // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
+        bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
     }
 
     if (involveDictionary) {

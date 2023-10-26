@@ -70,6 +70,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
               }
             }
           } else {
+
             if (type == TYPE.REPLICA_HOT_RESYNC) {
               LogManager.instance().log(this, getErrorLevel(), "TEST: Received hot resync request");
               hotResync = true;
@@ -103,16 +104,6 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
               new File("./target/replication/replication_ArcadeDB_2.rlog.0").delete();
 
               LogManager.instance().log(this, Level.SEVERE, "TEST: Restarting Replica 2...");
-
-              final Database db = getServerDatabase(0, getDatabaseName());
-              db.transaction(() -> {
-                LogManager.instance().log(this, Level.SEVERE, "TEST: Found %d records in V1 before starting the Replica 2",
-                    db.countType("V1", true));
-                for (Bucket b : db.getSchema().getType("V1").getBuckets(true))
-                  LogManager.instance().log(this, Level.SEVERE, "TEST: - %d records in bucket %d (%s) totalPages=%d",//
-                      b.count(), b.getFileId(), b.getName(), b.getTotalPages());
-
-              });
 
               getServer(2).start();
               return null;

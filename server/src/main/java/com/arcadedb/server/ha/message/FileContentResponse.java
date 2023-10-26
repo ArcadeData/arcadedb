@@ -111,14 +111,14 @@ public class FileContentResponse extends HAAbstractCommand {
         }
 
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(file.getFileId());
-//
-//        final int lastPageNumber = pageFromInclusive + totalPages;
-//        if (lastPageNumber > component.getTotalPages()) {
-//          component.setPageCount(lastPageNumber);
-//          database.getFileManager().setVirtualFileSize(file.getFileId(),
-//              (long) component.getTotalPages() * ((PaginatedComponentFile) database.getFileManager()
-//                  .getFile(file.getFileId())).getPageSize());
-//        }
+
+        final int lastPageNumber = pageFromInclusive + totalPages;
+        if (lastPageNumber > component.getTotalPages()) {
+          component.setPageCount(lastPageNumber);
+          database.getFileManager().setVirtualFileSize(file.getFileId(),
+              (long) component.getTotalPages() * ((PaginatedComponentFile) database.getFileManager()
+                  .getFile(file.getFileId())).getPageSize());
+        }
 
         if (component instanceof Bucket)
           // RESET CACHED RECORD COUNT
