@@ -31,6 +31,15 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DocumentValidator {
+
+  // TODO move ACCM validation here?
+
+  public static void validateSpecificProperties(final MutableDocument document, final List<Property> properties) throws ValidationException {
+    document.checkForLazyLoadingProperties();
+    for (Property entry : properties)
+      validateField(document, entry);
+  }
+
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
     for (Property entry : document.getType().getProperties())

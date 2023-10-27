@@ -24,7 +24,8 @@ package com.arcadedb.exception;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ValidationException extends ArcadeDBException {
-  public ValidationException(final String message) {
+
+public ValidationException(final String message) {
     super(message);
   }
 

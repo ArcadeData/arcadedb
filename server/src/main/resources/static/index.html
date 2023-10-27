@@ -271,18 +271,12 @@
           $("#inputUserName").delay(1000).focus().select();
         });
 
-        console.log("aaa doc localstorage", localStorage.getItem(REFRESH_TOKEN), localStorage.getItem(ACCESS_TOKEN_EXPIRES));
-
         if (
           globalCredentials == null &&
           (localStorage.getItem(REFRESH_TOKEN) == null ||
             (localStorage.getItem(ACCESS_TOKEN_EXPIRES) &&
               localStorage.getItem(ACCESS_TOKEN_EXPIRES) < Date.now()))
         ) {
-          console.log("aa test", globalCredentials == null,
-            localStorage.getItem(REFRESH_TOKEN) == null,
-            localStorage.getItem(ACCESS_TOKEN_EXPIRES),
-            localStorage.getItem(ACCESS_TOKEN_EXPIRES) < Date.now());
           showLoginPopup();
         } else {
           console.log("index gc", globalCredentials);

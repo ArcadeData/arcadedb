@@ -65,6 +65,7 @@ public class ArcadeRole {
 
     /**
      * Create new user type arcade role for data access enforcement
+     * 
      * @param roleType
      * @param database
      * @param tableRegex
@@ -79,10 +80,11 @@ public class ArcadeRole {
 
     /**
      * Create new database admin type arcade role for data access enforcement
+     * 
      * @param roleType
      * @param database
      * @param databaseAdminRole
-     */ 
+     */
     public ArcadeRole(RoleType roleType, String database, DatabaseAdminRole databaseAdminRole) {
         this.roleType = roleType;
         this.database = database;
@@ -97,6 +99,14 @@ public class ArcadeRole {
         return Arrays.stream(keycloakRole.split(PERMISSION_DELIMITER))
                 .filter(part -> part.startsWith(marker) && part.length() > marker.length())
                 .count() == 1;
+    }
+
+    private static boolean isValidDataStewardRole(String keycloakRole) {
+        boolean containsDatabaseMarker = validateRolePart(keycloakRole, DATABASE_MARKER);
+        boolean containsTableMarker = validateRolePart(keycloakRole, TABLE_MARKER);
+        boolean containsRightNumberOfParts = keycloakRole.split(PERMISSION_DELIMITER).length == 4;
+        return isArcadeRole(keycloakRole) && containsDatabaseMarker && containsTableMarker
+                && containsRightNumberOfParts;
     }
 
     /**
@@ -142,7 +152,6 @@ public class ArcadeRole {
             ArcadeRole arcadeRole = new ArcadeRole();
             arcadeRole.name = role;
             arcadeRole.roleType = arcadeRole.getRoleTypeFromString(role);
-            //log.info("role type: {}", arcadeRole.roleType);
 
             if (arcadeRole.roleType == null) {
                 return null;
@@ -195,6 +204,21 @@ public class ArcadeRole {
                         return null;
                     }
                     break;
+                case DATA_STEWARD:
+                    if (isValidDataStewardRole(role)) {
+                        String[] parts = role.split(PERMISSION_DELIMITER);
+                        for (String part : parts) {
+                            if (part.startsWith(DATABASE_MARKER)) {
+                                arcadeRole.database = part.substring(2);
+                            } else if (part.startsWith(TABLE_MARKER)) {
+                                arcadeRole.tableRegex = part.substring(2);
+                            }
+                        }
+                    } else {
+                        log.warn("invalid arcade role assigned to user: {}", role);
+                        return null;
+                    }
+                    break;
                 default:
                     log.warn("invalid arcade role assigned to user: {}", role);
                     return null;
@@ -218,7 +242,7 @@ public class ArcadeRole {
         return s != null && !s.isEmpty();
     }
 
-    /** 
+    /**
      * Converts the ArcadeRole to a corresponding Keycloak role name.
      */
     public String getKeycloakRoleName() {
@@ -260,6 +284,16 @@ public class ArcadeRole {
                     result = sb.toString();
                 }
                 break;
+            case DATA_STEWARD:
+                if (notNullOrEmpty(database) && notNullOrEmpty(tableRegex)) {
+                    sb.append(DATABASE_MARKER);
+                    sb.append(database);
+                    sb.append(PERMISSION_DELIMITER);
+                    sb.append(TABLE_MARKER);
+                    sb.append(tableRegex);
+                    result = sb.toString();
+                }
+                break;
             default:
                 break;
         }
@@ -269,5 +303,31 @@ public class ArcadeRole {
 
     public List<String> getCrudPermissionsAsArcadeNames() {
         return this.crudPermissions.stream().map(p -> p.getArcadeName()).collect(Collectors.toList());
+    }
+
+    /**
+     * Checks if the provided table/type in the role matches the table/type of interest.
+     * TODO implement regex support. Only wildcards are supported now.
+     * @param type
+     * @return
+     */
+    public boolean isTypeMatch(String type) {
+        if (this.tableRegex == null) {
+            return true;
+        }
+        return this.tableRegex.equals(type) || this.tableRegex.equals(ALL_WILDCARD);
+    }
+
+    /**
+     * Chekcs if the granted database(s) in the role matches the database of interest.
+     * TODO implement regex support. Only wildcards are supported now.
+     * @param database
+     * @return
+     */
+    public boolean isDatabaseMatch(String database) {
+        if (this.database == null || database == null) {
+            return false;
+        }
+        return this.database.equalsIgnoreCase(database) || this.database.equals(ALL_WILDCARD);
     }
 }

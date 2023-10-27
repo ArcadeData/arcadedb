@@ -76,7 +76,7 @@ async function logout() {
   localStorage.removeItem(REFRESH_TOKEN);
   localStorage.removeItem(ACCESS_TOKEN_EXPIRES);
   // redirect to login page
-  window.location.href = `${basePath}`;
+  window.location.href = "/";
 }
 
 function createInactivityTimer() {

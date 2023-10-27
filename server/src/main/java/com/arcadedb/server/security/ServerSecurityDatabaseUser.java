@@ -25,6 +25,8 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.security.oidc.ArcadeRole;
+import com.arcadedb.server.security.oidc.role.RoleType;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -41,11 +43,13 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private long resultSetLimit = -1;
   private long readTimeout = -1;
   private final boolean[] databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+  private List<ArcadeRole> arcadeRoles = new ArrayList<>();
 
-  public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
+  public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups, final List<ArcadeRole> arcadeRoles) {
     this.databaseName = databaseName;
     this.userName = userName;
     this.groups = groups;
+    this.arcadeRoles = arcadeRoles;
   }
 
   public String[] getGroups() {
@@ -298,5 +302,25 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     }
   //  log.debug("updateAccessArray: accessObj: {}; array: {}", access, array);
     return array;
+  }
+
+  /**
+   * Checks if the user is a data steward role type for type of object requested.
+   */
+  @Override
+  public boolean isDataSteward(String type) {
+    for (ArcadeRole role : arcadeRoles) {
+      if (role.getRoleType().equals(RoleType.DATA_STEWARD) && role.isTypeMatch(type)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  @Override
+  public boolean isServiceAccount() {
+    // Keycloak client service account naming convention follows this. Update as needed.
+    return this.userName.startsWith("service-account-");
   }
 }
