@@ -828,13 +828,17 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testIndexNameSpecialCharactersUsingSQL() {
+  public void testIndexNameSpecialCharactersUsingSQL() throws InterruptedException {
     database.command("sql", "create vertex type `This.is:special`");
     database.command("sql", "create property `This.is:special`.`other.special:property` string");
     database.transaction(() -> {
       database.newVertex("This.is:special").set("other.special:property", "testEncoding").save();
     });
 
+    database.async().waitCompletion();
+
+    // THIS IS NECESSARY TO THE CI TO COMPLETE THE TEST
+    Thread.sleep(1000);
     database.async().waitCompletion();
 
     database.command("sql", "create index on `This.is:special`(`other.special:property`) unique");
