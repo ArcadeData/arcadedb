@@ -32,12 +32,14 @@ import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
 
 public class HTTPTransactionIT extends BaseGraphServerTest {
 
+  private static final String DATABASE_NAME = "graph";
+
   @Test
   public void simpleTx() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -86,14 +88,14 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
       // CANNOT RETRIEVE DOCUMENT OUTSIDE A TX
       try {
-        checkDocumentWasCreated(serverIndex, payload, rid, null);
+        checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, null);
         Assertions.fail();
       } catch (final Exception e) {
         // EXPECTED
       }
 
       // RETRIEVE DOCUMENT
-      checkDocumentWasCreated(serverIndex, payload, rid, sessionId);
+      checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, sessionId);
 
       // QUERY IN GET
       connection = (HttpURLConnection) new URL(
@@ -156,7 +158,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // RETRIEVE DOCUMENT
-      checkDocumentWasCreated(serverIndex, payload, rid, sessionId);
+      checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, sessionId);
     });
   }
 
@@ -223,22 +225,23 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     });
   }
 
-  private void checkDocumentWasCreated(final int serverIndex, final JSONObject payload, final String rid, final String sessionId)
-      throws IOException {
+  public static void checkDocumentWasCreated(final String databaseName, final int serverIndex, final JSONObject payload,
+      final String rid, final String sessionId) throws IOException {
 
     // QUERY IN GET
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20%23" + rid.substring(1)).openConnection();
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + databaseName + "/sql/select%20from%20%23" + rid.substring(
+            1)).openConnection();
 
     connection.setRequestMethod("GET");
-    connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+    if (sessionId != null)
+      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     connection.connect();
 
     try {
       final String response = readResponse(connection);
-      LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
       final JSONObject responseAsJson = new JSONObject(response);
       Assertions.assertTrue(responseAsJson.has("result"));
       final JSONObject object = responseAsJson.getJSONArray("result").getJSONObject(0);

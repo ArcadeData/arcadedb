@@ -314,9 +314,13 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
           } catch (InterruptedException e) {
             break;
           }
+        } else {
+          serversSynchronized = true;
+          return;
         }
       }
     }
+
     LogManager.instance()
         .log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica,
             serverCount);
@@ -410,7 +414,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     return GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + serverId + File.separator + getDatabaseName();
   }
 
-  protected String readResponse(final HttpURLConnection connection) throws IOException {
+  protected static String readResponse(final HttpURLConnection connection) throws IOException {
     final InputStream in = connection.getInputStream();
     final String buffer = FileUtils.readStreamAsString(in, "utf8");
     return buffer.replace('\n', ' ');

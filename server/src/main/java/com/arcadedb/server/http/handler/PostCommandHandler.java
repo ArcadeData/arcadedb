@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.CodeUtils;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
@@ -40,7 +41,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database)
+      throws IOException {
     final String payload = parseRequestPayload(exchange);
     if (payload == null || payload.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
@@ -48,6 +50,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final JSONObject json = new JSONObject(payload);
 
     final Map<String, Object> requestMap = json.toMap();
+
+    if (requestMap.get("command") == null)
+      throw new IllegalArgumentException("command missing");
 
     final String language = (String) requestMap.get("language");
     String command = decode((String) requestMap.get("command"));
@@ -114,7 +119,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }
 
-  protected ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
+  protected ResultSet executeCommand(final Database database, final String language, final String command,
+      final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
     if (params instanceof Object[])
