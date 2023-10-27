@@ -371,23 +371,11 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
-    try {
-      final HttpURLConnection connection = createConnection("GET",
-          getUrl("document", databaseName + "/" + rid.getBucketId() + ":" + rid.getPosition()));
-      connection.connect();
-      if (connection.getResponseCode() == 404)
-        throw new RecordNotFoundException("Record " + rid + " not found", rid);
+    final ResultSet result = query("sql", "select from " + rid);
+    if (!result.hasNext())
+      throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-      final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
-      if (response.has("result"))
-        return json2Record(response.getJSONObject("result"));
-      return null;
-
-    } catch (final RecordNotFoundException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on loading record " + rid, e);
-    }
+    return result.next().getRecord().get();
   }
 
   @Override

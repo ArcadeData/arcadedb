@@ -79,7 +79,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
           // EXPECTED
         }
 
-        // CREATE DOCUMENT VIA SQP
+        // CREATE DOCUMENT VIA SQL
         ResultSet result = database.command("SQL", "insert into Person set name = 'Elon'");
         Assertions.assertNotNull(result);
         Assertions.assertTrue(result.hasNext());
