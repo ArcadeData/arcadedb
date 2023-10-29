@@ -623,9 +623,8 @@ public class DocumentType {
 
     final List<TypeIndex> list = new ArrayList<>(indexesByProperties.values());
 
-    if (polymorphic)
-      for (final DocumentType t : superTypes)
-        list.addAll(t.getAllIndexes(true));
+    for (final DocumentType t : superTypes)
+      list.addAll(t.getAllIndexes(true));
 
     return Collections.unmodifiableCollection(list);
   }
