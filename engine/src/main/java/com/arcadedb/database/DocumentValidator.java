@@ -102,7 +102,7 @@ public class DocumentValidator {
               } else if (item instanceof EmbeddedDocument) {
                 if (!((EmbeddedDocument) item).getType().instanceOf(ofType))
                   throwValidationException(p,
-                      "has been declared as LIST of '" + ofType + "' but an embedded document of type '" + embType + "' is used. Value: " + fieldValue);
+                      "has been declared as LIST of '" + ofType + "' but an embedded document of type '" + embType + "' is used. Value: " + fieldValue); // TODO: potential null pointer dereference
               } else if (item instanceof Identifiable) {
                 final RID rid = ((Identifiable) item).getIdentity();
                 final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
