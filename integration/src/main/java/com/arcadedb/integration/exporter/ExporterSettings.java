@@ -60,7 +60,7 @@ public class ExporterSettings {
 
     if (file == null) {
       final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-      file = String.format(file, dateFormat.format(System.currentTimeMillis()));
+      file = String.format(file, dateFormat.format(System.currentTimeMillis())); // TODO: null parameter not allowed?
     }
   }
 
