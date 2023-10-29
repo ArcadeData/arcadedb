@@ -155,7 +155,7 @@ public class SQLFunctionSquareRootTest {
     public void testNegativeBigInteger() {
         function.execute(null, null, null, new Object[]{new BigInteger("-4")}, null);
         final Object result = function.getResult();
-        assertNull(results);
+        assertNull(result);
     }
 
     @Test
