@@ -65,7 +65,7 @@ public class SQLFunctionSquareRootTest {
     public void testNegativeInteger() {
         function.execute(null, null, null, new Object[]{-4}, null);
         final Object result = function.getResult();
-        assertEquals(result, null);
+        assertNull(result);
     }
 
     @Test
@@ -80,7 +80,7 @@ public class SQLFunctionSquareRootTest {
     public void testNegativeLong() {
         function.execute(null, null, null, new Object[]{-4L}, null);
         final Object result = function.getResult();
-        assertEquals(result, null);
+        assertNull(result);
     }
 
     @Test
@@ -95,7 +95,7 @@ public class SQLFunctionSquareRootTest {
     public void testNegativeShort() {
         function.execute(null, null, null, new Object[]{(short) -4}, null);
         final Object result = function.getResult();
-        assertEquals(result, null);
+        assertNull(result);
     }
 
     @Test
@@ -110,7 +110,7 @@ public class SQLFunctionSquareRootTest {
     public void testNegativeDouble() {
         function.execute(null, null, null, new Object[]{-4.0D}, null);
         final Object result = function.getResult();
-        assertEquals(result, null);
+        assertNull(result);
     }
 
     @Test
@@ -125,7 +125,7 @@ public class SQLFunctionSquareRootTest {
     public void testNegativeFloat() {
         function.execute(null, null, null, new Object[]{-4.0F}, null);
         final Object result = function.getResult();
-        assertEquals(result, null);
+        assertNull(result);
     }
 
     @Test
@@ -140,7 +140,7 @@ public class SQLFunctionSquareRootTest {
     public void testNegativeBigDecimal() {
         function.execute(null, null, null, new Object[]{BigDecimal.valueOf(-4.0D)}, null);
         final Object result = function.getResult();
-        assertEquals(result, null);
+        assertNull(result);
     }
 
     @Test
@@ -155,7 +155,7 @@ public class SQLFunctionSquareRootTest {
     public void testNegativeBigInteger() {
         function.execute(null, null, null, new Object[]{new BigInteger("-4")}, null);
         final Object result = function.getResult();
-        assertEquals(result, null);
+        assertNull(results);
     }
 
     @Test
