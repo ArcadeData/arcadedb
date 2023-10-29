@@ -57,7 +57,7 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
 
       if (bucketName != null)
         bucketObj = db.getSchema().getBucketByName(bucketName);
-      else if (bucket.getBucketName() != null)
+      else if (bucket.getBucketName() != null) // TODO: potential null pointer dereference?
         bucketObj = db.getSchema().getBucketByName(bucket.getBucketName());
       else
         bucketObj = db.getSchema().getBucketById(bucket.getBucketNumber());
