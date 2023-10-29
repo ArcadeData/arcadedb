@@ -248,7 +248,7 @@ public class TraverseExecutionPlanner {
       }
 
       final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context, profilingEnabled);
-      // TODO: THIS SEEMS A BUG
+      // TODO: THIS SEEMS A BUG (maybe because if null is passed equals always returns false?)
       if (Boolean.TRUE.equals(orderByRidAsc)) {
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
       } else if (Boolean.FALSE.equals(orderByRidAsc)) {
