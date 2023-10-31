@@ -50,18 +50,16 @@ public class ExporterSettings {
     if (file == null)
       // ASSIGN DEFAULT FILENAME
       switch (format) {
-      case "jsonl":
-        file = "arcadedb-export-%s.jsonl.tgz";
-        break;
       case "backup":
         file = "arcadedb-backup-%s.zip";
         break;
+      default:
+        file = "arcadedb-backup-%s." + format + ".tgz";
+        break;
       }
 
-    if (file == null) {
-      final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-      file = String.format(file, dateFormat.format(System.currentTimeMillis())); // TODO: null parameter not allowed?
-    }
+    final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
+    file = String.format(file, dateFormat.format(System.currentTimeMillis()));
   }
 
   public int parseParameter(String name, final String value) {

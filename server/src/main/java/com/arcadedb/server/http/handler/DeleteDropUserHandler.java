@@ -42,7 +42,7 @@ public class DeleteDropUserHandler extends AbstractServerHttpHandler {
 
     final Deque<String> userNamePar = exchange.getQueryParameters().get("userName");
     String userName = userNamePar.isEmpty() ? null : userNamePar.getFirst().trim();
-    if (userName.isEmpty()) // TODO: Null pointer dereference?
+    if (userName != null && userName.isEmpty())
       userName = null;
 
     if (userName == null)

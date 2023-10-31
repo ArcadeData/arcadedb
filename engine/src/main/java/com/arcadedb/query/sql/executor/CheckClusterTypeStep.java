@@ -37,7 +37,8 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
   final String targetType;
   boolean found = false;
 
-  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext context, final boolean profilingEnabled) {
+  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext context,
+      final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.bucketName = targetBucketName;
     this.bucket = null;
@@ -57,10 +58,13 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
 
       if (bucketName != null)
         bucketObj = db.getSchema().getBucketByName(bucketName);
-      else if (bucket.getBucketName() != null) // TODO: potential null pointer dereference?
-        bucketObj = db.getSchema().getBucketByName(bucket.getBucketName());
-      else
-        bucketObj = db.getSchema().getBucketById(bucket.getBucketNumber());
+      else if (bucket != null) {
+        if (bucket.getBucketName() != null)
+          bucketObj = db.getSchema().getBucketByName(bucket.getBucketName());
+        else
+          bucketObj = db.getSchema().getBucketById(bucket.getBucketNumber());
+      } else
+        bucketObj = null;
 
       if (bucketObj == null)
         throw new CommandExecutionException("Bucket not found: " + bucketName);

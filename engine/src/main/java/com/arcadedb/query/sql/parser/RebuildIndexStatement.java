@@ -120,7 +120,7 @@ public class RebuildIndexStatement extends DDLStatement {
   private static void buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx,
       final int batchSize) {
     if (idx == null)
-      throw new CommandExecutionException("Index '" + idx.getName() + "' not found"); // TODO: Null pointer derefence?
+      throw new CommandExecutionException("Index name is null");
 
     if (!idx.isAutomatic())
       throw new CommandExecutionException(

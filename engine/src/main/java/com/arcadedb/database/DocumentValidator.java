@@ -50,7 +50,9 @@ public class DocumentValidator {
       if (p.getRegexp() != null)
         // REGEXP
         if (!(fieldValue.toString()).matches(p.getRegexp()))
-          throwValidationException(p, "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: " + document);
+          throwValidationException(p,
+              "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: "
+                  + document);
 
       final Type propertyType = p.getType();
 
@@ -67,7 +69,9 @@ public class DocumentValidator {
             final RID rid = ((Identifiable) fieldValue).getIdentity();
             final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
             if (!embSchemaType.instanceOf(ofType))
-              throwValidationException(p, "has been declared as LINK of '" + ofType + "' but a link to type '" + embSchemaType + "' is used. Value: " + fieldValue);
+              throwValidationException(p,
+                  "has been declared as LINK of '" + ofType + "' but a link to type '" + embSchemaType + "' is used. Value: "
+                      + fieldValue);
           }
         }
         break;
@@ -80,7 +84,8 @@ public class DocumentValidator {
             final DocumentType embSchemaType = ((EmbeddedDocument) fieldValue).getType();
             if (!embSchemaType.instanceOf(ofType))
               throwValidationException(p,
-                  "has been declared as EMBEDDED of '" + ofType + "' but a document of type '" + embSchemaType + "' is used. Value: " + fieldValue);
+                  "has been declared as EMBEDDED of '" + ofType + "' but a document of type '" + embSchemaType
+                      + "' is used. Value: " + fieldValue);
           }
           if (fieldValue instanceof MutableEmbeddedDocument)
             ((MutableEmbeddedDocument) fieldValue).validate();
@@ -98,17 +103,19 @@ public class DocumentValidator {
               if (embType != null) {
                 if (Type.getTypeByValue(item) != embType)
                   throwValidationException(p,
-                      "has been declared as LIST of '" + ofType + "' but a value of type '" + Type.getTypeByValue(item) + "' is used. Value: " + fieldValue);
+                      "has been declared as LIST of '" + ofType + "' but a value of type '" + Type.getTypeByValue(item)
+                          + "' is used. Value: " + fieldValue);
               } else if (item instanceof EmbeddedDocument) {
                 if (!((EmbeddedDocument) item).getType().instanceOf(ofType))
-                  throwValidationException(p,
-                      "has been declared as LIST of '" + ofType + "' but an embedded document of type '" + embType + "' is used. Value: " + fieldValue); // TODO: potential null pointer dereference
+                  throwValidationException(p, "has been declared as LIST of '" + ofType + "' but an embedded document of type '"
+                      + ((EmbeddedDocument) item).getType().getName() + "' is used. Value: " + fieldValue);
               } else if (item instanceof Identifiable) {
                 final RID rid = ((Identifiable) item).getIdentity();
                 final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
                 if (!embSchemaType.instanceOf(ofType))
                   throwValidationException(p,
-                      "has been declared as LIST of '" + ofType + "' but a link to type '" + embSchemaType + "' is used. Value: " + fieldValue);
+                      "has been declared as LIST of '" + ofType + "' but a link to type '" + embSchemaType + "' is used. Value: "
+                          + fieldValue);
               }
             }
 
@@ -129,18 +136,20 @@ public class DocumentValidator {
               if (embType != null) {
                 if (Type.getTypeByValue(item) != embType)
                   throwValidationException(p,
-                      "has been declared as MAP of <String,'" + ofType + "'> but a value of type '" + Type.getTypeByValue(item) + "' is used. Value: "
-                          + fieldValue);
+                      "has been declared as MAP of <String,'" + ofType + "'> but a value of type '" + Type.getTypeByValue(item)
+                          + "' is used. Value: " + fieldValue);
               } else if (item instanceof EmbeddedDocument) {
                 if (!((EmbeddedDocument) item).getType().instanceOf(ofType))
                   throwValidationException(p,
-                      "has been declared as MAP of <String,'" + ofType + "'> but an embedded document of type '" + embType + "' is used. Value: " + fieldValue);
+                      "has been declared as MAP of <String,'" + ofType + "'> but an embedded document of type '" + embType
+                          + "' is used. Value: " + fieldValue);
               } else if (item instanceof Identifiable) {
                 final RID rid = ((Identifiable) item).getIdentity();
                 final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
                 if (!embSchemaType.instanceOf(ofType))
                   throwValidationException(p,
-                      "has been declared as LIST of '" + ofType + "' but a link to type '" + embType + "' is used. Value: " + fieldValue);
+                      "has been declared as LIST of '" + ofType + "' but a link to type '" + embType + "' is used. Value: "
+                          + fieldValue);
               }
             }
 
@@ -220,7 +229,8 @@ public class DocumentValidator {
           final Date fieldValueAsDate = (Date) Type.convert(database, fieldValue, Date.class);
 
           if (fieldValueAsDate.compareTo(minAsDate) < 0)
-            throwValidationException(p, "contains the date " + fieldValue + " which precedes the first acceptable date (" + min + ")");
+            throwValidationException(p,
+                "contains the date " + fieldValue + " which precedes the first acceptable date (" + min + ")");
           break;
         }
 
@@ -321,7 +331,8 @@ public class DocumentValidator {
           final Date fieldValueAsDate = (Date) Type.convert(database, fieldValue, Date.class);
 
           if (fieldValueAsDate.compareTo(maxAsDate) > 0)
-            throwValidationException(p, "contains the date " + fieldValue + " which is after the last acceptable date (" + max + ")");
+            throwValidationException(p,
+                "contains the date " + fieldValue + " which is after the last acceptable date (" + max + ")");
           break;
         }
 

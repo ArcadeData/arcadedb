@@ -56,7 +56,9 @@ public class TraverseExecutionPlanner {
 
   public TraverseExecutionPlanner(final TraverseStatement statement) {
     //copying the content, so that it can be manipulated and optimized
-    this.projections = statement.getProjections() == null ? null : statement.getProjections().stream().map(x -> x.copy()).collect(Collectors.toList());
+    this.projections = statement.getProjections() == null ?
+        null :
+        statement.getProjections().stream().map(x -> x.copy()).collect(Collectors.toList());
 
     this.target = statement.getTarget();
     this.whileClause = statement.getWhileClause() == null ? null : statement.getWhileClause().copy();
@@ -97,7 +99,8 @@ public class TraverseExecutionPlanner {
     //TODO
   }
 
-  private void handleFetchFromTarget(final SelectExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
+  private void handleFetchFromTarget(final SelectExecutionPlan result, final CommandContext context,
+      final boolean profilingEnabled) {
 
     final FromItem target = this.target == null ? null : this.target.getItem();
     if (target == null) {
@@ -126,8 +129,8 @@ public class TraverseExecutionPlanner {
     }
   }
 
-  private void handleInputParamAsTarget(final SelectExecutionPlan result, final InputParameter inputParam, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleInputParamAsTarget(final SelectExecutionPlan result, final InputParameter inputParam,
+      final CommandContext context, final boolean profilingEnabled) {
     final Object paramValue = inputParam.getValue(context.getInputParameters());
     if (paramValue == null) {
       result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
@@ -186,8 +189,8 @@ public class TraverseExecutionPlanner {
     result.chain(new EmptyDataGeneratorStep(1, context, profilingEnabled));
   }
 
-  private void handleIndexAsTarget(final SelectExecutionPlan result, final IndexIdentifier indexIdentifier, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleIndexAsTarget(final SelectExecutionPlan result, final IndexIdentifier indexIdentifier,
+      final CommandContext context, final boolean profilingEnabled) {
     final String indexName = indexIdentifier.getIndexName();
     final RangeIndex index = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
@@ -220,7 +223,8 @@ public class TraverseExecutionPlanner {
     }
   }
 
-  private void handleRidsAsTarget(final SelectExecutionPlan plan, final List<Rid> rids, final CommandContext context, final boolean profilingEnabled) {
+  private void handleRidsAsTarget(final SelectExecutionPlan plan, final List<Rid> rids, final CommandContext context,
+      final boolean profilingEnabled) {
     final List<RID> actualRids = new ArrayList<>();
     for (final Rid rid : rids) {
       actualRids.add(rid.toRecordId((Result) null, context));
@@ -228,49 +232,44 @@ public class TraverseExecutionPlanner {
     plan.chain(new FetchFromRidsStep(actualRids, context, profilingEnabled));
   }
 
-  private void handleClassAsTarget(final SelectExecutionPlan plan, final FromClause queryTarget, final CommandContext context, final boolean profilingEnabled) {
+  private void handleClassAsTarget(final SelectExecutionPlan plan, final FromClause queryTarget, final CommandContext context,
+      final boolean profilingEnabled) {
     final Identifier identifier = queryTarget.getItem().getIdentifier();
 
     final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
-    final FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), null, context, orderByRidAsc, profilingEnabled);
+    final FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), null, context,
+        orderByRidAsc, profilingEnabled);
     plan.chain(fetcher);
   }
 
   private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext context,
       final boolean profilingEnabled) {
     final Database db = context.getDatabase();
-    final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     if (clusters.size() == 1) {
       final Bucket bucket = clusters.get(0);
       Integer bucketId = bucket.getBucketNumber();
-      if (bucketId == null) {
+      if (bucketId == null)
         bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
-      }
 
       final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context, profilingEnabled);
-      // TODO: THIS SEEMS A BUG (maybe because if null is passed equals always returns false?)
-      if (Boolean.TRUE.equals(orderByRidAsc)) {
-        step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
-      } else if (Boolean.FALSE.equals(orderByRidAsc)) {
-        step.setOrder(FetchFromClusterExecutionStep.ORDER_DESC);
-      }
       plan.chain(step);
     } else {
       final int[] bucketIds = new int[clusters.size()];
       for (int i = 0; i < clusters.size(); i++) {
         final Bucket bucket = clusters.get(i);
         Integer bucketId = bucket.getBucketNumber();
-        if (bucketId == null) {
+        if (bucketId == null)
           bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
-        }
+
         bucketIds[i] = bucketId;
       }
-      final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, orderByRidAsc, profilingEnabled);
+      final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, null, profilingEnabled);
       plan.chain(step);
     }
   }
 
-  private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context, final boolean profilingEnabled) {
+  private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context,
+      final boolean profilingEnabled) {
     final BasicCommandContext subCtx = new BasicCommandContext();
     subCtx.setDatabase(context.getDatabase());
     subCtx.setParent(context);
