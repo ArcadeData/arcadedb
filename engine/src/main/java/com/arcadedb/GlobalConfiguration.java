@@ -29,6 +29,7 @@ import com.arcadedb.utility.SystemVariableResolver;
 import java.io.*;
 import java.util.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
@@ -504,7 +505,8 @@ public enum GlobalConfiguration {
     out.println(" configuration:");
 
     String lastSection = "";
-    for (final GlobalConfiguration v : values()) {
+    for (final GlobalConfiguration v : Arrays.stream(values()).sorted(Comparator.comparing(Enum::name))
+        .collect(Collectors.toList())) {
       final String section = v.key.substring(0, v.key.indexOf('.'));
 
       if (!lastSection.equals(section)) {

@@ -71,7 +71,6 @@ import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 public class HttpServer implements ServerPlugin {
   private final ArcadeDBServer     server;
   private final HttpSessionManager sessionManager;
-  private final JsonSerializer     jsonSerializer = new JsonSerializer();
   private final WebSocketEventBus  webSocketEventBus;
   private       Undertow           undertow;
   private       String             listeningAddress;
@@ -169,7 +168,7 @@ public class HttpServer implements ServerPlugin {
         LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
             httpsPortListening > 0 ? httpsPortListening : "-");
 
-        if (host.equalsIgnoreCase("0.0.0.0"))
+        if (host.equals("0.0.0.0"))
           listeningAddress = server.getHostAddress() + ":" + httpPortListening;
         else
           listeningAddress = host + ":" + httpPortListening;
@@ -230,10 +229,6 @@ public class HttpServer implements ServerPlugin {
 
   public ArcadeDBServer getServer() {
     return server;
-  }
-
-  public JsonSerializer getJsonSerializer() {
-    return jsonSerializer;
   }
 
   public String getListeningAddress() {

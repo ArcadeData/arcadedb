@@ -96,15 +96,17 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            - name: arcadedb.server.rootPassword
+            - name: rootPassword
               valueFrom:
                 secretKeyRef:
-                  name: server-root-password
-                  key: arcadedb.server.rootPassword
+                  key: rootPassword
+                  name: arcadedb-credentials
+                  optional: false
           command:
             - "bin/server.sh"
             - "-Darcadedb.dumpConfigAtStartup=true"
             - "-Darcadedb.server.name=${HOSTNAME}"
+            - "-Darcadedb.server.rootPassword=${rootPassword}"
             - "-Darcadedb.server.databaseDirectory=/mnt/data0/databases"
             - "-Darcadedb.server.defaultDatabases=Universe[elon:musk]"
             - "-Darcadedb.ha.enabled=true"
