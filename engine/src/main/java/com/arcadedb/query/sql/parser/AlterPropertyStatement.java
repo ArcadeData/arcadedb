@@ -50,7 +50,7 @@ public class AlterPropertyStatement extends DDLStatement {
     final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
 
     if (typez == null)
-      throw new CommandExecutionException("Invalid type name or type not found: " + typez);
+      throw new CommandExecutionException("Type name is null");
 
     final Property property = typez.getProperty(propertyName.getStringValue());
     if (property == null)

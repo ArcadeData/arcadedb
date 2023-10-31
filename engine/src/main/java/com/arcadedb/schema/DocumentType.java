@@ -107,7 +107,8 @@ public class DocumentType {
     final Set<String> allProperties = getPolymorphicPropertyNames();
     for (final String p : superType.getPolymorphicPropertyNames())
       if (allProperties.contains(p)) {
-        LogManager.instance().log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or any super types");
+        LogManager.instance()
+            .log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or any super types");
         //throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any super types");
       }
 
@@ -127,20 +128,22 @@ public class DocumentType {
           schema.getDatabase().transaction(() -> {
             for (final TypeIndex index : indexes) {
               if (index.getType() == null) {
-                LogManager.instance()
-                    .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
+                LogManager.instance().log(this, Level.WARNING,
+                    "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
               } else {
                 for (int i = 0; i < buckets.size(); i++) {
                   final Bucket bucket = buckets.get(i);
-                  schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(), LSMTreeIndexAbstract.DEF_PAGE_SIZE,
-                      index.getNullStrategy(), null, index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
+                  schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
+                      LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
+                      index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
                       IndexBuilder.BUILD_BATCH_SIZE);
                 }
               }
             }
           }, false);
         } catch (final IndexException e) {
-          LogManager.instance().log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
           throw e;
         }
       }
@@ -360,10 +363,12 @@ public class DocumentType {
    */
   public Property createProperty(final String propertyName, final Type propertyType, final String ofType) {
     if (properties.containsKey(propertyName))
-      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
+      throw new SchemaException(
+          "Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
 
     if (getPolymorphicPropertyNames().contains(propertyName))
-      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because it was already defined in a super type");
+      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
+          + "' because it was already defined in a super type");
 
     final Property property = new Property(this, propertyName, propertyType);
 
@@ -447,7 +452,8 @@ public class DocumentType {
   public Property dropProperty(final String propertyName) {
     for (final TypeIndex index : getAllIndexes(true)) {
       if (index.getPropertyNames().contains(propertyName))
-        throw new SchemaException("Error on dropping property '" + propertyName + "' because used by index '" + index.getName() + "'");
+        throw new SchemaException(
+            "Error on dropping property '" + propertyName + "' because used by index '" + index.getName() + "'");
     }
 
     return recordFileChanges(() -> {
@@ -459,39 +465,45 @@ public class DocumentType {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).create();
   }
 
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize) {
+  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).create();
   }
 
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
-      final Index.BuildIndexCallback callback) {
-    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withCallback(callback).create();
-  }
-
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
-      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
-    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
+  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize, final Index.BuildIndexCallback callback) {
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).create();
   }
 
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
+        .withNullStrategy(nullStrategy).withCallback(callback).create();
+  }
+
+  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
+      final String... propertyNames) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withIgnoreIfExists(true).create();
   }
 
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize) {
-    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withIgnoreIfExists(true).create();
-  }
-
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
-      final Index.BuildIndexCallback callback) {
-    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withCallback(callback)
+  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
+      final String[] propertyNames, final int pageSize) {
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withIgnoreIfExists(true).create();
   }
 
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
-      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
-    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
+  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
+      final String[] propertyNames, final int pageSize, final Index.BuildIndexCallback callback) {
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).withIgnoreIfExists(true).create();
+  }
+
+  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
+      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final Index.BuildIndexCallback callback) {
+    return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
+        .withNullStrategy(nullStrategy).withCallback(callback).withIgnoreIfExists(true).create();
   }
 
   public List<Bucket> getInvolvedBuckets() {
@@ -530,7 +542,8 @@ public class DocumentType {
 
   public int getBucketIndexByKeys(final Object[] keys, final boolean async) {
     if (buckets.isEmpty())
-      throw new SchemaException("Cannot retrieve a bucket for keys '" + Arrays.toString(keys) + "' because there are no buckets associated");
+      throw new SchemaException(
+          "Cannot retrieve a bucket for keys '" + Arrays.toString(keys) + "' because there are no buckets associated");
     return bucketSelectionStrategy.getBucketIdByKeys(keys, async);
   }
 
@@ -557,7 +570,8 @@ public class DocumentType {
 
       selectionStrategy = new PartitionedBucketSelectionStrategy(convertedParams);
     } else if (selectionStrategyName.startsWith("partitioned(") && selectionStrategyName.endsWith(")")) {
-      final String[] params = selectionStrategyName.substring("partitioned(".length(), selectionStrategyName.length() - 1).split(",");
+      final String[] params = selectionStrategyName.substring("partitioned(".length(), selectionStrategyName.length() - 1)
+          .split(",");
       final List<String> convertedParams = new ArrayList<>(params.length);
       for (int i = 0; i < params.length; i++)
         convertedParams.add(FileUtils.getStringContent(params[i]));
@@ -623,9 +637,8 @@ public class DocumentType {
 
     final List<TypeIndex> list = new ArrayList<>(indexesByProperties.values());
 
-    if (polymorphic)
-      for (final DocumentType t : superTypes)
-        list.addAll(t.getAllIndexes(true));
+    for (final DocumentType t : superTypes)
+      list.addAll(t.getAllIndexes(true));
 
     return Collections.unmodifiableCollection(list);
   }
@@ -827,7 +840,8 @@ public class DocumentType {
     return Objects.hash(name);
   }
 
-  protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames, TypeIndex propIndex) {
+  protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames,
+      TypeIndex propIndex) {
     index.setMetadata(name, propertyNames, bucketId);
 
     final List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new ArrayList<>());
@@ -877,9 +891,8 @@ public class DocumentType {
   protected void addBucketInternal(final Bucket bucket) {
     for (final DocumentType cl : schema.getTypes()) {
       if (cl.hasBucket(bucket.getName()))
-        throw new SchemaException(
-            "Cannot add the bucket '" + bucket.getName() + "' to the type '" + name + "', because the bucket is already associated to the type '" + cl.getName()
-                + "'");
+        throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + name
+            + "', because the bucket is already associated to the type '" + cl.getName() + "'");
     }
 
     buckets = CollectionUtils.addToUnmodifiableList(buckets, bucket);
@@ -896,8 +909,9 @@ public class DocumentType {
     if (!existentIndexes.isEmpty()) {
       schema.getDatabase().transaction(() -> {
         for (TypeIndex idx : existentIndexes) {
-          schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSize(), idx.getNullStrategy(), null,
-              idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx, IndexBuilder.BUILD_BATCH_SIZE);
+          schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSize(),
+              idx.getNullStrategy(), null, idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx,
+              IndexBuilder.BUILD_BATCH_SIZE);
         }
       });
     }
@@ -905,9 +919,8 @@ public class DocumentType {
 
   protected void removeBucketInternal(final Bucket bucket) {
     if (!buckets.contains(bucket))
-      throw new SchemaException(
-          "Cannot remove the bucket '" + bucket.getName() + "' to the type '" + name + "', because the bucket is not associated to the type '" + getName()
-              + "'");
+      throw new SchemaException("Cannot remove the bucket '" + bucket.getName() + "' to the type '" + name
+          + "', because the bucket is not associated to the type '" + getName() + "'");
 
     buckets = CollectionUtils.removeFromUnmodifiableList(buckets, bucket);
     cachedPolymorphicBuckets = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBuckets, bucket);
