@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.4.0
+    rev: v4.5.0
     hooks:
       - id: fix-byte-order-marker
       - id: trailing-whitespace
@@ -17,7 +17,7 @@ repos:
       - id: check-json
       - id: check-xml
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.0.0-alpha.4
+    rev: v3.0.3
     hooks:
       - id: prettier
         types: [ java ]
