@@ -55,7 +55,7 @@ public class DistanceFunctionFactory {
   }
 
   public static DistanceFunction getImplementationByName(final String name) {
-    return implementationsByName.get(name.toLowerCase());
+    return implementationsByName.get(name.toLowerCase(Locale.ENGLISH));
   }
 
   public static DistanceFunction getImplementationByClassName(final String name) {
@@ -63,7 +63,7 @@ public class DistanceFunctionFactory {
   }
 
   public static void registerImplementation(final String name, final DistanceFunction impl) {
-    implementationsByName.put(name.toLowerCase(), impl);
+    implementationsByName.put(name.toLowerCase(Locale.ENGLISH), impl);
     implementationsByClassName.put(impl.getClass().getSimpleName(), impl);
   }
 }

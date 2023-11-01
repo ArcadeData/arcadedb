@@ -80,7 +80,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final JSONObject response = createResult(user, null).put("result","ok");
 
-    final String command_lc = command.toLowerCase();
+    final String command_lc = command.toLowerCase(Locale.ENGLISH);
 
     if (command_lc.equals(LIST_DATABASES))
       return listDatabases(user);

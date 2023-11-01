@@ -65,7 +65,7 @@ public class Restore {
   }
 
   protected AbstractRestoreFormat createFormatImplementation() {
-    switch (settings.format.toLowerCase()) {
+    switch (settings.format.toLowerCase(Locale.ENGLISH)) {
     case "full":
       return new FullRestoreFormat(database, settings, logger);
 

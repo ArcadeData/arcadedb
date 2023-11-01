@@ -71,7 +71,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
     if (limit != -1) {
       if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
-        final String commandLC = command.toLowerCase().trim();
+        final String commandLC = command.toLowerCase(Locale.ENGLISH).trim();
         if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
           if (!commandLC.contains(" limit ") && !commandLC.contains("\nlimit ")) {
             command += " limit " + limit;

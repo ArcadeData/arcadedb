@@ -40,7 +40,7 @@ public class RestoreSettings {
   public int parseParameter(final String name, final String value) {
     if ("format".equals(name)) {
       if (value != null)
-        format = value.toLowerCase();
+        format = value.toLowerCase(Locale.ENGLISH);
     } else if ("f".equals(name)) {
       if (value != null)
         inputFileURL = value;

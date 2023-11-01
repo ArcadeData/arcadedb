@@ -38,7 +38,7 @@ public class BeginStatement extends SimpleExecStatement {
   @Override
   public ResultSet executeSimple(final CommandContext context) {
     if (isolation != null)
-      context.getDatabase().begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolation.getStringValue().toUpperCase()));
+      context.getDatabase().begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolation.getStringValue().toUpperCase(Locale.ENGLISH)));
     else
       // USE THE STANDARD ISOLATION LEVEL
       context.getDatabase().begin();

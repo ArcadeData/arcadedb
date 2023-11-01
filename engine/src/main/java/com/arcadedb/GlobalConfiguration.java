@@ -360,7 +360,7 @@ public enum GlobalConfiguration {
 
   HA_CLUSTER_NAME("arcadedb.ha.clusterName", SCOPE.SERVER,
       "Cluster name. By default is 'arcadedb'. Useful in case of multiple clusters in the same network", String.class,
-      Constants.PRODUCT.toLowerCase()),
+      Constants.PRODUCT.toLowerCase(Locale.ENGLISH)),
 
   HA_SERVER_LIST("arcadedb.ha.serverList", SCOPE.SERVER,
       "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
@@ -695,7 +695,7 @@ public enum GlobalConfiguration {
         }
 
       if (allowed != null && value != null)
-        if (!allowed.contains(value.toString().toLowerCase()))
+        if (!allowed.contains(value.toString().toLowerCase(Locale.ENGLISH)))
           throw new IllegalArgumentException(
               "Global setting '" + key + "=" + value + "' is not valid. Allowed values are " + allowed);
 

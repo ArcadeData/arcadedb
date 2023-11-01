@@ -133,7 +133,7 @@ public class MethodCall extends SimpleNode {
   }
 
   public Object executeReverse(final Object targetObjects, final CommandContext context) {
-    final String straightName = methodName.getStringValue().toLowerCase();
+    final String straightName = methodName.getStringValue().toLowerCase(Locale.ENGLISH);
     final String inverseMethodName = bidirectionalMethods.get(straightName);
 
     if (inverseMethodName != null)

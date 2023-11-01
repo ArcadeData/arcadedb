@@ -21,6 +21,8 @@ package com.arcadedb.server.http.ws;
 import com.arcadedb.database.Record;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.*;
+
 public class ChangeEvent {
   private final TYPE   type;
   private final Record record;
@@ -42,7 +44,7 @@ public class ChangeEvent {
 
   public String toJSON() {
     final var jsonObject = new JSONObject();
-    jsonObject.put("changeType", this.type.toString().toLowerCase());
+    jsonObject.put("changeType", this.type.toString().toLowerCase(Locale.ENGLISH));
     jsonObject.put("record", this.record.toJSON());
     jsonObject.put("database", this.record.getDatabase().getName());
     return jsonObject.toString();

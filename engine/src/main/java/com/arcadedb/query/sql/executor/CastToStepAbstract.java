@@ -22,6 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
+import java.util.*;
+
 /**
  * Created by luigidellaquila on 20/02/17.
  */
@@ -82,7 +84,7 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CAST TO " + clsName.toUpperCase();
+    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CAST TO " + clsName.toUpperCase(Locale.ENGLISH);
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }

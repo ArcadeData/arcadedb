@@ -184,7 +184,7 @@ public class Exporter {
   }
 
   protected AbstractExporterFormat createFormatImplementation() {
-    switch (settings.format.toLowerCase()) {
+    switch (settings.format.toLowerCase(Locale.ENGLISH)) {
     case JsonlExporterFormat.NAME:
       return new JsonlExporterFormat(database, settings, context, logger);
 

@@ -22,6 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.*;
+
 /**
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
@@ -36,6 +38,6 @@ public class SQLMethodToLowerCase extends AbstractSQLMethod {
 
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    return ioResult != null ? ioResult.toString().toLowerCase() : null;
+    return ioResult != null ? ioResult.toString().toLowerCase(Locale.ENGLISH) : null;
   }
 }

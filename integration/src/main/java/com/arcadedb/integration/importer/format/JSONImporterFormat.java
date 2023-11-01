@@ -321,7 +321,7 @@ public class JSONImporterFormat implements FormatImporter {
 
         Type propType = Type.getTypeByValue(idValue);
         if (mapping.has("@idType"))
-          propType = Type.getTypeByName(mapping.getString("@idType").toUpperCase());
+          propType = Type.getTypeByName(mapping.getString("@idType").toUpperCase(Locale.ENGLISH));
 
         prop = type.createProperty(id, propType);
       }

@@ -523,7 +523,7 @@ public class ArcadeDBServer {
               LogManager.instance().log(this, Level.WARNING, "Error in startup command configuration format: '%s'", commands);
               break;
             }
-            final String commandType = command.substring(0, commandSeparator).toLowerCase();
+            final String commandType = command.substring(0, commandSeparator).toLowerCase(Locale.ENGLISH);
             final String commandParams = command.substring(commandSeparator + 1);
 
             switch (commandType) {

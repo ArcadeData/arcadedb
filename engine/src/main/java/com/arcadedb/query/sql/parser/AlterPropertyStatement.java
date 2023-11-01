@@ -71,7 +71,7 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("oldValue", oldValue);
       result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
-      final String setting = settingName.getStringValue().toLowerCase();
+      final String setting = settingName.getStringValue().toLowerCase(Locale.ENGLISH);
       final Object finalValue = settingValue.execute((Identifiable) null, context);
 
       final Object oldValue;

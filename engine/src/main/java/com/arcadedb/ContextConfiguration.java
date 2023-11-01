@@ -133,7 +133,7 @@ public class ContextConfiguration implements Serializable {
     if (enumType.isAssignableFrom(value.getClass())) {
       return enumType.cast(value);
     } else if (value instanceof String) {
-      final String presentation = value.toString().toUpperCase();
+      final String presentation = value.toString().toUpperCase(Locale.ENGLISH);
       return Enum.valueOf(enumType, presentation);
     } else {
       throw new ClassCastException("Value " + value + " can not be cast to enumeration " + enumType.getSimpleName());

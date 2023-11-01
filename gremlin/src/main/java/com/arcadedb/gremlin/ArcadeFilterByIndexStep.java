@@ -105,7 +105,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
   }
 
   public String toString() {
-    return StringFactory.stepString(this, this.returnClass.getSimpleName().toLowerCase(), indexCursors);
+    return StringFactory.stepString(this, this.returnClass.getSimpleName().toLowerCase(Locale.ENGLISH), indexCursors);
   }
 
   @Override

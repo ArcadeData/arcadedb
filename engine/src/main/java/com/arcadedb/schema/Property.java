@@ -140,7 +140,7 @@ public class Property {
     if (changed) {
       if (type == Type.LIST || type == Type.MAP) {
         if (Type.getTypeByName(ofType) != null) {
-          ofType = ofType.toUpperCase();
+          ofType = ofType.toUpperCase(Locale.ENGLISH);
         } else {
           if (!owner.schema.existsType(ofType))
             throw new SchemaException("Type '" + ofType + "' not defined");

@@ -139,7 +139,7 @@ public class HAServer implements ServerPlugin {
     this.bucketName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     this.startedOn = System.currentTimeMillis();
     this.replicationPath = server.getRootPath() + "/replication";
-    this.serverRole = SERVER_ROLE.valueOf(configuration.getValueAsString(GlobalConfiguration.HA_SERVER_ROLE).toUpperCase());
+    this.serverRole = SERVER_ROLE.valueOf(configuration.getValueAsString(GlobalConfiguration.HA_SERVER_ROLE).toUpperCase(Locale.ENGLISH));
   }
 
   @Override

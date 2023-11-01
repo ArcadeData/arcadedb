@@ -185,7 +185,7 @@ public class GraphQLSchema {
 
   private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection, final ObjectTypeDefinition returnType) {
     if (directive.getArguments() == null)
-      throw new CommandParsingException(language.toUpperCase() + " directive has no `statement` argument");
+      throw new CommandParsingException(language.toUpperCase(Locale.ENGLISH) + " directive has no `statement` argument");
 
     String statement = null;
     Map<String, Object> arguments = null;
