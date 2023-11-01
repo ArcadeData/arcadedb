@@ -219,7 +219,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   }
 
   private Object convertValue(final String key, Object value) {
-    if (key.toLowerCase().contains("password"))
+    if (key.toLowerCase(Locale.ENGLISH).contains("password"))
       // MASK SENSITIVE DATA
       value = "*****";
 

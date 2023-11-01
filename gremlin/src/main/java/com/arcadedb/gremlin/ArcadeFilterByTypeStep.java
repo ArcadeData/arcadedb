@@ -124,7 +124,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
   }
 
   public String toString() {
-    return StringFactory.stepString(this, this.returnClass.getSimpleName().toLowerCase(), typeName);
+    return StringFactory.stepString(this, this.returnClass.getSimpleName().toLowerCase(Locale.ENGLISH), typeName);
   }
 
   @Override

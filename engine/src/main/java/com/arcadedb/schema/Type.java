@@ -116,7 +116,7 @@ public enum Type {
   static {
     for (final Type type : values()) {
       TYPES_BY_ID[type.id] = type;
-      TYPES_BY_NAME.put(type.name.toLowerCase(), type);
+      TYPES_BY_NAME.put(type.name.toLowerCase(Locale.ENGLISH), type);
     }
 
     // This is made by hand because not all types should be add.
@@ -175,7 +175,7 @@ public enum Type {
 
   Type(final String iName, final int iId, final byte binaryType, final Class<?> iJavaDefaultType,
       final Class<?>[] iAllowAssignmentBy) {
-    this.name = iName.toUpperCase();
+    this.name = iName.toUpperCase(Locale.ENGLISH);
     this.id = iId;
     this.binaryType = binaryType;
     this.javaDefaultType = iJavaDefaultType;
@@ -280,7 +280,7 @@ public enum Type {
   }
 
   public static Type getTypeByName(final String name) {
-    return TYPES_BY_NAME.get(name.toLowerCase());
+    return TYPES_BY_NAME.get(name.toLowerCase(Locale.ENGLISH));
   }
 
   /**

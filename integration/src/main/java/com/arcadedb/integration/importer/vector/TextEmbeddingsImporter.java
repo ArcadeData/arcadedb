@@ -80,13 +80,13 @@ public class TextEmbeddingsImporter {
 
     if (settings.options.containsKey("distanceFunction")) {
       this.distanceFunctionName = settings.options.get("distanceFunction");
-      this.distanceFunctionName = Character.toUpperCase(this.distanceFunctionName.charAt(0)) + this.distanceFunctionName.substring(1).toLowerCase();
+      this.distanceFunctionName = Character.toUpperCase(this.distanceFunctionName.charAt(0)) + this.distanceFunctionName.substring(1).toLowerCase(Locale.ENGLISH);
     }
 
     if (settings.options.containsKey("vectorType")) {
       this.vectorTypeName = settings.options.get("vectorType");
       // USE CAMEL CASE FOR THE VECTOR TYPE
-      this.vectorTypeName = Character.toUpperCase(this.vectorTypeName.charAt(0)) + this.vectorTypeName.substring(1).toLowerCase();
+      this.vectorTypeName = Character.toUpperCase(this.vectorTypeName.charAt(0)) + this.vectorTypeName.substring(1).toLowerCase(Locale.ENGLISH);
     }
 
     if (settings.options.containsKey("vectorProperty"))

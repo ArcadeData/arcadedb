@@ -186,7 +186,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     try {
       context.graphImporter = new GraphImporter((DatabaseInternal) database, (int) expectedVertices, (int) settings.expectedEdges,
-          Type.valueOf(settings.typeIdType.toUpperCase()));
+          Type.valueOf(settings.typeIdType.toUpperCase(Locale.ENGLISH)));
     } catch (ClassNotFoundException e) {
       throw new ImportException("Error on creating internal component", e);
     }
@@ -315,7 +315,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     try {
       if (context.graphImporter == null)
-        context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
+        context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase(Locale.ENGLISH)));
     } catch (ClassNotFoundException e) {
       throw new ImportException("Error on creating internal component", e);
     }

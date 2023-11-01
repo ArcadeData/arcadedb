@@ -24,6 +24,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryHelper;
 
+import java.util.*;
+
 public class ILikeOperator extends SimpleNode implements BinaryCompareOperator {
   public ILikeOperator(final int id) {
     super(id);
@@ -37,7 +39,7 @@ public class ILikeOperator extends SimpleNode implements BinaryCompareOperator {
     if (iLeft == null || iRight == null) {
       return false;
     }
-    return QueryHelper.like(iLeft.toString().toLowerCase(), iRight.toString().toLowerCase());
+    return QueryHelper.like(iLeft.toString().toLowerCase(Locale.ENGLISH), iRight.toString().toLowerCase(Locale.ENGLISH));
   }
 
   @Override

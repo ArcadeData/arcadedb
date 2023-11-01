@@ -623,7 +623,7 @@ public class Neo4jImporter {
         else if (state.equals("batchSize"))
           batchSize = Integer.parseInt(arg);
         else if (state.equals("decimalType"))
-          typeForDecimals = Type.valueOf(arg.toUpperCase());
+          typeForDecimals = Type.valueOf(arg.toUpperCase(Locale.ENGLISH));
       }
     }
   }

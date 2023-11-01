@@ -65,7 +65,7 @@ public enum AnsiCode {
       SUPPORTS_COLORS = true;
     else if ("auto".equalsIgnoreCase(ansiSupport)) {
       // AUTOMATIC CHECK
-      SUPPORTS_COLORS = System.console() != null && !System.getProperty("os.name").toLowerCase().contains("win");
+      SUPPORTS_COLORS = System.console() != null && !System.getProperty("os.name").toLowerCase(Locale.ENGLISH).contains("win");
     } else
       // DO NOT SUPPORT ANSI
       SUPPORTS_COLORS = false;

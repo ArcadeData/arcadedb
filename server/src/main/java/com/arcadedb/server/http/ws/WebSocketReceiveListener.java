@@ -53,7 +53,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       final var rawAction = message.optString("action", "");
       var action = ACTION.UNKNOWN;
       try {
-        action = ACTION.valueOf(rawAction.toUpperCase());
+        action = ACTION.valueOf(rawAction.toUpperCase(Locale.ENGLISH));
       } catch (final IllegalArgumentException ignored) {
       }
 
@@ -62,7 +62,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
         final var jsonChangeTypes = !message.isNull("changeTypes") ? message.getJSONArray("changeTypes") : null;
         final var changeTypes = jsonChangeTypes == null ?
             null :
-            jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase())).collect(Collectors.toSet());
+            jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase(Locale.ENGLISH))).collect(Collectors.toSet());
         this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), changeTypes, channel);
         this.sendAck(channel, action);
         break;
@@ -96,7 +96,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
   private void sendAck(final WebSocketChannel channel, final ACTION action) {
     final var json = new JSONObject("{\"result\": \"ok\"}");
-    json.put("action", action.toString().toLowerCase());
+    json.put("action", action.toString().toLowerCase(Locale.ENGLISH));
     WebSockets.sendText(json.toString(), channel, null);
   }
 

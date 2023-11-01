@@ -624,7 +624,7 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
-      final String upperCaseText = portal.query.toUpperCase();
+      final String upperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
 
       if (portal.query.isEmpty() ||//
           (ignoreQueriesAppNames.contains(connectionProperties.get("application_name")) &&//
@@ -1079,7 +1079,7 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void writeCommandComplete(final String queryText, final int resultSetCount) {
-    final String upperCaseText = queryText.toUpperCase();
+    final String upperCaseText = queryText.toUpperCase(Locale.ENGLISH);
     String tag = "";
     if (upperCaseText.startsWith("CREATE VERTEX") || upperCaseText.startsWith("INSERT INTO"))
       tag = "INSERT 0 " + resultSetCount;

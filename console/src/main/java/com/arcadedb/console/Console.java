@@ -228,7 +228,7 @@ public class Console {
       if (lineTrimmed.isEmpty() || lineTrimmed.startsWith("--"))
         return true;
 
-      final String lineLowerCase = lineTrimmed.toLowerCase();
+      final String lineLowerCase = lineTrimmed.toLowerCase(Locale.ENGLISH);
 
       if (lineLowerCase.equals("quit") || lineLowerCase.equals("exit")) {
         executeClose();
@@ -411,7 +411,7 @@ public class Console {
 
       ComponentFile.MODE mode = ComponentFile.MODE.READ_WRITE;
       if (urlParts.length > 1)
-        mode = ComponentFile.MODE.valueOf(urlParts[1].toUpperCase());
+        mode = ComponentFile.MODE.valueOf(urlParts[1].toUpperCase(Locale.ENGLISH));
 
       databaseFactory = new DatabaseFactory(localUrl);
       databaseProxy = databaseFactory.setAutoTransaction(true).open(mode);
@@ -451,7 +451,7 @@ public class Console {
   private void executeCreateUser(final String params) {
     checkRemoteDatabaseIsConnected();
 
-    final String paramsUpperCase = params.toUpperCase();
+    final String paramsUpperCase = params.toUpperCase(Locale.ENGLISH);
 
     final int identifiedByPos = paramsUpperCase.indexOf("IDENTIFIED BY");
     if (identifiedByPos < 0)
@@ -808,7 +808,7 @@ public class Console {
 
       final Result result = typeResult.next();
 
-      outputLine(0, result.getProperty("type").toString().toUpperCase() + " TYPE '" + typeName + "'\n");
+      outputLine(0, result.getProperty("type").toString().toUpperCase(Locale.ENGLISH) + " TYPE '" + typeName + "'\n");
       outputLine(0, "Super types.......: " + result.getProperty("parentTypes"));
       outputLine(0, "Buckets...........: " + result.getProperty("buckets"));
       outputLine(0, "Bucket selection..: " + result.getProperty("bucketSelectionStrategy"));

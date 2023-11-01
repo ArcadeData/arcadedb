@@ -42,7 +42,7 @@ public class SQLMethodCapitalize extends AbstractSQLMethod {
     return ioResult != null ? Pattern.compile("\\b(.)(.*?)\\b")
                                      .matcher(ioResult.toString())
                                      .replaceAll(match -> match.group(1).toUpperCase(Locale.ENGLISH) +
-                                                          match.group(2).toLowerCase())
+                                                          match.group(2).toLowerCase(Locale.ENGLISH))
                             : null;
   }
 }

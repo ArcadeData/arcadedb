@@ -109,7 +109,7 @@ public class AlterTypeStatement extends DDLStatement {
     final ResultInternal result = new ResultInternal();
 
     if (property != null) {
-      switch (property.toLowerCase()) {
+      switch (property.toLowerCase(Locale.ENGLISH)) {
       case "bucket":
         for (int i = 0; i < identifierListValue.size(); i++) {
           final Identifier identifierValue = identifierListValue.get(i);

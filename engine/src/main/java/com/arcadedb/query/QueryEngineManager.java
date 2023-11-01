@@ -56,11 +56,11 @@ public class QueryEngineManager {
   }
 
   public void register(final QueryEngine.QueryEngineFactory impl) {
-    implementations.put(impl.getLanguage().toLowerCase(), impl);
+    implementations.put(impl.getLanguage().toLowerCase(Locale.ENGLISH), impl);
   }
 
   public QueryEngine getInstance(final String language, final DatabaseInternal database) {
-    final QueryEngine.QueryEngineFactory impl = implementations.get(language.toLowerCase());
+    final QueryEngine.QueryEngineFactory impl = implementations.get(language.toLowerCase(Locale.ENGLISH));
     if (impl == null)
       throw new IllegalArgumentException("Query engine '" + language + "' was not found. Check your configuration");
     return impl.getInstance(database);

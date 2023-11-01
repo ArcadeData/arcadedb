@@ -108,7 +108,7 @@ public class Backup {
   }
 
   protected AbstractBackupFormat createFormatImplementation() {
-    switch (settings.format.toLowerCase()) {
+    switch (settings.format.toLowerCase(Locale.ENGLISH)) {
     case "full":
       return new FullBackupFormat(database, settings, logger);
 

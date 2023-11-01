@@ -66,7 +66,7 @@ public class ExporterSettings {
     name = FileUtils.getStringContent(name);
 
     if ("format".equals(name))
-      format = value.toLowerCase();
+      format = value.toLowerCase(Locale.ENGLISH);
     else if ("f".equals(name) || "file".equals(name))
       file = value;
     else if ("d".equals(name))

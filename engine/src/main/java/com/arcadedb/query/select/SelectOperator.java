@@ -105,7 +105,7 @@ public enum SelectOperator {
   ilike("ilike", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return QueryHelper.like(((String) SelectExecutor.evaluateValue(record, left)).toLowerCase(),
+      return QueryHelper.like(((String) SelectExecutor.evaluateValue(record, left)).toLowerCase(Locale.ENGLISH),
           ((String) SelectExecutor.evaluateValue(record, right)).toLowerCase());
     }
   },
