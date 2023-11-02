@@ -24,6 +24,7 @@ public interface ReplicationCallback {
         SERVER_UP,
         SERVER_SHUTTING_DOWN,
         SERVER_DOWN,
+        LEADER_ELECTED,
         REPLICA_MSG_RECEIVED,
         REPLICA_ONLINE,
         REPLICA_OFFLINE,

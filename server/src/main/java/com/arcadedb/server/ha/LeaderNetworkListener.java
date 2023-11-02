@@ -22,6 +22,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ConnectionException;
+import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 import com.arcadedb.utility.Pair;
@@ -39,7 +40,8 @@ public class LeaderNetworkListener extends Thread {
   private final        String              hostName;
   private              int                 port;
 
-  public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
+  public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory iSocketFactory, final String iHostName,
+      final String iHostPortRange) {
     super(ha.getServerName() + " replication listen at " + iHostName + ":" + iHostPortRange);
 
     this.ha = ha;
@@ -117,8 +119,10 @@ public class LeaderNetworkListener extends Thread {
 
         if (serverSocket.isBound()) {
           LogManager.instance().log(this, Level.INFO,
-              "Listening for replication connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort() + "} " + (
-                  ha.getServerAddress() != null ? ("current host $ANSI{green " + ha.getServerAddress() + "} ") : "") + "(protocol v." + protocolVersion + ")");
+              "Listening for replication connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":"
+                  + inboundAddr.getPort() + "} " + (ha.getServerAddress() != null ?
+                  ("current host $ANSI{green " + ha.getServerAddress() + "} ") :
+                  "") + "(protocol v." + protocolVersion + ")");
 
           port = tryPort;
 
@@ -139,9 +143,11 @@ public class LeaderNetworkListener extends Thread {
     }
 
     LogManager.instance()
-        .log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null, hostPortRange, hostName);
+        .log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null,
+            hostPortRange, hostName);
 
-    throw new ServerException("Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
+    throw new ServerException(
+        "Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
   }
 
   private void handleConnection(final Socket socket) throws IOException {
@@ -163,7 +169,8 @@ public class LeaderNetworkListener extends Thread {
         // IGNORE IT
       }
       socket.close();
-      throw new ConnectionException(socket.getInetAddress().toString(), "Bad replication protocol. The connected server is not an ArcadeDB Server");
+      throw new ConnectionException(socket.getInetAddress().toString(),
+          "Bad replication protocol. The connected server is not an ArcadeDB Server");
     }
 
     readProtocolVersion(socket, channel);
@@ -189,11 +196,13 @@ public class LeaderNetworkListener extends Thread {
       break;
 
     default:
-      throw new ConnectionException(channel.socket.getInetAddress().toString(), "Replication command '" + command + "' not supported");
+      throw new ConnectionException(channel.socket.getInetAddress().toString(),
+          "Replication command '" + command + "' not supported");
     }
   }
 
-  private void electionComplete(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress) throws IOException {
+  private void electionComplete(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress)
+      throws IOException {
     final long voteTurn = channel.readLong();
 
     ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
@@ -201,10 +210,15 @@ public class LeaderNetworkListener extends Thread {
 
     LogManager.instance().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
 
-    if (ha.connectToLeader(remoteServerAddress, null))
+    if (ha.connectToLeader(remoteServerAddress, null)) {
       // ELECTION FINISHED, THE SERVER IS A REPLICA
       ha.setElectionStatus(HAServer.ELECTION_STATUS.DONE);
-    else
+      try {
+        ha.getServer().lifecycleEvent(ReplicationCallback.TYPE.LEADER_ELECTED, remoteServerName);
+      } catch (final Exception e) {
+        throw new ArcadeDBException("Error on propagating election status", e);
+      }
+    } else
       // CANNOT CONTACT THE ELECTED LEADER, START ELECTION AGAIN
       ha.startElection();
   }
@@ -218,8 +232,8 @@ public class LeaderNetworkListener extends Thread {
     if (localServerLastMessageNumber > lastReplicationMessage) {
       // LOCAL SERVER HAS A HIGHER LSN, START ELECTION PROCESS IF NOT THE LEADER
       LogManager.instance().log(this, Level.INFO,
-          "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote because my LSN is higher", remoteServerName,
-          lastReplicationMessage, localServerLastMessageNumber, voteTurn);
+          "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote because my LSN is higher",
+          remoteServerName, lastReplicationMessage, localServerLastMessageNumber, voteTurn);
       channel.writeByte((byte) 2);
       ha.lastElectionVote = new Pair<>(voteTurn, "-");
       final Replica2LeaderNetworkExecutor leader = ha.getLeader();
@@ -230,15 +244,16 @@ public class LeaderNetworkListener extends Thread {
 
     } else if (ha.lastElectionVote == null || ha.lastElectionVote.getFirst() < voteTurn) {
       LogManager.instance()
-          .log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote", remoteServerName,
-              lastReplicationMessage, localServerLastMessageNumber, voteTurn);
+          .log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote",
+              remoteServerName, lastReplicationMessage, localServerLastMessageNumber, voteTurn);
       channel.writeByte((byte) 0);
       ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
       ha.setElectionStatus(HAServer.ELECTION_STATUS.VOTING_FOR_OTHERS);
     } else {
       LogManager.instance().log(this, Level.INFO,
-          "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote (votedFor='%s' on turn %d)", remoteServerName,
-          lastReplicationMessage, localServerLastMessageNumber, voteTurn, ha.lastElectionVote.getSecond(), ha.lastElectionVote.getFirst());
+          "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote (votedFor='%s' on turn %d)",
+          remoteServerName, lastReplicationMessage, localServerLastMessageNumber, voteTurn, ha.lastElectionVote.getSecond(),
+          ha.lastElectionVote.getFirst());
       channel.writeByte((byte) 1);
       final Replica2LeaderNetworkExecutor leader = ha.getLeader();
       channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());
@@ -246,8 +261,8 @@ public class LeaderNetworkListener extends Thread {
     channel.flush();
   }
 
-  private void connect(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress, final String remoteServerHTTPAddress)
-      throws IOException {
+  private void connect(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress,
+      final String remoteServerHTTPAddress) throws IOException {
     if (remoteServerName.equals(ha.getServerName())) {
       channel.writeBoolean(false);
       channel.writeByte(ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME);
@@ -257,8 +272,8 @@ public class LeaderNetworkListener extends Thread {
     }
 
     // CREATE A NEW PROTOCOL INSTANCE
-    final Leader2ReplicaNetworkExecutor connection = new Leader2ReplicaNetworkExecutor(ha, channel, remoteServerName, remoteServerAddress,
-        remoteServerHTTPAddress);
+    final Leader2ReplicaNetworkExecutor connection = new Leader2ReplicaNetworkExecutor(ha, channel, remoteServerName,
+        remoteServerAddress, remoteServerHTTPAddress);
 
     ha.registerIncomingConnection(connection.getRemoteServerName(), connection);
 
@@ -281,10 +296,12 @@ public class LeaderNetworkListener extends Thread {
     if (remoteProtocolVersion != ReplicationProtocol.PROTOCOL_VERSION) {
       channel.writeBoolean(false);
       channel.writeByte(ReplicationProtocol.ERROR_CONNECT_UNSUPPORTEDPROTOCOL);
-      channel.writeString("Network protocol version " + remoteProtocolVersion + " is different than local server " + ReplicationProtocol.PROTOCOL_VERSION);
+      channel.writeString("Network protocol version " + remoteProtocolVersion + " is different than local server "
+          + ReplicationProtocol.PROTOCOL_VERSION);
       channel.flush();
       throw new ConnectionException(socket.getInetAddress().toString(),
-          "Network protocol version " + remoteProtocolVersion + " is different than local server " + ReplicationProtocol.PROTOCOL_VERSION);
+          "Network protocol version " + remoteProtocolVersion + " is different than local server "
+              + ReplicationProtocol.PROTOCOL_VERSION);
     }
   }
 

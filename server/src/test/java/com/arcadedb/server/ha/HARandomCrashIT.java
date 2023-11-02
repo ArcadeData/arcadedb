@@ -44,7 +44,6 @@ public class HARandomCrashIT extends ReplicationServerIT {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.HA_QUORUM.setValue("Majority");
   }
 
   @Override
@@ -60,10 +59,10 @@ public class HARandomCrashIT extends ReplicationServerIT {
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
-        final int serverId = new Random().nextInt(getServerCount());
-
-        if (!areAllServersOnline())
+        if (!areAllReplicasAreConnected())
           return;
+
+        final int serverId = new Random().nextInt(getServerCount());
 
         if (restarts >= getServerCount()) {
           delay = 0;
@@ -72,7 +71,6 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
         for (int i = 0; i < getServerCount(); ++i)
           if (getServer(i).isStarted()) {
-
             final Database db = getServer(i).getDatabase(getDatabaseName());
             db.begin();
             try {
@@ -129,7 +127,6 @@ public class HARandomCrashIT extends ReplicationServerIT {
             }, 10000);
 
             return;
-
           }
 
         LogManager.instance().log(this, getLogLevel(), "TEST: Cannot restart server because unable to count vertices");

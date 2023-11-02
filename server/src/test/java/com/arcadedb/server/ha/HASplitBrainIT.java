@@ -39,6 +39,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
   private final    AtomicLong messages  = new AtomicLong();
   private volatile boolean    split     = false;
   private volatile boolean    rejoining = false;
+  private          String     firstLeader;
 
   public HASplitBrainIT() {
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
@@ -48,13 +49,13 @@ public class HASplitBrainIT extends ReplicationServerIT {
   @Override
   public void endTest() {
     super.endTest();
-    GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(512);
+    GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.reset();
   }
 
   @Override
   protected void onAfterTest() {
     timer.cancel();
-    Assertions.assertEquals("ArcadeDB_0", getLeaderServer().getServerName());
+    Assertions.assertEquals(firstLeader, getLeaderServer().getServerName());
   }
 
   @Override
@@ -67,7 +68,10 @@ public class HASplitBrainIT extends ReplicationServerIT {
     server.registerTestEventListener(new ReplicationCallback() {
       @Override
       public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) throws IOException {
-        if (type == TYPE.NETWORK_CONNECTION && split) {
+        if (type == TYPE.LEADER_ELECTED) {
+          if (firstLeader == null)
+            firstLeader = (String) object;
+        } else if (type == TYPE.NETWORK_CONNECTION && split) {
           final String connectTo = (String) object;
 
           final String[] parts = connectTo.split(":");

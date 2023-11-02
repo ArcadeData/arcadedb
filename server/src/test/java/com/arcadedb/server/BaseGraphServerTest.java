@@ -330,6 +330,26 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
             serverCount);
   }
 
+  protected boolean areAllReplicasAreConnected() {
+    final int serverCount = getServerCount();
+
+    int lastTotalConnectedReplica = 0;
+
+    for (int i = 0; i < serverCount; ++i) {
+      if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
+        // ONLY FOR CANDIDATE LEADERS
+        if (servers[i].getHA() != null) {
+          if (servers[i].getHA().isLeader()) {
+            lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
+            if (lastTotalConnectedReplica >= serverCount - 1)
+              return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   protected void stopServers() {
     if (servers != null) {
       // RESTART ANY SERVER IS DOWN TO CHECK INTEGRITY AFTER THE REALIGNMENT
@@ -452,21 +472,6 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         return getServer(leaderName);
       }
     return null;
-  }
-
-  protected boolean areAllServersOnline() {
-    final ArcadeDBServer leader = getLeaderServer();
-    if (leader == null)
-      return false;
-
-    final int onlineReplicas = leader.getHA().getOnlineReplicas();
-    if (1 + onlineReplicas < getServerCount()) {
-      // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-      LogManager.instance().log(this, Level.FINE, "TEST: Not all the servers are ONLINE (%d), skip this crash...", onlineReplicas);
-      leader.getHA().printClusterConfiguration();
-      return false;
-    }
-    return true;
   }
 
   protected int[] getServerToCheck() {
