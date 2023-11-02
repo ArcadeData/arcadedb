@@ -291,7 +291,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected HAServer.SERVER_ROLE getServerRole(final int serverIndex) {
-    return serverIndex == 1 ? HAServer.SERVER_ROLE.REPLICA : HAServer.SERVER_ROLE.ANY;
+    return serverIndex == 0 ? HAServer.SERVER_ROLE.ANY : HAServer.SERVER_ROLE.REPLICA;
   }
 
   protected void waitAllReplicasAreConnected() {
@@ -300,24 +300,28 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     int lastTotalConnectedReplica = 0;
     final long beginTime = System.currentTimeMillis();
     while (System.currentTimeMillis() - beginTime < 10_000) {
-      for (int i = 0; i < serverCount; ++i) {
-        if (servers[i].getHA() != null && servers[i].getHA().isLeader()) {
-          lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
-          if (lastTotalConnectedReplica >= serverCount - 1) {
-            // ALL CONNECTED
-            serversSynchronized = true;
-            return;
+      try {
+        for (int i = 0; i < serverCount; ++i) {
+          if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
+            // ONLY FOR CANDIDATE LEADERS
+            if (servers[i].getHA() != null) {
+              if (servers[i].getHA().isLeader()) {
+                lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
+                if (lastTotalConnectedReplica >= serverCount - 1) {
+                  // ALL CONNECTED
+                  serversSynchronized = true;
+                  LogManager.instance().log(this, Level.WARNING, "All %d replicas are online", lastTotalConnectedReplica);
+                  return;
+                } else
+                  Thread.sleep(300);
+              }
+            } else
+              // WAIT FOR HA COMPONENT TO BE ONLINE
+              Thread.sleep(300);
           }
-
-          try {
-            Thread.sleep(300);
-          } catch (InterruptedException e) {
-            break;
-          }
-        } else {
-          serversSynchronized = true;
-          return;
         }
+      } catch (InterruptedException e) {
+        break;
       }
     }
 

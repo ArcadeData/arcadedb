@@ -37,7 +37,8 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
   public void testOneEdgePerTxMultiThreads() throws Exception {
     testEachServer((serverIndex) -> {
       executeCommand(serverIndex, "sqlscript",
-          "create vertex type Photos" + serverIndex + ";create vertex type Users" + serverIndex + ";create edge type HasUploaded" + serverIndex + ";");
+          "create vertex type Photos" + serverIndex + ";create vertex type Users" + serverIndex + ";create edge type HasUploaded"
+              + serverIndex + ";");
 
       Thread.sleep(500);
 
@@ -58,7 +59,8 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
                   "BEGIN ISOLATION REPEATABLE_READ;" //
                       + "LET photo = CREATE vertex Photos" + serverIndex + " SET id = uuid(), name = \"downloadX.jpg\";" //
                       + "LET user = SELECT * FROM Users" + serverIndex + " WHERE id = \"u1111\";" //
-                      + "LET userEdge = Create edge HasUploaded" + serverIndex + " FROM $user to $photo set type = \"User_Photos\";" //
+                      + "LET userEdge = Create edge HasUploaded" + serverIndex + " FROM $user to $photo set type = \"User_Photos\";"
+                      //
                       + "commit retry 100;return $photo;");
 
               atomic.incrementAndGet();
@@ -71,7 +73,7 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
               Assertions.assertNotNull(responseAsJson.getJSONObject("result").getJSONArray("records"));
 
             } catch (Exception e) {
-              throw new RuntimeException(e);
+              Assertions.fail(e);
             }
           }
         });
@@ -84,7 +86,8 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
       Assertions.assertEquals(THREADS * SCRIPTS, atomic.get());
 
       final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql", //
-          "SELECT id FROM ( SELECT expand( outE('HasUploaded" + serverIndex + "') ) FROM Users" + serverIndex + " WHERE id = \"u1111\" )");
+          "SELECT id FROM ( SELECT expand( outE('HasUploaded" + serverIndex + "') ) FROM Users" + serverIndex
+              + " WHERE id = \"u1111\" )");
 
       Assertions.assertEquals(THREADS * SCRIPTS, responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length(),
           "Some edges was missing when executing from server " + serverIndex);

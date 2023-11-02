@@ -37,7 +37,8 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
   public DatabaseAlignRequest() {
   }
 
-  public DatabaseAlignRequest(final String databaseName, final String schemaJson, final Map<Integer, Long> fileChecksums, final Map<Integer, Long> fileSizes) {
+  public DatabaseAlignRequest(final String databaseName, final String schemaJson, final Map<Integer, Long> fileChecksums,
+      final Map<Integer, Long> fileSizes) {
     this.databaseName = databaseName;
     this.schemaJson = schemaJson;
     this.fileChecksums = fileChecksums;
@@ -84,7 +85,7 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
 
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    final DatabaseInternal database = (DatabaseInternal) server.getServer().getDatabase(databaseName);
+    final DatabaseInternal database = server.getServer().getDatabase(databaseName);
 
     final List<int[]> pagesToAlign = new ArrayList<>();
 
@@ -102,8 +103,9 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
             // ALIGN THE ENTIRE FILE
             pagesToAlign.add(new int[] { fileId, 0, -1 });
 
-            LogManager.instance().log(this, Level.INFO, "File %d size %s <> leader %s: requesting the entire file from the leader", null,//
-                fileId, file.getSize(), leaderFileSize);
+            LogManager.instance()
+                .log(this, Level.INFO, "File %d size %s <> leader %s: requesting the entire file from the leader", null,//
+                    fileId, file.getSize(), leaderFileSize);
             continue;
           }
 
@@ -116,8 +118,9 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
             // ALIGN THE ENTIRE FILE
             pagesToAlign.add(new int[] { fileId, 0, -1 });
 
-            LogManager.instance().log(this, Level.INFO, "File %d checksum %s <> leader %s: requesting the entire file from the leader", null,//
-                fileId, localFileChecksum, leaderFileChecksum);
+            LogManager.instance()
+                .log(this, Level.INFO, "File %d checksum %s <> leader %s: requesting the entire file from the leader", null,//
+                    fileId, localFileChecksum, leaderFileChecksum);
             continue;
           }
         }
