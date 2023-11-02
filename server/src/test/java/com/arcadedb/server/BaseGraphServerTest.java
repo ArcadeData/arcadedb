@@ -422,6 +422,14 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     return null;
   }
 
+  protected int getServerNumber(final String name) {
+    for (int i = 0; i < servers.length; i++) {
+      if (servers[i].getServerName().equals(name))
+        return i;
+    }
+    return -1;
+  }
+
   protected int getServerCount() {
     return 1;
   }

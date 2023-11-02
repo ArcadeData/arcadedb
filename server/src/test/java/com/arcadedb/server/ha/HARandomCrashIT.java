@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -31,6 +30,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -75,7 +75,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
             db.begin();
             try {
               final long count = db.countType(VERTEX1_TYPE_NAME, true);
-              if (count > (getTxs() * getVerticesPerTx()) * 9 / 10) {
+              if (count > ((long) getTxs() * getVerticesPerTx()) * 9 / 10) {
                 LogManager.instance()
                     .log(this, getLogLevel(), "TEST: Skip stop of server because it's close to the end of the test (%d/%d)", null,
                         count, getTxs() * getVerticesPerTx());
@@ -89,30 +89,25 @@ public class HARandomCrashIT extends ReplicationServerIT {
               db.rollback();
             }
 
-            delay = 1000;
+            delay = 100;
             LogManager.instance().log(this, getLogLevel(), "TEST: Stopping the Server %s (delay=%d)...", null, serverId, delay);
 
             getServer(serverId).stop();
 
-            while (getServer(serverId).getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN) {
-              try {
-                Thread.sleep(1000);
-              } catch (final InterruptedException e) {
-                e.printStackTrace();
-              }
-            }
+            while (getServer(serverId).getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN)
+              CodeUtils.sleep(300);
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Restarting the Server %s (delay=%d)...", null, serverId, delay);
 
             restarts++;
 
-            for (int j = 0; j < 3; j++) {
+            for (int restartRetry = 0; restartRetry < 3; restartRetry++) {
               try {
                 getServer(serverId).start();
                 break;
               } catch (Throwable e) {
                 LogManager.instance()
-                    .log(this, getLogLevel(), "TEST: Error on restarting the server %s, retrying (%d/%d)", e, j + 1, 3);
+                    .log(this, getLogLevel(), "TEST: Error on restarting the server %s, retrying (%d/%d)", e, restartRetry + 1, 3);
               }
             }
 
@@ -124,7 +119,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
                 delay = 0;
                 LogManager.instance().log(this, getLogLevel(), "TEST: Resetting delay (delay=%d)...", null, delay);
               }
-            }, 10000);
+            }, 10_000);
 
             return;
           }
@@ -132,7 +127,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
         LogManager.instance().log(this, getLogLevel(), "TEST: Cannot restart server because unable to count vertices");
 
       }
-    }, 15000, 10000);
+    }, 15_000, 10_000);
 
     final String server1Address = getServer(0).getHttpServer().getListeningAddress();
     final String[] server1AddressParts = server1Address.split(":");
@@ -167,12 +162,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
             Assertions.assertEquals("distributed-test", result.getProperty("name"));
           }
 
-          if (delay > 0) {
-            try {
-              Thread.sleep(delay);
-            } catch (final Exception e) {
-            }
-          }
+          CodeUtils.sleep(delay);
+
           break;
 
         } catch (final TransactionException | NeedRetryException | RemoteException | TimeoutException e) {
@@ -217,20 +208,16 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
     LogManager.instance().log(this, getLogLevel(), "Done, restarted %d times", null, restarts);
 
-    try {
-      Thread.sleep(5000);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (final int s : getServerToCheck()) {
+    for (final int s : getServerToCheck())
       checkEntriesOnServer(s);
-    }
 
     onAfterTest();
 
-    Assertions.assertTrue(restarts >= getServerCount(), "Restarts " + restarts);
+    Assertions.assertTrue(restarts >= getServerCount(), "Restarts " + restarts + " times");
   }
 
   private static Level getLogLevel() {

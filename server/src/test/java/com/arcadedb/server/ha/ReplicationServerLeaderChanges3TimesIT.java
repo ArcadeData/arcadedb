@@ -31,6 +31,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ha.message.TxRequest;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -107,13 +108,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
           // IGNORE IT
           LogManager.instance()
               .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
-          try {
-            Thread.sleep(500);
-          } catch (final InterruptedException e1) {
-            Thread.currentThread().interrupt();
-          }
-
-          continue;
+          CodeUtils.sleep(500);
 
         } catch (final DuplicatedKeyException e) {
           // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH

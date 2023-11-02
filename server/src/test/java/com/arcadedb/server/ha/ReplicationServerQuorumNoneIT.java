@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.AfterEach;
 
 public class ReplicationServerQuorumNoneIT extends ReplicationServerIT {
@@ -41,13 +42,7 @@ public class ReplicationServerQuorumNoneIT extends ReplicationServerIT {
   @AfterEach
   @Override
   public void endTest() {
-    try {
-      Thread.sleep(5000);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      e.printStackTrace();
-    }
-
+    CodeUtils.sleep(5000);
     super.endTest();
     GlobalConfiguration.HA_QUORUM.setValue("MAJORITY");
   }

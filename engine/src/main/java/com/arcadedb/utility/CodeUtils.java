@@ -109,4 +109,16 @@ public class CodeUtils {
       parts.add(text.substring(startPos));
     return parts;
   }
+
+  public static boolean sleep(final long delay) {
+    if (delay > 0)
+      try {
+        Thread.sleep(delay);
+        return true;
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        // IGNORE IT
+      }
+    return false;
+  }
 }

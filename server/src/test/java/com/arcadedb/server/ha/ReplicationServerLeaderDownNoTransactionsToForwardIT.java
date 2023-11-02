@@ -27,6 +27,7 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
+import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -55,10 +56,11 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
     final String server2Address = getServer(1).getHttpServer().getListeningAddress();
     final String[] server1AddressParts = server2Address.split(":");
 
-    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]),
+        getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    LogManager.instance().log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    LogManager.instance()
+        .log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     long counter = 0;
 
@@ -68,7 +70,8 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
       for (int i = 0; i < getVerticesPerTx(); ++i) {
         for (int retry = 0; retry < maxRetry; ++retry) {
           try {
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter, "distributed-test");
+            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
+                "distributed-test");
 
             Assertions.assertTrue(resultSet.hasNext());
             final Result result = resultSet.next();
@@ -82,12 +85,9 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
             break;
           } catch (final RemoteException e) {
             // IGNORE IT
-            LogManager.instance().log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
-            try {
-              Thread.sleep(500);
-            } catch (final InterruptedException e1) {
-              Thread.currentThread().interrupt();
-            }
+            LogManager.instance()
+                .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
+            CodeUtils.sleep(500);
           }
         }
       }
@@ -101,16 +101,11 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
 
     LogManager.instance().log(this, Level.FINE, "Done");
 
-    try {
-      Thread.sleep(1000);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
+    CodeUtils.sleep(1000);
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (final int s : getServerToCheck()) {
+    for (final int s : getServerToCheck())
       checkEntriesOnServer(s);
-    }
 
     onAfterTest();
   }

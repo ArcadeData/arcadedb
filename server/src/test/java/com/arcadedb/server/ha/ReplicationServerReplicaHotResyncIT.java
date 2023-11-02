@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Assertions;
 
 import java.util.concurrent.atomic.*;
@@ -51,19 +52,14 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          if( !serversSynchronized)
+          if (!serversSynchronized)
             return;
 
           if (slowDown) {
             // SLOW DOWN A SERVER AFTER 5TH MESSAGE
             if (totalMessages.incrementAndGet() > 5) {
-              try {
-                LogManager.instance().log(this, Level.FINE, "TEST: Slowing down response from replica server 2...");
-                Thread.sleep(10000);
-              } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-                // IGNORE IT
-              }
+              LogManager.instance().log(this, Level.FINE, "TEST: Slowing down response from replica server 2...");
+              CodeUtils.sleep(10_000);
             }
           } else {
             if (type == TYPE.REPLICA_HOT_RESYNC) {
@@ -82,7 +78,7 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
           // SLOW DOWN A SERVER
-          if( !serversSynchronized)
+          if (!serversSynchronized)
             return;
 
           if ("ArcadeDB_2".equals(object) && type == TYPE.REPLICA_OFFLINE) {

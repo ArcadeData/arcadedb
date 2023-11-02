@@ -27,6 +27,7 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
+import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -89,11 +90,7 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
             // IGNORE IT
             LogManager.instance()
                 .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
-            try {
-              Thread.sleep(500);
-            } catch (final InterruptedException e1) {
-              Thread.currentThread().interrupt();
-            }
+            CodeUtils.sleep(500);
           }
         }
       }
@@ -106,17 +103,11 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
     }
 
     LogManager.instance().log(this, Level.FINE, "Done");
-
-    try {
-      Thread.sleep(1000);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
+    CodeUtils.sleep(1000);
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (final int s : getServerToCheck()) {
+    for (final int s : getServerToCheck())
       checkEntriesOnServer(s);
-    }
 
     onAfterTest();
   }
