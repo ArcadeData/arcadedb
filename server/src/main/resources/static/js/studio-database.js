@@ -114,6 +114,7 @@ async function login() {
     updateLocalStorageWithNewJwt(jwt);
     createRefreshTokenTimer(jwt.expires_in);
     createInactivityTimer();
+    loadDatabaseMetadata();
   }
 
   updateDatabases(function () {
@@ -189,13 +190,12 @@ function editorFocus(){
 
 function updateDatabases( callback ){
   let selected = getCurrentDatabase();
-  if( selected == null || selected == "" )
+  if (selected == null || selected == "")
     selected = globalStorageLoad("database.current");
 
   jQuery.ajax({
-    type: "POST",
-    url: basePath + "/server",
-    data: "{ command: 'list databases' }",
+    type: "GET",
+    url: basePath + "/databasesInfo",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
@@ -210,8 +210,9 @@ function updateDatabases( callback ){
 
       let databases = "";
       for( let i in data.result ){
-        let dbName = data.result[i];
-        databases += "<option value='"+dbName+"'>"+dbName+"</option>";
+        let dbName = data.result[i].name;
+        let classification = data.result[i].classification || "";
+        databases += `<option value='${dbName}'><b>(${classification})</b> ${dbName}</option>`;
       }
       $("#inputDatabase").html(databases);
   
@@ -242,8 +243,28 @@ function updateDatabases( callback ){
 }
 
 function createDatabase(){
-  let html = "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='inputCreateDatabaseName'>";
+    // <input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='inputCreateDatabaseName'>
+  let html = `
+  <div style='text-align: left'>
+  <div style="padding-bottom: 10px">
+  <b>Name:  </b><input id='inputCreateDatabaseName'></br>
+  </div>
+  <div style="padding-bottom: 10px">
+  <b>Classification:  </b><input id='inputClassification'></br>
+  </div>
+  <div style="padding-bottom: 10px">
+  <b>Owner:  </b><input id='inputOwner'>
+  </div>
+  <p style="margin-bottom: 5px; font-weight: bold;">Please select database visibility:</p>
+  <input type="radio" id="rbPublic" name="publicPrivate" value="public">
+  <label for="rbPublic">Public</label><br>
+  <input type="radio" id="rbPrivate" name="publicPrivate" value="private">
+  <label for="rbPrivate">Private</label><br>
+  <label for="import"><b>Import WIP SDL Ontology:</b></label>
+  <input type="checkbox" id="chkImport" name="chkImport" value="import">
+  </div>
 
+  `;
   Swal.fire({
     title: 'Create a new database',
     html: html,
@@ -257,7 +278,32 @@ function createDatabase(){
   }).then((result) => {
     if (result.value) {
       let database = encodeURI( $("#inputCreateDatabaseName").val().trim() );
-      if( database == "" ){
+      let owner = encodeURI( $("#inputOwner").val().trim() );
+      let visibility = "public";
+
+      var ele = document.getElementsByName('publicPrivate');
+ 
+      for (i = 0; i < ele.length; i++) {
+          if (ele[i].checked)
+              visibility = ele[i].value;
+      }
+
+      let classification = encodeURI( $("#inputClassification").val().trim() );
+
+      var chkImport = document.getElementsByName('chkImport');
+      let importOntology = chkImport[0].checked;
+
+      console.log("checked", chkImport, importOntology);
+
+      var options = {
+        owner: owner,
+        visibility: visibility,
+        classification: classification,
+        importOntology: importOntology
+      }
+      console.log("options: ", database, owner, visibility, classification);
+
+      if ( database == "" ){
         globalNotify( "Error", "Database name empty", "danger");
         return;
       }
@@ -265,7 +311,9 @@ function createDatabase(){
       jQuery.ajax({
         type: "POST",
         url: basePath + "/server",
-        data: "{ 'command': 'create database " + database + "' }",
+
+        // TODO update with new options props.
+        data: "{ 'command': 'create database " + database + "', options: "+ JSON.stringify(options) + " }",
         beforeSend: function (xhr){
           xhr.setRequestHeader('Authorization', globalCredentials);
         }
@@ -410,6 +458,7 @@ function setCurrentDatabase( dbName ){
   $("#currentDatabase").html( dbName );
   $("#inputDatabase").val( dbName );
   globalStorageSave("database.current", dbName);
+  loadDatabaseMetadata();
 }
 
 function getQueryHistory(){
@@ -917,4 +966,33 @@ function updateDatabaseSetting(key, value){
       });
     }
   });
+}
+
+function loadDatabaseMetadata() {
+  jQuery.ajax({
+    type: "GET",
+    url: basePath + "/databasesInfo",
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data) {
+    let json = JSON.parse(JSON.stringify(data));
+    
+    if (typeof json == "object" && json["result"] == 'ok') {
+      // no data returned, the user doesn't have access to any databases
+    } else {
+      // valid response, parse the databases the user has access to
+      let databases = "";
+      for ( let i in data.result ) {
+        if ( data.result[i].name == $("#inputDatabase").val()) {
+            $("#lblClassification").text( data.result[i].classification || "" );
+            $("#lblOwner").text( data.result[i].owner || "" );
+            $("#lblPublic").text( data.result[i].isPublic || "" );
+            $("#lblCreatedBy").text( data.result[i].createdBy || "" );
+            $("#lblCreatedDate").text( data.result[i].createdDateTime || "" );
+          }
+        }
+      }
+    });
 }

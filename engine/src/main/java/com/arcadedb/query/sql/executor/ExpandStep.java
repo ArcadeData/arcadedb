@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.security.AuthorizationUtils;
 
 import java.util.*;
 
@@ -70,12 +71,12 @@ public class ExpandStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
 
         final Result result = nextElement;
+        
         localCount++;
         nextElement = null;
         fetchNext(context, nRecords);
         return result;
       }
-
     };
   }
 
@@ -92,6 +93,13 @@ public class ExpandStep extends AbstractExecutionStep {
             if (record == null) {
               continue;
             }
+         
+            // Prevent loading edges the user doesn't have access to.
+            if (!AuthorizationUtils.checkPermissionsOnDocumentToRead(record.asDocument(true), 
+                context.getDatabase().getContext().getCurrentUser())) {
+              continue;
+            }
+
             nextElement = new ResultInternal();
             ((ResultInternal) nextElement).setElement((Document) record);
           } else if (nextElementObj instanceof Map) {

@@ -44,12 +44,14 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private long readTimeout = -1;
   private final boolean[] databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
   private List<ArcadeRole> arcadeRoles = new ArrayList<>();
+  private Map<String,Object> attributes;
 
-  public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups, final List<ArcadeRole> arcadeRoles) {
+  public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups, final List<ArcadeRole> arcadeRoles, Map<String, Object> attributes) {
     this.databaseName = databaseName;
     this.userName = userName;
     this.groups = groups;
     this.arcadeRoles = arcadeRoles;
+    this.attributes = attributes;
   }
 
   public String[] getGroups() {
@@ -82,6 +84,11 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
+    // Allow root user to access all databases for HA syncing between nodes
+    if (this.getName().equals("root")) {
+      return true;
+    }
+
     log.debug("requestAccessOnDatabase: access: {}, decision: {}", access,
         databaseAccessMap[access.ordinal()]);
     return databaseAccessMap[access.ordinal()];
@@ -89,6 +96,11 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
+    // Allow root user to access all files for HA syncing between nodes
+    if (this.getName().equals("root")) {
+      return true;
+    }
+
     final boolean[] permissions = fileAccessMap[fileId];
     // log.info("requestAccessOnFile: database: {}; fileId: {}, access: {}, permissions: {}", databaseName, fileId, access,
     //     permissions);
@@ -322,5 +334,49 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   public boolean isServiceAccount() {
     // Keycloak client service account naming convention follows this. Update as needed.
     return this.userName.startsWith("service-account-");
+  }
+
+  public String getClearanceForCountryOrTetragraphCode(String code) {
+    return getStringValueFromKeycloakAttribute("clearance" + "-" + code);
+  }
+
+  public String getNationality() {
+    return getStringValueFromKeycloakAttribute("nationality");
+  }
+
+  /**
+   * Checks if the user has the specific Tetragraph, or 4 character code representing an organization, like NATO, etc.
+   */
+  public boolean hasTetragraph(String tetraGraph) {
+    String tetras = getStringValueFromKeycloakAttribute("tetragraphs");
+    if (tetras != null) {
+      return tetras.contains(tetraGraph);
+    } else {
+      return false;
+    }
+  }
+
+  /**
+   * Gets any Tetragraphs, or 4 character codes representing organizations, like NATO, etc. that the user may be a member of.
+   */
+  public String getTetragraphs() {
+    return getStringValueFromKeycloakAttribute("tetragraphs");
+  }
+
+  /**
+   * Workaround for keycloak sending over string attributes as arrays........
+   * Strip the array brackets out of the string and return the string.
+   * @param attributeName
+   * @return
+   */
+  private String getStringValueFromKeycloakAttribute(String attributeName) {
+    if (attributes != null && attributes.containsKey(attributeName)) {
+      var nationality = attributes.get(attributeName).toString();
+      nationality = nationality.replace("[", "");
+      nationality = nationality.replace("]", "");
+      return nationality;
+    } else { 
+      return null;
+    }
   }
 }

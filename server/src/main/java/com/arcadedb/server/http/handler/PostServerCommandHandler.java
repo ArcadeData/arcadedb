@@ -25,8 +25,10 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.security.AuthorizationUtils;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
 import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
@@ -41,12 +43,14 @@ import com.arcadedb.server.security.oidc.role.CRUDPermission;
 import com.arcadedb.server.security.oidc.role.DatabaseAdminRole;
 import com.arcadedb.server.security.oidc.role.RoleType;
 import com.arcadedb.server.security.oidc.role.ServerAdminRole;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nimbusds.oauth2.sdk.util.StringUtils;
 
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.rmi.*;
 import java.util.*;
 
@@ -88,7 +92,7 @@ public class PostServerCommandHandler extends AbstractHandler {
       if (command.startsWith("shutdown"))
         shutdownServer(command);
       else if (command.startsWith("create database "))
-        createDatabase(command, user);
+        createDatabase(payload, user);
       else if (command.equals("list databases")) {
         return listDatabases(user);
       } else if (command.startsWith("drop database "))
@@ -189,20 +193,62 @@ public class PostServerCommandHandler extends AbstractHandler {
     });
   }
 
-  private void createDatabase(final String command, final ServerSecurityUser user) {
-    final String databaseName = command.substring("create database ".length()).trim();
-    if (databaseName.isEmpty())
-      throw new IllegalArgumentException("Database name empty");
+  private boolean isNotNullOrEmpty(String toCheck) {
+    return toCheck != null && !toCheck.isEmpty();
+  }
+
+  private void createDatabase(final JsonObject command, final ServerSecurityUser user) {
 
     // check if user has create database role, or is root
     var anyRequiredRoles = List.of(ServerAdminRole.CREATE_DATABASE, ServerAdminRole.ALL);
     if (httpServer.getServer().getSecurity().checkUserHasAnyServerAdminRole(user, anyRequiredRoles)) {
       checkServerIsLeaderIfInHA();
 
+      // TODO check if required database info is present in the JSON options payload, including owner, classificaiton, public/private
+      final String databaseName = command.get("command").getAsString().substring("create database ".length()).trim();
+
+      final String OPTIONS = "options";
+      final String CLASSIFICATION = "classification";
+      final String OWNER = "owner";
+      final String VISIBILITY = "visibility";
+
+      if (databaseName.isEmpty())
+        throw new IllegalArgumentException("Database name empty");
+      // validate json payload, needs command and options object
+      if (!command.has("command"))
+        throw new IllegalArgumentException("Missing command");
+      if (!command.has(OPTIONS))
+        throw new IllegalArgumentException(String.format("Missing %s object", OPTIONS));
+
+      var options = command.get(OPTIONS).getAsJsonObject();
+
+      if (!options.has(CLASSIFICATION) && !isNotNullOrEmpty(options.get(CLASSIFICATION).getAsString())) {
+        throw new IllegalArgumentException(String.format("Missing %s.%s", OPTIONS, CLASSIFICATION));
+      }
+      if (!options.has(OWNER) && !isNotNullOrEmpty(options.get(OWNER).getAsString())) {
+        throw new IllegalArgumentException(String.format("Missing %s.%s", OPTIONS, OWNER));
+      }
+      if (options.has(VISIBILITY) && !isNotNullOrEmpty(options.get(VISIBILITY).getAsString())) {
+        throw new IllegalArgumentException(String.format("Missing %s.%s", OPTIONS, VISIBILITY));
+      }
+
+      // Handle operational database metadata
+      String classification = options.get(CLASSIFICATION).getAsString();
+
+      // TODO cap acceptable classifications at the deployment level.
+      // make static util method for this
+      
+      if (!AuthorizationUtils.isClassificationValidForDeployment(classification)) {
+        throw new IllegalArgumentException(String.format("Invalid classification %s. Acceptable values are %s", classification));
+      }
+      
+      String owner = options.has(OWNER) ? options.get(OWNER).getAsString() : null;
+      boolean isPublic = options.has(VISIBILITY) ? options.get(VISIBILITY).getAsString().equalsIgnoreCase("public") : false;
+
       final ArcadeDBServer server = httpServer.getServer();
       server.getServerMetrics().meter("http.create-database").hit();
 
-      final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
+      final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE, classification, owner, isPublic);
 
       if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
         ((ReplicatedDatabase) db).createInReplicas();
@@ -213,10 +259,40 @@ public class PostServerCommandHandler extends AbstractHandler {
       ArcadeRole schemaRole = new ArcadeRole(RoleType.DATABASE_ADMIN, databaseName, DatabaseAdminRole.ALL);
       createAndAssignRoleToUser(dataRole, user.getName());
       createAndAssignRoleToUser(schemaRole, user.getName());
+
+      if (options.has("importOntology") && options.get("importOntology").getAsBoolean()) {
+        // get the ontology file from project resources
+        try {
+          InputStream inputStream = PostServerCommandHandler.class.getResourceAsStream("/ontology");
+          String data = readFromInputStream(inputStream);
+
+          // get JSONArray from data
+          JSONArray jsonArray = new JSONArray(data);
+
+          // iterate over jsonArray and insert into database
+          for (int i = 0; i < jsonArray.length(); i++) {
+            db.command("sql", jsonArray.getString(i));
+          }
+        } catch (Exception e) {
+          throw new ServerException("Error importing ontology: " + e.getMessage());
+        }
+      }
     } else {
       throw new ServerSecurityException("Create database operation not allowed for user " + user.getName());
     }
   }
+
+  private String readFromInputStream(InputStream inputStream) throws IOException {
+    StringBuilder resultStringBuilder = new StringBuilder();
+    try (BufferedReader br
+      = new BufferedReader(new InputStreamReader(inputStream))) {
+        String line;
+        while ((line = br.readLine()) != null) {
+            resultStringBuilder.append(line).append("\n");
+        }
+    }
+  return resultStringBuilder.toString();
+}
 
   private void createAndAssignRoleToUser(ArcadeRole arcadeRole, String username) {
     String newRole = arcadeRole.getKeycloakRoleName();

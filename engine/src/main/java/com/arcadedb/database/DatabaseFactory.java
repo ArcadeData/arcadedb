@@ -38,6 +38,10 @@ public class DatabaseFactory implements AutoCloseable {
   private final        String                                                     databasePath;
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
 
+  private String classification = "U";
+  private String owner;
+  private boolean isPublic = false;
+
   public DatabaseFactory(final String path) {
     if (path == null || path.isEmpty())
       throw new IllegalArgumentException("Missing path");
@@ -86,6 +90,12 @@ public class DatabaseFactory implements AutoCloseable {
     final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, PaginatedFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.create();
+
+    // Set additional operational metadata for the new database
+    database.getSchema().getEmbedded().setClassification(classification);
+    database.getSchema().getEmbedded().setOwner(owner);
+    database.getSchema().getEmbedded().setPublic(isPublic);
+    database.getSchema().getEmbedded().saveConfiguration();
 
     registerActiveInstance(database);
 
@@ -144,5 +154,20 @@ public class DatabaseFactory implements AutoCloseable {
       database.close();
       throw new DatabaseOperationException("Found active instance of database '" + database.databasePath + "' already in use");
     }
+  }
+
+  public synchronized DatabaseFactory setOwner(final String owner) {
+    this.owner = owner;
+    return this;
+  }
+
+  public synchronized DatabaseFactory setClassification(final String classification) {
+    this.classification = classification;
+    return this;
+  }
+  
+  public DatabaseFactory setPublic(final boolean isPublic) {
+    this.isPublic = isPublic;
+    return this;
   }
 }

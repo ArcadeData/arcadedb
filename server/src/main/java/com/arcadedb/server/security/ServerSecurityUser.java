@@ -32,7 +32,6 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -44,12 +43,13 @@ public class ServerSecurityUser implements SecurityUser {
   private       String                                                password;
   private final ConcurrentHashMap<String, ServerSecurityDatabaseUser> databaseCache = new ConcurrentHashMap();
   private List<ArcadeRole> arcadeRoles = new ArrayList<>();
+  private Map<String,Object> attributes;
 
   public ServerSecurityUser(final ArcadeDBServer server, final JSONObject userConfiguration) {
-    this(server, userConfiguration, new ArrayList<>());
+    this(server, userConfiguration, new ArrayList<>(), null);
   }
 
-  public ServerSecurityUser(final ArcadeDBServer server, final JSONObject userConfiguration, List<ArcadeRole> arcadeRoles) {
+  public ServerSecurityUser(final ArcadeDBServer server, final JSONObject userConfiguration, List<ArcadeRole> arcadeRoles, Map<String, Object> attributes) {
     this.server = server;
     this.userConfiguration = userConfiguration;
 
@@ -65,6 +65,8 @@ public class ServerSecurityUser implements SecurityUser {
     }
 
     this.arcadeRoles = arcadeRoles;
+
+    this.attributes = attributes;
   }
 
   @Override
@@ -106,7 +108,7 @@ public class ServerSecurityUser implements SecurityUser {
 
     if (dbu == null)
       // USER HAS NO ACCESS TO THE DATABASE, RETURN A USER WITH NO AX
-      dbu = new ServerSecurityDatabaseUser(databaseName, name, new String[0], getRelevantRoles(arcadeRoles, databaseName));
+      dbu = new ServerSecurityDatabaseUser(databaseName, name, new String[0], getRelevantRoles(arcadeRoles, databaseName), attributes);
 
     final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(databaseName, dbu);
     if (prev != null)
@@ -150,11 +152,21 @@ public class ServerSecurityUser implements SecurityUser {
 
   @Override
   public Set<String> getAuthorizedDatabases() {
+    // Allow root user to access all databases for HA syncing between nodes
+    if (this.name.equals("root")) {
+      return server.getDatabaseNames();
+    }
+
     return databasesNames;
   }
 
   @Override
   public boolean canAccessToDatabase(final String databaseName) {
+    // Allow root user to access all databases for HA syncing between nodes
+    if (name.equals("root")) {
+      return true;
+    }
+
     log.debug("canAccessToDatabase: {} {} {} {}", name, databaseName, databasesNames.contains(SecurityManager.ANY), databasesNames.contains(databaseName));
     return databasesNames.contains(SecurityManager.ANY) || databasesNames.contains(databaseName);
   }
@@ -180,18 +192,19 @@ public class ServerSecurityUser implements SecurityUser {
     log.debug("XX registerDatabaseUser: name: {}; database: {}; groupList: {}", name, databaseName, groupList.toString());
     
     ServerSecurityDatabaseUser dbu = new ServerSecurityDatabaseUser(databaseName, name, groupList.toArray(new String[groupList.size()]), 
-            getRelevantRoles(arcadeRoles, databaseName));
+            getRelevantRoles(arcadeRoles, databaseName), attributes);
 
     final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(databaseName, dbu);
     if (prev != null)
       // USE THE EXISTENT ONE
       dbu = prev;
-
-    if (database != null) {
+    
+    // Parsing the database groups configuration is unnecessary for the root user, we pass all requests
+    if (database != null && !name.equals("root")) {
       if (!SecurityManager.ANY.equals(database.getName())) {
         final JSONObject databaseGroups = server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
         dbu.updateDatabaseConfiguration(databaseGroups);
-        log.debug("registerDatabaseUser, calling updateFileAccess {} {}", databaseName, databaseGroups.toString());
+        log.debug("registerDatabaseUser, calling updateFileAccess {} {}", databaseName, databaseGroups);
         dbu.updateFileAccess((DatabaseInternal) database, databaseGroups);
       }
     }

@@ -21,12 +21,11 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.AuthorizationUtils;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.*;
@@ -98,11 +97,14 @@ public class BucketIterator implements Iterator<Record> {
               if (!bucket.existsRecord(rid))
                 continue;
 
-              if (!checkPermissionsOnDocument(rid.asDocument(true))) {
+              if (!AuthorizationUtils.checkPermissionsOnDocumentToRead(rid.asDocument(true), database.getContext().getCurrentUser())) {
                 continue;
               }
 
               next = rid.getRecord(false);
+
+              // TODO strip out properties the user doesn't have access to
+
               return null;
 
             } else if (recordSize[0] == Bucket.RECORD_PLACEHOLDER_POINTER) {
@@ -118,9 +120,11 @@ public class BucketIterator implements Iterator<Record> {
               var record = database.getRecordFactory()
                   .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
 
-              if (!checkPermissionsOnDocument(record.asDocument(true))) {
+              if (!AuthorizationUtils.checkPermissionsOnDocumentToRead(record.asDocument(true), database.getContext().getCurrentUser())) {
                 continue;
               }
+
+              // TODO strip out properties the user doesn't have access to
 
               next = record;
               return null;
@@ -142,19 +146,6 @@ public class BucketIterator implements Iterator<Record> {
         }
       }
     });
-  }
-
-  private boolean checkPermissionsOnDocument(final Document document) {
-    var currentUser = database.getContext().getCurrentUser();
-
-    if (currentUser.isServiceAccount() || currentUser.isDataSteward(document.getTypeName())) {
-      return true;
-    }
-
-    if ((!document.has(MutableDocument.CLASSIFICATION_MARKED) || !document.getBoolean(MutableDocument.CLASSIFICATION_MARKED))) {
-      return false;
-    }
-    return true;
   }
 
   @Override

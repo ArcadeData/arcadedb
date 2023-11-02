@@ -73,4 +73,14 @@ public interface SecurityDatabaseUser {
   long getResultSetLimit();
 
   long getReadTimeout();
+
+  String getClearanceForCountryOrTetragraphCode(String code);
+
+  String getNationality();
+
+  String getTetragraphs();
+
+  boolean hasTetragraph(String tetragraph);
+
+  // TODO location, organization, etc.
 }

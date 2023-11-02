@@ -21,6 +21,8 @@ package com.arcadedb.database;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.AuthorizationUtils;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.math.*;
 import java.util.*;
@@ -32,12 +34,103 @@ import java.util.*;
  */
 public class DocumentValidator {
 
-  // TODO move ACCM validation here?
+  /**
+   * Map of ordered classification abbreviations, permitting math comparisons to check classification validity.
+   */
+  public static final Map<String, Integer> classificationOptions = 
+      Map.of("U", 0, "CUI", 1, "C", 2, "S", 3, "TS", 4);
 
-  public static void validateSpecificProperties(final MutableDocument document, final List<Property> properties) throws ValidationException {
-    document.checkForLazyLoadingProperties();
-    for (Property entry : properties)
-      validateField(document, entry);
+  public static void verifyDocumentClassificationValidForDeployment(String toCheck, MutableDocument document) {
+    if (toCheck == null || toCheck.isEmpty())
+      throw new IllegalArgumentException("Classification cannot be null or empty");
+
+    if (!classificationOptions.containsKey(toCheck))
+      throw new ValidationException("Classification must be one of " + classificationOptions);
+
+    var deploymentClassification = System.getProperty("deploymentClassifcation", "S");
+    if (classificationOptions.get(deploymentClassification) < classificationOptions.get(toCheck))
+      throw new ValidationException("Classification " + toCheck + " is not allowed in this deployment");
+
+    var databaseClassification = document.getDatabase().getSchema().getEmbedded().getClassification();
+    if (classificationOptions.get(databaseClassification) < classificationOptions.get(toCheck))
+      throw new ValidationException("Classification " + toCheck + " is not allowed in this database");
+  }
+
+  public static void validateClassificationMarkings(final MutableDocument document, 
+          SecurityDatabaseUser securityDatabaseUser) {
+    boolean validSources = false;
+
+    // validate sources, if present
+    if (document.has(MutableDocument.SOURCES) && !document.toJSON().getJSONObject(MutableDocument.SOURCES).isEmpty()) {
+      validateSources(document, securityDatabaseUser);
+      validSources = true;
+    }
+
+    if (document.has(MutableDocument.CLASSIFICATION_PROPERTY) 
+        && document.toJSON().getJSONObject(MutableDocument.CLASSIFICATION_PROPERTY).has(MutableDocument.CLASSIFICATION_GENERAL_PROPERTY)) {
+
+      var classificationMarkings = document.toJSON().getJSONObject(MutableDocument.CLASSIFICATION_PROPERTY)
+          .getString(MutableDocument.CLASSIFICATION_GENERAL_PROPERTY);
+
+      if (classificationMarkings.trim().isEmpty()) {
+        throw new ValidationException("Classification " + classificationMarkings + " is not valid");
+      }
+
+      // TODO handle SBU, LES, etc.
+      String classification = classificationMarkings;
+      if (classificationMarkings.contains("//")) {
+        classification = classificationMarkings.substring(0, classificationMarkings.indexOf("//"));
+      }
+
+      // Validate the user can set the classification of the document. Can't create higher than what you can access.
+      if (!AuthorizationUtils.checkPermissionsOnDocumentToWrite(document, securityDatabaseUser)) {
+        throw new ValidationException("User cannot set classification markings on documents higher than or outside their current access.");
+      }
+
+      try {
+        verifyDocumentClassificationValidForDeployment(classification, document);
+      } catch (IllegalArgumentException e) {
+        throw new ValidationException("Invalid classification: " + classification);
+      }
+    } else if (!validSources){
+      throw new ValidationException("Missing classification data on document");
+    }
+  }
+
+  /**
+   * Validate the sources on the document are properly portion marked.
+   * Sources are stored in the document as a JSON object, with the key being a numbered list, and the values being the portion marked source id.
+   * @param document
+   */
+  private static void validateSources(final MutableDocument document, SecurityDatabaseUser securityDatabaseUser) {
+    var sources = document.toJSON().getJSONObject(MutableDocument.SOURCES);
+    sources.toMap().entrySet().forEach(entry -> {
+      var source = entry.getValue().toString().trim();
+
+      // Check for portion marked classification information. Should be in parantheses, and not empty
+      if (source.contains("(") && source.contains(")") && source.substring(0, 1).equals("(")) {
+        var markings = source.substring(1, source.indexOf(")"));
+        if (markings.trim().isEmpty()) {
+          throw new ValidationException("Source " + source + " is not valid");
+        }
+
+        if (!AuthorizationUtils.checkPermissionsOnDocumentToWrite(document, securityDatabaseUser)) {
+          throw new ValidationException("User cannot set classification markings on documents higher than or outside their current access.");
+        }
+
+        // Classification will end with a double separator if there are any additional ACCM markings.
+        if (markings.contains("//")) {
+          markings = markings.substring(0, markings.indexOf("//"));
+        }
+        try {
+          verifyDocumentClassificationValidForDeployment(markings, document);
+        } catch (IllegalArgumentException e) {
+          throw new ValidationException("Invalid classification for source: " + markings);
+        }
+      } else {
+        throw new ValidationException("Source " + source + " is not valid");
+      }
+    });
   }
 
   public static void validate(final MutableDocument document) throws ValidationException {
@@ -60,7 +153,8 @@ public class DocumentValidator {
       if (p.getRegexp() != null)
         // REGEXP
         if (!(fieldValue.toString()).matches(p.getRegexp()))
-          throwValidationException(p, "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: " + document);
+          throwValidationException(p, "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " 
+              + fieldValue + ", record: " + document);
 
       final Type propertyType = p.getType();
 

@@ -22,6 +22,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.ACCM.AccmProperty;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -40,8 +41,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   protected boolean dirty = false;
 
   public static final String CLASSIFICATION_TYPE = "Classification";
-  public static final String CLASSIFICATION_EMBEDDED_PROPERTY = "classification";
+  public static final String CLASSIFICATION_PROPERTY = "classification";
+  public static final String CLASSIFICATION_GENERAL_PROPERTY = "general";
+  public static final String CLASSIFICATION_ATTRIBUTES_PROPERTY = "attributes";
   public static final String CLASSIFICATION_MARKED = "classificationMarked";
+
+  public static final String SOURCES = "sources";
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {
     super(database, type, rid, null);
@@ -125,23 +130,14 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     return result;
   }
 
+  /**
+   * Convert externally configurable required proeprty defintiions into arcade internal required properties.
+   * Not used at the moment, leaving short term for possible use.
+   * @return
+   */
   public List<Property> getAccmProperties() {
 
     List<AccmProperty> accmProperties = new ArrayList<>();
-    AccmProperty ap = new AccmProperty()
-         .name(CLASSIFICATION_EMBEDDED_PROPERTY + ".general")
-         .parentType(CLASSIFICATION_TYPE)
-         .dataType(Type.STRING)
-         .readOnly(true)
-         .notNull(true)
-         .required(true)
-         .options(List.of("U", "CUI"));
-
-    // TODO further limit options based on databsase classification- can't be classified higher than the instance
-    // TODO recieve classification level from env var/k8s
-
-    accmProperties.add(ap);
-
     List<Property> properties = new ArrayList<>();
 
     for (AccmProperty accmProperty : accmProperties) {
@@ -167,16 +163,21 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     return properties;
   }
 
-  public void validateSpecificProperties(List<Property> properties) {
-    DocumentValidator.validateSpecificProperties(this, properties);
-  }
-
   /**
    * Triggers the native required property valiation of arcade, as well as the one time ACCM validation.
    * ACCM validation follows a different recursive type checking pattern than arcade, so it is done separately.
+ * @param securityDatabaseUser
    */
-  public void validateAndAccmCheck() {
+  public void validateAndAccmCheck(SecurityDatabaseUser securityDatabaseUser) {
     
+    /**
+     * Skip validitng during initial edge creation, as they don't have properties set yet.
+     * Arcade uses a multi step process to create edges, and the last step will apply the classification payload to the new edge.
+    */ 
+    if (toJSON().getString("@cat").equals("e") && !toJSON().has("@rid")) {
+      return;
+    }
+
     validate();
 
     /* The following is ACCM validation. Properties are most likely nested down a few objects from the root document,
@@ -186,16 +187,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
      * users until a data steward properly marks the document.
      */ 
     try {
-      // TODO group properties by embedded document and validate each embedded document
-      for (Property property : getAccmProperties()) {
-        if (property.getType() != Type.EMBEDDED) {
-          MutableEmbeddedDocument embeddedDocument = getEmbeddedDocumentToValidate(this, property.getName());
-
-          // The embedded doc has been fetched, remove the embedded doc name from the property name to check.
-          property.setName(property.getName().substring(property.getName().lastIndexOf(".") + 1));
-          embeddedDocument.validateSpecificProperties(List.of(property));
-        }
-      }
+      DocumentValidator.validateClassificationMarkings(this, securityDatabaseUser);
 
       set(CLASSIFICATION_MARKED, true);
     } catch (ValidationException e) {
@@ -219,11 +211,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @throws ValidationException if the document breaks some validation
    *                             constraints defined in the
-   *                             schema
    * @see Property
    */
   public void validate() throws ValidationException {
-
     DocumentValidator.validate(this);
   }
 
@@ -264,7 +254,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   /**
    * Sets the property value in the document. If the property has been defined in
    * the schema, the value is converted according to the property type.
-   */
+   */ 
   public synchronized MutableDocument set(final String name, Object value) {
     checkForLazyLoadingProperties();
     dirty = true;
@@ -276,7 +266,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   /**
    * Sets the property values in the document. If any properties has been defined
    * in the schema, the value is converted according to the property type.
-   *
+   * 
    * @param properties Array containing pairs of name (String) and value (Object)
    */
   public synchronized MutableDocument set(final Object... properties) {
@@ -320,38 +310,6 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       ((Collection<EmbeddedDocument>) old).add(emb);
     else
       set(propertyName, emb);
-
-    return emb;
-  }
-
-  /**
-   * Creates a new embedded document attached to the current document. If the
-   * property name already exists, and it is a map, then the embedded document
-   * is added to the collection.
-   *
-   * @param embeddedTypeName Embedded type name
-   * @param propertyName     Current document's property name where the embedded
-   *                         document is stored
-   * @param mapKey           key for the map to assign the embedded document
-   *
-   * @return MutableEmbeddedDocument instance
-   */
-  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName,
-      final String propertyName, final String mapKey) {
-    final Object old = get(propertyName);
-
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
-
-    if (old == null) {
-      final Map<String, EmbeddedDocument> embMap = new HashMap<>();
-      embMap.put(mapKey, emb);
-      set(propertyName, embMap);
-    } else if (old instanceof Map)
-      ((Map<String, EmbeddedDocument>) old).put(mapKey, emb);
-    else
-      throw new IllegalArgumentException(
-          "Property '" + propertyName + "' is '" + old.getClass() + "', but null or Map was expected");
 
     return emb;
   }

@@ -21,7 +21,15 @@
   </div>
 
   <hr>
-
+  <div class="row">
+    <div class="col">
+    <label><b>Classification: </b></label>&nbsp;<label id="lblClassification" name="lblClassification"></label><br>
+    <label><b>Owner: </b></label>&nbsp;<label id="lblOwner" name="lblOwner"></label><br>
+    <label><b>Public: </b></label>&nbsp;<label id="lblPublic" name="lblPublic"></label><br>
+    <!-- <label><b>Created By: </b></label>&nbsp;<label id="lblCreatedBy" name="lblCreatedBy"></label><br>
+    <label><b>Created Date: </b></label>&nbsp;<label id="lblCreatedDate" name="lblCreatedDate"></label><br> -->
+  </div>
+</div>
   <div class="row">
     <div class="col-6">
       <button class="btn btn-pill" onclick="updateDatabases()">Refresh <i class="fa fa-sync"></i></button>
@@ -55,9 +63,9 @@
                     properties and indexes.<br><br>
                   </div>
                 </div>
-                <div class="row">
-                  <div class="col-2">
-                    <ul id='vTypesTabs' class='nav nav-tabs flex-column'></ul>
+                <div class="col">
+                  <div class="col-2-auto">
+                    <ul id='vTypesTabs' class='flex-column' style="list-style-type: none; height: 200px; overflow-y: scroll;"></ul>
                   </div>
                   <div class="col-10">
                     <div id='vTypesPanels' class="tab-content"></div>
@@ -121,5 +129,6 @@
     loadQueryHistory();
     displaySchema();
     displayDatabaseSettings();
+    loadDatabaseMetadata();
   });
 </script>

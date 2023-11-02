@@ -258,6 +258,7 @@
             updateCluster();
           } else if (activeTab == "tab-database-sel") {
             studioCurrentTab = "database";
+            loadDatabaseMetadata();
           } else if (activeTab == "tab-api-sel") {
             studioCurrentTab = "api";
           } else if (activeTab == "tab-resources-sel") {
@@ -283,9 +284,10 @@
           $("#loginSpinner").show();
           if (globalCredentials != null) {
             updateDatabases(function () {
-            initQuery();
-          });
-        }
+              initQuery();
+            });
+            loadDatabaseMetadata();
+          }
         }
       });
     </script>

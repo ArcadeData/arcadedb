@@ -374,7 +374,11 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     userJson.put("databases", databases);
 
     log.debug("getOrCreateUser userJson {}", userJson.toString());
-    ServerSecurityUser serverSecurityUser = new ServerSecurityUser(server, userJson, arcadeRoles);
+
+    // 7. get user attribtues for ACCM
+    Map<String, Object> attributes = KeycloakClient.getUserAttributes(username);
+
+    ServerSecurityUser serverSecurityUser = new ServerSecurityUser(server, userJson, arcadeRoles, attributes);
     users.put(username, serverSecurityUser);
 
     return serverSecurityUser;

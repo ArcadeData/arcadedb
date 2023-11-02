@@ -184,6 +184,23 @@ public class KeycloakClient {
         return null;
     }
 
+    public static Map<String, Object> getUserAttributes(String username) {
+        String url = getBaseKeycloakAdminUrl() + "/users";
+        var userResponse = sendAuthenticatedGetAndGetResponse(url);
+
+        if (userResponse != null) {
+            JSONArray usersJA = new JSONArray(userResponse);
+            for (int i = 0; i < usersJA.length(); i++) {
+                var user = usersJA.getJSONObject(i);
+                if (user.getString("username").equals(username) && user.has("attributes")) {
+                    return user.getJSONObject("attributes").toMap();
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static String getClientId(String clientName) {
         String url = getBaseKeycloakAdminUrl() + "/clients";
         var userReponse = sendAuthenticatedGetAndGetResponse(url);
