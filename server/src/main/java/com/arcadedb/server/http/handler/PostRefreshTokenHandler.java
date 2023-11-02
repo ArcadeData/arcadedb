@@ -1,5 +1,6 @@
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -31,11 +32,14 @@ public class PostRefreshTokenHandler extends AbstractHandler {
         formData.put("refresh_token", refreshToken);
         formData.put("grant_type", "refresh_token");
         formData.put("scope", "openid");
-        formData.put("client_id", "df-backend");
+        formData.put("client_id", GlobalConfiguration.KEYCLOAK_CLIENT_ID.getValueAsString());
         formData.put("client_secret", System.getenv("KEYCLOAK_CLIENT_SECRET"));
 
+        String keycloakRootUrl = GlobalConfiguration.KEYCLOAK_ROOT_URL.getValueAsString();
+        String uri = String.format("%s/auth/realms/data-fabric/protocol/openid-connect/token", keycloakRootUrl);
+
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("http://df-keycloak.auth.svc.cluster.local:8080/auth/realms/data-fabric/protocol/openid-connect/token"))
+                .uri(URI.create(uri))
                 .POST(HttpRequest.BodyPublishers.ofString(PostLoginHandler.getFormDataAsString(formData)))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .build();

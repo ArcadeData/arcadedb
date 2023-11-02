@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -43,7 +44,7 @@ public class KeycloakClient {
      * @return
      */
     private static String getBaseKeycloakUrl() {
-        return "http://df-keycloak.auth:8080/auth/realms/data-fabric";
+        return String.format("%s/auth/realms/data-fabric", GlobalConfiguration.KEYCLOAK_ROOT_URL.getValueAsString());
     }
 
     /**
@@ -53,7 +54,7 @@ public class KeycloakClient {
      * @return
      */
     private static String getBaseKeycloakAdminUrl() {
-        return "http://df-keycloak.auth:8080/auth/admin/realms/data-fabric";
+        return String.format("%s/auth/admin/realms/data-fabric", GlobalConfiguration.KEYCLOAK_ROOT_URL.getValueAsString());
     }
 
     private static String getLoginUrl() {
@@ -67,7 +68,7 @@ public class KeycloakClient {
         formData.put("password", password);
         formData.put("grant_type", "password");
         formData.put("scope", "openid");
-        formData.put("client_id", "df-backend");
+        formData.put("client_id", GlobalConfiguration.KEYCLOAK_CLIENT_ID.getValueAsString());
         formData.put("client_secret", System.getenv("KEYCLOAK_CLIENT_SECRET"));
         return postUnauthenticatedAndGetResponse(getLoginUrl(), formData);
     }
@@ -242,6 +243,8 @@ public class KeycloakClient {
     public static List<String> getUserClientRoles(String username) {
         List<String> roles = new ArrayList<>();
 
+        String clientId = GlobalConfiguration.KEYCLOAK_CLIENT_ID.getValueAsString();
+
         String userId = getUserId(username);
         if (userId != null) {
             // get user roles
@@ -253,9 +256,9 @@ public class KeycloakClient {
             if (rolesResponse != null) {
                 JSONObject rolesJO = new JSONObject(rolesResponse);
 
-                if (rolesJO.has("clientMappings") && rolesJO.getJSONObject("clientMappings").has("df-backend")) {
+                if (rolesJO.has("clientMappings") && rolesJO.getJSONObject("clientMappings").has(clientId)) {
                     var clientMappings = rolesJO.getJSONObject("clientMappings");
-                    var dfBackend = clientMappings.getJSONObject("df-backend");
+                    var dfBackend = clientMappings.getJSONObject(clientId);
                     var mappings = dfBackend.getJSONArray("mappings");
 
                     roles = mappings.toList().stream().map(m -> {
@@ -268,7 +271,7 @@ public class KeycloakClient {
             // get user groups
             List<String> groupIds = getUserGroupIds(userId);
             for (String groupId : groupIds) {
-                roles.addAll(getClientRolesForGroup(groupId, "df-backend"));
+                roles.addAll(getClientRolesForGroup(groupId, clientId));
             }
         }
 
@@ -331,7 +334,7 @@ public class KeycloakClient {
     }
 
     public static void createRole(String roleName) {
-        String clientId = getClientId("df-backend");
+        String clientId = getClientId(GlobalConfiguration.KEYCLOAK_CLIENT_ID.getValueAsString());
 
         // TODO parameterize below url with config
         String url = String.format("%s/clients/%s/roles", getBaseKeycloakAdminUrl(), clientId);
@@ -350,7 +353,7 @@ public class KeycloakClient {
     public static void assignRoleToUser(String roleName, String username) {
         // get the id of the user to assign the role to
         String userId = getUserId(username);
-        String clientId = getClientId("df-backend");
+        String clientId = getClientId(GlobalConfiguration.KEYCLOAK_CLIENT_ID.getValueAsString());
         if (userId != null && clientId != null) {
 
             // get the role id to assign
