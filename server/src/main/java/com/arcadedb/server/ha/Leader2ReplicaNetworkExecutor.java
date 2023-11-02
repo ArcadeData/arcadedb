@@ -101,16 +101,18 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       this.forwarderQueue = new ArrayBlockingQueue<>(queueSize);
     }
 
-    setName(Constants.PRODUCT + "-ha-leader2replica/" + server.getServer().getServerName() + "/?");
+    setName(server.getServer().getServerName() + " leader2replica->?");
 
     synchronized (channelOutputLock) {
       try {
         if (!ha.isLeader()) {
+          final Replica2LeaderNetworkExecutor leader = server.getLeader();
+
           this.channel.writeBoolean(false);
           this.channel.writeByte(ReplicationProtocol.ERROR_CONNECT_NOLEADER);
           this.channel.writeString("Current server '" + ha.getServerName() + "' is not the Leader");
-          this.channel.writeString(server.getLeader().getRemoteServerName());
-          this.channel.writeString(server.getLeader().getRemoteAddress());
+          this.channel.writeString(leader != null ? leader.getRemoteServerName() : "");
+          this.channel.writeString(leader != null ? leader.getRemoteAddress() : "");
           throw new ConnectionException(channel.socket.getInetAddress().toString(),
               "Current server '" + ha.getServerName() + "' is not the Leader");
         }
@@ -124,8 +126,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
           throw new ConnectionException(channel.socket.getInetAddress().toString(), "Election for Leader is pending");
         }
 
-        setName(Constants.PRODUCT + "-ha-leader2replica/" + server.getServer().getServerName() + "/" + remoteServerName + "("
-            + remoteServerAddress + ")");
+        setName(server.getServer().getServerName() + " leader2replica->" + remoteServerName + "(" + remoteServerAddress + ")");
 
         // CONNECTED
         this.channel.writeBoolean(true);
@@ -207,8 +208,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       }
     });
     senderThread.start();
-    senderThread.setName(
-        Constants.PRODUCT + "-ha-leader2replica-sender/" + server.getServer().getServerName() + "/" + remoteServerName);
+    senderThread.setName(server.getServer().getServerName() + " leader2replica-sender->" + remoteServerName);
 
     forwarderThread = new Thread(new Runnable() {
       @Override
@@ -245,11 +245,10 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
         LogManager.instance()
             .log(this, Level.FINE, "Replication thread to remote server '%s' is off (buffered=%d)", remoteServerName,
                 forwarderQueue.size());
-
       }
     });
     forwarderThread.start();
-    forwarderThread.setName(Constants.PRODUCT + "-ha-leader-forwarder/" + server.getServer().getServerName());
+    forwarderThread.setName(server.getServer().getServerName() + " leader-forwarder");
 
     // REUSE THE SAME BUFFER TO AVOID MALLOC
     final Binary buffer = new Binary(8192);
@@ -340,7 +339,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
         final Thread qt = senderThread;
         if (qt != null) {
           try {
-            qt.join(5000);
+            qt.join(1_000);
             senderThread = null;
           } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -351,7 +350,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
         final Thread ft = forwarderThread;
         if (ft != null) {
           try {
-            ft.join(5000);
+            ft.join(1_000);
             forwarderThread = null;
           } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();

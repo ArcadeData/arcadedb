@@ -34,18 +34,20 @@ public class DateUtils {
   private static final ZoneId                                       UTC_ZONE_ID       = ZoneId.of("UTC");
   private static       ConcurrentHashMap<String, DateTimeFormatter> CACHED_FORMATTERS = new ConcurrentHashMap<>();
 
-  public static Object dateTime(final Database database, final long timestamp, final ChronoUnit sourcePrecision, final Class dateTimeImplementation,
-      final ChronoUnit destinationPrecision) {
+  public static Object dateTime(final Database database, final long timestamp, final ChronoUnit sourcePrecision,
+      final Class dateTimeImplementation, final ChronoUnit destinationPrecision) {
     final long convertedTimestamp = convertTimestamp(timestamp, sourcePrecision, destinationPrecision);
 
     final Object value;
     if (dateTimeImplementation.equals(Date.class)) {
       if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
-        throw new IllegalArgumentException("java.util.Date implementation cannot handle datetime with precision " + destinationPrecision);
+        throw new IllegalArgumentException(
+            "java.util.Date implementation cannot handle datetime with precision " + destinationPrecision);
       value = new Date(convertedTimestamp);
     } else if (dateTimeImplementation.equals(Calendar.class)) {
       if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
-        throw new IllegalArgumentException("java.util.Calendar implementation cannot handle datetime with precision " + destinationPrecision);
+        throw new IllegalArgumentException(
+            "java.util.Calendar implementation cannot handle datetime with precision " + destinationPrecision);
       value = Calendar.getInstance(database.getSchema().getTimeZone());
       ((Calendar) value).setTimeInMillis(convertedTimestamp);
     } else if (dateTimeImplementation.equals(LocalDateTime.class)) {
@@ -85,7 +87,8 @@ public class DateUtils {
       else
         value = 0;
     } else
-      throw new SerializationException("Error on deserialize datetime. Configured class '" + dateTimeImplementation + "' is not supported");
+      throw new SerializationException(
+          "Error on deserialize datetime. Configured class '" + dateTimeImplementation + "' is not supported");
     return value;
   }
 
@@ -117,11 +120,15 @@ public class DateUtils {
         timestamp = localDateTime.toInstant(ZoneOffset.UTC).getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
         timestamp =
-            TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND);
+            TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(
+                ChronoField.MILLI_OF_SECOND);
       else if (precisionToUse.equals(ChronoUnit.MICROS))
-        timestamp = TimeUnit.MICROSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + (localDateTime.getNano() / 1000);
+        timestamp =
+            TimeUnit.MICROSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + (localDateTime.getNano()
+                / 1000);
       else if (precisionToUse.equals(ChronoUnit.NANOS))
-        timestamp = TimeUnit.NANOSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getNano();
+        timestamp =
+            TimeUnit.NANOSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getNano();
       else
         // NOT SUPPORTED
         timestamp = 0;
@@ -132,7 +139,8 @@ public class DateUtils {
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
         timestamp = zonedDateTime.toInstant().toEpochMilli();
       else if (precisionToUse.equals(ChronoUnit.MICROS))
-        timestamp = TimeUnit.MICROSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + (zonedDateTime.getNano() / 1000);
+        timestamp =
+            TimeUnit.MICROSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + (zonedDateTime.getNano() / 1000);
       else if (precisionToUse.equals(ChronoUnit.NANOS))
         timestamp = TimeUnit.NANOSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + zonedDateTime.getNano();
       else
@@ -299,7 +307,8 @@ public class DateUtils {
   public static boolean isDate(final Object obj) {
     if (obj == null)
       return false;
-    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDateTime || obj instanceof ZonedDateTime || obj instanceof Instant;
+    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDateTime || obj instanceof ZonedDateTime
+        || obj instanceof Instant;
   }
 
   public static ChronoUnit getHigherPrecision(final Object... objs) {
@@ -342,11 +351,9 @@ public class DateUtils {
   }
 
   public static DateTimeFormatter getFormatter(final String format) {
-    return CACHED_FORMATTERS.computeIfAbsent(format, (f) -> new DateTimeFormatterBuilder().appendPattern(f)
-                                                                .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
-                                                                .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)
-                                                                .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0)
-                                                                .toFormatter());
+    return CACHED_FORMATTERS.computeIfAbsent(format,
+        (f) -> new DateTimeFormatterBuilder().appendPattern(f).parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
+            .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0).parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter());
   }
 
   public static Object getDate(final Object date, final Class impl) {
@@ -385,5 +392,13 @@ public class DateUtils {
       return String.format("%.1f months", months);
 
     return String.format("%.1f years", months / 12F);
+  }
+
+  public static boolean areSameDay(final Date d1, final Date d2) {
+    final Calendar c1 = Calendar.getInstance();
+    c1.setTime(d1);
+    final Calendar c2 = Calendar.getInstance();
+    c2.setTime(d2);
+    return c1.get(Calendar.YEAR) == c2.get(Calendar.YEAR) && c1.get(Calendar.DAY_OF_YEAR) == c2.get(Calendar.DAY_OF_YEAR);
   }
 }

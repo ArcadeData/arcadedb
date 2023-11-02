@@ -18,12 +18,10 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.Constants;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryClient;
@@ -32,7 +30,6 @@ import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.server.ReplicationCallback;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.message.DatabaseStructureRequest;
 import com.arcadedb.server.ha.message.DatabaseStructureResponse;
@@ -78,6 +75,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     final Binary buffer = new Binary(8192);
     buffer.setAllocationChunkSize(1024);
 
+    long lastReqId = -1;
+
     while (!shutdown) {
       long reqId = -1;
       try {
@@ -98,6 +97,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         final ReplicationMessage message = request.getFirst();
 
         reqId = message.messageNumber;
+
+        lastReqId = reqId;
 
         if (reqId > -1)
           LogManager.instance()
@@ -162,8 +163,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     }
 
     LogManager.instance()
-        .log(this, Level.INFO, "Replica message thread closed (shutdown=%s name=%s threadId=%d)", shutdown, getName(),
-            Thread.currentThread().getId());
+        .log(this, Level.INFO, "Replica message thread closed (shutdown=%s name=%s threadId=%d lastReqId=%d)", shutdown, getName(),
+            Thread.currentThread().getId(), lastReqId);
   }
 
   public String getRemoteServerName() {
@@ -236,7 +237,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             serverAddressListCopy = new HashSet<>(Arrays.asList(server.getServerAddressList().split(",")));
           }
 
-          server.startElection();
+          server.startElection(true);
         }
       }
     }
@@ -387,7 +388,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port,
         server.getServerAddressList());
 
-    setName(Constants.PRODUCT + "-ha-replica2leader/" + server.getServerName() + "/" + getRemoteServerName());
+    setName(server.getServerName() + " replica2leader<-" + getRemoteServerName());
 
     LogManager.instance()
         .log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host,
@@ -402,7 +403,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     final long lastLogNumber = server.getReplicationLogFile().getLastMessageNumber();
 
-    LogManager.instance().log(this, Level.INFO, "Requesting install of databases...");
+    LogManager.instance().log(this, Level.INFO, "Requesting install of databases up to log %d...", lastLogNumber);
 
     try {
       sendCommandToLeader(buffer, new ReplicaConnectRequest(lastLogNumber), -1);
@@ -474,8 +475,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     DatabaseContext.INSTANCE.init(database);
     database.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
 
-    LogManager.instance().log(this, Level.INFO, "Database '%s' installed from the cluster (%s - %d files)", null, db,
-        FileUtils.getSizeAsString(databaseSize), list.size());
+    LogManager.instance()
+        .log(this, Level.INFO, "Database '%s' installed from the cluster (%s - %d files lastLogNumber=%d)", null, db,
+            FileUtils.getSizeAsString(databaseSize), list.size(), installDatabaseLastLogNumber);
   }
 
   private long installFile(final Binary buffer, final String db, final int fileId, final String fileName,

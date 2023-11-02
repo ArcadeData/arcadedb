@@ -44,6 +44,7 @@ import com.arcadedb.server.ha.message.HAMessageFactory;
 import com.arcadedb.server.ha.message.UpdateClusterConfiguration;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
 import com.arcadedb.utility.Callable;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
@@ -55,7 +56,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-// TODO: REFACTOR LEADER/REPLICA IN 2 USERTYPEES
 public class HAServer implements ServerPlugin {
   public static final String                                         DEFAULT_PORT                      = "2424";
   private final       HAMessageFactory                               messageFactory;
@@ -84,6 +84,7 @@ public class HAServer implements ServerPlugin {
   private volatile    ELECTION_STATUS                                electionStatus                    = ELECTION_STATUS.DONE;
   private             boolean                                        started;
   private final       SERVER_ROLE                                    serverRole;
+  private             Thread                                         electionThread;
 
   public enum QUORUM {
     NONE, ONE, TWO, THREE, MAJORITY, ALL
@@ -139,7 +140,8 @@ public class HAServer implements ServerPlugin {
     this.bucketName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     this.startedOn = System.currentTimeMillis();
     this.replicationPath = server.getRootPath() + "/replication";
-    this.serverRole = SERVER_ROLE.valueOf(configuration.getValueAsString(GlobalConfiguration.HA_SERVER_ROLE).toUpperCase(Locale.ENGLISH));
+    this.serverRole = SERVER_ROLE.valueOf(
+        configuration.getValueAsString(GlobalConfiguration.HA_SERVER_ROLE).toUpperCase(Locale.ENGLISH));
   }
 
   @Override
@@ -202,8 +204,7 @@ public class HAServer implements ServerPlugin {
               bucketName, configuredServers, majorityOfVotes);
 
       if (serverRole != SERVER_ROLE.REPLICA)
-        // START ELECTION IN BACKGROUND
-        new Thread(this::startElection).start();
+        startElection(false);
     }
   }
 
@@ -258,148 +259,20 @@ public class HAServer implements ServerPlugin {
       replicationLogFile.close();
   }
 
-  public void startElection() {
-    if (electionStatus == ELECTION_STATUS.VOTING_FOR_ME)
-      // ELECTION ALREADY RUNNING
-      return;
-
-    setElectionStatus(ELECTION_STATUS.VOTING_FOR_ME);
-
-    final long lastReplicationMessage = replicationLogFile.getLastMessageNumber();
-
-    long electionTurn = lastElectionVote == null ? 1 : lastElectionVote.getFirst() + 1;
-
-    final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
-    if (lc != null) {
-      // CLOSE ANY LEADER CONNECTION STILL OPEN
-      lc.close();
-      leaderConnection.set(null);
-    }
-
-    // TODO: IF A LEADER START THE ELECTION, SHOULD IT CLOSE THE EXISTENT CONNECTIONS TO THE REPLICAS?
-
-    for (int retry = 0; !checkForExistentLeaderConnection(electionTurn) && started; ++retry) {
-      final int majorityOfVotes = (configuredServers / 2) + 1;
-
-      int totalVotes = 1;
-
-      lastElectionVote = new Pair<>(electionTurn, getServerName());
-
-      LogManager.instance().log(this, Level.INFO,
-          "Starting election of local server asking for votes from %s (turn=%d retry=%d lastReplicationMessage=%d configuredServers=%d majorityOfVotes=%d)",
-          serverAddressList, electionTurn, retry, lastReplicationMessage, configuredServers, majorityOfVotes);
-
-      final HashMap<String, Integer> otherLeaders = new HashMap<>();
-
-      boolean electionAborted = false;
-
-      final HashSet<String> serverAddressListCopy = new HashSet<>(serverAddressList);
-
-      for (final String serverAddressCopy : serverAddressListCopy) {
-        if (isCurrentServer(serverAddressCopy))
-          // SKIP LOCAL SERVER
-          continue;
-
-        try {
-
-          String[] parts = serverAddressCopy.split(":");
-          if (parts.length == 1)
-            parts = new String[] { parts[0], DEFAULT_PORT };
-
-          final ChannelBinaryClient channel = createNetworkConnection(parts[0], Integer.parseInt(parts[1]),
-              ReplicationProtocol.COMMAND_VOTE_FOR_ME);
-          channel.writeLong(electionTurn);
-          channel.writeLong(lastReplicationMessage);
-          channel.flush();
-
-          final byte vote = channel.readByte();
-
-          if (vote == 0) {
-            // RECEIVED VOTE
-            ++totalVotes;
-            LogManager.instance()
-                .log(this, Level.INFO, "Received the vote from server %s (turn=%d totalVotes=%d majority=%d)", serverAddressCopy,
-                    electionTurn, totalVotes, majorityOfVotes);
-
-          } else {
-            final String otherLeaderName = channel.readString();
-
-            if (!otherLeaderName.isEmpty()) {
-              final Integer counter = otherLeaders.get(otherLeaderName);
-              otherLeaders.put(otherLeaderName, counter == null ? 1 : counter + 1);
-            }
-
-            if (vote == 1) {
-              // NO VOTE, IT ALREADY VOTED FOR SOMEBODY ELSE
-              LogManager.instance()
-                  .log(this, Level.INFO, "Did not receive the vote from server %s (turn=%d totalVotes=%d majority=%d itsLeader=%s)",
-                      serverAddressCopy, electionTurn, totalVotes, majorityOfVotes, otherLeaderName);
-
-            } else if (vote == 2) {
-              // NO VOTE, THE OTHER NODE HAS A HIGHER LSN, IT WILL START THE ELECTION
-              electionAborted = true;
-              LogManager.instance().log(this, Level.INFO,
-                  "Aborting election because server %s has a higher LSN (turn=%d lastReplicationMessage=%d totalVotes=%d majority=%d)",
-                  serverAddressCopy, electionTurn, lastReplicationMessage, totalVotes, majorityOfVotes);
-            }
-          }
-
-          channel.close();
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.INFO, "Error contacting server %s for election", e, serverAddressCopy);
-        }
-      }
-
-      if (checkForExistentLeaderConnection(electionTurn))
-        break;
-
-      if (!electionAborted && totalVotes >= majorityOfVotes) {
-        LogManager.instance()
-            .log(this, Level.INFO, "Current server elected as new $ANSI{green Leader} (turn=%d totalVotes=%d majority=%d)",
-                electionTurn, totalVotes, majorityOfVotes);
-        sendNewLeadershipToOtherNodes();
-        break;
-      }
-
-      if (!otherLeaders.isEmpty()) {
-        // TRY TO CONNECT TO THE EXISTENT LEADER
-        LogManager.instance()
-            .log(this, Level.INFO, "Other leaders found %s (turn=%d totalVotes=%d majority=%d)", otherLeaders, electionTurn,
-                totalVotes, majorityOfVotes);
-        for (final Map.Entry<String, Integer> entry : otherLeaders.entrySet()) {
-          if (entry.getValue() >= majorityOfVotes) {
-            LogManager.instance()
-                .log(this, Level.INFO, "Trying to connect to the existing leader '%s' (turn=%d totalVotes=%d majority=%d)",
-                    entry.getKey(), electionTurn, entry.getValue(), majorityOfVotes);
-            if (!isCurrentServer(entry.getKey()) && connectToLeader(entry.getKey(), null))
-              break;
+  public void startElection(final boolean waitForCompletion) {
+    synchronized (this) {
+      if (electionThread == null) {
+        electionThread = new Thread(this::startElection, getServerName() + " election");
+        electionThread.start();
+        if (waitForCompletion) {
+          try {
+            electionThread.join(60 * 1_000);
+          } catch (InterruptedException e) {
+            LogManager.instance().log(this, Level.SEVERE, "Timeout on election process");
+            // IGNORE IT
           }
         }
       }
-
-      if (checkForExistentLeaderConnection(electionTurn))
-        break;
-
-      try {
-        long timeout = 1000 + new Random().nextInt(1000);
-        if (electionAborted)
-          timeout *= 3;
-
-        LogManager.instance()
-            .log(this, Level.INFO, "Not able to be elected as Leader, waiting %dms and retry (turn=%d totalVotes=%d majority=%d)",
-                timeout, electionTurn, totalVotes, majorityOfVotes);
-        Thread.sleep(timeout);
-
-      } catch (final InterruptedException e) {
-        // INTERRUPTED
-        Thread.currentThread().interrupt();
-        break;
-      }
-
-      if (checkForExistentLeaderConnection(electionTurn))
-        break;
-
-      ++electionTurn;
     }
   }
 
@@ -480,7 +353,7 @@ public class HAServer implements ServerPlugin {
     }
 
     if (electionStatus == ELECTION_STATUS.LEADER_WAITING_FOR_QUORUM) {
-      if (1 + getOnlineReplicas() >= configuredServers / 2 + 1)
+      if (getOnlineServers() >= configuredServers / 2 + 1)
         // ELECTION COMPLETED
         setElectionStatus(ELECTION_STATUS.DONE);
     }
@@ -603,6 +476,8 @@ public class HAServer implements ServerPlugin {
    * @return the result from the command if synchronous, otherwise a result set containing `{"operation", "forwarded to the leader"}`
    */
   public Object forwardCommandToLeader(final HACommand command, final long timeout) {
+    LogManager.instance().setContext(getServerName());
+
     final Binary buffer = new Binary();
 
     final String leaderName = getLeaderName();
@@ -652,7 +527,7 @@ public class HAServer implements ServerPlugin {
 
     } catch (final IOException | TimeoutException e) {
       LogManager.instance().log(this, Level.SEVERE, "Leader server '%s' does not respond, starting election...", leaderName);
-      startElection();
+      startElection(false);
     } finally {
       forwardMessagesWaitingForResponse.remove(opNumber);
     }
@@ -691,9 +566,13 @@ public class HAServer implements ServerPlugin {
   public List<Object> sendCommandToReplicasWithQuorum(final HACommand command, final int quorum, final long timeout) {
     checkCurrentNodeIsTheLeader();
 
-    if (quorum > 1 + getOnlineReplicas()) {
-      waitAndRetryDuringElection(quorum);
-      checkCurrentNodeIsTheLeader();
+    if (quorum > getOnlineServers()) {
+      // THE ONLY SMART THING TO DO HERE IS TO THROW AN EXCEPTION. IF THE SERVER WAITS THE ELECTION
+      // IS COMPLETED, IT COULD CAUSE A DEADLOCK BECAUSE LOCKS COULD BE ACQUIRED IN CASE OF TX
+      throw new QuorumNotReachedException(
+          "Quorum " + quorum + " not reached because only " + getOnlineServers() + " server(s) are online");
+//      waitAndRetryDuringElection(quorum);
+//      checkCurrentNodeIsTheLeader();
     }
 
     final Binary buffer = new Binary();
@@ -841,6 +720,10 @@ public class HAServer implements ServerPlugin {
     configuredServers = 1 + replicaConnections.size();
   }
 
+  public int getOnlineServers() {
+    return 1 + getOnlineReplicas();
+  }
+
   public int getOnlineReplicas() {
     int total = 0;
     for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
@@ -873,11 +756,18 @@ public class HAServer implements ServerPlugin {
     ResultInternal line = new ResultInternal();
     list.add(new RecordTableFormatter.TableRecordRow(line));
 
+    Date date = new Date(startedOn);
+    String dateFormatted = startedOn > 0 ?
+        DateUtils.areSameDay(date, new Date()) ?
+            DateUtils.format(date, "HH:mm:ss") :
+            DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
+        "";
+
     line.setProperty("SERVER", getServerName());
     line.setProperty("HOST:PORT", getServerAddress());
     line.setProperty("ROLE", "Leader");
     line.setProperty("STATUS", "ONLINE");
-    line.setProperty("JOINED ON", new Date(startedOn));
+    line.setProperty("JOINED ON", dateFormatted);
     line.setProperty("LEFT ON", "");
     line.setProperty("THROUGHPUT", "");
     line.setProperty("LATENCY", "");
@@ -892,8 +782,24 @@ public class HAServer implements ServerPlugin {
       line.setProperty("HOST:PORT", c.getRemoteServerAddress());
       line.setProperty("ROLE", "Replica");
       line.setProperty("STATUS", status);
-      line.setProperty("JOINED ON", c.getJoinedOn() > 0 ? new Date(c.getJoinedOn()) : "");
-      line.setProperty("LEFT ON", c.getLeftOn() > 0 ? new Date(c.getLeftOn()) : "");
+
+      date = new Date(c.getJoinedOn());
+      dateFormatted = c.getJoinedOn() > 0 ?
+          DateUtils.areSameDay(date, new Date()) ?
+              DateUtils.format(date, "HH:mm:ss") :
+              DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
+          "";
+
+      line.setProperty("JOINED ON", dateFormatted);
+
+      date = new Date(c.getLeftOn());
+      dateFormatted = c.getLeftOn() > 0 ?
+          DateUtils.areSameDay(date, new Date()) ?
+              DateUtils.format(date, "HH:mm:ss") :
+              DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
+          "";
+
+      line.setProperty("LEFT ON", dateFormatted);
       line.setProperty("THROUGHPUT", c.getThroughputStats());
       line.setProperty("LATENCY", c.getLatencyStats());
     }
@@ -925,7 +831,13 @@ public class HAServer implements ServerPlugin {
     current.put("address", getServerAddress());
     current.put("role", isLeader() ? "Leader" : "Replica");
     current.put("status", "ONLINE");
-    current.put("joinedOn", new Date(startedOn));
+
+    Date date = new Date(startedOn);
+    String dateFormatted = DateUtils.areSameDay(date, new Date()) ?
+        DateUtils.format(date, "HH:mm:ss") :
+        DateUtils.format(date, "yyyy-MM-dd HH:mm:ss");
+
+    current.put("joinedOn", dateFormatted);
 
     result.put("current", current);
 
@@ -942,8 +854,24 @@ public class HAServer implements ServerPlugin {
         replica.put("address", c.getRemoteServerAddress());
         replica.put("role", "Replica");
         replica.put("status", status);
-        replica.put("joinedOn", c.getJoinedOn() > 0 ? new Date(c.getJoinedOn()) : "");
-        replica.put("leftOn", c.getLeftOn() > 0 ? new Date(c.getLeftOn()) : "");
+
+        date = new Date(c.getJoinedOn());
+        dateFormatted = c.getJoinedOn() > 0 ?
+            DateUtils.areSameDay(date, new Date()) ?
+                DateUtils.format(date, "HH:mm:ss") :
+                DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
+            "";
+
+        replica.put("joinedOn", dateFormatted);
+
+        date = new Date(c.getLeftOn());
+        dateFormatted = c.getLeftOn() > 0 ?
+            DateUtils.areSameDay(date, new Date()) ?
+                DateUtils.format(date, "HH:mm:ss") :
+                DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
+            "";
+
+        replica.put("leftOn", dateFormatted);
         replica.put("throughput", c.getThroughputStats());
         replica.put("latency", c.getLatencyStats());
       }
@@ -1096,7 +1024,7 @@ public class HAServer implements ServerPlugin {
     if (electionStatus == ELECTION_STATUS.DONE)
       // BLOCK HERE THE REQUEST, THE QUORUM CANNOT BE REACHED AT PRIORI
       throw new QuorumNotReachedException(
-          "Quorum " + quorum + " not reached because only " + getOnlineReplicas() + " server(s) are online");
+          "Quorum " + quorum + " not reached because only " + getOnlineServers() + " server(s) are online");
 
     LogManager.instance()
         .log(this, Level.INFO, "Waiting during election (quorum=%d onlineReplicas=%d)", quorum, getOnlineReplicas());
@@ -1133,5 +1061,156 @@ public class HAServer implements ServerPlugin {
     if (localHostServers > 0 && localHostServers < serverEntries.length)
       throw new ServerException(
           "Found a localhost (127.0.0.1) in the server list among non-localhost servers. Please fix the server list configuration.");
+  }
+
+  private void startElection() {
+    try {
+      if (electionStatus == ELECTION_STATUS.VOTING_FOR_ME)
+        // ELECTION ALREADY RUNNING
+        return;
+
+      setElectionStatus(ELECTION_STATUS.VOTING_FOR_ME);
+
+      final long lastReplicationMessage = replicationLogFile.getLastMessageNumber();
+
+      long electionTurn = lastElectionVote == null ? 1 : lastElectionVote.getFirst() + 1;
+
+      final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
+      if (lc != null) {
+        // CLOSE ANY LEADER CONNECTION STILL OPEN
+        lc.close();
+        leaderConnection.set(null);
+      }
+
+      // TODO: IF A LEADER START THE ELECTION, SHOULD IT CLOSE THE EXISTENT CONNECTIONS TO THE REPLICAS?
+
+      for (int retry = 0; !checkForExistentLeaderConnection(electionTurn) && started; ++retry) {
+        final int majorityOfVotes = (configuredServers / 2) + 1;
+
+        int totalVotes = 1;
+
+        lastElectionVote = new Pair<>(electionTurn, getServerName());
+
+        LogManager.instance().log(this, Level.INFO,
+            "Starting election of local server asking for votes from %s (turn=%d retry=%d lastReplicationMessage=%d configuredServers=%d majorityOfVotes=%d)",
+            serverAddressList, electionTurn, retry, lastReplicationMessage, configuredServers, majorityOfVotes);
+
+        final HashMap<String, Integer> otherLeaders = new HashMap<>();
+
+        boolean electionAborted = false;
+
+        final HashSet<String> serverAddressListCopy = new HashSet<>(serverAddressList);
+
+        for (final String serverAddressCopy : serverAddressListCopy) {
+          if (isCurrentServer(serverAddressCopy))
+            // SKIP LOCAL SERVER
+            continue;
+
+          try {
+
+            String[] parts = serverAddressCopy.split(":");
+            if (parts.length == 1)
+              parts = new String[] { parts[0], DEFAULT_PORT };
+
+            final ChannelBinaryClient channel = createNetworkConnection(parts[0], Integer.parseInt(parts[1]),
+                ReplicationProtocol.COMMAND_VOTE_FOR_ME);
+            channel.writeLong(electionTurn);
+            channel.writeLong(lastReplicationMessage);
+            channel.flush();
+
+            final byte vote = channel.readByte();
+
+            if (vote == 0) {
+              // RECEIVED VOTE
+              ++totalVotes;
+              LogManager.instance()
+                  .log(this, Level.INFO, "Received the vote from server %s (turn=%d totalVotes=%d majority=%d)", serverAddressCopy,
+                      electionTurn, totalVotes, majorityOfVotes);
+
+            } else {
+              final String otherLeaderName = channel.readString();
+
+              if (!otherLeaderName.isEmpty()) {
+                final Integer counter = otherLeaders.get(otherLeaderName);
+                otherLeaders.put(otherLeaderName, counter == null ? 1 : counter + 1);
+              }
+
+              if (vote == 1) {
+                // NO VOTE, IT ALREADY VOTED FOR SOMEBODY ELSE
+                LogManager.instance().log(this, Level.INFO,
+                    "Did not receive the vote from server %s (turn=%d totalVotes=%d majority=%d itsLeader=%s)", serverAddressCopy,
+                    electionTurn, totalVotes, majorityOfVotes, otherLeaderName);
+
+              } else if (vote == 2) {
+                // NO VOTE, THE OTHER NODE HAS A HIGHER LSN, IT WILL START THE ELECTION
+                electionAborted = true;
+                LogManager.instance().log(this, Level.INFO,
+                    "Aborting election because server %s has a higher LSN (turn=%d lastReplicationMessage=%d totalVotes=%d majority=%d)",
+                    serverAddressCopy, electionTurn, lastReplicationMessage, totalVotes, majorityOfVotes);
+              }
+            }
+
+            channel.close();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.INFO, "Error contacting server %s for election", e, serverAddressCopy);
+          }
+        }
+
+        if (checkForExistentLeaderConnection(electionTurn))
+          break;
+
+        if (!electionAborted && totalVotes >= majorityOfVotes) {
+          LogManager.instance()
+              .log(this, Level.INFO, "Current server elected as new $ANSI{green Leader} (turn=%d totalVotes=%d majority=%d)",
+                  electionTurn, totalVotes, majorityOfVotes);
+          sendNewLeadershipToOtherNodes();
+          break;
+        }
+
+        if (!otherLeaders.isEmpty()) {
+          // TRY TO CONNECT TO THE EXISTENT LEADER
+          LogManager.instance()
+              .log(this, Level.INFO, "Other leaders found %s (turn=%d totalVotes=%d majority=%d)", otherLeaders, electionTurn,
+                  totalVotes, majorityOfVotes);
+          for (final Map.Entry<String, Integer> entry : otherLeaders.entrySet()) {
+            if (entry.getValue() >= majorityOfVotes) {
+              LogManager.instance()
+                  .log(this, Level.INFO, "Trying to connect to the existing leader '%s' (turn=%d totalVotes=%d majority=%d)",
+                      entry.getKey(), electionTurn, entry.getValue(), majorityOfVotes);
+              if (!isCurrentServer(entry.getKey()) && connectToLeader(entry.getKey(), null))
+                break;
+            }
+          }
+        }
+
+        if (checkForExistentLeaderConnection(electionTurn))
+          break;
+
+        try {
+          long timeout = 1000 + new Random().nextInt(1000);
+          if (electionAborted)
+            timeout *= 3;
+
+          LogManager.instance()
+              .log(this, Level.INFO, "Not able to be elected as Leader, waiting %dms and retry (turn=%d totalVotes=%d majority=%d)",
+                  timeout, electionTurn, totalVotes, majorityOfVotes);
+          Thread.sleep(timeout);
+
+        } catch (final InterruptedException e) {
+          // INTERRUPTED
+          Thread.currentThread().interrupt();
+          break;
+        }
+
+        if (checkForExistentLeaderConnection(electionTurn))
+          break;
+
+        ++electionTurn;
+      }
+    } finally {
+      synchronized (this) {
+        electionThread = null;
+      }
+    }
   }
 }

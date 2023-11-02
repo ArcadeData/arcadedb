@@ -84,16 +84,7 @@ public class ReplicationLogFile extends LockContext {
 
   public ReplicationLogFile(final String filePath) throws FileNotFoundException {
     this.filePath = filePath;
-
-    final File f = new File(filePath);
-    if (!f.exists())
-      f.getParentFile().mkdirs();
-
-    openLastFileChunk(f);
-
-    final ReplicationMessage lastMessage = getLastMessage();
-    if (lastMessage != null)
-      lastMessageNumber = lastMessage.messageNumber;
+    openLastFile();
   }
 
   public void close() {
@@ -355,10 +346,26 @@ public class ReplicationLogFile extends LockContext {
         try {
           return lastChunkChannel.size() + (chunkNumber * CHUNK_SIZE);
         } catch (final IOException e) {
-          LogManager.instance()
-              .log(this, Level.SEVERE, "Error on computing file size for last chunk (%d) in replication log '%s'", e, chunkNumber,
-                  filePath);
-          return 0L;
+          // TRY REOPENING THE FILE
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error on computing file size for last chunk (%d) in replication log '%s', reopening file...", e, chunkNumber,
+              filePath);
+
+          try {
+            lastChunkChannel.close();
+          } catch (IOException ex) {
+            // IGNORE IT
+          }
+
+          try {
+            openLastFile();
+            return lastChunkChannel.size() + (chunkNumber * CHUNK_SIZE);
+          } catch (IOException ex) {
+            LogManager.instance()
+                .log(this, Level.SEVERE, "Error on computing file size for last chunk (%d) in replication log '%s'", e, chunkNumber,
+                    filePath);
+            throw new ReplicationLogException("Error on computing file size for last chunk in replication log", e);
+          }
         }
       }
     });
@@ -468,5 +475,17 @@ public class ReplicationLogFile extends LockContext {
       searchChannelChunkId = chunkId;
     }
     return true;
+  }
+
+  private void openLastFile() throws FileNotFoundException {
+    final File f = new File(filePath);
+    if (!f.exists())
+      f.getParentFile().mkdirs();
+
+    openLastFileChunk(f);
+
+    final ReplicationMessage lastMessage = getLastMessage();
+    if (lastMessage != null)
+      lastMessageNumber = lastMessage.messageNumber;
   }
 }

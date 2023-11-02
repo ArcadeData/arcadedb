@@ -220,7 +220,7 @@ public class LeaderNetworkListener extends Thread {
       }
     } else
       // CANNOT CONTACT THE ELECTED LEADER, START ELECTION AGAIN
-      ha.startElection();
+      ha.startElection(false);
   }
 
   private void voteForMe(final ChannelBinaryServer channel, final String remoteServerName) throws IOException {
@@ -239,8 +239,9 @@ public class LeaderNetworkListener extends Thread {
       final Replica2LeaderNetworkExecutor leader = ha.getLeader();
       channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());
 
-      if (leader == null)
-        ha.startElection();
+      if (leader == null || remoteServerName.equals(leader.getRemoteServerName()))
+        // NO LEADER OR THE SERVER ASKING FOR ELECTION IS THE CURRENT LEADER
+        ha.startElection(false);
 
     } else if (ha.lastElectionVote == null || ha.lastElectionVote.getFirst() < voteTurn) {
       LogManager.instance()

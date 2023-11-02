@@ -39,7 +39,8 @@ import java.util.logging.*;
  */
 public abstract class TestServerHelper {
 
-  public static ArcadeDBServer[] startServers(final int totalServers, final CallableParameterNoReturn<ContextConfiguration> onServerConfigurationCallback,
+  public static ArcadeDBServer[] startServers(final int totalServers,
+      final CallableParameterNoReturn<ContextConfiguration> onServerConfigurationCallback,
       final CallableParameterNoReturn<ArcadeDBServer> onBeforeStartingCallback) {
     final ArcadeDBServer[] servers = new ArcadeDBServer[totalServers];
 
@@ -101,21 +102,8 @@ public abstract class TestServerHelper {
     return null;
   }
 
-  public static boolean areAllServersOnline(final ArcadeDBServer[] servers) {
-    final ArcadeDBServer leader = getLeaderServer(servers);
-    if (leader == null)
-      return false;
-
-    final int onlineReplicas = leader.getHA().getOnlineReplicas();
-    if (1 + onlineReplicas < servers.length) {
-      // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-      leader.getHA().printClusterConfiguration();
-      return false;
-    }
-    return true;
-  }
-
-  public static void expectException(final CallableNoReturn callback, final Class<? extends Throwable> expectedException) throws Exception {
+  public static void expectException(final CallableNoReturn callback, final Class<? extends Throwable> expectedException)
+      throws Exception {
     try {
       callback.call();
       Assertions.fail();
@@ -139,7 +127,8 @@ public abstract class TestServerHelper {
     final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
 
     if (!activeDatabases.isEmpty())
-      LogManager.instance().log(TestServerHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
+      LogManager.instance()
+          .log(TestServerHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
 
     for (final Database db : activeDatabases)
       if (drop) {

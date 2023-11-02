@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha;
 
+import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Test;
 
 public class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
@@ -25,6 +26,7 @@ public class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT 
   public void testReplication() {
     testReplication(1);
     waitForReplicationIsCompleted(1);
+    CodeUtils.sleep(1_000);
   }
 
   @Override

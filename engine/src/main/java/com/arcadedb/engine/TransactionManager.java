@@ -316,7 +316,7 @@ public class TransactionManager {
             continue;
           throw new ConcurrentModificationException(
               "Concurrent modification on page " + pageId + " in file '" + database.getFileManager().getFile(pageId.getFileId())
-                  .getFileName() + "' (current v." + txPage.currentPageVersion + " <> database v." + page.getVersion()
+                  .getFileName() + "' (current v." + txPage.currentPageVersion + " <= database v." + page.getVersion()
                   + "). Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
         }
 
