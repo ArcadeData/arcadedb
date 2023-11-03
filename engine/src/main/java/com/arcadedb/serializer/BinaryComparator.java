@@ -396,7 +396,7 @@ public class BinaryComparator {
     if (buffer1 == null || buffer2 == null)
       return false;
 
-    if (buffer1.equals("") && buffer2.equals(""))
+    if (buffer1.isEmpty() && buffer2.isEmpty())
       return true;
 
     return equalsBytes(buffer1.getBytes(DatabaseFactory.getDefaultCharset()),
