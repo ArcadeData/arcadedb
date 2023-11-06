@@ -83,7 +83,8 @@ public class BucketIterator implements Iterator<Record> {
 
         if (recordCountInCurrentPage > 0 && currentRecordInPage < recordCountInCurrentPage) {
           try {
-            final int recordPositionInPage = (int) currentPage.readUnsignedInt(Bucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
+            final int recordPositionInPage = (int) currentPage.readUnsignedInt(
+                Bucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
             if (recordPositionInPage == 0)
               // CLEANED CORRUPTED RECORD
               continue;
@@ -91,7 +92,8 @@ public class BucketIterator implements Iterator<Record> {
             final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
             if (recordSize[0] > 0 || recordSize[0] == Bucket.FIRST_CHUNK) {
               // NOT DELETED
-              final RID rid = new RID(database, bucket.fileId, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
+              final RID rid = new RID(database, bucket.fileId,
+                  ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
               if (!bucket.existsRecord(rid))
                 continue;
@@ -101,16 +103,17 @@ public class BucketIterator implements Iterator<Record> {
 
             } else if (recordSize[0] == Bucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
-              final RID rid = new RID(database, bucket.fileId, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
+              final RID rid = new RID(database, bucket.fileId,
+                  ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
-              final Binary view = bucket.getRecordInternal(new RID(database, bucket.fileId, currentPage.readLong((int) (recordPositionInPage + recordSize[1]))),
-                  true);
+              final Binary view = bucket.getRecordInternal(
+                  new RID(database, bucket.fileId, currentPage.readLong((int) (recordPositionInPage + recordSize[1]))), true);
 
               if (view == null)
                 continue;
 
-              next = database.getRecordFactory()
-                  .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
+              next = database.getRecordFactory().newImmutableRecord(database,
+                  database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
               return null;
             }
           } catch (final Exception e) {

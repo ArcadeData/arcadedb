@@ -258,7 +258,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     int minQueueSize = 0;
     int minQueueIndex = -1;
     for (int i = 0; i < executorThreads.length; ++i) {
-      final int qSize = executorThreads[i].queue.size();
+      final int qSize = executorThreads[i].queue.size() + (executorThreads[i].isExecutingTask() ? 1 : 0);
       if (qSize == 0)
         // EMPTY QUEUE, USE THIS
         return i;
@@ -708,9 +708,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    *
    * @return true if the task has been scheduled, otherwise false
    */
-  public boolean scheduleTask(final int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
+  public boolean scheduleTask(int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
       final int applyBackPressureOnPercentage) {
     try {
+      if (slot == -1)
+        slot = getBestSlot();
+
       final BlockingQueue<DatabaseAsyncTask> queue = executorThreads[slot].queue;
 
       if (applyBackPressureOnPercentage > 0) {

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
+import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
 
 import java.io.*;
 import java.util.*;
@@ -33,11 +34,11 @@ import java.util.logging.*;
  * Flushes pages to disk asynchronously.
  */
 public class PageManagerFlushThread extends Thread {
-  private final    PageManager                           pageManager;
-  public final     ArrayBlockingQueue<List<MutablePage>> queue;
-  private final    String                                logContext;
-  private volatile boolean                               running   = true;
-  private final    AtomicBoolean                         suspended = new AtomicBoolean(false); // USED DURING BACKUP
+  private final    PageManager                      pageManager;
+  public final     BlockingQueue<List<MutablePage>> queue;
+  private final    String                           logContext;
+  private volatile boolean                          running   = true;
+  private final    AtomicBoolean                    suspended = new AtomicBoolean(false); // USED DURING BACKUP
 
   public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration,
       final String databaseName) {
@@ -45,7 +46,7 @@ public class PageManagerFlushThread extends Thread {
     setDaemon(false);
     this.pageManager = pageManager;
     this.logContext = LogManager.instance().getContext();
-    this.queue = new ArrayBlockingQueue<>(configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
+    this.queue = new DisruptorBlockingQueue<>(configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
   }
 
   public void scheduleFlushOfPages(final List<MutablePage> pages) throws InterruptedException {

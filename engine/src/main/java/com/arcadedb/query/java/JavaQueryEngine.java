@@ -91,7 +91,7 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   protected JavaQueryEngine(final DatabaseInternal database) {
-    this.userCodeExecutorQueue = new ArrayBlockingQueue<>(10000);
+    this.userCodeExecutorQueue = new ArrayBlockingQueue<>(1_000);
     this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, new ThreadPoolExecutor.CallerRunsPolicy());
     this.timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT);
   }

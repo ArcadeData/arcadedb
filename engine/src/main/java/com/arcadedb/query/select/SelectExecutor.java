@@ -38,7 +38,7 @@ public class SelectExecutor {
   long            evaluatedRecords = 0;
   List<IndexInfo> usedIndexes      = null;
 
-  class IndexInfo {
+  static class IndexInfo {
     public final Index   index;
     public final String  property;
     public final boolean order;
@@ -54,26 +54,29 @@ public class SelectExecutor {
     this.select = select;
   }
 
-  <T extends Identifiable> SelectIterator<T> execute() {
+  <T extends Document> SelectIterator<T> execute() {
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
 
-    final Iterator<Identifiable> iterator;
+    final Iterator<? extends Identifiable> iterator;
 
     if (iteratorFromIndexes != null)
       iterator = iteratorFromIndexes;
     else if (select.fromType != null)
-      iterator = (MultiIterator) select.database.iterateType(select.fromType.getName(), select.polymorphic);
+      iterator = select.database.iterateType(select.fromType.getName(), select.polymorphic);
     else if (select.fromBuckets.size() == 1)
-      iterator = (MultiIterator) select.database.iterateBucket(select.fromBuckets.get(0).getName());
+      iterator = select.database.iterateBucket(select.fromBuckets.get(0).getName());
     else {
-      final MultiIterator multiIterator = new MultiIterator<>();
+      final MultiIterator<? extends Identifiable> multiIterator = new MultiIterator<>();
       for (Bucket b : select.fromBuckets)
         multiIterator.addIterator(b.iterator());
       iterator = multiIterator;
     }
 
     if (select.timeoutInMs > 0 && iterator instanceof MultiIterator)
-      ((MultiIterator<Identifiable>) iterator).setTimeout(select.timeoutInMs, select.exceptionOnTimeout);
+      ((MultiIterator<? extends Identifiable>) iterator).setTimeout(select.timeoutInMs, select.exceptionOnTimeout);
+
+    if (select.parallel)
+      return new SelectParallelIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
 
     return new SelectIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
   }

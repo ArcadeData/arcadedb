@@ -36,7 +36,6 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   private       long    limit              = -1L;
   private       long    timeout            = -1L;
   private       boolean exceptionOnTimeout = false;
-  private       boolean embedded           = false;
   private       int     skipped            = 0;
   private final long    beginTime          = System.currentTimeMillis();
 
@@ -236,7 +235,7 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
     return false;
   }
 
-  private boolean checkForTimeout() {
+  public boolean checkForTimeout() {
     if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
       if (exceptionOnTimeout)
         throw new TimeoutException("Timeout on iteration");
@@ -245,13 +244,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
     return false;
   }
 
-  public boolean isEmbedded() {
-    return embedded;
-  }
-
-  public MultiIterator<T> setEmbedded(final boolean embedded) {
-    this.embedded = embedded;
-    return this;
+  public List<Object> getSources() {
+    return sources;
   }
 
   @Override

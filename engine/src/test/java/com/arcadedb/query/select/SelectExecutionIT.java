@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.select;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
@@ -26,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.oracle.truffle.js.builtins.GlobalBuiltins;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -39,7 +41,7 @@ import java.util.stream.*;
 public class SelectExecutionIT extends TestHelper {
 
   public SelectExecutionIT() {
-    autoStartTx = true;
+    autoStartTx = false;
   }
 
   @Override
@@ -252,11 +254,13 @@ public class SelectExecutionIT extends TestHelper {
 
   @Test
   public void okUpdate() {
-    database.select().fromType("Vertex")//
-        .where().property("id").lt().value(10)//
-        .and().property("name").eq().value("Elon")//
-        .limit(10).vertices()//
-        .forEachRemaining(a -> a.modify().set("modified", true).save());
+    database.transaction(() -> {
+      database.select().fromType("Vertex")//
+          .where().property("id").lt().value(10)//
+          .and().property("name").eq().value("Elon")//
+          .limit(10).vertices()//
+          .forEachRemaining(a -> a.modify().set("modified", true).save());
+    });
 
     database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
@@ -272,8 +276,8 @@ public class SelectExecutionIT extends TestHelper {
             .where().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS, true).vertices();
 
         while (iter.hasNext()) {
-          Assertions.assertTrue(iter.next().getInteger("id") < 10);
           try {
+            iter.next();
             Thread.sleep(2);
           } catch (InterruptedException e) {
             // IGNORE IT
@@ -303,6 +307,31 @@ public class SelectExecutionIT extends TestHelper {
     }
   }
 
+  /**
+   * Known limitation: the parallel select cannot use the current transaction because executed in
+   * different threads.
+   */
+  @Test
+  public void okParallel() {
+    database.getSchema().createVertexType("Parallel");
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000_000; i++) {
+        database.newVertex("Parallel").set("id", i, "float", 3.14F, "name", "Elon").save();
+      }
+    });
+
+    final SelectCompiled select = database.select().fromType("Parallel")//
+        .where().property("name").like().value("E%")//
+        .and().property("id").lt().value(1_000_000).compile();
+
+    for (int i = 0; i < 10; i++) {
+      final SelectIterator<Vertex> result = select.parallel().vertices();
+      final List<Vertex> list = result.toList();
+      Assertions.assertEquals(1_000_000, list.size());
+      list.forEach(r -> Assertions.assertTrue(r.getString("name").startsWith("E")));
+    }
+  }
+
   @Test
   public void okLike() {
     final SelectCompiled select = database.select().fromType("Vertex")//
@@ -315,7 +344,6 @@ public class SelectExecutionIT extends TestHelper {
       list.forEach(r -> Assertions.assertTrue(r.getString("name").startsWith("E")));
     }
   }
-
 
   @Test
   public void okILike() {

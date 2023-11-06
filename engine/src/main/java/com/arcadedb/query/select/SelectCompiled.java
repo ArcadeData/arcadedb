@@ -68,6 +68,11 @@ public class SelectCompiled {
     return json;
   }
 
+  public SelectCompiled parallel() {
+    select.parallel = true;
+    return this;
+  }
+
   public SelectIterator<Vertex> vertices() {
     return select.vertices();
   }

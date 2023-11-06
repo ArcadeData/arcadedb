@@ -17,10 +17,13 @@ package com.arcadedb.query.select;/*
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * Query iterator returned from queries. Extends the base Java iterator with convenient methods.
@@ -33,28 +36,32 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SelectIterator<T extends Identifiable> implements Iterator<T> {
-  private final SelectExecutor         executor;
-  private final Iterator<Identifiable> iterator;
-  private       HashSet<RID>           filterOutRecords;
-  private       T                      next       = null;
-  private       long                   returned   = 0;
-  private       List<Document>         sortedResultSet;
-  private       int                    orderIndex = 0;
+public class SelectIterator<T extends Document> implements Iterator<T> {
+  protected final SelectExecutor                   executor;
+  protected final Iterator<? extends Identifiable> iterator;
+  protected final Set<RID>                         filterOutRecords;
+  private         T                                next       = null;
+  protected       long                             returned   = 0;
+  private         List<Document>                   sortedResultSet;
+  private         int                              orderIndex = 0;
 
-  protected SelectIterator(final SelectExecutor executor, final Iterator<Identifiable> iterator,
+  protected SelectIterator(final SelectExecutor executor, final Iterator<? extends Identifiable> iterator,
       final boolean enforceUniqueReturn) {
     this.executor = executor;
     this.iterator = iterator;
     if (enforceUniqueReturn)
-      this.filterOutRecords = new HashSet<>();
+      this.filterOutRecords = ConcurrentHashMap.newKeySet();
+    else
+      this.filterOutRecords = null;
 
     fetchResultInCaseOfOrderBy();
 
     for (int i = 0; i < executor.select.skip; i++) {
-      // CONSUME UNTIL THE SKIP THRESHOLD IS LIMIT
+      // CONSUME UNTIL THE SKIP THRESHOLD HITS
       if (hasNext())
         next();
+      else
+        break;
     }
   }
 
@@ -73,8 +80,6 @@ public class SelectIterator<T extends Identifiable> implements Iterator<T> {
       return false;
     if (next != null)
       return true;
-    if (!iterator.hasNext())
-      return false;
 
     next = fetchNext();
     return next != null;
@@ -95,7 +100,10 @@ public class SelectIterator<T extends Identifiable> implements Iterator<T> {
     }
   }
 
-  private T fetchNext() {
+  protected T fetchNext() {
+    if (!iterator.hasNext())
+      return null;
+
     do {
       final Document record = iterator.next().asDocument();
 
@@ -149,10 +157,9 @@ public class SelectIterator<T extends Identifiable> implements Iterator<T> {
       }
     }
 
-    final List<Document> resultSet = new ArrayList<>();
+    sortedResultSet = new ArrayList<>();
     while (hasNext())
-      resultSet.add(next().asDocument(true));
-    sortedResultSet = resultSet;
+      sortedResultSet.add(next().asDocument(true));
 
     Collections.sort(sortedResultSet, (a, b) -> {
       for (Pair<String, Boolean> orderBy : executor.select.orderBy) {

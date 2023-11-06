@@ -53,6 +53,7 @@ public class Select {
   long                             timeoutInMs = 0;
   boolean                          exceptionOnTimeout;
   ArrayList<Pair<String, Boolean>> orderBy;
+  boolean                          parallel    = false;
 
   STATE state = STATE.DEFAULT;
   private SelectTreeNode lastTreeElement;
