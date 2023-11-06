@@ -22,7 +22,7 @@ RUN mvn clean install -DskipTests
 FROM eclipse-temurin:11
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
-ENV JAVA_OPTS=" "
+ENV JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata"
 
 ENV JAVA_OPTS_SCRIPT="--add-opens java.base/java.io=ALL-UNNAMED -Dpolyglot.engine.WarnInterpreterOnly=false -Djna.nosys=true -XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
 
