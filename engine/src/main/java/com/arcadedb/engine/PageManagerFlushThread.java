@@ -22,7 +22,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
-import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
 
 import java.io.*;
 import java.util.*;
@@ -46,7 +45,7 @@ public class PageManagerFlushThread extends Thread {
     setDaemon(false);
     this.pageManager = pageManager;
     this.logContext = LogManager.instance().getContext();
-    this.queue = new DisruptorBlockingQueue<>(configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
+    this.queue = new ArrayBlockingQueue<>(configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
   }
 
   public void scheduleFlushOfPages(final List<MutablePage> pages) throws InterruptedException {

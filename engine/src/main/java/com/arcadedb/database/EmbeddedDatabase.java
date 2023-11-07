@@ -636,7 +636,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       throw new IllegalArgumentException("Record is null");
 
     return (boolean) executeInReadLock((Callable<Object>) () -> {
-
       checkDatabaseIsOpen();
 
       // CHECK IN TX CACHE FIRST

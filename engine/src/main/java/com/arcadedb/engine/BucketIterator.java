@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -34,17 +33,19 @@ import java.util.logging.*;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 public class BucketIterator implements Iterator<Record> {
-
-  private final DatabaseInternal database;
-  private final Bucket           bucket;
+  private final static int              PREFETCH_SIZE = 1_024;
+  private final        DatabaseInternal database;
+  private final        Bucket           bucket;
+  final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
+  private              int              prefetchIndex = 0;
+  final                long             limit;
   int      nextPageNumber      = 0;
   BasePage currentPage         = null;
   short    recordCountInCurrentPage;
   int      totalPages;
-  Record   next                = null;
   int      currentRecordInPage = 0;
   long     browsed             = 0;
-  final long limit;
+  private int writeIndex = 0;
 
   BucketIterator(final Bucket bucket, final Database db) {
     ((DatabaseInternal) db).checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
@@ -62,17 +63,43 @@ public class BucketIterator implements Iterator<Record> {
   }
 
   public void setPosition(final RID position) throws IOException {
-    next = position.getRecord();
+    prefetchIndex = 0;
+    nextBatch[prefetchIndex] = position.getRecord();
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;
     currentPage = database.getTransaction().getPage(new PageId(position.getBucketId(), nextPageNumber), bucket.pageSize);
     recordCountInCurrentPage = currentPage.readShort(Bucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
 
+  @Override
+  public boolean hasNext() {
+    if (limit > -1 && browsed >= limit)
+      return false;
+    return prefetchIndex < writeIndex && nextBatch[prefetchIndex] != null;
+  }
+
+  @Override
+  public Record next() {
+    if (prefetchIndex >= writeIndex || nextBatch[prefetchIndex] == null)
+      throw new IllegalStateException();
+
+    ++browsed;
+    final Record record = nextBatch[prefetchIndex];
+    nextBatch[prefetchIndex] = null; // EARLY CLEANSE FOR GC
+    prefetchIndex++;
+    fetchNext();
+    return record;
+  }
+
   private void fetchNext() {
+    if (prefetchIndex < writeIndex)
+      return;
+
     database.executeInReadLock(() -> {
-      next = null;
-      while (true) {
+      prefetchIndex = 0;
+      nextBatch[prefetchIndex] = null;
+
+      for (writeIndex = 0; writeIndex < nextBatch.length; ) {
         if (currentPage == null) {
           if (nextPageNumber > totalPages) {
             return null;
@@ -98,8 +125,7 @@ public class BucketIterator implements Iterator<Record> {
               if (!bucket.existsRecord(rid))
                 continue;
 
-              next = rid.getRecord(false);
-              return null;
+              nextBatch[writeIndex++] = rid.getRecord(false);
 
             } else if (recordSize[0] == Bucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
@@ -112,9 +138,8 @@ public class BucketIterator implements Iterator<Record> {
               if (view == null)
                 continue;
 
-              next = database.getRecordFactory().newImmutableRecord(database,
+              nextBatch[writeIndex++] = database.getRecordFactory().newImmutableRecord(database,
                   database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
-              return null;
             }
           } catch (final Exception e) {
             final String msg = String.format("Error on loading record #%d:%d (error: %s)", currentPage.pageId.getFileId(),
@@ -132,30 +157,7 @@ public class BucketIterator implements Iterator<Record> {
           currentRecordInPage++;
         }
       }
+      return null;
     });
-  }
-
-  @Override
-  public boolean hasNext() {
-    if (limit > -1 && browsed >= limit)
-      return false;
-    return next != null;
-  }
-
-  @Override
-  public Record next() {
-    if (next == null) {
-      throw new IllegalStateException();
-    }
-    try {
-      ++browsed;
-      return next;
-    } finally {
-      try {
-        fetchNext();
-      } catch (final Exception e) {
-        throw new DatabaseOperationException("Cannot scan bucket '" + bucket.componentName + "'", e);
-      }
-    }
   }
 }

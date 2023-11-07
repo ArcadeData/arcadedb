@@ -20,8 +20,10 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.async.DatabaseAsyncBrowseIterator;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.MultiIterator;
 import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
+import com.conversantmedia.util.concurrent.MultithreadConcurrentQueue;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -44,8 +46,8 @@ import java.util.concurrent.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SelectParallelIterator<T extends Document> extends SelectIterator<T> {
-  private final CountDownLatch          semaphore;
-  private final BlockingQueue<Document> queue;
+  private final CountDownLatch                   semaphore;
+  private final MultithreadConcurrentQueue<Document> queue;
 
   protected SelectParallelIterator(final SelectExecutor executor, final Iterator<? extends Identifiable> iterator,
       final boolean enforceUniqueReturn) {
@@ -53,7 +55,7 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
 
     if (iterator instanceof MultiIterator) {
       final MultiIterator<? extends Identifiable> it = (MultiIterator<? extends Identifiable>) iterator;
-      queue = new DisruptorBlockingQueue<>(100);
+      queue = new MultithreadConcurrentQueue<>(4_096);
 
       final List<Object> sources = it.getSources();
 
@@ -65,6 +67,9 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
 
       for (int i = 0; i < sources.size(); i++) {
         final Iterator<? extends Identifiable> source = (Iterator<? extends Identifiable>) sources.get(i);
+
+        //System.out.printf("Iterator %d on %s\n", i, source);
+
         async.scheduleTask(-1, new DatabaseAsyncBrowseIterator(semaphore, record -> {
           if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
             // ALREADY RETURNED, AVOID DUPLICATES IN THE RESULT SET
@@ -76,13 +81,9 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
             if (filterOutRecords != null)
               filterOutRecords.add(record.getIdentity());
 
-            try {
-              if (!queue.offer(record, 1, TimeUnit.SECONDS))
-                return false;
-
-            } catch (InterruptedException e) {
-              Thread.currentThread().interrupt();
-              return false;
+            while (true) {
+              if (queue.offer(record))
+                break;
             }
           }
           return true;
@@ -104,12 +105,9 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
       ((MultiIterator<? extends Identifiable>) iterator).checkForTimeout();
 
     while (!queue.isEmpty() || semaphore.getCount() > 0) {
-      try {
-        return (T) queue.poll(100, TimeUnit.MILLISECONDS);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return null;
-      }
+      final T record = (T) queue.poll();
+      if (record != null)
+        return record;
     }
 
     // NOT FOUND

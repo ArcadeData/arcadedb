@@ -321,14 +321,19 @@ public class SelectExecutionIT extends TestHelper {
     });
 
     final SelectCompiled select = database.select().fromType("Parallel")//
-        .where().property("name").like().value("E%")//
-        .and().property("id").lt().value(1_000_000).compile();
+        .where().property("name").like().value("E%").and()//
+        .property("id").lt().value(1_000_000)//
+        .compile().parallel();
 
     for (int i = 0; i < 10; i++) {
-      final SelectIterator<Vertex> result = select.parallel().vertices();
+      final long beginTime = System.currentTimeMillis();
+
+      final SelectIterator<Vertex> result = select.vertices();
       final List<Vertex> list = result.toList();
       Assertions.assertEquals(1_000_000, list.size());
       list.forEach(r -> Assertions.assertTrue(r.getString("name").startsWith("E")));
+
+      System.out.println(i + " " + (System.currentTimeMillis() - beginTime));
     }
   }
 

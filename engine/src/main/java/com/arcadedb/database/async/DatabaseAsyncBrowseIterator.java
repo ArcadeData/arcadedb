@@ -21,9 +21,12 @@ package com.arcadedb.database.async;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.CodeUtils;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class DatabaseAsyncBrowseIterator implements DatabaseAsyncTask {
   public final CountDownLatch                   semaphore;

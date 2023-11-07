@@ -77,7 +77,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public final    DatabaseInternal                 database;
     public volatile boolean                          shutdown      = false;
     public volatile boolean                          forceShutdown = false;
-    public volatile boolean                          executingTask = false;
+    public          AtomicBoolean                    executingTask = new AtomicBoolean(false);
     public          long                             count         = 0;
 
     private AsyncThread(final DatabaseInternal database, final int id) {
@@ -119,14 +119,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         try {
           final DatabaseAsyncTask message = queue.poll(500, TimeUnit.MILLISECONDS);
           if (message != null) {
-            LogManager.instance()
-                .log(this, Level.FINE, "Received async message %s (threadId=%d)", message, Thread.currentThread().getId());
+            executingTask.set(true);
+            try {
+              LogManager.instance()
+                  .log(this, Level.FINE, "Received async message %s (threadId=%d)", message, Thread.currentThread().getId());
 
-            if (message == FORCE_EXIT) {
-              break;
-            } else {
-              executingTask = true;
-              try {
+              if (message == FORCE_EXIT) {
+                break;
+              } else {
 
                 if (message.requiresActiveTx() && !database.isTransactionActive())
                   database.begin();
@@ -140,16 +140,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                   database.begin();
                 }
 
-              } catch (final Throwable e) {
-                onError(e);
-                if (database.isTransactionActive())
-                  database.rollback();
+              }
+            } catch (final Throwable e) {
+              onError(e);
+              if (database.isTransactionActive())
+                database.rollback();
+            } finally {
+              try {
+                message.completed();
               } finally {
-                try {
-                  message.completed();
-                } finally {
-                  executingTask = false;
-                }
+                executingTask.set(false);
               }
             }
 
@@ -183,7 +183,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
 
     public boolean isExecutingTask() {
-      return executingTask;
+      return executingTask.get();
     }
   }
 
@@ -259,6 +259,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     int minQueueIndex = -1;
     for (int i = 0; i < executorThreads.length; ++i) {
       final int qSize = executorThreads[i].queue.size() + (executorThreads[i].isExecutingTask() ? 1 : 0);
+
       if (qSize == 0)
         // EMPTY QUEUE, USE THIS
         return i;

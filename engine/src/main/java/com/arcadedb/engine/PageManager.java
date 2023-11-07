@@ -39,26 +39,26 @@ import java.util.logging.*;
  * Manages pages from disk to RAM. Each page can have different size.
  */
 public class PageManager extends LockContext {
-  private final FileManager                       fileManager;
-  private final ConcurrentMap<PageId, CachedPage> readCache;
-  private final TransactionManager                txManager;
+  private final    FileManager                       fileManager;
+  private final    ConcurrentMap<PageId, CachedPage> readCache;
+  private final    TransactionManager                txManager;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
-  private final ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
-  private final long                              maxRAM;
-  private final AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
-  private final AtomicLong                        totalWriteCacheRAM                    = new AtomicLong();
-  private final AtomicLong                        totalPagesRead                        = new AtomicLong();
-  private final AtomicLong                        totalPagesReadSize                    = new AtomicLong();
-  private final AtomicLong                        totalPagesWritten                     = new AtomicLong();
-  private final AtomicLong                        totalPagesWrittenSize                 = new AtomicLong();
-  private final AtomicLong                        cacheHits                             = new AtomicLong();
-  private final AtomicLong                        cacheMiss                             = new AtomicLong();
-  private final AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
-  private final AtomicLong                        evictionRuns                          = new AtomicLong();
-  private final AtomicLong                        pagesEvicted                          = new AtomicLong();
-  private       long                              lastCheckForRAM                       = 0;
-  private final PageManagerFlushThread            flushThread;
-  private final int                               freePageRAM;
+  private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
+  private final    long                              maxRAM;
+  private final    AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
+  private final    AtomicLong                        totalWriteCacheRAM                    = new AtomicLong();
+  private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
+  private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
+  private final    AtomicLong                        totalPagesWritten                     = new AtomicLong();
+  private final    AtomicLong                        totalPagesWrittenSize                 = new AtomicLong();
+  private final    AtomicLong                        cacheHits                             = new AtomicLong();
+  private final    AtomicLong                        cacheMiss                             = new AtomicLong();
+  private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
+  private final    AtomicLong                        evictionRuns                          = new AtomicLong();
+  private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
+  private volatile long                              lastCheckForRAM                       = 0;
+  private final    PageManagerFlushThread            flushThread;
+  private final    int                               freePageRAM;
 
   public interface ConcurrentPageAccessCallback {
     void access() throws IOException;
@@ -374,18 +374,21 @@ public class PageManager extends LockContext {
     }
   }
 
-  private synchronized void checkForPageDisposal() {
+  private void checkForPageDisposal() {
     final long now = System.currentTimeMillis();
     if (now - lastCheckForRAM < 100)
       return;
 
     final long totalRAM = totalReadCacheRAM.get();
-
     if (totalRAM < maxRAM)
       return;
 
     final long ramToFree = totalRAM * freePageRAM / 100;
 
+    evictOldestPages(ramToFree, totalRAM);
+  }
+
+  private synchronized void evictOldestPages(final long ramToFree, final long totalRAM) {
     evictionRuns.incrementAndGet();
 
     LogManager.instance()
