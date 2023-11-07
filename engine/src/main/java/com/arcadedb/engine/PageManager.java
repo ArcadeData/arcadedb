@@ -174,7 +174,7 @@ public class PageManager extends LockContext {
       final boolean createIfNotExists) throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
     if (page != null)
-      // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
+      // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENTS CONCURRENCY ON THE BUFFER POSITION
       return page.useAsImmutable();
     return null;
   }
@@ -329,24 +329,30 @@ public class PageManager extends LockContext {
 
   private CachedPage loadPage(final PageId pageId, final int size, final boolean createIfNotExists, final boolean cache)
       throws IOException {
-    final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(pageId.getFileId());
+    // ASSURE THE PAGE IS NOT IN THE FLUSHING QUEUE
+    CachedPage page = flushThread.getCachedPageFromMutablePageInQueue(pageId);
+    if (page == null) {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(pageId.getFileId());
 
-    final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
-    if (!createIfNotExists && isNewPage)
-      // AVOID CREATING AN EMPTY PAGE JUST TO CHECK THE VERSION
-      return null;
+      final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
+      if (!createIfNotExists && isNewPage)
+        // AVOID CREATING AN EMPTY PAGE JUST TO CHECK THE VERSION
+        return null;
 
-    checkForPageDisposal();
+      checkForPageDisposal();
 
-    final CachedPage page = new CachedPage(this, pageId, size);
+      page = new CachedPage(this, pageId, size);
 
-    if (!isNewPage)
-      // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
-      concurrentPageAccess(pageId, false, () -> file.read(page));
+      if (!isNewPage) {
+        // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
+        final CachedPage finalPage = page;
+        concurrentPageAccess(pageId, false, () -> file.read(finalPage));
+      }
 
-    page.loadMetadata();
+      page.loadMetadata();
 
-    LogManager.instance().log(this, Level.FINE, "Loaded page %s (threadId=%d)", null, page, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.FINE, "Loaded page %s (threadId=%d)", null, page, Thread.currentThread().getId());
+    }
 
     totalPagesRead.incrementAndGet();
     totalPagesReadSize.addAndGet(page.getPhysicalSize());

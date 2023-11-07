@@ -42,7 +42,8 @@ public class MutablePage extends BasePage implements TrackableContent {
     updateModifiedRange(0, size - 1);
   }
 
-  public MutablePage(final PageManager manager, final PageId pageId, final int size, final byte[] array, final int version, final int contentSize) {
+  public MutablePage(final PageManager manager, final PageId pageId, final int size, final byte[] array, final int version,
+      final int contentSize) {
     super(manager, pageId, size, array, version, contentSize);
   }
 
@@ -162,7 +163,8 @@ public class MutablePage extends BasePage implements TrackableContent {
   @Override
   public void updateModifiedRange(final int start, final int end) {
     if (start < 0 || end >= getPhysicalSize())
-      throw new IllegalArgumentException("Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
+      throw new IllegalArgumentException(
+          "Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
 
     if (start < modifiedRangeFrom)
       modifiedRangeFrom = start;
@@ -190,7 +192,8 @@ public class MutablePage extends BasePage implements TrackableContent {
       throw new IllegalArgumentException("Invalid position " + start);
 
     if (start + length > getPhysicalSize())
-      throw new IllegalArgumentException("Cannot write outside the page space (" + (start + length) + ">" + getPhysicalSize() + ")");
+      throw new IllegalArgumentException(
+          "Cannot write outside the page space (" + (start + length) + ">" + getPhysicalSize() + ")");
 
     updateModifiedRange(start, start + length - 1);
   }

@@ -33,11 +33,11 @@ import java.util.logging.*;
  * Flushes pages to disk asynchronously.
  */
 public class PageManagerFlushThread extends Thread {
-  private final    PageManager                      pageManager;
-  public final     BlockingQueue<List<MutablePage>> queue;
-  private final    String                           logContext;
-  private volatile boolean                          running   = true;
-  private final    AtomicBoolean                    suspended = new AtomicBoolean(false); // USED DURING BACKUP
+  private final    PageManager                           pageManager;
+  public final     ArrayBlockingQueue<List<MutablePage>> queue;
+  private final    String                                logContext;
+  private volatile boolean                               running   = true;
+  private final    AtomicBoolean                         suspended = new AtomicBoolean(false); // USED DURING BACKUP
 
   public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration,
       final String databaseName) {
@@ -90,6 +90,7 @@ public class PageManagerFlushThread extends Thread {
 
     if (pages != null) {
       if (pages.isEmpty())
+        // EMPTY PAGES IS A SPECIAL CONTENT FOR SHUTDOWN
         running = false;
       else
         for (final MutablePage page : pages)
@@ -114,5 +115,20 @@ public class PageManagerFlushThread extends Thread {
     running = false;
     queue.offer(Collections.emptyList()); // EMPTY LIST MEANS SHUTDOWN OF THE THREAD
     join();
+  }
+
+  public CachedPage getCachedPageFromMutablePageInQueue(final PageId pageId) {
+    final Object[] content = queue.toArray();
+    for (int i = 0; i < content.length; i++) {
+      final List<MutablePage> pages = (List<MutablePage>) content[i];
+      if (pages != null) {
+        for (int j = 0; j < pages.size(); j++) {
+          final MutablePage page = pages.get(j);
+          if (page.getPageId().equals(pageId))
+            return new CachedPage(page, true);
+        }
+      }
+    }
+    return null;
   }
 }
