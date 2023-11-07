@@ -542,9 +542,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public Iterator<Record> iterateBucket(final String bucketName) {
     stats.iterateBucket.incrementAndGet();
 
-    readLock();
-    try {
-
+    return executeInReadLock(() -> {
       checkDatabaseIsOpen();
       try {
         final Bucket bucket = schema.getBucketByName(bucketName);
@@ -552,10 +550,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       } catch (final Exception e) {
         throw new DatabaseOperationException("Error on executing scan of bucket '" + bucketName + "'", e);
       }
-
-    } finally {
-      readUnlock();
-    }
+    });
   }
 
   public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
@@ -1394,7 +1389,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
    */
   @Override
   public <RET> RET executeInReadLock(final Callable<RET> callable) {
-    readLock();
+    final long stamp = readLock();
     try {
 
       return callable.call();
@@ -1411,7 +1406,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       throw new DatabaseOperationException("Error during read lock", e);
 
     } finally {
-      readUnlock();
+      readUnlock(stamp);
     }
   }
 
@@ -1420,7 +1415,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
    */
   @Override
   public <RET> RET executeInWriteLock(final Callable<RET> callable) {
-    writeLock();
+    final long stamp = writeLock();
     try {
 
       return callable.call();
@@ -1437,7 +1432,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       throw new DatabaseOperationException("Error during write lock", e);
 
     } finally {
-      writeUnlock();
+      writeUnlock(stamp);
     }
   }
 

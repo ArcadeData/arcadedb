@@ -24,29 +24,36 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.locks.*;
 
 public class RWLockContext {
-  private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+  private final StampedLock lock = new StampedLock();
 
-  protected void readLock() {
-    lock.readLock().lock();
+  protected long readLock() {
+    if (lock.isWriteLocked() || lock.isReadLocked())
+      return 0;
+
+    return lock.readLock();
   }
 
-  protected void readUnlock() {
-    lock.readLock().unlock();
+  protected void readUnlock(final long stamp) {
+    if (stamp != 0)
+      lock.unlockRead(stamp);
   }
 
-  protected void writeLock() {
-    lock.writeLock().lock();
+  protected long writeLock() {
+    if (lock.isWriteLocked() || lock.isReadLocked())
+      return 0;
+    return lock.writeLock();
   }
 
-  protected void writeUnlock() {
-    lock.writeLock().unlock();
+  protected void writeUnlock(final long stamp) {
+    if (stamp != 0)
+      lock.unlockWrite(stamp);
   }
 
   /**
    * Executes a callback in an shared lock.
    */
   public <RET> RET executeInReadLock(final Callable<RET> callable) {
-    readLock();
+    final long stamp = readLock();
     try {
 
       return callable.call();
@@ -58,7 +65,7 @@ public class RWLockContext {
       throw new ArcadeDBException("Error in execution in lock", e);
 
     } finally {
-      readUnlock();
+      readUnlock(stamp);
     }
   }
 
@@ -66,7 +73,7 @@ public class RWLockContext {
    * Executes a callback in an exclusive lock.
    */
   public <RET> RET executeInWriteLock(final Callable<RET> callable) {
-    writeLock();
+    final long stamp = writeLock();
     try {
 
       return callable.call();
@@ -78,7 +85,7 @@ public class RWLockContext {
       throw new ArcadeDBException("Error in execution in lock", e);
 
     } finally {
-      writeUnlock();
+      writeUnlock(stamp);
     }
   }
 }
