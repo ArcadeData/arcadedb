@@ -15,10 +15,17 @@ public class SQLDefinedSQLFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testCallFromSQL() {
+  public void testCallFromSQLWithParams() {
     registerFunctions();
     final ResultSet result = database.command("sql", "select `math.sum`(?,?) as result", 3, 5);
     Assertions.assertEquals(8, (Integer) result.next().getProperty("result"));
+  }
+
+  @Test
+  public void testCallFromSQLNoParams() {
+    registerFunctions();
+    final ResultSet result = database.command("sql", "select `math.hello`() as result");
+    Assertions.assertEquals("hello", result.next().getProperty("result"));
   }
 
   @Test
@@ -62,6 +69,7 @@ public class SQLDefinedSQLFunctionTest extends TestHelper {
   private void registerFunctions() {
     database.command("sql", "define function math.sum \"select :a + :b;\" parameters [a,b] language sql");
     database.command("sql", "define function util.sum \"select :a + :b;\" parameters [a,b] language sql");
+    database.command("sql", "define function math.hello \"select 'hello'\" language sql");
 
     final FunctionLibraryDefinition flib = database.getSchema().getFunctionLibrary("math");
     Assertions.assertNotNull(flib);

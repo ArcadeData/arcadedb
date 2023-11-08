@@ -46,17 +46,22 @@ public class DefineFunctionStatement extends SimpleExecStatement {
         break;
 
       default:
-        throw new CommandSQLParsingException("Error on function creation: language '" + language.getStringValue() + "' not supported");
+        throw new CommandSQLParsingException(
+            "Error on function creation: language '" + language.getStringValue() + "' not supported");
       }
 
       database.getSchema().registerFunctionLibrary(fLib);
     } else
       fLib = database.getSchema().getFunctionLibrary(libraryName.getStringValue());
 
-    // CONVERT PARAMETERS
-    final String[] parameterArray = new String[parameters.size()];
-    for (int i = 0; i < parameters.size(); i++)
-      parameterArray[i] = parameters.get(i).getStringValue();
+    final String[] parameterArray;
+    if (parameters != null) {
+      // CONVERT PARAMETERS
+      parameterArray = new String[parameters.size()];
+      for (int i = 0; i < parameters.size(); i++)
+        parameterArray[i] = parameters.get(i).getStringValue();
+    } else
+      parameterArray = new String[] {};
 
     final FunctionDefinition f;
     switch (language.getStringValue()) {
@@ -69,13 +74,15 @@ public class DefineFunctionStatement extends SimpleExecStatement {
       break;
 
     default:
-      throw new CommandSQLParsingException("Error on function creation: language '" + language.getStringValue() + "' not supported");
+      throw new CommandSQLParsingException(
+          "Error on function creation: language '" + language.getStringValue() + "' not supported");
     }
 
     fLib.registerFunction(f);
 
-    return new InternalResultSet().add(new ResultInternal().setProperty("operation", "create function").setProperty("libraryName", libraryName.getStringValue())
-        .setProperty("functionName", functionName.getStringValue()));
+    return new InternalResultSet().add(
+        new ResultInternal().setProperty("operation", "create function").setProperty("libraryName", libraryName.getStringValue())
+            .setProperty("functionName", functionName.getStringValue()));
   }
 
   @Override
