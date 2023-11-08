@@ -89,8 +89,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
       if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
-        exchange.setStatusCode(403);
-        sendErrorResponse(exchange, 403, "No authentication was provided", null, null);
+        exchange.setStatusCode(401);
+        exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE,"Basic");
+        sendErrorResponse(exchange, 401, "", null, null);
         return;
       }
 
