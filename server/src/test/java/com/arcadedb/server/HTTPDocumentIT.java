@@ -121,7 +121,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
         readResponse(connection);
         Assertions.fail("Authentication was bypassed!");
       } catch (final IOException e) {
-        Assertions.assertTrue(e.toString().contains("403"));
+        Assertions.assertTrue(e.toString().contains("401"));
       } finally {
         connection.disconnect();
       }
