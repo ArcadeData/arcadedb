@@ -158,7 +158,7 @@ public class SelectIterator<T extends Document> implements Iterator<T> {
     }
 
     sortedResultSet = new ArrayList<>();
-    while (hasNext())
+    while (orderIndex < sortedResultSet.size())
       sortedResultSet.add(next().asDocument(true));
 
     Collections.sort(sortedResultSet, (a, b) -> {
