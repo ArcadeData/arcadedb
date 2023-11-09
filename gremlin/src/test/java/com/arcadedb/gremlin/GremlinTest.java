@@ -320,7 +320,8 @@ public class GremlinTest {
   public void testUseIndex() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
-      graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING)
+          .getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
 
       final String uuid = UUID.randomUUID().toString();
       final Vertex v = graph.addVertex("Person");
@@ -424,7 +425,8 @@ public class GremlinTest {
       Assertions.assertEquals(Long.MAX_VALUE + 1, (long) value.getProperty("result"));
 
       value = graph.gremlin("g.inject(BigInteger.valueOf(Long.MAX_VALUE), 1).sum()").execute().nextIfAvailable();
-      Assertions.assertEquals(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)), (BigInteger) value.getProperty("result"));
+      Assertions.assertEquals(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)),
+          (BigInteger) value.getProperty("result"));
     } finally {
       graph.drop();
     }
@@ -462,6 +464,24 @@ public class GremlinTest {
       Assertions.assertNotNull(result.getProperty("Alice"));
       Assertions.assertNotNull(result.getProperty("Bob"));
       Assertions.assertNotNull(result.getProperty("Steve"));
+    } finally {
+      graph.drop();
+    }
+  }
+
+  //@Test
+  // Issue https://github.com/ArcadeData/arcadedb/issues/1301
+  public void testMerge() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testMerge");
+    try {
+      graph.database.command("sqlscript",//
+          "CREATE VERTEX TYPE TestMerge;" + //
+              "CREATE PROPERTY TestMerge.id STRING;" +//
+              "CREATE INDEX ON TestMerge (id) UNIQUE;");
+
+      graph.cypher("CREATE (v:TestMerge{id: 0})").execute();
+      graph.cypher("UNWIND range(0, 10) AS id MERGE (v:TestMerge{id: id}) RETURN v").execute();
+
     } finally {
       graph.drop();
     }
