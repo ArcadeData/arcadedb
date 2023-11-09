@@ -51,7 +51,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
     if (iParams.length == 0 || iParams[0] == null)
       date = LocalDateTime.now();
     else if (iParams[0] instanceof Number)
-      date = DateUtils.millisTolocalDateTime(((Number) iParams[0]).longValue());
+      date = DateUtils.millisToLocalDateTime(((Number) iParams[0]).longValue());
     else if (iParams[0] instanceof String) {
       final String dateAsString = (String) iParams[0];
       final String format;

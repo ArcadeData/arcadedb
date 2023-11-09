@@ -332,15 +332,19 @@ public class DateUtils {
     return highestPrecision;
   }
 
-  public static LocalDateTime millisTolocalDateTime(final long millis) {
+  public static LocalDateTime millisToLocalDateTime(final long millis) {
     return Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDateTime();
+  }
+
+  public static LocalDate millisToLocalDate(final long millis) {
+    return Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate();
   }
 
   public static String format(final Object obj, final String format) {
     if (obj instanceof Date)
-      return getFormatter(format).format(millisTolocalDateTime(((Date) obj).getTime()));
+      return getFormatter(format).format(millisToLocalDateTime(((Date) obj).getTime()));
     else if (obj instanceof Calendar)
-      return getFormatter(format).format(millisTolocalDateTime(((Calendar) obj).getTimeInMillis()));
+      return getFormatter(format).format(millisToLocalDateTime(((Calendar) obj).getTimeInMillis()));
     else if (obj instanceof TemporalAccessor)
       return getFormatter(format).format((TemporalAccessor) obj);
     return null;
