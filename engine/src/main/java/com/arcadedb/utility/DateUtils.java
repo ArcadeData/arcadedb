@@ -337,7 +337,7 @@ public class DateUtils {
   }
 
   public static LocalDate millisToLocalDate(final long millis) {
-    return Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate();
+    return LocalDate.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
   }
 
   public static String format(final Object obj, final String format) {
