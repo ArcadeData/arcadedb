@@ -151,8 +151,6 @@
                     <compilerArgs>
                         <arg>--add-exports</arg>
                         <arg>java.management/sun.management=ALL-UNNAMED</arg>
-                        <arg>--add-opens</arg>
-                        <arg>java.base/java.util.concurrent.atomic=ALL-UNNAMED</arg>
                     </compilerArgs>
                 </configuration>
             </plugin>
