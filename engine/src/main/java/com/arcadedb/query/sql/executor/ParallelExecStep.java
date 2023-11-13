@@ -32,7 +32,8 @@ public class ParallelExecStep extends AbstractExecutionStep {
   int current = 0;
   private ResultSet currentResultSet = null;
 
-  public ParallelExecStep(final List<InternalExecutionPlan> subExecutionPlans, final CommandContext context, final boolean profilingEnabled) {
+  public ParallelExecStep(final List<InternalExecutionPlan> subExecutionPlans, final CommandContext context,
+      final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.subExecutionPlans = subExecutionPlans;
   }
@@ -40,15 +41,14 @@ public class ParallelExecStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
-
     return new ResultSet() {
       int localCount = 0;
 
       @Override
       public boolean hasNext() {
-        if (localCount >= nRecords) {
+        if (localCount >= nRecords)
           return false;
-        }
+
         while (currentResultSet == null || !currentResultSet.hasNext()) {
           fetchNext(context, nRecords);
           if (currentResultSet == null) {
@@ -65,9 +65,8 @@ public class ParallelExecStep extends AbstractExecutionStep {
         }
         while (currentResultSet == null || !currentResultSet.hasNext()) {
           fetchNext(context, nRecords);
-          if (currentResultSet == null) {
+          if (currentResultSet == null)
             throw new NoSuchElementException();
-          }
         }
         localCount++;
         return currentResultSet.next();
@@ -83,9 +82,9 @@ public class ParallelExecStep extends AbstractExecutionStep {
         return;
       }
       currentResultSet = subExecutionPlans.get(current).fetchNext(nRecords);
-      if (!currentResultSet.hasNext()) {
+      if (!currentResultSet.hasNext())
         current++;
-      }
+
     } while (!currentResultSet.hasNext());
   }
 
@@ -210,6 +209,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(context)).collect(Collectors.toList()), context, profilingEnabled);
+    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(context)).collect(Collectors.toList()), context,
+        profilingEnabled);
   }
 }

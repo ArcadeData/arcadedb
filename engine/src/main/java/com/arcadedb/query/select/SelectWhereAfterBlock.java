@@ -27,10 +27,10 @@ import java.util.concurrent.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SelectWhereAfterFirstBlock {
+public class SelectWhereAfterBlock {
   private final Select select;
 
-  public SelectWhereAfterFirstBlock(final Select select) {
+  public SelectWhereAfterBlock(final Select select) {
     this.select = select;
   }
 
