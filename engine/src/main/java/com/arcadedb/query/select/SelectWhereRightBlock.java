@@ -27,17 +27,17 @@ public class SelectWhereRightBlock extends SelectWhereBaseBlock {
     super(select);
   }
 
-  public SelectWhereAfterFirstBlock property(final String name) {
+  public SelectWhereAfterBlock property(final String name) {
     setProperty(name);
-    return new SelectWhereAfterFirstBlock(select);
+    return new SelectWhereAfterBlock(select);
   }
 
-  public SelectWhereAfterFirstBlock parameter(final String parameterName) {
+  public SelectWhereAfterBlock parameter(final String parameterName) {
     setParameter(parameterName);
-    return new SelectWhereAfterFirstBlock(select);
+    return new SelectWhereAfterBlock(select);
   }
 
-  public SelectWhereAfterFirstBlock value(final Object value) {
+  public SelectWhereAfterBlock value(final Object value) {
     select.checkNotCompiled();
     if (select.property == null)
       throw new IllegalArgumentException("Property has not been set");
@@ -52,6 +52,6 @@ public class SelectWhereRightBlock extends SelectWhereBaseBlock {
       break;
     }
 
-    return new SelectWhereAfterFirstBlock(select);
+    return new SelectWhereAfterBlock(select);
   }
 }
