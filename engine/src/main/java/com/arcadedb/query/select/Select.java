@@ -138,13 +138,6 @@ public class Select {
     return this;
   }
 
-  public Select parameter(final String paramName, final Object paramValue) {
-    if (parameters == null)
-      parameters = new HashMap<>();
-    parameters.put(paramName, paramValue);
-    return this;
-  }
-
   public Select limit(final int limit) {
     checkNotCompiled();
     this.limit = limit;
