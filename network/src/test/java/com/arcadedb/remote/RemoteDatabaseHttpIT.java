@@ -18,12 +18,11 @@ import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 @ExtendWith(MockitoExtension.class)
-class RemoteDatabaseTest {
+class RemoteDatabaseHttpIT {
   class MockRemoteDatabase extends RemoteDatabase {
     MockRemoteDatabase() {
       super("localhost", 1234, "testdb", "user", "password", new ContextConfiguration());
     }
-
     void requestClusterConfiguration() {
     }
   }

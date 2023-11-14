@@ -24,11 +24,14 @@ import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 
 import java.util.*;
 
 public interface BasicDatabase extends AutoCloseable {
   String getName();
+
+  Schema getSchema();
 
   @Override
   void close();
@@ -108,7 +111,8 @@ public interface BasicDatabase extends AutoCloseable {
    *
    * @return true if a new transaction has been created or false if an existent transaction has been joined
    */
-  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, final OkCallback ok, final ErrorCallback error);
+  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, final OkCallback ok,
+      final ErrorCallback error);
 
   /**
    * Begins a new transaction. If a transaction is already begun, the current transaction is parked and a new sub-transaction is begun. The new sub-transaction

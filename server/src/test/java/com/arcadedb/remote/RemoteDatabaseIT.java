@@ -42,7 +42,6 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 
 public class RemoteDatabaseIT extends BaseGraphServerTest {
-
   private static final String DATABASE_NAME = "remote-database";
 
   @Override
@@ -53,8 +52,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @Test
   public void simpleTxDocuments() throws Exception {
     testEachServer((serverIndex) -> {
-      Assertions.assertTrue(
-          new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
+      Assertions.assertTrue(new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
 
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -304,8 +303,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final int TOTAL_TRANSACTIONS = 100;
       final int BATCH_SIZE = 100;
 
-      Assertions.assertTrue(
-          new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
+      Assertions.assertTrue(new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
 
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -383,8 +382,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @Test
   public void testTransactionWrongSessionId() throws Exception {
     testEachServer((serverIndex) -> {
-      Assertions.assertTrue(
-          new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
+      Assertions.assertTrue(new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists());
 
       final RemoteDatabase database1 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -418,14 +417,16 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @BeforeEach
   public void beginTest() {
     super.beginTest();
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (!database.exists())
       database.create();
   }
 
   @AfterEach
   public void endTest() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (database.exists())
       database.drop();
     super.endTest();

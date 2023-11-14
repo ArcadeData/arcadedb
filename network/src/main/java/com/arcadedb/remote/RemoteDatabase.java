@@ -86,18 +86,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   private              String                               sessionId;
   protected final      DatabaseStats                        stats                     = new DatabaseStats();
   private              Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-
-  public List<String> getReplicaAddresses() {
-    return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
-  }
-
-  String getSessionId() {
-    return sessionId;
-  }
-
-  void setSessionId(String sessionId) {
-    this.sessionId = sessionId;
-  }
+  private final        RemoteSchema                         schema                    = new RemoteSchema(this);
 
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN
@@ -137,6 +126,11 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   public void create() {
     serverCommand("POST", "create database " + databaseName, true, true, null);
+  }
+
+  @Override
+  public RemoteSchema getSchema() {
+    return schema;
   }
 
   public List<String> databases() {
@@ -625,6 +619,18 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   public String getLeaderAddress() {
     return leaderServer.getFirst() + ":" + leaderServer.getSecond();
+  }
+
+  public List<String> getReplicaAddresses() {
+    return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
+  }
+
+  String getSessionId() {
+    return sessionId;
+  }
+
+  void setSessionId(String sessionId) {
+    this.sessionId = sessionId;
   }
 
   HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
