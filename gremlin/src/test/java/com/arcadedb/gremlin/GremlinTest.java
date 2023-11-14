@@ -469,14 +469,14 @@ public class GremlinTest {
     }
   }
 
-  //@Test
   // Issue https://github.com/ArcadeData/arcadedb/issues/1301
+  @Test
   public void testMerge() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testMerge");
     try {
       graph.database.command("sqlscript",//
           "CREATE VERTEX TYPE TestMerge;" + //
-              "CREATE PROPERTY TestMerge.id STRING;" +//
+              "CREATE PROPERTY TestMerge.id INTEGER;" +//
               "CREATE INDEX ON TestMerge (id) UNIQUE;");
 
       graph.cypher("CREATE (v:TestMerge{id: 0})").execute();
