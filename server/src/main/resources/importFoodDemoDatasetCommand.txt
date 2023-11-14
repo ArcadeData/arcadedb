@@ -1,0 +1,45 @@
+import database file://demo-data/FoodData_Central_foundation_food_json_2022-10-28.json with mapping = {
+     "FoundationFoods": [{
+         "@cat": "v",
+         "@type": "<foodClass>",
+         "foodNutrients": [{
+             "@cat": "e",
+             "@type": "HAS_NUTRIENT",
+             "@in": "nutrient",
+             "@cardinality": "no-duplicates",
+             "nutrient": {
+                 "@cat": "v",
+                 "@type": "Nutrient",
+                 "@id": "id",
+                 "@idType": "long",
+                 "@strategy": "merge"
+             },
+             "foodNutrientDerivation": "@ignore"
+         }],
+         "inputFoods": [{
+             "@cat": "e",
+             "@type": "INPUT",
+             "@in": "inputFood",
+             "@cardinality": "no-duplicates",
+             "inputFood": {
+                 "@cat": "v",
+                 "@type": "<foodClass>",
+                 "@id": "fdcId",
+                 "@idType": "long",
+                 "@strategy": "merge",
+                 "foodCategory": {
+                     "@cat": "e",
+                     "@type": "HAS_CATEGORY",
+                     "@cardinality": "no-duplicates",
+                     "@in": {
+                         "@cat": "v",
+                         "@type": "FoodCategory",
+                         "@id": "id",
+                         "@idType": "long",
+                         "@strategy": "merge"
+                     }
+                 }
+             }
+         }]
+     }]
+ }

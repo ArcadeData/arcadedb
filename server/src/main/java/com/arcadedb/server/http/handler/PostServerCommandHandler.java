@@ -50,8 +50,6 @@ import com.nimbusds.oauth2.sdk.util.StringUtils;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.rmi.*;
 import java.util.*;
 
 public class PostServerCommandHandler extends AbstractHandler {
@@ -211,6 +209,7 @@ public class PostServerCommandHandler extends AbstractHandler {
       final String CLASSIFICATION = "classification";
       final String OWNER = "owner";
       final String VISIBILITY = "visibility";
+      final String CLASSIFICATION_VALIDATION_ENABLED = "classificationValidationEnabled";
 
       if (databaseName.isEmpty())
         throw new IllegalArgumentException("Database name empty");
@@ -245,10 +244,13 @@ public class PostServerCommandHandler extends AbstractHandler {
       String owner = options.has(OWNER) ? options.get(OWNER).getAsString() : null;
       boolean isPublic = options.has(VISIBILITY) ? options.get(VISIBILITY).getAsString().equalsIgnoreCase("public") : false;
 
+      boolean isClassificationValidationEnabled = options.has(CLASSIFICATION_VALIDATION_ENABLED)
+              ? options.get(CLASSIFICATION_VALIDATION_ENABLED).getAsBoolean() : true;
+
       final ArcadeDBServer server = httpServer.getServer();
       server.getServerMetrics().meter("http.create-database").hit();
 
-      final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE, classification, owner, isPublic);
+      final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE, classification, owner, isPublic, isClassificationValidationEnabled);
 
       if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
         ((ReplicatedDatabase) db).createInReplicas();
@@ -291,8 +293,8 @@ public class PostServerCommandHandler extends AbstractHandler {
             resultStringBuilder.append(line).append("\n");
         }
     }
-  return resultStringBuilder.toString();
-}
+    return resultStringBuilder.toString();
+  }
 
   private void createAndAssignRoleToUser(ArcadeRole arcadeRole, String username) {
     String newRole = arcadeRole.getKeycloakRoleName();

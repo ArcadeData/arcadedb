@@ -220,6 +220,10 @@ function updateDatabases( callback ){
         $("#inputDatabase").val(selected);
   
       $("#currentDatabase").html( getCurrentDatabase() );
+
+      getClassificationForDatabase(getCurrentDatabase()).then((classification) => {
+        $("#lblCurrentDatabaseClassification").html( classification );
+      });
     }
 
     $("#user").html(data.user);
@@ -247,7 +251,7 @@ function createDatabase(){
   let html = `
   <div style='text-align: left'>
   <div style="padding-bottom: 10px">
-  <b>Name:  </b><input id='inputCreateDatabaseName'></br>
+  <b>Name:  </b><input id='inputCreateDatabaseName' type='text'></br>
   </div>
   <div style="padding-bottom: 10px">
   <b>Classification:  </b><input id='inputClassification'></br>
@@ -262,8 +266,9 @@ function createDatabase(){
   <label for="rbPrivate">Private</label><br>
   <label for="import"><b>Import WIP SDL Ontology:</b></label>
   <input type="checkbox" id="chkImport" name="chkImport" value="import">
+  <label for="validation"><b>Enable SDL Classification Data Access Enforcement:</b></label>
+  <input type="checkbox" id="chkValidation" name="chkValidation" value="enabled" checked oninput=onValidationEnabledChange()>
   </div>
-
   `;
   Swal.fire({
     title: 'Create a new database',
@@ -293,15 +298,16 @@ function createDatabase(){
       var chkImport = document.getElementsByName('chkImport');
       let importOntology = chkImport[0].checked;
 
-      console.log("checked", chkImport, importOntology);
+      var chkValidation = document.getElementsByName('chkValidation');
+      let enableClassificationValidation = chkValidation[0].checked;
 
       var options = {
         owner: owner,
         visibility: visibility,
         classification: classification,
-        importOntology: importOntology
+        importOntology: importOntology,
+        classificationValidationEnabled: enableClassificationValidation
       }
-      console.log("options: ", database, owner, visibility, classification);
 
       if ( database == "" ){
         globalNotify( "Error", "Database name empty", "danger");
@@ -329,6 +335,21 @@ function createDatabase(){
   });
 
   $("#inputCreateDatabaseName").focus();
+}
+
+/**
+ * Set the database classification to U, and block updates when classification validation is disabled.
+ */
+function onValidationEnabledChange() {
+  var chkValidation = document.getElementsByName('chkValidation');
+  let enableClassificationValidation = chkValidation[0].checked;
+
+  if (!enableClassificationValidation) {
+    $("#inputClassification").val('U');
+    $("#inputClassification")[0].readOnly = true;
+  } else {
+    $("#inputClassification")[0].readOnly = false;
+  }
 }
 
 function dropDatabase(){
@@ -454,7 +475,16 @@ function getCurrentDatabase(){
   return db != null ? db.trim() : null;
 }
 
-function setCurrentDatabase( dbName ){
+function setCurrentDatabase( dbName ) {
+  let data = getDatabaseMetadata().then((data) => {
+
+    for ( let i in data ) {
+      if ( data[i].name == $("#inputDatabase").val()) {
+        $("#lblCurrentDatabaseClassification").html( escapeHtml(data[i].classification || "") );
+      }
+    }
+  });
+
   $("#currentDatabase").html( dbName );
   $("#inputDatabase").val( dbName );
   globalStorageSave("database.current", dbName);
@@ -502,7 +532,7 @@ function copyQueryFromHistory(){
     let queryHistory = getQueryHistory();
     let q = queryHistory[index];
     if( q != null ) {
-      setCurrentDatabase( q.d );
+       setCurrentDatabase( q.d );
        $("#inputLanguage").val( q.l );
       editor.setValue( q.c );
     }
@@ -968,31 +998,49 @@ function updateDatabaseSetting(key, value){
   });
 }
 
-function loadDatabaseMetadata() {
-  jQuery.ajax({
-    type: "GET",
-    url: basePath + "/databasesInfo",
-    beforeSend: function (xhr){
-      xhr.setRequestHeader('Authorization', globalCredentials);
-    }
-  })
-  .done(function(data) {
-    let json = JSON.parse(JSON.stringify(data));
-    
-    if (typeof json == "object" && json["result"] == 'ok') {
-      // no data returned, the user doesn't have access to any databases
-    } else {
-      // valid response, parse the databases the user has access to
-      let databases = "";
-      for ( let i in data.result ) {
-        if ( data.result[i].name == $("#inputDatabase").val()) {
-            $("#lblClassification").text( data.result[i].classification || "" );
-            $("#lblOwner").text( data.result[i].owner || "" );
-            $("#lblPublic").text( data.result[i].isPublic || "" );
-            $("#lblCreatedBy").text( data.result[i].createdBy || "" );
-            $("#lblCreatedDate").text( data.result[i].createdDateTime || "" );
-          }
-        }
+function loadDatabaseMetadata(){
+  getDatabaseMetadata().then((data) => {
+    setDatabaseMetadata(data)
+  });
+}
+
+async function getClassificationForDatabase(database) {
+  database = escapeHtml(database?.trim());
+  if (database != null && database != "") {
+    let data = await getDatabaseMetadata();
+    for ( let i in data ) {
+      if ( data[i].name == escapeHtml(database)) {
+        return data[i].classification || "";
       }
-    });
+    }
+  }
+  return "";
+}
+
+async function getDatabaseMetadata() {
+
+  const dataResponse = await fetch(`${basePath}/databasesInfo`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      'Authorization': globalCredentials
+    }
+  });
+  if (dataResponse.ok) {
+    const data = await dataResponse.json();
+    return data.result;
+  }
+}
+
+function setDatabaseMetadata(data) {
+  for ( let i in data ) {
+    if ( data[i].name == escapeHtml($("#inputDatabase").val())) {
+        $("#lblClassification").text( data[i].classification || "" );
+        $("#lblOwner").text( data[i].owner || "" );
+        $("#lblPublic").text( data[i].isPublic || "" );
+        $("#lblCreatedBy").text( data[i].createdBy || "" );
+        $("#lblCreatedDate").text( data[i].createdDateTime || "" );
+        $("#lblClassificationValidationEnabled").text( data[i].classificationValidationEnabled);
+      }
+    }
 }

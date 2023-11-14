@@ -31,7 +31,7 @@
     <div class="col-1">
     </div>
     <div class="col-6 text-left">
-      <label>Current database:&nbsp;<a href="#" onclick="globalActivateTab('tab-database');" class="link"><span id="currentDatabase"></span></a></label>
+      <label>Current database:&nbsp;<a href="#" onclick="globalActivateTab('tab-database');" class="link">(<span id="lblCurrentDatabaseClassification"></span>)&nbsp;<span id="currentDatabase"></span></a></label>
     </div>
     <div class="col-2 text-left">
       <label>Auto Limit &nbsp;
@@ -302,7 +302,7 @@ function initQuery() {
   // APPLY SETTINGS FROM URL
   var dbPar = getURLParameter("db");
   if( dbPar != null && dbPar != "null")
-    setCurrentDatabase( dbPar );
+   setCurrentDatabase( dbPar );
 
   var limitPar = getURLParameter("limit");
   if( limitPar != null && limitPar != "null") {

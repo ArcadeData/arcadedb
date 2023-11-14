@@ -40,6 +40,7 @@ import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.PostServerCommandHandler;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
 import com.arcadedb.server.monitor.ServerMonitor;
@@ -153,6 +154,8 @@ public class ArcadeDBServer {
     // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
     loadDatabases();
 
+    loadDefaultFoodDatabase();
+
     httpServer.startService();
 
     status = STATUS.ONLINE;
@@ -178,6 +181,35 @@ public class ArcadeDBServer {
     }
 
     serverMonitor.start();
+  }
+
+  private void loadDefaultFoodDatabase() {
+    if (getDatabaseNames() == null || !getDatabaseNames().contains("Food_Demo")) {
+      LogManager.instance().log(this, Level.INFO, "Food demo database not found, creating...");
+      Database database = createDatabase("Food_Demo", READ_WRITE, "U", "admin", true, false);
+
+      try {
+        InputStream inputStream = PostServerCommandHandler.class.getResourceAsStream("/importFoodDemoDatasetCommand.txt");
+        String data = readFromInputStream(inputStream);
+        database.command("sql", data);
+      } catch (Exception e) {
+        throw new ServerException("Error creating food demo dataset: " + e.getMessage());
+      }
+    } else {
+      LogManager.instance().log(this, Level.INFO, "Food demo database found, skipping...");
+    }
+  }
+
+  private String readFromInputStream(InputStream inputStream) throws IOException {
+    StringBuilder resultStringBuilder = new StringBuilder();
+    try (BufferedReader br
+      = new BufferedReader(new InputStreamReader(inputStream))) {
+        String line;
+        while ((line = br.readLine()) != null) {
+            resultStringBuilder.append(line).append("\n");
+        }
+    }
+    return resultStringBuilder.toString();
   }
 
   private void welcomeBanner() {
@@ -324,11 +356,11 @@ public class ArcadeDBServer {
   }
 
   public synchronized DatabaseInternal createDatabase(final String databaseName, final PaginatedFile.MODE mode) { 
-    return createDatabase(databaseName, mode, databaseName, null, false);
+    return createDatabase(databaseName, mode, databaseName, null, false, true);
   }
 
   public synchronized DatabaseInternal createDatabase(final String databaseName, final PaginatedFile.MODE mode,
-         String classification, String owner, boolean isPublic) {   DatabaseInternal db = databases.get(databaseName);
+         String classification, String owner, boolean isPublic, boolean isClassificationValidationEnabled) {   DatabaseInternal db = databases.get(databaseName);
     if (db != null)
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
@@ -337,7 +369,8 @@ public class ArcadeDBServer {
         .setAutoTransaction(true)
         .setPublic(isPublic)
         .setClassification(classification)
-        .setOwner(owner);
+        .setOwner(owner)
+        .setClassificationValidationEnabled(isClassificationValidationEnabled);
     
     if (factory.exists())
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");

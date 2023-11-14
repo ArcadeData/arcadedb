@@ -46,6 +46,8 @@ public class GetDatabasesInfoHandler  extends AbstractHandler {
                   root.put("createdDateTime", embeddedSchema.getCreatedDateTime());
                 }
 
+                root.put("classificationValidationEnabled", embeddedSchema.isClassificationValidationEnabled());
+
                 databases.put(root);
             }
           }

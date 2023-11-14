@@ -187,9 +187,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
      * users until a data steward properly marks the document.
      */ 
     try {
-      DocumentValidator.validateClassificationMarkings(this, securityDatabaseUser);
-
-      set(CLASSIFICATION_MARKED, true);
+      if (this.getDatabase().getSchema().getEmbedded().isClassificationValidationEnabled()) {
+        DocumentValidator.validateClassificationMarkings(this, securityDatabaseUser);
+        set(CLASSIFICATION_MARKED, true);
+      }
     } catch (ValidationException e) {
       // Only ignore data validation errors on writes for service accounts.
       if (database.getContext().getCurrentUser().isServiceAccount()) {

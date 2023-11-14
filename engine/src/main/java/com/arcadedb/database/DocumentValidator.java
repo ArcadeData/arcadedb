@@ -58,6 +58,12 @@ public class DocumentValidator {
 
   public static void validateClassificationMarkings(final MutableDocument document, 
           SecurityDatabaseUser securityDatabaseUser) {
+
+    // Skip validation checks if classification validation is disabled for the database
+    if (!document.getDatabase().getSchema().getEmbedded().isClassificationValidationEnabled()) {
+      return;
+    }
+
     boolean validSources = false;
 
     // validate sources, if present

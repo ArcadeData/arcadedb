@@ -41,6 +41,7 @@ public class DatabaseFactory implements AutoCloseable {
   private String classification = "U";
   private String owner;
   private boolean isPublic = false;
+  private boolean classificationValidationEnabled = true;
 
   public DatabaseFactory(final String path) {
     if (path == null || path.isEmpty())
@@ -95,6 +96,7 @@ public class DatabaseFactory implements AutoCloseable {
     database.getSchema().getEmbedded().setClassification(classification);
     database.getSchema().getEmbedded().setOwner(owner);
     database.getSchema().getEmbedded().setPublic(isPublic);
+    database.getSchema().getEmbedded().setClassificationValidationEnabled(classificationValidationEnabled);
     database.getSchema().getEmbedded().saveConfiguration();
 
     registerActiveInstance(database);
@@ -168,6 +170,11 @@ public class DatabaseFactory implements AutoCloseable {
   
   public DatabaseFactory setPublic(final boolean isPublic) {
     this.isPublic = isPublic;
+    return this;
+  }
+
+  public DatabaseFactory setClassificationValidationEnabled(boolean isClassificationValidationEnabled) {
+    this.classificationValidationEnabled = isClassificationValidationEnabled;
     return this;
   }
 }

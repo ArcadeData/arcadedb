@@ -118,6 +118,12 @@ public class EmbeddedSchema implements Schema {
   @Getter
   private String createdDateTime;
 
+  @Getter @Setter
+  private boolean classificationValidationEnabled = true;
+
+  private final static String CLASSIFICATION_VALIDATION_SETTING = "classificationValidationEnabled";
+
+
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
     this.databasePath = databasePath;
@@ -889,6 +895,10 @@ public class EmbeddedSchema implements Schema {
         createdDateTime = settings.getString("createdDateTime");
       }
 
+      if (settings.has(CLASSIFICATION_VALIDATION_SETTING)) {
+        classificationValidationEnabled = settings.getBoolean(CLASSIFICATION_VALIDATION_SETTING);
+      }
+
       dateFormat = settings.getString("dateFormat");
       dateTimeFormat = settings.getString("dateTimeFormat");
 
@@ -1133,6 +1143,8 @@ public class EmbeddedSchema implements Schema {
 
     settings.put("createdDateTime", LocalDateTime.now().toString());
     settings.put("createdBy", database.getCurrentUserName());
+
+    settings.put(CLASSIFICATION_VALIDATION_SETTING, classificationValidationEnabled);
 
     final JSONObject types = new JSONObject();
     root.put("types", types);
