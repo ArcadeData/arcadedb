@@ -91,20 +91,35 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ("detailed".equalsIgnoreCase(profileExecution))
       paramMap.put("$profileExecution", true);
 
-    final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
+    boolean awaitResponse = true;
+    if (requestMap.containsKey("awaitResponse") && requestMap.get("awaitResponse") instanceof Boolean) {
+        awaitResponse = (Boolean) requestMap.get("awaitResponse");
+    }
+
+    if (!awaitResponse) {
+      if (language.equalsIgnoreCase("sqlScript"))
+        executeScriptAsync(database, command, paramMap);
+      else
+        executeCommandAsync(database, language, command, paramMap);
+
+      return new ExecutionResponse(202, "{ \"result\": \"Command accepted for asynchronous execution\"}");
+    } else {
+
+      final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
         executeScript(database, command, paramMap) :
         executeCommand(database, language, command, paramMap);
 
-    final JSONObject response = createResult(user, database);
+      final JSONObject response = createResult(user, database);
 
-    serializeResultSet(database, serializer, limit, response, qResult);
+      serializeResultSet(database, serializer, limit, response, qResult);
 
-    if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
-      qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
+      if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
+        qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
 
-    httpServer.getServer().getServerMetrics().meter("http.command").hit();
+      httpServer.getServer().getServerMetrics().meter("http.command").hit();
 
-    return new ExecutionResponse(200, response.toString());
+      return new ExecutionResponse(200, response.toString());
+    }
   }
 
   private ResultSet executeScript(final Database database, String command, final Map<String, Object> paramMap) {
@@ -127,5 +142,27 @@ public class PostCommandHandler extends AbstractQueryHandler {
       return database.command(language, command, httpServer.getServer().getConfiguration(), (Object[]) params);
 
     return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
+  }
+
+  private void executeScriptAsync(final Database database, String command, final Map<String, Object> paramMap) {
+    final Object params = mapParams(paramMap);
+
+    if (!command.endsWith(";"))
+      command += ";";
+
+    if (params instanceof Object[])
+      database.async().command("sqlscript", command, null, (Object[]) params);
+    else
+      database.async().command("sqlscript", command, null, (Map<String, Object>) params);
+  }
+
+  protected void executeCommandAsync(final Database database, final String language, final String command,
+      final Map<String, Object> paramMap) {
+    final Object params = mapParams(paramMap);
+
+    if (params instanceof Object[])
+      database.async().command(language, command, null, (Object[]) params);
+    else
+      database.async().command(language, command, null, (Map<String, Object>) params);
   }
 }
