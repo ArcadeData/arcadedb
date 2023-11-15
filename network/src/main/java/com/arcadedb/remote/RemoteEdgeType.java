@@ -22,10 +22,14 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.EdgeType;
 
 /**
- * Remote Edge Type implementation used by Remote Database. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ * Edge type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
+ * {@link RemoteSchema#reload()} is called.
+ * <p>
+ * This class is not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+
 public class RemoteEdgeType extends RemoteDocumentType implements EdgeType {
 
   RemoteEdgeType(final RemoteDatabase remoteDatabase, final Result record) {

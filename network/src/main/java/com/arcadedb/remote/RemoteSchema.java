@@ -46,7 +46,11 @@ import java.util.*;
 import java.util.stream.*;
 
 /**
- * Remote Schema implementation used by Remote Database. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ * Remote Schema implementation used by Remote Database. The types are loaded from the server the first time
+ * are needed and cached in RAM until the schema is changed, then it is automatically reloaded from the server.
+ * You can manually reload the schema by calling the {@link #reload()} method.
+ * <p>
+ * This class is not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -126,7 +130,7 @@ public class RemoteSchema implements Schema {
   public DocumentType createDocumentType(final String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "`");
     if (result.hasNext())
-      return reloadSchema().getType(typeName);
+      return reload().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
   }
 
@@ -134,7 +138,7 @@ public class RemoteSchema implements Schema {
   public DocumentType createDocumentType(final String typeName, final int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "` buckets " + buckets);
     if (result.hasNext())
-      return reloadSchema().getType(typeName);
+      return reload().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
   }
 
@@ -143,7 +147,7 @@ public class RemoteSchema implements Schema {
     final ResultSet result = remoteDatabase.command("sql",
         "create document type `" + typeName + "` if not exists buckets " + buckets);
     if (result.hasNext())
-      return reloadSchema().getType(typeName);
+      return reload().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
   }
 
@@ -151,7 +155,7 @@ public class RemoteSchema implements Schema {
   public VertexType createVertexType(final String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "`");
     if (result.hasNext())
-      return (VertexType) reloadSchema().getType(typeName);
+      return (VertexType) reload().getType(typeName);
     throw new SchemaException("Error on creating vertex type '" + typeName + "'");
   }
 
@@ -160,7 +164,7 @@ public class RemoteSchema implements Schema {
     final ResultSet result = remoteDatabase.command("sql",
         "create vertex type `" + typeName + "` if not exists buckets " + buckets);
     if (result.hasNext())
-      return (VertexType) reloadSchema().getType(typeName);
+      return (VertexType) reload().getType(typeName);
     throw new SchemaException("Error on creating vertex type '" + typeName + "'");
   }
 
@@ -168,7 +172,7 @@ public class RemoteSchema implements Schema {
   public VertexType getOrCreateVertexType(final String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists");
     if (result.hasNext())
-      return (VertexType) reloadSchema().getType(typeName);
+      return (VertexType) reload().getType(typeName);
     throw new SchemaException("Error on creating vertex type '" + typeName + "'");
   }
 
@@ -176,7 +180,7 @@ public class RemoteSchema implements Schema {
   public VertexType createVertexType(String typeName, int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` buckets " + buckets);
     if (result.hasNext())
-      return (VertexType) reloadSchema().getType(typeName);
+      return (VertexType) reload().getType(typeName);
     throw new SchemaException("Error on creating vertex type '" + typeName + "'");
   }
 
@@ -184,7 +188,7 @@ public class RemoteSchema implements Schema {
   public EdgeType createEdgeType(final String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "`");
     if (result.hasNext())
-      return (EdgeType) reloadSchema().getType(typeName);
+      return (EdgeType) reload().getType(typeName);
     throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
@@ -192,7 +196,7 @@ public class RemoteSchema implements Schema {
   public EdgeType getOrCreateEdgeType(String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists");
     if (result.hasNext())
-      return (EdgeType) reloadSchema().getType(typeName);
+      return (EdgeType) reload().getType(typeName);
     throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
@@ -200,7 +204,7 @@ public class RemoteSchema implements Schema {
   public EdgeType createEdgeType(String typeName, int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` buckets " + buckets);
     if (result.hasNext())
-      return (EdgeType) reloadSchema().getType(typeName);
+      return (EdgeType) reload().getType(typeName);
     throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
@@ -208,7 +212,7 @@ public class RemoteSchema implements Schema {
   public EdgeType getOrCreateEdgeType(final String typeName, final int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists buckets " + buckets);
     if (result.hasNext())
-      return (EdgeType) reloadSchema().getType(typeName);
+      return (EdgeType) reload().getType(typeName);
     throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
@@ -582,7 +586,10 @@ public class RemoteSchema implements Schema {
     types = null;
   }
 
-  RemoteSchema reloadSchema() {
+  /**
+   * Force a reload of the schema from the server.
+   */
+  public RemoteSchema reload() {
     final ResultSet result = remoteDatabase.command("sql", "select from schema:types");
     while (result.hasNext()) {
       final Result record = result.next();
@@ -616,6 +623,6 @@ public class RemoteSchema implements Schema {
 
   private void checkSchemaIsLoaded() {
     if (types == null)
-      reloadSchema();
+      reload();
   }
 }

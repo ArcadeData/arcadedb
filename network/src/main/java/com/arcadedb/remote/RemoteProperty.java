@@ -43,10 +43,14 @@ import java.util.*;
 import java.util.stream.*;
 
 /**
- * Remote Property Type implementation used by Remote Database. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ * Property used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
+ * {@link RemoteSchema#reload()} is called.
+ * <p>
+ * This class is not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+
 public class RemoteProperty extends AbstractProperty {
 
   RemoteProperty(final DocumentType owner, final Map<String, Object> record) {

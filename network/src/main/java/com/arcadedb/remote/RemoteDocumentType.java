@@ -23,7 +23,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -40,10 +39,14 @@ import java.util.*;
 import java.util.stream.*;
 
 /**
- * Remote Document Type implementation used by Remote Database. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ * Document type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
+ * {@link RemoteSchema#reload()} is called.
+ * <p>
+ * This class is not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+
 public class RemoteDocumentType implements DocumentType {
   protected final RemoteDatabase              remoteDatabase;
   protected final String                      name;
@@ -138,7 +141,7 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public Property createProperty(final String propertyName, final String propertyType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType);
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
@@ -146,28 +149,28 @@ public class RemoteDocumentType implements DocumentType {
   public Property createProperty(final String propertyName, final Class<?> propertyType) {
     remoteDatabase.command("sql",
         "create property `" + name + "`.`" + propertyName + "` " + Type.getTypeByClass(propertyType).name());
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
   @Override
   public Property createProperty(String propertyName, Type propertyType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType.name());
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
   @Override
   public Property createProperty(final String propertyName, final Type propertyType, final String ofType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType.name() + " of " + ofType);
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final String propertyType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType);
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
@@ -175,7 +178,7 @@ public class RemoteDocumentType implements DocumentType {
   public Property getOrCreateProperty(final String propertyName, final String propertyType, final String ofType) {
     remoteDatabase.command("sql",
         "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType + " of " + ofType);
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
@@ -183,14 +186,14 @@ public class RemoteDocumentType implements DocumentType {
   public Property getOrCreateProperty(final String propertyName, final Class<?> propertyType) {
     remoteDatabase.command("sql",
         "create property `" + name + "`.`" + propertyName + "` if not exists " + Type.getTypeByClass(propertyType).name());
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final Type propertyType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType.name());
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
@@ -198,7 +201,7 @@ public class RemoteDocumentType implements DocumentType {
   public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
     remoteDatabase.command("sql",
         "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType.name() + " of " + ofType);
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
@@ -206,7 +209,7 @@ public class RemoteDocumentType implements DocumentType {
   public Property dropProperty(final String propertyName) {
     final Property p = getProperty(propertyName);
     remoteDatabase.command("sql", "drop property `" + name + "`.`" + propertyName + "`");
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return p;
   }
 
@@ -228,28 +231,28 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public DocumentType addSuperType(final String superName) {
     remoteDatabase.command("sql", "alter type `" + name + "` supertype +`" + superName + "`");
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return this;
   }
 
   @Override
   public DocumentType addSuperType(final DocumentType superType) {
     remoteDatabase.command("sql", "alter type `" + name + "` supertype +`" + superType.getName() + "`");
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return this;
   }
 
   @Override
   public DocumentType removeSuperType(final String superTypeName) {
     remoteDatabase.command("sql", "alter type `" + name + "` supertype -`" + superTypeName + "`");
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return this;
   }
 
   @Override
   public DocumentType removeSuperType(final DocumentType superType) {
     remoteDatabase.command("sql", "alter type `" + name + "` supertype -`" + superType.getName() + "`");
-    remoteDatabase.getSchema().reloadSchema();
+    remoteDatabase.getSchema().reload();
     return this;
   }
 

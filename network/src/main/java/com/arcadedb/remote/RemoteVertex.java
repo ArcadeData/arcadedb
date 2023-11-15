@@ -27,6 +27,14 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
+/**
+ * Vertex type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
+ * {@link RemoteSchema#reload()} is called.
+ * <p>
+ * This class is not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class RemoteVertex {
   public final Vertex         vertex;
   public final RemoteDatabase remoteDatabase;
@@ -85,26 +93,30 @@ public class RemoteVertex {
   }
 
   public boolean isConnectedTo(final Identifiable toVertex) {
-    final String query = "select from ( select both() as vertices from " + vertex.getIdentity() + " ) where vertices contains " + toVertex;
+    final String query =
+        "select from ( select both() as vertices from " + vertex.getIdentity() + " ) where vertices contains " + toVertex;
     final ResultSet resultSet = remoteDatabase.query("sql", query);
     return resultSet.hasNext();
   }
 
   public boolean isConnectedTo(final Identifiable toVertex, final Vertex.DIRECTION direction) {
     final String query =
-        "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "() as vertices from " + vertex.getIdentity() + " ) where vertices contains " + toVertex;
+        "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "() as vertices from " + vertex.getIdentity()
+            + " ) where vertices contains " + toVertex;
     final ResultSet resultSet = remoteDatabase.query("sql", query);
     return resultSet.hasNext();
   }
 
   public boolean isConnectedTo(final Identifiable toVertex, final Vertex.DIRECTION direction, final String edgeType) {
-    final String query = "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "('" + edgeType + "') as vertices from " + vertex.getIdentity()
-        + " ) where vertices contains " + toVertex;
+    final String query =
+        "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "('" + edgeType + "') as vertices from "
+            + vertex.getIdentity() + " ) where vertices contains " + toVertex;
     final ResultSet resultSet = remoteDatabase.query("sql", query);
     return resultSet.hasNext();
   }
 
-  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional, final Object... properties) {
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
+      final Object... properties) {
     if (!bidirectional)
       throw new UnsupportedOperationException("Creating unidirectional edges is not supported from remote database");
 
