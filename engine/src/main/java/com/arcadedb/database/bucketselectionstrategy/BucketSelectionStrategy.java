@@ -19,7 +19,7 @@
 package com.arcadedb.database.bucketselectionstrategy;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
 /**
@@ -28,7 +28,7 @@ import com.arcadedb.serializer.json.JSONObject;
  * @author Luca Garulli
  */
 public interface BucketSelectionStrategy {
-  void setType(DocumentType type);
+  void setType(EmbeddedDocumentType type);
 
   int getBucketIdByRecord(Document record, boolean async);
 

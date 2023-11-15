@@ -37,12 +37,12 @@ import java.util.logging.*;
 public class TypeBuilder<T> {
   final DatabaseInternal database;
   final Class<T>         type;
-  boolean            ignoreIfExists  = false;
-  String             typeName;
-  List<DocumentType> superTypes;
-  List<Bucket>       bucketInstances = Collections.emptyList();
-  int                buckets;
-  int                pageSize;
+  boolean                    ignoreIfExists  = false;
+  String                     typeName;
+  List<EmbeddedDocumentType> superTypes;
+  List<Bucket>               bucketInstances = Collections.emptyList();
+  int                        buckets;
+  int                        pageSize;
 
   protected TypeBuilder(final DatabaseInternal database, final Class<T> type) {
     this.database = database;
@@ -59,7 +59,7 @@ public class TypeBuilder<T> {
 
     final EmbeddedSchema schema = database.getSchema().getEmbedded();
 
-    final DocumentType t = schema.types.get(typeName);
+    final EmbeddedDocumentType t = schema.types.get(typeName);
     if (t != null) {
       if (t.getClass().equals(type))
         return (T) t;
@@ -80,13 +80,13 @@ public class TypeBuilder<T> {
       throw new SchemaException("Type '" + typeName + "' already exists");
 
     return schema.recordFileChanges(() -> {
-      final DocumentType c;
+      final EmbeddedDocumentType c;
       if (type.equals(VertexType.class))
-        c = new VertexType(schema, typeName);
+        c = new EmbeddedVertexType(schema, typeName);
       else if (type.equals(EdgeType.class))
-        c = new EdgeType(schema, typeName);
+        c = new EmbeddedEdgeType(schema, typeName);
       else {
-        c = new DocumentType(schema, typeName);
+        c = new EmbeddedDocumentType(schema, typeName);
 
         // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
         schema.getDictionary().getIdByName(typeName, true);
@@ -110,7 +110,7 @@ public class TypeBuilder<T> {
       }
 
       if (superTypes != null)
-        for (DocumentType sup : superTypes)
+        for (EmbeddedDocumentType sup : superTypes)
           c.addSuperType(sup);
 
       schema.saveConfiguration();
@@ -128,7 +128,7 @@ public class TypeBuilder<T> {
   public TypeBuilder<T> withSuperType(final String superType) {
     if (superTypes == null)
       superTypes = new ArrayList<>();
-    superTypes.add(database.getSchema().getType(superType));
+    superTypes.add((EmbeddedDocumentType) database.getSchema().getType(superType));
     return this;
   }
 

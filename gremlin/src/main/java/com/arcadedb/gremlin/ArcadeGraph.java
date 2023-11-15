@@ -35,8 +35,8 @@ import com.arcadedb.gremlin.service.ArcadeServiceRegistry;
 import com.arcadedb.gremlin.service.VectorNeighborsFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.EmbeddedEdgeType;
+import com.arcadedb.schema.EmbeddedVertexType;
 import com.arcadedb.utility.FileUtils;
 import org.apache.commons.configuration2.BaseConfiguration;
 import org.apache.commons.configuration2.Configuration;
@@ -88,10 +88,11 @@ public class ArcadeGraph implements Graph, Closeable {
   private              ServiceRegistry           serviceRegistry;
 
   static {
-    TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class, TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
-        .addStrategies(//
-            ArcadeIoRegistrationStrategy.instance(),//
-            new ArcadeTraversalStrategy())//
+    TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class,
+        TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
+            .addStrategies(//
+                ArcadeIoRegistrationStrategy.instance(),//
+                new ArcadeTraversalStrategy())//
     );
   }
 
@@ -190,7 +191,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
     if (!this.database.getSchema().existsType(typeName))
       this.database.getSchema().createVertexType(typeName);
-    else if (!(this.database.getSchema().getType(typeName) instanceof VertexType))
+    else if (!(this.database.getSchema().getType(typeName) instanceof EmbeddedVertexType))
       throw new IllegalArgumentException("Type '" + typeName + "' is not a vertex");
 
     final MutableVertex modifiableVertex = this.database.newVertex(typeName);
@@ -217,10 +218,10 @@ public class ArcadeGraph implements Graph, Closeable {
     tx().readWrite();
 
     if (vertexIds.length == 0) {
-      final Collection<DocumentType> types = this.database.getSchema().getTypes();
+      final Collection<? extends DocumentType> types = this.database.getSchema().getTypes();
       final Set<Bucket> buckets = new HashSet<>();
       for (final DocumentType t : types)
-        if (t instanceof VertexType)
+        if (t instanceof EmbeddedVertexType)
           buckets.addAll(t.getBuckets(true));
 
       if (buckets.isEmpty())
@@ -280,10 +281,10 @@ public class ArcadeGraph implements Graph, Closeable {
 
     if (edgeIds.length == 0) {
 
-      final Collection<DocumentType> types = this.database.getSchema().getTypes();
+      final Collection<? extends DocumentType> types = this.database.getSchema().getTypes();
       final Set<Bucket> buckets = new HashSet<>();
       for (final DocumentType t : types)
-        if (t instanceof EdgeType)
+        if (t instanceof EmbeddedEdgeType)
           buckets.addAll(t.getBuckets(true));
 
       if (buckets.isEmpty())

@@ -30,8 +30,8 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.EmbeddedEdgeType;
+import com.arcadedb.schema.EmbeddedVertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
@@ -474,10 +474,10 @@ public class Bucket extends PaginatedComponent {
     stats.put("totalMaxOffset", totalMaxOffset);
 
     final DocumentType type = database.getSchema().getTypeByBucketId(fileId);
-    if (type instanceof VertexType) {
+    if (type instanceof EmbeddedVertexType) {
       stats.put("totalAllocatedVertices", totalAllocatedRecords);
       stats.put("totalActiveVertices", totalActiveRecords);
-    } else if (type instanceof EdgeType) {
+    } else if (type instanceof EmbeddedEdgeType) {
       stats.put("totalAllocatedEdges", totalAllocatedRecords);
       stats.put("totalActiveEdges", totalActiveRecords);
     } else {

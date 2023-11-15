@@ -22,12 +22,16 @@ package com.arcadedb.remote;
 
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.*;
 
 public class RemoteSchemaIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
@@ -48,6 +52,14 @@ public class RemoteSchemaIT extends BaseGraphServerTest {
       Assertions.assertNotNull(type);
       Assertions.assertEquals(type.getName(), "Document");
       Assertions.assertTrue(database.getSchema().existsType("Document"));
+
+      type.createProperty("a", Type.STRING);
+      Assertions.assertTrue(type.existsProperty("a"));
+      Assertions.assertFalse(type.existsProperty("zz"));
+
+      type.createProperty("b", Type.LIST, "STRING");
+      Assertions.assertTrue(type.existsProperty("b"));
+
       database.getSchema().dropType("Document");
     });
   }
@@ -60,8 +72,38 @@ public class RemoteSchemaIT extends BaseGraphServerTest {
 
       Assertions.assertFalse(database.getSchema().existsType("Vertex"));
       VertexType type = database.getSchema().createVertexType("Vertex");
-      //Assertions.assertNotNull(type);
+      Assertions.assertNotNull(type);
+      Assertions.assertEquals(type.getName(), "Vertex");
       Assertions.assertTrue(database.getSchema().existsType("Vertex"));
+
+      VertexType type2 = database.getSchema().createVertexType("Vertex2");
+
+      Property prop2 = type2.createProperty("b", Type.LIST, "STRING");
+      Assertions.assertEquals("b", prop2.getName());
+      Assertions.assertEquals(Type.LIST, prop2.getType());
+      Assertions.assertEquals("STRING", prop2.getOfType());
+
+      type2.addSuperType("Vertex");
+      Assertions.assertTrue(type2.isSubTypeOf("Vertex"));
+
+      VertexType type3 = database.getSchema().createVertexType("Vertex3");
+      Property prop3 = type3.createProperty("c", Type.LIST, "INTEGER");
+      Assertions.assertEquals("c", prop3.getName());
+      Assertions.assertEquals(Type.LIST, prop3.getType());
+      Assertions.assertEquals("INTEGER", prop3.getOfType());
+
+      type3.addSuperType("Vertex2");
+      Assertions.assertTrue(type3.isSubTypeOf("Vertex"));
+      Assertions.assertTrue(type3.isSubTypeOf("Vertex2"));
+
+      Assertions.assertEquals(3, database.getSchema().getTypes().size());
+
+      Assertions.assertNotNull(database.getSchema().getType("Vertex"));
+      Assertions.assertNotNull(database.getSchema().getType("Vertex2"));
+      Assertions.assertNotNull(database.getSchema().getType("Vertex3"));
+
+      database.getSchema().dropType("Vertex3");
+      database.getSchema().dropType("Vertex2");
       database.getSchema().dropType("Vertex");
     });
   }
@@ -74,7 +116,8 @@ public class RemoteSchemaIT extends BaseGraphServerTest {
 
       Assertions.assertFalse(database.getSchema().existsType("Edge"));
       EdgeType type = database.getSchema().createEdgeType("Edge");
-      //Assertions.assertNotNull(type);
+      Assertions.assertNotNull(type);
+      Assertions.assertEquals(type.getName(), "Edge");
       Assertions.assertTrue(database.getSchema().existsType("Edge"));
       database.getSchema().dropType("Edge");
     });

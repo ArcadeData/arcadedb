@@ -19,7 +19,7 @@
 package com.arcadedb.database.bucketselectionstrategy;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedDocumentType;
 
 /**
  * Default round-robin implementation that uses all the available buckets. For async execution, the thread selection strategy is used.
@@ -39,7 +39,7 @@ public class RoundRobinBucketSelectionStrategy extends ThreadBucketSelectionStra
   }
 
   @Override
-  public void setType(final DocumentType type) {
+  public void setType(final EmbeddedDocumentType type) {
     this.total = type.getBuckets(false).size();
     synchronized (this) {
       if (current >= total)

@@ -31,8 +31,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.EmbeddedEdgeType;
+import com.arcadedb.schema.EmbeddedVertexType;
 import com.arcadedb.schema.Type;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.serializer.json.JSONArray;
@@ -313,9 +314,9 @@ public class RedisNetworkExecutor extends Thread {
 
         final MutableDocument document;
 
-        if (type instanceof VertexType)
+        if (type instanceof EmbeddedVertexType)
           document = database.newVertex(typeName);
-        else if (type instanceof EdgeType)
+        else if (type instanceof EmbeddedEdgeType)
           document = new MutableEdge(database, (EdgeType) type, null);
         else
           document = database.newDocument(typeName);

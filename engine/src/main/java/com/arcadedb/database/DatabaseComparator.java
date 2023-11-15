@@ -118,8 +118,8 @@ public class DatabaseComparator {
   }
 
   public void compareTypes(final Database db1, final Database db2) {
-    final Collection<DocumentType> types1 = db1.getSchema().getTypes();
-    final Collection<DocumentType> types2 = db2.getSchema().getTypes();
+    final Collection<? extends DocumentType> types1 = db1.getSchema().getTypes();
+    final Collection<? extends DocumentType> types2 = db2.getSchema().getTypes();
     if (types1.size() != types2.size())
       throw new DatabaseAreNotIdentical("Types: DB1 %d <> DB2 %d", types1.size(), types2.size());
 

@@ -26,9 +26,9 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.EmbeddedEdgeType;
 import com.arcadedb.schema.EmbeddedSchema;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.EmbeddedVertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -111,7 +111,7 @@ public class DatabaseChecker {
         if (type == null || !types.contains(type.getName()))
           continue;
 
-      if (type instanceof EdgeType) {
+      if (type instanceof EmbeddedEdgeType) {
         final Map<String, Object> stats = database.getGraphEngine().checkEdges(type.getName(), fix, verboseLevel);
 
         updateStats(stats);
@@ -131,7 +131,7 @@ public class DatabaseChecker {
         if (type == null || !types.contains(type.getName()))
           continue;
 
-      if (type instanceof VertexType) {
+      if (type instanceof EmbeddedVertexType) {
         final Map<String, Object> stats = database.getGraphEngine().checkVertices(type.getName(), fix, verboseLevel);
 
         updateStats(stats);

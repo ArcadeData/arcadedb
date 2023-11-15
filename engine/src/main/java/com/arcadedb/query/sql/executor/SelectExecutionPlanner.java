@@ -68,6 +68,7 @@ import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
@@ -938,7 +939,7 @@ public class SelectExecutionPlanner {
 
     if (paramValue == null) {
       result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
-    } else if (paramValue instanceof DocumentType) {
+    } else if (paramValue instanceof EmbeddedDocumentType) {
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);

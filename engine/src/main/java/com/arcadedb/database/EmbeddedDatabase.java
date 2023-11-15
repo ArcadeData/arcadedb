@@ -64,7 +64,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.EmbeddedVertexType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
@@ -1116,8 +1118,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
-    final DocumentType type = schema.getType(typeName);
-    if (!type.getClass().equals(DocumentType.class))
+    final EmbeddedDocumentType type = schema.getType(typeName);
+    if (!type.getClass().equals(EmbeddedDocumentType.class))
       throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a document type");
 
     stats.createRecord.incrementAndGet();
@@ -1130,8 +1132,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
-    final DocumentType type = schema.getType(typeName);
-    if (!type.getClass().equals(DocumentType.class))
+    final EmbeddedDocumentType type = schema.getType(typeName);
+    if (!type.getClass().equals(EmbeddedDocumentType.class))
       throw new IllegalArgumentException(
           "Cannot create an embedded document of type '" + typeName + "' because it is a " + type.getClass().getName()
               + " instead of a document type ");
@@ -1144,8 +1146,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
-    final DocumentType type = schema.getType(typeName);
-    if (!type.getClass().equals(VertexType.class))
+    final EmbeddedDocumentType type = schema.getType(typeName);
+    if (!type.getClass().equals(EmbeddedVertexType.class))
       throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex type");
 
     stats.createRecord.incrementAndGet();

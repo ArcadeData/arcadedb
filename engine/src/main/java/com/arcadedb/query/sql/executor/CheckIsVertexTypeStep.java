@@ -22,8 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedVertexType;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.VertexType;
 
 /**
  * This step is used just as a gate check for classes (eg. for CREATE VERTEX to make sure that the passed class is a vertex class).
@@ -63,7 +63,7 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
         throw new CommandExecutionException("Type not found: " + this.targetClass);
       }
 
-      if (targettypez instanceof VertexType) {
+      if (targettypez instanceof EmbeddedVertexType) {
         found = true;
       }
       if (!found) {

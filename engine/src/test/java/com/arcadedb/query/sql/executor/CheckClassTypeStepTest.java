@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedDocumentType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -59,7 +60,8 @@ public class CheckClassTypeStepTest {
       TestHelper.executeInNewDatabase((db) -> {
         final BasicCommandContext context = new BasicCommandContext();
         context.setDatabase(db);
-        final CheckClassTypeStep step = new CheckClassTypeStep(TestHelper.createRandomType(db).getName(), TestHelper.createRandomType(db).getName(), context, false);
+        final CheckClassTypeStep step = new CheckClassTypeStep(TestHelper.createRandomType(db).getName(),
+            TestHelper.createRandomType(db).getName(), context, false);
 
         step.syncPull(context, 20);
       });

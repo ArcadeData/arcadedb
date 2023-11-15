@@ -78,14 +78,14 @@ public class EmbeddedSchema implements Schema {
   public static final String                                 CACHED_COUNT_FILE_NAME   = "cached-count.json";
   public static final int                                    BUILD_TX_BATCH_SIZE      = 100_000;
   final               IndexFactory                           indexFactory             = new IndexFactory();
-  final               Map<String, DocumentType>              types                    = new HashMap<>();
+  final               Map<String, EmbeddedDocumentType>      types                    = new HashMap<>();
   private             String                                 encoding                 = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
   private final       List<Component>                        files                    = new ArrayList<>();
   private final       Map<String, Bucket>                    bucketMap                = new HashMap<>();
-  private             Map<Integer, DocumentType>             bucketId2TypeMap         = new HashMap<>();
-  private             Map<Integer, DocumentType>             bucketId2InvolvedTypeMap = new HashMap<>();
+  private             Map<Integer, EmbeddedDocumentType>     bucketId2TypeMap         = new HashMap<>();
+  private             Map<Integer, EmbeddedDocumentType>     bucketId2InvolvedTypeMap = new HashMap<>();
   protected final     Map<String, IndexInternal>             indexMap                 = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
@@ -341,11 +341,11 @@ public class EmbeddedSchema implements Schema {
     DocumentType newType = null;
     try {
       // CREATE THE NEW TYPE
-      if (newTypeClass == VertexType.class)
+      if (newTypeClass == EmbeddedVertexType.class)
         newType = buildVertexType().withName(newTypeName).withTotalBuckets(buckets).withPageSize(pageSize).create();
-      else if (newTypeClass == EdgeType.class)
+      else if (newTypeClass == EmbeddedEdgeType.class)
         throw new IllegalArgumentException("Type '" + newTypeClass + "' not supported");
-      else if (newTypeClass == DocumentType.class)
+      else if (newTypeClass == EmbeddedDocumentType.class)
         newType = buildDocumentType().withName(newTypeName).withTotalBuckets(buckets).withPageSize(pageSize).create();
       else
         throw new IllegalArgumentException("Type '" + newTypeClass + "' not supported");
@@ -365,7 +365,7 @@ public class EmbeddedSchema implements Schema {
           final Document record = (Document) iter.next();
 
           final MutableDocument newRecord;
-          if (newType instanceof VertexType)
+          if (newType instanceof EmbeddedVertexType)
             newRecord = database.newVertex(newTypeName);
           else
             newRecord = database.newDocument(newTypeName);
@@ -455,7 +455,7 @@ public class EmbeddedSchema implements Schema {
           indexMap.remove(indexName);
 
           if (index.getTypeName() != null) {
-            final DocumentType type = getType(index.getTypeName());
+            final EmbeddedDocumentType type = getType(index.getTypeName());
             if (index instanceof TypeIndex)
               type.removeTypeIndexInternal((TypeIndex) index);
             else
@@ -647,8 +647,8 @@ public class EmbeddedSchema implements Schema {
     return Collections.unmodifiableCollection(types.values());
   }
 
-  public DocumentType getType(final String typeName) {
-    final DocumentType t = types.get(typeName);
+  public EmbeddedDocumentType getType(final String typeName) {
+    final EmbeddedDocumentType t = types.get(typeName);
     if (t == null)
       throw new SchemaException("Type with name '" + typeName + "' was not found");
     return t;
@@ -685,10 +685,10 @@ public class EmbeddedSchema implements Schema {
     recordFileChanges(() -> {
       multipleUpdate = true;
       try {
-        final DocumentType type = database.getSchema().getType(typeName);
+        final EmbeddedDocumentType type = (EmbeddedDocumentType) database.getSchema().getType(typeName);
 
         // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
-        for (final DocumentType parent : type.superTypes) {
+        for (final EmbeddedDocumentType parent : type.superTypes) {
           parent.subTypes.remove(type);
           parent.cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(parent.cachedPolymorphicBuckets,
               type.buckets);
@@ -696,9 +696,9 @@ public class EmbeddedSchema implements Schema {
               type.bucketIds);
         }
 
-        for (final DocumentType sub : type.subTypes) {
+        for (final EmbeddedDocumentType sub : type.subTypes) {
           sub.superTypes.remove(type);
-          for (final DocumentType parent : type.superTypes)
+          for (final EmbeddedDocumentType parent : type.superTypes)
             sub.addSuperType(parent, false);
         }
 
@@ -706,7 +706,7 @@ public class EmbeddedSchema implements Schema {
         for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
           dropIndex(m.getName());
 
-        if (type instanceof VertexType)
+        if (type instanceof EmbeddedVertexType)
           // DELETE IN/OUT EDGE FILES
           database.getGraphEngine().dropVertexType((VertexType) type);
 
@@ -735,7 +735,7 @@ public class EmbeddedSchema implements Schema {
     final Bucket bucket = getBucketByName(bucketName);
 
     recordFileChanges(() -> {
-      for (final DocumentType type : types.values()) {
+      for (final EmbeddedDocumentType type : types.values()) {
         if (type.buckets.contains(bucket))
           throw new SchemaException(
               "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + type.getName()
@@ -762,6 +762,7 @@ public class EmbeddedSchema implements Schema {
     });
   }
 
+  @Override
   public DocumentType createDocumentType(final String typeName) {
     return buildDocumentType().withName(typeName).create();
   }
@@ -802,8 +803,8 @@ public class EmbeddedSchema implements Schema {
   }
 
   @Override
-  public TypeBuilder<DocumentType> buildDocumentType() {
-    return new TypeBuilder<>(database, DocumentType.class);
+  public TypeBuilder<EmbeddedDocumentType> buildDocumentType() {
+    return new TypeBuilder<>(database, EmbeddedDocumentType.class);
   }
 
   @Override
@@ -947,15 +948,15 @@ public class EmbeddedSchema implements Schema {
       for (final String typeName : types.keySet()) {
         final JSONObject schemaType = types.getJSONObject(typeName);
 
-        final DocumentType type;
+        final EmbeddedDocumentType type;
 
         final String kind = (String) schemaType.get("type");
         if ("v".equals(kind)) {
-          type = new VertexType(this, typeName);
+          type = new EmbeddedVertexType(this, typeName);
         } else if ("e".equals(kind)) {
-          type = new EdgeType(this, typeName);
+          type = new EmbeddedEdgeType(this, typeName);
         } else if ("d".equals(kind)) {
-          type = new DocumentType(this, typeName);
+          type = new EmbeddedDocumentType(this, typeName);
         } else
           throw new ConfigurationException("Type '" + kind + "' is not supported");
 
@@ -1006,7 +1007,7 @@ public class EmbeddedSchema implements Schema {
 
       // RESTORE THE INHERITANCE
       for (final Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
-        final DocumentType type = getType(entry.getKey());
+        final EmbeddedDocumentType type = getType(entry.getKey());
         for (final String p : entry.getValue())
           type.addSuperType(getType(p), false);
       }
@@ -1016,7 +1017,7 @@ public class EmbeddedSchema implements Schema {
         final JSONObject schemaType = types.getJSONObject(typeName);
         final JSONObject typeIndexesJSON = schemaType.getJSONObject("indexes");
         if (typeIndexesJSON != null) {
-          final DocumentType type = getType(typeName);
+          final EmbeddedDocumentType type = getType(typeName);
 
           final List<String> orderedIndexes = new ArrayList<>(typeIndexesJSON.keySet());
           orderedIndexes.sort(Comparator.naturalOrder());
@@ -1075,7 +1076,7 @@ public class EmbeddedSchema implements Schema {
                 final String bucketNameIndex = entry.getKey().substring(0, pos2);
 
                 if (bucketName.equals(bucketNameIndex)) {
-                  final DocumentType type = this.types.get(entry.getValue().getString("type"));
+                  final EmbeddedDocumentType type = this.types.get(entry.getValue().getString("type"));
                   if (type != null) {
                     final JSONArray schemaIndexProperties = entry.getValue().getJSONArray("properties");
 
@@ -1301,9 +1302,10 @@ public class EmbeddedSchema implements Schema {
     }
   }
 
-  protected Index createBucketIndex(final DocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName,
-      final INDEX_TYPE indexType, final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
-      final Index.BuildIndexCallback callback, final String[] propertyNames, final TypeIndex propIndex, final int batchSize) {
+  protected Index createBucketIndex(final EmbeddedDocumentType type, final Type[] keyTypes, final Bucket bucket,
+      final String typeName, final INDEX_TYPE indexType, final boolean unique, final int pageSize,
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback, final String[] propertyNames,
+      final TypeIndex propIndex, final int batchSize) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)
@@ -1353,16 +1355,16 @@ public class EmbeddedSchema implements Schema {
    * Replaces the map to allow concurrent usage while rebuilding the map.
    */
   private void rebuildBucketTypeMap() {
-    final Map<Integer, DocumentType> newBucketId2TypeMap = new HashMap<>();
-    for (final DocumentType t : types.values()) {
+    final Map<Integer, EmbeddedDocumentType> newBucketId2TypeMap = new HashMap<>();
+    for (final EmbeddedDocumentType t : types.values()) {
       for (final Bucket b : t.getBuckets(false))
         newBucketId2TypeMap.put(b.getFileId(), t);
     }
     bucketId2TypeMap = newBucketId2TypeMap;
 
     // COMPUTE INVOLVED BUCKETS FOR SECURITY
-    final Map<Integer, DocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
-    for (final DocumentType t : types.values()) {
+    final Map<Integer, EmbeddedDocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
+    for (final EmbeddedDocumentType t : types.values()) {
       for (final Bucket b : t.getInvolvedBuckets())
         newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
     }

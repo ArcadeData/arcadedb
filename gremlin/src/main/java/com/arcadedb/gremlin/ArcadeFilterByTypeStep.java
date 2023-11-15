@@ -22,8 +22,8 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.EmbeddedEdgeType;
+import com.arcadedb.schema.EmbeddedVertexType;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.Contains;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -85,7 +85,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     final DocumentType type = graph.getDatabase().getSchema().getType(this.typeName);
 
     if (Vertex.class.isAssignableFrom(this.returnClass)) {
-      if (!(type instanceof VertexType))
+      if (!(type instanceof EmbeddedVertexType))
         throw new IllegalArgumentException("Type '" + this.typeName + "' is not a vertex type");
 
       final Iterator<Record> rawIterator =
@@ -103,7 +103,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
       };
 
     } else if (Edge.class.isAssignableFrom(this.returnClass)) {
-      if (!(type instanceof EdgeType))
+      if (!(type instanceof EmbeddedEdgeType))
         throw new IllegalArgumentException("Type '" + this.typeName + "' is not an edge type");
 
       final Iterator<Record> rawIterator =

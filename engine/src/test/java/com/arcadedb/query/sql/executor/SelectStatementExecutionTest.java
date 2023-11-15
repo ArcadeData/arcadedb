@@ -31,6 +31,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -72,7 +73,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
 
     database.commit();
-    final ResultSet result = database.query("sql", "select address, count(*) as occurrences from InputTx where address is not null group by address limit 10");
+    final ResultSet result = database.query("sql",
+        "select address, count(*) as occurrences from InputTx where address is not null group by address limit 10");
     while (result.hasNext()) {
       final Result row = result.next();
       Assertions.assertNotNull(row.getProperty("address")); // <== FALSE!
@@ -649,7 +651,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.getSchema().createDocumentType(className);
 
     try {
-      final ResultSet result = database.query("sql", "select max(a + b) + (max(b + c * 2) + 1 + 2) * 3 as foo, max(d) + max(e), f from " + className);
+      final ResultSet result = database.query("sql",
+          "select max(a + b) + (max(b + c * 2) + 1 + 2) * 3 as foo, max(d) + max(e), f from " + className);
 
       result.close();
     } catch (final Exception e) {
@@ -724,7 +727,8 @@ public class SelectStatementExecutionTest extends TestHelper {
       doc.save();
     }
     database.commit();
-    final ResultSet result = database.query("sql", "select sum(val), max(val), min(val), type from " + className + " group by type");
+    final ResultSet result = database.query("sql",
+        "select sum(val), max(val), min(val), type from " + className + " group by type");
     boolean evenFound = false;
     boolean oddFound = false;
     for (int i = 0; i < 2; i++) {
@@ -915,7 +919,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    final ResultSet result = database.query("sql", "select from bucket:[" + targetClusterName + ", " + targetClusterName2 + "] order by @rid asc");
+    final ResultSet result = database.query("sql",
+        "select from bucket:[" + targetClusterName + ", " + targetClusterName2 + "] order by @rid asc");
 
     for (int i = 0; i < 20; i++) {
       Assertions.assertTrue(result.hasNext());
@@ -1227,7 +1232,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
 
     database.commit();
-    final ResultSet result = database.query("sql", "select from " + className + " where foo is not null and (name = 'name2' or surname = 'surname3')");
+    final ResultSet result = database.query("sql",
+        "select from " + className + " where foo is not null and (name = 'name2' or surname = 'surname3')");
 
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -1252,7 +1258,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    final ResultSet result = database.query("sql", "select from " + className + " where foo < 100 and (name = 'name2' or surname = 'surname3')");
+    final ResultSet result = database.query("sql",
+        "select from " + className + " where foo < 100 and (name = 'name2' or surname = 'surname3')");
 
     Assertions.assertTrue(result.hasNext());
     for (int i = 0; i < 2; i++) {
@@ -1284,8 +1291,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    final ResultSet result = database.query("sql",
-        "select from " + className + " where foo < 100 and ((name = 'name2' and foo < 20) or surname = 'surname3') and ( 4<5 and foo < 50)");
+    final ResultSet result = database.query("sql", "select from " + className
+        + " where foo < 100 and ((name = 'name2' and foo < 20) or surname = 'surname3') and ( 4<5 and foo < 50)");
 
     Assertions.assertTrue(result.hasNext());
     for (int i = 0; i < 2; i++) {
@@ -1928,7 +1935,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    final ResultSet result = database.query("sql", "select from " + className + " where name in (select name from " + className + " where name = 'name1')");
+    final ResultSet result = database.query("sql",
+        "select from " + className + " where name in (select name from " + className + " where name = 'name1')");
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -1954,7 +1962,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     final ResultSet result = database.query("sql",
-        "select $foo as name from " + className + " let $foo = (select name from " + className + " where name = $parent.$current.name)");
+        "select $foo as name from " + className + " let $foo = (select name from " + className
+            + " where name = $parent.$current.name)");
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -1981,8 +1990,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     final ResultSet result = database.query("sql",
-        "select $bar as name from " + className + " " + "let $foo = (select name from " + className + " where name = $parent.$current.name),"
-            + "$bar = $foo[0].name");
+        "select $bar as name from " + className + " " + "let $foo = (select name from " + className
+            + " where name = $parent.$current.name)," + "$bar = $foo[0].name");
     for (int i = 0; i < 10; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2271,7 +2280,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromClassExecutionStep); // no index, because the superclass is not empty
+    Assertions.assertTrue(
+        plan.getSteps().get(0) instanceof FetchFromClassExecutionStep); // no index, because the superclass is not empty
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2497,7 +2507,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name DESC, surname DESC");
+    final ResultSet result = database.query("sql",
+        "select from " + className + " where name = 'name1' order by name DESC, surname DESC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
@@ -2535,7 +2546,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name ASC, surname ASC");
+    final ResultSet result = database.query("sql",
+        "select from " + className + " where name = 'name1' order by name ASC, surname ASC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
@@ -2690,7 +2702,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
 
-    final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by name ASC, surname DESC");
+    final ResultSet result = database.query("sql",
+        "select from " + className + " where name = 'name1' order by name ASC, surname DESC");
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -3130,7 +3143,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     elem4.save();
 
     database.commit();
-    final ResultSet result = database.query("sql", "select name, elem1:{*}, elem2:{!surname} from " + className + " where name = 'd'");
+    final ResultSet result = database.query("sql",
+        "select name, elem1:{*}, elem2:{!surname} from " + className + " where name = 'd'");
     Assertions.assertTrue(result.hasNext());
     final Result item = result.next();
     Assertions.assertNotNull(item);
@@ -3255,7 +3269,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     });
 
     int totalFound = 0;
-    for (final ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = 3 )"); result.hasNext(); ) {
+    for (final ResultSet result = database.query("sql",
+        "select from " + className + " where list contains ( value = 3 )"); result.hasNext(); ) {
       final Result item = result.next();
       final List<EmbeddedDocument> embeddedList = item.getProperty("list");
 
@@ -3293,7 +3308,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     });
 
     int totalFound = 0;
-    for (final ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
+    for (final ResultSet result = database.query("sql",
+        "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
       final Result item = result.next();
       final List<EmbeddedDocument> embeddedList = item.getProperty("list");
 
@@ -3333,7 +3349,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     });
 
     int totalFound = 0;
-    for (final ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
+    for (final ResultSet result = database.query("sql",
+        "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
       final Result item = result.next();
       final List<Map> embeddedList = item.getProperty("list");
 
@@ -3805,7 +3822,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert INTO " + className + " SET thelist = [{name:\"Joe\"}]").close();
     database.commit();
 
-    try (final ResultSet result = database.query("sql", "select from " + className + " where thelist CONTAINS ( name = ?)", "Jack")) {
+    try (final ResultSet result = database.query("sql", "select from " + className + " where thelist CONTAINS ( name = ?)",
+        "Jack")) {
       Assertions.assertTrue(result.hasNext());
       result.next();
       Assertions.assertFalse(result.hasNext());
@@ -3871,7 +3889,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "INSERT INTO " + className + " content {\"name\": \"rose\", \"age\": 22, \"test\": [[]]}").close();
     database.command("sql", "INSERT INTO " + className + " content {\"name\": \"rose\", \"age\": 22, \"test\": [[1]]}").close();
     database.command("sql", "INSERT INTO " + className + " content {\"name\": \"pete\", \"age\": 22, \"test\": [{}]}").close();
-    database.command("sql", "INSERT INTO " + className + " content {\"name\": \"david\", \"age\": 22, \"test\": [\"hello\"]}").close();
+    database.command("sql", "INSERT INTO " + className + " content {\"name\": \"david\", \"age\": 22, \"test\": [\"hello\"]}")
+        .close();
 
     database.commit();
     try (final ResultSet result = database.query("sql", "select from " + className + " where test contains []")) {
@@ -3892,7 +3911,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "INSERT INTO " + className + " content {\"name\": \"rose\", \"age\": 22, \"test\": [[]]}").close();
     database.command("sql", "INSERT INTO " + className + " content {\"name\": \"rose\", \"age\": 22, \"test\": [[1]]}").close();
     database.command("sql", "INSERT INTO " + className + " content {\"name\": \"pete\", \"age\": 22, \"test\": [{}]}").close();
-    database.command("sql", "INSERT INTO " + className + " content {\"name\": \"david\", \"age\": 22, \"test\": [\"hello\"]}").close();
+    database.command("sql", "INSERT INTO " + className + " content {\"name\": \"david\", \"age\": 22, \"test\": [\"hello\"]}")
+        .close();
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where test contains [1]")) {
@@ -4174,18 +4194,18 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create property " + classNamePrefix + "Report.source String;").close();
     database.command("sql", "create edge type " + classNamePrefix + "hasOwnership ;").close();
     database.command("sql", "insert into " + classNamePrefix + "User content {id:\"admin\"};");
-    database.command("sql", "insert into " + classNamePrefix + "Report content {format:\"PDF\", id:\"rep1\", label:\"Report 1\", source:\"Report1.src\"};")
-        .close();
-    database.command("sql", "insert into " + classNamePrefix + "Report content {format:\"CSV\", id:\"rep2\", label:\"Report 2\", source:\"Report2.src\"};")
-        .close();
+    database.command("sql", "insert into " + classNamePrefix
+        + "Report content {format:\"PDF\", id:\"rep1\", label:\"Report 1\", source:\"Report1.src\"};").close();
+    database.command("sql", "insert into " + classNamePrefix
+        + "Report content {format:\"CSV\", id:\"rep2\", label:\"Report 2\", source:\"Report2.src\"};").close();
     database.command("sql",
-            "create edge " + classNamePrefix + "hasOwnership from (select from " + classNamePrefix + "User) to (select from " + classNamePrefix + "Report);")
-        .close();
+        "create edge " + classNamePrefix + "hasOwnership from (select from " + classNamePrefix + "User) to (select from "
+            + classNamePrefix + "Report);").close();
 
     database.commit();
     try (final ResultSet rs = database.query("sql",
-        "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from " + classNamePrefix
-            + "User where id = 'admin');")) {
+        "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from "
+            + classNamePrefix + "User where id = 'admin');")) {
       Assertions.assertTrue(rs.hasNext());
       rs.next();
       Assertions.assertTrue(rs.hasNext());
@@ -4196,8 +4216,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create index ON " + classNamePrefix + "Report(id) unique;").close();
 
     try (final ResultSet rs = database.query("sql",
-        "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from " + classNamePrefix
-            + "User where id = 'admin');")) {
+        "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from "
+            + classNamePrefix + "User where id = 'admin');")) {
       Assertions.assertTrue(rs.hasNext());
       rs.next();
       Assertions.assertTrue(rs.hasNext());
@@ -4240,13 +4260,15 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.set("name", "baaa");
     doc.save();
 
-    try (final ResultSet result = database.query("sql", "select from " + className + " LET $order = name.substring(1) ORDER BY $order ASC LIMIT 1")) {
+    try (final ResultSet result = database.query("sql",
+        "select from " + className + " LET $order = name.substring(1) ORDER BY $order ASC LIMIT 1")) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("baaa", item.getProperty("name"));
     }
-    try (final ResultSet result = database.query("sql", "select from " + className + " LET $order = name.substring(1) ORDER BY $order DESC LIMIT 1")) {
+    try (final ResultSet result = database.query("sql",
+        "select from " + className + " LET $order = name.substring(1) ORDER BY $order DESC LIMIT 1")) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
       Assertions.assertNotNull(item);

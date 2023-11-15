@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedProperty;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
@@ -127,7 +128,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @throws ValidationException if the document breaks some validation constraints defined in the
    *                             schema
-   * @see Property
+   * @see EmbeddedProperty
    */
   public void validate() throws ValidationException {
     DocumentValidator.validate(this);

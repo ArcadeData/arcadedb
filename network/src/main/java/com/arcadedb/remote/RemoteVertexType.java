@@ -1,4 +1,4 @@
-package com.arcadedb.schema;/*
+/*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,24 +12,23 @@ package com.arcadedb.schema;/*
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
+package com.arcadedb.remote;
 
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.VertexType;
 
 /**
- * Schema Edge Type.
+ * Remote Vertex Type implementation used by Remote Database. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public interface EdgeType extends DocumentType {
-  @Override
-  default MutableDocument newRecord() {
-    throw new UnsupportedOperationException();
-  }
+public class RemoteVertexType extends RemoteDocumentType implements VertexType {
 
-  @Override
-  default byte getType() {
-    return Edge.RECORD_TYPE;
+  RemoteVertexType(final RemoteDatabase remoteDatabase, final Result record) {
+    super(remoteDatabase, record);
   }
 }

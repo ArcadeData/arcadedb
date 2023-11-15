@@ -74,7 +74,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
-    final DocumentType type = schema.getType(typeName);
+    final EmbeddedDocumentType type = schema.getType(typeName);
 
     final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
     if (index != null)
@@ -86,7 +86,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     int i = 0;
 
     for (final String propertyName : propertyNames) {
-      if (type instanceof EdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
+      if (type instanceof EmbeddedEdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
         keyTypes[i++] = Type.LINK;
       } else {
         final Property property = type.getPolymorphicPropertyIfExists(propertyName);

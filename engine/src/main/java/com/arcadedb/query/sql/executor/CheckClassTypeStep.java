@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.schema.Schema;
 
 /**
@@ -48,7 +49,8 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
    * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckClassTypeStep(final String targetClass, final String parentClass, final CommandContext context, final boolean profilingEnabled) {
+  public CheckClassTypeStep(final String targetClass, final String parentClass, final CommandContext context,
+      final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.targetClass = targetClass;
     this.parentClass = parentClass;

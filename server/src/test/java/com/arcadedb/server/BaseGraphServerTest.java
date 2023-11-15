@@ -296,6 +296,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   protected void waitAllReplicasAreConnected() {
     final int serverCount = getServerCount();
+    if (serverCount == 1)
+      return;
 
     int lastTotalConnectedReplica = 0;
     final long beginTime = System.currentTimeMillis();

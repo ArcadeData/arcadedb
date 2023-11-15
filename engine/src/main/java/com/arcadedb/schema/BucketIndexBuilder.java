@@ -59,7 +59,7 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
-    final DocumentType type = schema.getType(typeName);
+    final EmbeddedDocumentType type = schema.getType(typeName);
 
     // CHECK ALL THE PROPERTIES EXIST
     final Type[] keyTypes = new Type[propertyNames.length];

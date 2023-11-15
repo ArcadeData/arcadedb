@@ -23,34 +23,20 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.Component;
-import com.arcadedb.engine.Dictionary;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.function.FunctionDefinition;
-import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.BucketIndexBuilder;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.EmbeddedSchema;
-import com.arcadedb.schema.ManualIndexBuilder;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.schema.TypeBuilder;
-import com.arcadedb.schema.TypeIndexBuilder;
-import com.arcadedb.schema.VectorIndexBuilder;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.time.*;
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.stream.*;
 
 /**
@@ -58,12 +44,56 @@ import java.util.stream.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RemoteDocumentType extends DocumentType {
-  private final RemoteDatabase remoteDatabase;
+public class RemoteDocumentType implements DocumentType {
+  protected final RemoteDatabase              remoteDatabase;
+  protected final String                      name;
+  private         int                         count;
+  private         List<String>                buckets;
+  private         String                      bucketSelectionStrategy;
+  private         List<String>                parentTypes;
+  private         Map<String, RemoteProperty> properties;
 
-  public RemoteDocumentType(final RemoteDatabase remoteDatabase, final String typeName) {
-    super(null, typeName);
+  RemoteDocumentType(final RemoteDatabase remoteDatabase, final Result record) {
     this.remoteDatabase = remoteDatabase;
+    this.name = record.getProperty("name");
+    reload(record);
+  }
+
+  void reload(final Result record) {
+    count = record.getProperty("records");
+    buckets = record.getProperty("buckets");
+    bucketSelectionStrategy = record.getProperty("bucketSelectionStrategy");
+    parentTypes = record.getProperty("parentTypes");
+
+    final List<Map<String, Object>> propertiesMap = record.getProperty("properties");
+
+    if (properties == null)
+      properties = new HashMap<>(propertiesMap.size());
+
+    for (Map<String, Object> entry : propertiesMap) {
+      final String propertyName = (String) entry.get("name");
+
+      RemoteProperty p = properties.get(propertyName);
+      if (p == null) {
+        p = new RemoteProperty(this, entry);
+        properties.put(propertyName, p);
+      } else
+        p.reload(entry);
+    }
+
+//
+//  final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName))
+//      .map(typeIndex -> {
+//        final ResultInternal propRes = new ResultInternal();
+//        propRes.setProperty("name", typeIndex.getName());
+//        propRes.setProperty("typeName", typeIndex.getTypeName());
+//        propRes.setProperty("type", typeIndex.getType());
+//        propRes.setProperty("unique", typeIndex.isUnique());
+//        propRes.setProperty("properties", typeIndex.getPropertyNames());
+//        propRes.setProperty("automatic", typeIndex.isAutomatic());
+//        return propRes;
+//      }).collect(Collectors.toList());
+//      r.setProperty("indexes",indexes);
   }
 
   @Override
@@ -92,82 +122,98 @@ public class RemoteDocumentType extends DocumentType {
   }
 
   @Override
+  public String getName() {
+    return name;
+  }
+
+  @Override
   public MutableDocument newRecord() {
     return new RemoteMutableDocument(remoteDatabase, name);
+  }
+
+  public int count() {
+    return count;
   }
 
   @Override
   public Property createProperty(final String propertyName, final String propertyType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType);
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property createProperty(final String propertyName, final Class<?> propertyType) {
     remoteDatabase.command("sql",
         "create property `" + name + "`.`" + propertyName + "` " + Type.getTypeByClass(propertyType).name());
-    return null;
-  }
-
-  @Override
-  public Property createProperty(String propName, JSONObject prop) {
-    throw new UnsupportedOperationException();
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property createProperty(String propertyName, Type propertyType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType.name());
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property createProperty(final String propertyName, final Type propertyType, final String ofType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType.name() + " of " + ofType);
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final String propertyType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType);
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final String propertyType, final String ofType) {
     remoteDatabase.command("sql",
         "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType + " of " + ofType);
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final Class<?> propertyType) {
     remoteDatabase.command("sql",
         "create property `" + name + "`.`" + propertyName + "` if not exists " + Type.getTypeByClass(propertyType).name());
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final Type propertyType) {
     remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType.name());
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
     remoteDatabase.command("sql",
         "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType.name() + " of " + ofType);
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return getProperty(propertyName);
   }
 
   @Override
   public Property dropProperty(final String propertyName) {
+    final Property p = getProperty(propertyName);
     remoteDatabase.command("sql", "drop property `" + name + "`.`" + propertyName + "`");
-    return null;
+    remoteDatabase.getSchema().reloadSchema();
+    return p;
   }
 
   @Override
   public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
     remoteDatabase.getSchema().createTypeIndex(indexType, unique, name, propertyNames);
+    remoteDatabase.getSchema().invalidateSchema();
     return null;
   }
 
@@ -175,41 +221,84 @@ public class RemoteDocumentType extends DocumentType {
   public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
       final String... propertyNames) {
     remoteDatabase.getSchema().getOrCreateTypeIndex(indexType, unique, name, propertyNames);
+    remoteDatabase.getSchema().invalidateSchema();
     return null;
   }
 
   @Override
   public DocumentType addSuperType(final String superName) {
-    remoteDatabase.command("sql", "alter type `" + name + "` supertype +" + superName);
+    remoteDatabase.command("sql", "alter type `" + name + "` supertype +`" + superName + "`");
+    remoteDatabase.getSchema().reloadSchema();
     return this;
   }
 
   @Override
   public DocumentType addSuperType(final DocumentType superType) {
-    remoteDatabase.command("sql", "alter type `" + name + "` supertype +" + superType.getName());
+    remoteDatabase.command("sql", "alter type `" + name + "` supertype +`" + superType.getName() + "`");
+    remoteDatabase.getSchema().reloadSchema();
     return this;
   }
 
   @Override
   public DocumentType removeSuperType(final String superTypeName) {
-    remoteDatabase.command("sql", "alter type `" + name + "` supertype -" + superTypeName);
+    remoteDatabase.command("sql", "alter type `" + name + "` supertype -`" + superTypeName + "`");
+    remoteDatabase.getSchema().reloadSchema();
     return this;
   }
 
   @Override
   public DocumentType removeSuperType(final DocumentType superType) {
-    remoteDatabase.command("sql", "alter type `" + name + "` supertype -" + superType.getName());
+    remoteDatabase.command("sql", "alter type `" + name + "` supertype -`" + superType.getName() + "`");
+    remoteDatabase.getSchema().reloadSchema();
     return this;
+  }
+
+  @Override
+  public boolean existsProperty(final String propertyName) {
+    return properties.containsKey(propertyName);
+  }
+
+  @Override
+  public boolean existsPolymorphicProperty(final String propertyName) {
+    if (existsProperty(propertyName))
+      return true;
+    for (DocumentType s : getSuperTypes())
+      if (s.existsProperty(propertyName))
+        return true;
+    return false;
+  }
+
+  @Override
+  public boolean isSubTypeOf(final String type) {
+    if (parentTypes != null) {
+      if (parentTypes.contains(type))
+        return true;
+
+      for (DocumentType s : getSuperTypes())
+        if (s.isSubTypeOf(type))
+          return true;
+    }
+    return false;
+  }
+
+  @Override
+  public List<DocumentType> getSuperTypes() {
+    return parentTypes.stream().map(p -> remoteDatabase.getSchema().getType(p)).collect(Collectors.toList());
+  }
+
+  @Override
+  public Property getPropertyIfExists(String propertyName) {
+    return properties.get(propertyName);
+  }
+
+  @Override
+  public boolean isSuperTypeOf(final String type) {
+    return remoteDatabase.getSchema().getType(type).isSubTypeOf(name);
   }
 
   // UNSUPPORTED METHODS. OPEN A NEW ISSUE TO REQUEST THE SUPPORT OF ADDITIONAL METHODS IN REMOTE
   @Override
   public boolean instanceOf(final String type) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public List<DocumentType> getSuperTypes() {
     throw new UnsupportedOperationException();
   }
 
@@ -335,36 +424,6 @@ public class RemoteDocumentType extends DocumentType {
   }
 
   @Override
-  public boolean existsProperty(String propertyName) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public boolean existsPolymorphicProperty(String propertyName) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Property getPolymorphicPropertyIfExists(String propertyName) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Property getPropertyIfExists(String propertyName) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Property getProperty(String propertyName) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Property getPolymorphicProperty(String propertyName) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
   public Collection<TypeIndex> getAllIndexes(boolean polymorphic) {
     throw new UnsupportedOperationException();
   }
@@ -395,47 +454,12 @@ public class RemoteDocumentType extends DocumentType {
   }
 
   @Override
-  protected void addIndexInternal(IndexInternal index, int bucketId, String[] propertyNames, TypeIndex propIndex) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public void removeTypeIndexInternal(TypeIndex index) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public void removeBucketIndexInternal(Index index) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  protected void addBucketInternal(Bucket bucket) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  protected void removeBucketInternal(Bucket bucket) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
   public boolean hasBucket(String bucketName) {
     throw new UnsupportedOperationException();
   }
 
   @Override
   public int getFirstBucketId() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public boolean isSubTypeOf(String type) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public boolean isSuperTypeOf(String type) {
     throw new UnsupportedOperationException();
   }
 
@@ -460,7 +484,7 @@ public class RemoteDocumentType extends DocumentType {
   }
 
   @Override
-  protected <RET> RET recordFileChanges(Callable<Object> callback) {
+  public Property createProperty(String propName, JSONObject prop) {
     throw new UnsupportedOperationException();
   }
 }

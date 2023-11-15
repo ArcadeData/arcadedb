@@ -18,40 +18,16 @@
  */
 package com.arcadedb.remote;
 
-import com.arcadedb.ContextConfiguration;
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.BasicDatabase;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseStats;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
-import com.arcadedb.database.async.ErrorCallback;
-import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.Dictionary;
-import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.exception.TransactionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.log.LogManager;
-import com.arcadedb.network.binary.QuorumNotReachedException;
-import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.BucketIndexBuilder;
 import com.arcadedb.schema.DocumentType;
@@ -64,19 +40,9 @@ import com.arcadedb.schema.TypeBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.FileUtils;
-import com.arcadedb.utility.Pair;
-import com.arcadedb.utility.RWLockContext;
 
-import javax.annotation.processing.SupportedAnnotationTypes;
-import java.io.*;
-import java.net.*;
-import java.nio.charset.*;
 import java.time.*;
 import java.util.*;
-import java.util.logging.*;
 import java.util.stream.*;
 
 /**
@@ -85,7 +51,8 @@ import java.util.stream.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteSchema implements Schema {
-  private final RemoteDatabase remoteDatabase;
+  private final RemoteDatabase                  remoteDatabase;
+  private       Map<String, RemoteDocumentType> types = null;
 
   public RemoteSchema(final RemoteDatabase remoteDatabase) {
     this.remoteDatabase = remoteDatabase;
@@ -129,9 +96,8 @@ public class RemoteSchema implements Schema {
 
   @Override
   public Bucket createBucket(final String bucketName) {
-    remoteDatabase.command("sql", "create nucket `" + bucketName + "`");
+    final ResultSet result = remoteDatabase.command("sql", "create bucket `" + bucketName + "`");
     return null;
-
   }
 
   @Override
@@ -157,30 +123,18 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
-  public VertexType createVertexType(final String typeName) {
-    remoteDatabase.command("sql", "create vertex type `" + typeName + "`");
-    return null;
-  }
-
-  @Override
-  public VertexType getOrCreateVertexType(String typeName, int buckets) {
-    remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists buckets " + buckets);
-    return null;
-  }
-
-  @Override
   public DocumentType createDocumentType(final String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "`");
     if (result.hasNext())
-      return new RemoteDocumentType(remoteDatabase, typeName);
+      return reloadSchema().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
   }
 
   @Override
-  public DocumentType createDocumentType(String typeName, int buckets) {
+  public DocumentType createDocumentType(final String typeName, final int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "` buckets " + buckets);
     if (result.hasNext())
-      return new RemoteDocumentType(remoteDatabase, typeName);
+      return reloadSchema().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
   }
 
@@ -189,46 +143,85 @@ public class RemoteSchema implements Schema {
     final ResultSet result = remoteDatabase.command("sql",
         "create document type `" + typeName + "` if not exists buckets " + buckets);
     if (result.hasNext())
-      return new RemoteDocumentType(remoteDatabase, typeName);
+      return reloadSchema().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
+  }
+
+  @Override
+  public VertexType createVertexType(final String typeName) {
+    final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "`");
+    if (result.hasNext())
+      return (VertexType) reloadSchema().getType(typeName);
+    throw new SchemaException("Error on creating vertex type '" + typeName + "'");
+  }
+
+  @Override
+  public VertexType getOrCreateVertexType(String typeName, int buckets) {
+    final ResultSet result = remoteDatabase.command("sql",
+        "create vertex type `" + typeName + "` if not exists buckets " + buckets);
+    if (result.hasNext())
+      return (VertexType) reloadSchema().getType(typeName);
+    throw new SchemaException("Error on creating vertex type '" + typeName + "'");
+  }
+
+  @Override
+  public VertexType getOrCreateVertexType(final String typeName) {
+    final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists");
+    if (result.hasNext())
+      return (VertexType) reloadSchema().getType(typeName);
+    throw new SchemaException("Error on creating vertex type '" + typeName + "'");
+  }
+
+  @Override
+  public VertexType createVertexType(String typeName, int buckets) {
+    final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` buckets " + buckets);
+    if (result.hasNext())
+      return (VertexType) reloadSchema().getType(typeName);
+    throw new SchemaException("Error on creating vertex type '" + typeName + "'");
+  }
+
+  @Override
+  public EdgeType createEdgeType(final String typeName) {
+    final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "`");
+    if (result.hasNext())
+      return (EdgeType) reloadSchema().getType(typeName);
+    throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists");
     if (result.hasNext())
-      return null;//new RemoteDocumentType(remoteDatabase, typeName);
-    return null;
+      return (EdgeType) reloadSchema().getType(typeName);
+    throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
   @Override
   public EdgeType createEdgeType(String typeName, int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` buckets " + buckets);
-    return null;
+    if (result.hasNext())
+      return (EdgeType) reloadSchema().getType(typeName);
+    throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, final int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists buckets " + buckets);
-    return null;
+    if (result.hasNext())
+      return (EdgeType) reloadSchema().getType(typeName);
+    throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
   @Override
-  public VertexType getOrCreateVertexType(final String typeName) {
-    final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists");
-    return null;
+  public Collection<? extends DocumentType> getTypes() {
+    checkSchemaIsLoaded();
+    return types.values();
   }
 
   @Override
-  public VertexType createVertexType(String typeName, int buckets) {
-    final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` buckets " + buckets);
-    return null;
-  }
-
-  @Override
-  public EdgeType createEdgeType(final String typeName) {
-    final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "`");
-    return null;
+  public DocumentType getType(final String typeName) {
+    checkSchemaIsLoaded();
+    return types.get(typeName);
   }
 
   @Override
@@ -580,20 +573,49 @@ public class RemoteSchema implements Schema {
 
   @Deprecated
   @Override
-  public Collection<DocumentType> getTypes() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Deprecated
-  @Override
-  public DocumentType getType(final String typeName) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Deprecated
-  @Override
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String[] propertyNames, int pageSize) {
     throw new UnsupportedOperationException();
+  }
+
+  void invalidateSchema() {
+    types = null;
+  }
+
+  RemoteSchema reloadSchema() {
+    final ResultSet result = remoteDatabase.command("sql", "select from schema:types");
+    while (result.hasNext()) {
+      final Result record = result.next();
+
+      final String typeName = record.getProperty("name");
+
+      if (types == null)
+        types = new HashMap<>();
+
+      RemoteDocumentType type = types.get(typeName);
+      if (type == null) {
+        switch ((String) record.getProperty("type")) {
+        case "document":
+          type = new RemoteDocumentType(remoteDatabase, record);
+          break;
+        case "vertex":
+          type = new RemoteVertexType(remoteDatabase, record);
+          break;
+        case "edge":
+          type = new RemoteEdgeType(remoteDatabase, record);
+          break;
+        default:
+          throw new IllegalArgumentException("Unknown record type for " + typeName);
+        }
+        types.put(typeName, type);
+      } else
+        type.reload(record);
+    }
+    return this;
+  }
+
+  private void checkSchemaIsLoaded() {
+    if (types == null)
+      reloadSchema();
   }
 }

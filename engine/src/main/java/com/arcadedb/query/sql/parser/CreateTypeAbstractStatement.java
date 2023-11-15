@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
@@ -91,10 +92,11 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   }
 
   protected DocumentType[] getSuperTypes(final Schema schema) {
-    if (supertypes == null) {
-      return new DocumentType[] {};
-    }
-    return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList()).toArray(new DocumentType[] {});
+    if (supertypes == null)
+      return new EmbeddedDocumentType[] {};
+
+    return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList())
+        .toArray(new DocumentType[] {});
   }
 
   protected void checkSuperTypes(final Schema schema, final CommandContext context) {
@@ -187,7 +189,9 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       if (!schema.existsBucket(b.bucketName.getStringValue()))
         schema.createBucket(b.bucketName.getStringValue());
 
-      bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
+      bucketInstances.add(b.bucketName != null ?
+          schema.getBucketByName(b.bucketName.getStringValue()) :
+          schema.getBucketById(b.bucketId.value.intValue()));
     }
     return bucketInstances;
   }

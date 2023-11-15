@@ -1,4 +1,4 @@
-package com.arcadedb.schema;/*
+/*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,24 +12,17 @@ package com.arcadedb.schema;/*
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
+package com.arcadedb.schema;
 
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.Edge;
 
-/**
- * Schema Edge Type.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
- */
-public interface EdgeType extends DocumentType {
-  @Override
-  default MutableDocument newRecord() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  default byte getType() {
-    return Edge.RECORD_TYPE;
+public class EmbeddedEdgeType extends EmbeddedDocumentType implements EdgeType {
+  public EmbeddedEdgeType(final EmbeddedSchema schema, final String name) {
+    super(schema, name);
   }
 }

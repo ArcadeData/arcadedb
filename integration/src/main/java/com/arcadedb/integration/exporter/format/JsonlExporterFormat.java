@@ -27,9 +27,9 @@ import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.EmbeddedEdgeType;
 import com.arcadedb.schema.EmbeddedSchema;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.EmbeddedVertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -97,9 +97,9 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         if (settings.excludeTypes != null && settings.excludeTypes.contains(typeName))
           continue;
 
-        if (type instanceof VertexType)
+        if (type instanceof EmbeddedVertexType)
           vertexTypes.add(typeName);
-        else if (type instanceof EdgeType)
+        else if (type instanceof EmbeddedEdgeType)
           edgeTypes.add(typeName);
         else
           documentTypes.add(typeName);

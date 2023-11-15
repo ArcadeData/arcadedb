@@ -21,8 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.EmbeddedEdgeType;
+import com.arcadedb.schema.EmbeddedVertexType;
 
 import java.util.*;
 
@@ -68,9 +68,9 @@ public class CreateRecordStep extends AbstractExecutionStep {
           final DocumentType type = context.getDatabase().getSchema().getType(typeName);
 
           final MutableDocument instance;
-          if (type instanceof VertexType)
+          if (type instanceof EmbeddedVertexType)
             instance = context.getDatabase().newVertex(typeName);
-          else if (type instanceof EdgeType)
+          else if (type instanceof EmbeddedEdgeType)
             throw new IllegalArgumentException("Cannot instantiate an edge");
           else
             instance = context.getDatabase().newDocument(typeName);
