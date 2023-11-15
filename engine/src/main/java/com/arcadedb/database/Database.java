@@ -46,10 +46,6 @@ public interface Database extends BasicDatabase {
 
   DatabaseAsyncExecutor async();
 
-  String getDatabasePath();
-
-  boolean isOpen();
-
   /**
    * Return the current username if the database supports security. If used embedded, ArcadeDB does not provide a security model. If you want to use database
    * security, use ArcadeDB server.

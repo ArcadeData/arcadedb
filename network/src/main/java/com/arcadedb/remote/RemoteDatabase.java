@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.MutableDocument;
@@ -31,6 +32,7 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -87,6 +89,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   protected final      DatabaseStats                        stats                     = new DatabaseStats();
   private              Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private final        RemoteSchema                         schema                    = new RemoteSchema(this);
+  private              boolean                              open                      = true;
 
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN
@@ -124,6 +127,16 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
     return databaseName;
   }
 
+  @Override
+  public String getDatabasePath() {
+    return protocol + "://" + currentServer + ":" + currentPort + "/" + databaseName;
+  }
+
+  @Override
+  public boolean isOpen() {
+    return open;
+  }
+
   public void create() {
     serverCommand("POST", "create database " + databaseName, true, true, null);
   }
@@ -146,10 +159,12 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   @Override
   public void close() {
     setSessionId(null);
+    open = false;
   }
 
   @Override
   public void drop() {
+    checkDatabaseIsOpen();
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("server"));
       setRequestPayload(connection, new JSONObject().put("command", "drop database " + databaseName));
@@ -167,6 +182,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public MutableDocument newDocument(final String typeName) {
+    checkDatabaseIsOpen();
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
@@ -175,6 +191,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public RemoteMutableVertex newVertex(final String typeName) {
+    checkDatabaseIsOpen();
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
@@ -201,6 +218,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   @Override
   public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts,
       final OkCallback ok, final ErrorCallback error) {
+    checkDatabaseIsOpen();
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
 
@@ -259,6 +277,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+    checkDatabaseIsOpen();
     if (getSessionId() != null)
       throw new TransactionException("Transaction already begun");
 
@@ -277,6 +296,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   public void commit() {
+    checkDatabaseIsOpen();
     stats.txCommits.incrementAndGet();
 
     if (getSessionId() == null)
@@ -304,6 +324,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   }
 
   public void rollback() {
+    checkDatabaseIsOpen();
     stats.txRollbacks.incrementAndGet();
 
     if (getSessionId() == null)
@@ -325,6 +346,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public long countBucket(final String bucketName) {
+    checkDatabaseIsOpen();
     stats.countBucket.incrementAndGet();
     return ((Number) ((ResultSet) databaseCommand("query", "sql", "select count(*) as count from bucket:" + bucketName, null, false,
         (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
@@ -332,6 +354,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public long countType(final String typeName, final boolean polymorphic) {
+    checkDatabaseIsOpen();
     stats.countType.incrementAndGet();
     final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
     return ((Number) ((ResultSet) databaseCommand("query", "sql", "select count(*) as count from " + typeName + appendix, null,
@@ -361,6 +384,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
+    checkDatabaseIsOpen();
     stats.readRecord.incrementAndGet();
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
@@ -374,6 +398,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public void deleteRecord(final Record record) {
+    checkDatabaseIsOpen();
     stats.deleteRecord.incrementAndGet();
 
     if (record.getIdentity() == null)
@@ -390,6 +415,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public ResultSet command(final String language, final String command, final Object... args) {
+    checkDatabaseIsOpen();
     stats.commands.incrementAndGet();
 
     final Map<String, Object> params = mapArgs(args);
@@ -399,6 +425,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   @Override
   public ResultSet query(final String language, final String command, final Object... args) {
+    checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
 
     final Map<String, Object> params = mapArgs(args);
@@ -412,6 +439,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String command, final Object... args) {
+    checkDatabaseIsOpen();
     stats.commands.incrementAndGet();
 
     final Map<String, Object> params = mapArgs(args);
@@ -506,6 +534,7 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
 
   private Object databaseCommand(final String operation, final String language, final String payloadCommand,
       final Map<String, Object> params, final boolean requiresLeader, final Callback callback) {
+    checkDatabaseIsOpen();
     return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true, callback);
   }
 
@@ -940,5 +969,10 @@ public class RemoteDatabase extends RWLockContext implements BasicDatabase {
         "Error on executing remote command '" + operation + "' (httpErrorCode=" + connection.getResponseCode()
             + " httpErrorDescription=" + httpErrorDescription + " reason=" + reason + " detail=" + detail + " exception="
             + exception + ")");
+  }
+
+  protected void checkDatabaseIsOpen() {
+    if (!open)
+      throw new DatabaseIsClosedException(databaseName);
   }
 }

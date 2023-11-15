@@ -23,6 +23,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
@@ -411,6 +412,23 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       database1.setSessionId(sessionId);
 
       database1.commit();
+    });
+  }
+
+  @Test
+  public void testDatabaseClose() throws Exception {
+    testEachServer((serverIndex) -> {
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+      Assertions.assertTrue(database.isOpen());
+      database.close();
+      Assertions.assertFalse(database.isOpen());
+      try {
+        database.countType("aaa", true);
+        Assertions.fail();
+      } catch (DatabaseIsClosedException e) {
+        //EXPECTED
+      }
     });
   }
 

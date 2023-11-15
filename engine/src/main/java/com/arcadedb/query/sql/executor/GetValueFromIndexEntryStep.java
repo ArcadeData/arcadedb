@@ -34,7 +34,7 @@ import java.util.stream.*;
  */
 public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
-  private final int[] filterClusterIds;
+  private final int[] filterBucketIds;
 
   // runtime
 
@@ -42,12 +42,12 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
   /**
    * @param context          the execution context
-   * @param filterClusterIds only extract values from these clusters. Pass null if no filtering is needed
+   * @param filterBucketIds  only extract values from these clusters. Pass null if no filtering is needed
    * @param profilingEnabled enable profiling
    */
-  public GetValueFromIndexEntryStep(final CommandContext context, final int[] filterClusterIds, final boolean profilingEnabled) {
+  public GetValueFromIndexEntryStep(final CommandContext context, final int[] filterBucketIds, final boolean profilingEnabled) {
     super(context, profilingEnabled);
-    this.filterClusterIds = filterClusterIds;
+    this.filterBucketIds = filterBucketIds;
   }
 
   @Override
@@ -115,13 +115,13 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
           try {
             final Object finalVal = val.getProperty("rid");
-            if (filterClusterIds != null) {
+            if (filterBucketIds != null) {
               if (!(finalVal instanceof Identifiable)) {
                 continue;
               }
               final RID rid = ((Identifiable) finalVal).getIdentity();
               boolean found = false;
-              for (final int filterClusterId : filterClusterIds) {
+              for (final int filterClusterId : filterBucketIds) {
                 if (rid.getBucketId() < 0 || filterClusterId == rid.getBucketId()) {
                   found = true;
                   break;
@@ -163,11 +163,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
 
-    if (filterClusterIds != null) {
+    if (filterBucketIds != null) {
       result += "\n";
       result += spaces;
-      result += "  filtering clusters [";
-      result += Arrays.stream(filterClusterIds).boxed().map(x -> "" + x).collect(Collectors.joining(","));
+      result += "  filtering buckets [";
+      result += Arrays.stream(filterBucketIds).boxed().map(x -> "" + x).collect(Collectors.joining(","));
       result += "]";
     }
 
@@ -181,6 +181,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new GetValueFromIndexEntryStep(context, this.filterClusterIds, this.profilingEnabled);
+    return new GetValueFromIndexEntryStep(context, this.filterBucketIds, this.profilingEnabled);
   }
 }

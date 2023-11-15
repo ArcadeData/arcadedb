@@ -31,6 +31,10 @@ import java.util.*;
 public interface BasicDatabase extends AutoCloseable {
   String getName();
 
+  String getDatabasePath();
+
+  boolean isOpen();
+
   Schema getSchema();
 
   @Override
