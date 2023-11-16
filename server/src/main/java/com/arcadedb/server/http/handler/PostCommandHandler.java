@@ -91,6 +91,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
       }
     }
 
+    if (language.equalsIgnoreCase("sqlScript") && !command.endsWith(";"))
+      command += ";";
+
     if ("detailed".equalsIgnoreCase(profileExecution))
       paramMap.put("$profileExecution", true);
 
@@ -100,17 +103,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
 
     if (!awaitResponse) {
-      if (language.equalsIgnoreCase("sqlScript"))
-        executeScriptAsync(database, command, paramMap);
-      else
         executeCommandAsync(database, language, command, paramMap);
 
       return new ExecutionResponse(202, "{ \"result\": \"Command accepted for asynchronous execution\"}");
     } else {
 
-      final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
-        executeScript(database, command, paramMap) :
-        executeCommand(database, language, command, paramMap);
+      final ResultSet qResult = executeCommand(database, language, command, paramMap);
 
       final JSONObject response = createResult(user, database);
 
@@ -125,91 +123,29 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
   }
 
-  private ResultSet executeScript(final Database database, String command, final Map<String, Object> paramMap) {
-    final Object params = mapParams(paramMap);
-
-    if (!command.endsWith(";"))
-      command += ";";
-
-    if (params instanceof Object[])
-      return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Object[]) params);
-
-    return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
-  }
-
   protected ResultSet executeCommand(final Database database, final String language, final String command,
       final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
-    if (params instanceof Object[])
-      return database.command(language, command, httpServer.getServer().getConfiguration(), (Object[]) params);
-
-    return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
-  }
-
-  private void executeScriptAsync(final Database database, String command, final Map<String, Object> paramMap) {
-    final Object params = mapParams(paramMap);
-
-    if (!command.endsWith(";"))
-      command += ";";
-
-    if (params instanceof Object[])
-      database.async().command("sqlscript", command, new AsyncResultsetCallback() {
-          @Override
-          public void onComplete(final ResultSet rs) {
-            LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
-          }
-
-          @Override
-          public void onError(final Exception exception) {
-            LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
-            LogManager.instance().log(this, Level.SEVERE, "", exception);
-          }
-        }, (Object[]) params);
-    else
-      database.async().command("sqlscript", command, new AsyncResultsetCallback() {
-          @Override
-          public void onComplete(final ResultSet rs) {
-            LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
-          }
-
-          @Override
-          public void onError(final Exception exception) {
-            LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
-            LogManager.instance().log(this, Level.SEVERE, "", exception);
-          }
-        }, (Map<String, Object>) params);
+    return database.command(language, command, httpServer.getServer().getConfiguration(),
+      params instanceof Object[] ? (Object[]) params : (Map<String, Object>) params);
   }
 
   protected void executeCommandAsync(final Database database, final String language, final String command,
       final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
-    if (params instanceof Object[])
-      database.async().command(language, command, new AsyncResultsetCallback() {
-          @Override
-          public void onComplete(final ResultSet rs) {
-            LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
-          }
+    database.async().command(language, command, new AsyncResultsetCallback() {
+        @Override
+        public void onComplete(final ResultSet rs) {
+          LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
+        }
 
-          @Override
-          public void onError(final Exception exception) {
-            LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
-            LogManager.instance().log(this, Level.SEVERE, "", exception);
-          }
-        }, (Object[]) params);
-    else
-      database.async().command(language, command, new AsyncResultsetCallback() {
-          @Override
-          public void onComplete(final ResultSet rs) {
-            LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
-          }
-
-          @Override
-          public void onError(final Exception exception) {
-            LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
-            LogManager.instance().log(this, Level.SEVERE, "", exception);
-          }
-        }, (Map<String, Object>) params);
+        @Override
+        public void onError(final Exception exception) {
+          LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
+          LogManager.instance().log(this, Level.SEVERE, "", exception);
+        }
+      }, params instanceof Object[] ? (Object[]) params : (Map<String, Object>) params);
   }
 }
