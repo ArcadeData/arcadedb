@@ -110,7 +110,8 @@ public class ConsoleAsyncInsertTest {
     private final String        node;
     private final String        orderStatus;
 
-    private CandidateOrder(String processor, String triggerRid, LocalDateTime start, LocalDateTime stop, String node, String orderStatus) {
+    private CandidateOrder(String processor, String triggerRid, LocalDateTime start, LocalDateTime stop, String node,
+        String orderStatus) {
       this.processor = processor;
       this.triggerRid = triggerRid;
       this.start = start;
@@ -147,12 +148,13 @@ public class ConsoleAsyncInsertTest {
   @Test
   public void testBulkAsyncInsertProductsUsingSQL() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
-    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("databases");
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("./target/databases/" + DATABASE_NAME)) {
       try (Database db = databaseFactory.create()) {
         db.transaction(() -> {
-          DocumentType dtProducts = db.getSchema().buildDocumentType().withName("Product").withTotalBuckets(PARALLEL_LEVEL).create();
+          DocumentType dtProducts = db.getSchema().buildDocumentType().withName("Product").withTotalBuckets(PARALLEL_LEVEL)
+              .create();
           dtProducts.createProperty("name", Type.STRING);
           dtProducts.createProperty("type", Type.STRING);
           dtProducts.createProperty("start", Type.DATETIME_MICROS);
@@ -222,12 +224,13 @@ public class ConsoleAsyncInsertTest {
   @Test
   public void testBulkAsyncInsertProductsUsingAPI() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
-    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("databases");
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("./target/databases/" + DATABASE_NAME)) {
       try (Database db = databaseFactory.create()) {
         db.transaction(() -> {
-          DocumentType dtProducts = db.getSchema().buildDocumentType().withName("Product").withTotalBuckets(PARALLEL_LEVEL).create();
+          DocumentType dtProducts = db.getSchema().buildDocumentType().withName("Product").withTotalBuckets(PARALLEL_LEVEL)
+              .create();
           dtProducts.createProperty("name", Type.STRING);
           dtProducts.createProperty("type", Type.STRING);
           dtProducts.createProperty("start", Type.DATETIME_MICROS);
@@ -298,11 +301,11 @@ public class ConsoleAsyncInsertTest {
   @Test
   public void testOrderByAfterDeleteInsert() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
-    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("databases");
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
     final String DATABASE_NAME = "test";
     final int PARALLEL_LEVEL = 1;
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("./target/databases/" + DATABASE_NAME)) {
       try (Database db = databaseFactory.create()) {
         DocumentType dtOrders = db.getSchema().buildDocumentType().withName("Order").withTotalBuckets(PARALLEL_LEVEL).create();
         dtOrders.createProperty("id", Type.INTEGER);
@@ -346,10 +349,11 @@ public class ConsoleAsyncInsertTest {
     final int TOTAL = 2;
     database.async().setParallelLevel(PARALLEL_LEVEL);
     String rid;
-    Product p = new Product("CS_OPER_SIR1LRM_0__20130201T001643_20130201T002230_0001.DBL", "SIR1LRM_0_", LocalDateTime.now().minusMinutes(5),
-        LocalDateTime.now(), "0001");
-    try (ResultSet resultSet = database.command("sql", "insert into Product set name = ?, type = ?, start = ?, stop = ?, v = ? return @rid",
-        arcadeDBServer.getConfiguration(), p.fileName, p.fileType, p.getStartValidity(), p.getStopValidity(), p.getVersion())) {
+    Product p = new Product("CS_OPER_SIR1LRM_0__20130201T001643_20130201T002230_0001.DBL", "SIR1LRM_0_",
+        LocalDateTime.now().minusMinutes(5), LocalDateTime.now(), "0001");
+    try (ResultSet resultSet = database.command("sql",
+        "insert into Product set name = ?, type = ?, start = ?, stop = ?, v = ? return @rid", arcadeDBServer.getConfiguration(),
+        p.fileName, p.fileType, p.getStartValidity(), p.getStopValidity(), p.getVersion())) {
       Assertions.assertTrue(resultSet.hasNext());
       Result result = resultSet.next();
       rid = result.getProperty("@rid").toString();
@@ -392,7 +396,8 @@ public class ConsoleAsyncInsertTest {
     }
   }
 
-  private void checkResults(AtomicLong txErrorCounter, Database database, AtomicLong okCount, AtomicLong errCount, long N, long begin) {
+  private void checkResults(AtomicLong txErrorCounter, Database database, AtomicLong okCount, AtomicLong errCount, long N,
+      long begin) {
     Assertions.assertTrue(database.async().waitCompletion(30_000));
 
     System.out.println("Total async insertion of " + N + " elements in " + (System.currentTimeMillis() - begin));
@@ -432,7 +437,8 @@ public class ConsoleAsyncInsertTest {
       } else {
 
         final MutableDocument record = database.newDocument("Product")
-            .set("name", fileName, "type", p.getFileType(), "start", p.getStartValidity(), "stop", p.getStopValidity(), "v", p.getVersion());
+            .set("name", fileName, "type", p.getFileType(), "start", p.getStartValidity(), "stop", p.getStopValidity(), "v",
+                p.getVersion());
         database.async().createRecord(record, newRecord -> okCount.incrementAndGet(), exception -> {
           errCount.incrementAndGet();
           System.out.println("database.async.command() error: " + exception.getMessage());
@@ -477,7 +483,8 @@ public class ConsoleAsyncInsertTest {
     MutableDocument record;
     final AtomicInteger totalRows = new AtomicInteger();
     final int[] firstOrderId = new int[1];
-    TypeIndex insertOrdersIndex = database.getSchema().getType("Order").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
+    TypeIndex insertOrdersIndex = database.getSchema().getType("Order")
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
     for (CandidateOrder order : orders) {
       indexCursor = database.lookupByKey("Order", new String[] { "processor", "vstart", "vstop" },
           new Object[] { order.getProcessor(), order.getStart(), order.getStop() });
@@ -527,8 +534,8 @@ public class ConsoleAsyncInsertTest {
   }
 
   @BeforeEach
-  public void cleanup() throws IOException {
-    FileUtils.deleteRecursively(new File("./databases"));
+  public void cleanup() {
+    FileUtils.deleteRecursively(new File("./target/databases/"));
   }
 
   @AfterEach
