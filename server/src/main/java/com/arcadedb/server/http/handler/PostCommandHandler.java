@@ -18,7 +18,9 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -28,6 +30,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
 import java.util.*;
+import java.util.logging.*;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
@@ -88,44 +91,61 @@ public class PostCommandHandler extends AbstractQueryHandler {
       }
     }
 
+    if (language.equalsIgnoreCase("sqlScript") && !command.endsWith(";"))
+      command += ";";
+
     if ("detailed".equalsIgnoreCase(profileExecution))
       paramMap.put("$profileExecution", true);
 
-    final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
-        executeScript(database, command, paramMap) :
-        executeCommand(database, language, command, paramMap);
+    boolean awaitResponse = true;
+    if (requestMap.containsKey("awaitResponse") && requestMap.get("awaitResponse") instanceof Boolean) {
+        awaitResponse = (Boolean) requestMap.get("awaitResponse");
+    }
 
-    final JSONObject response = createResult(user, database);
+    if (!awaitResponse) {
+        executeCommandAsync(database, language, command, paramMap);
 
-    serializeResultSet(database, serializer, limit, response, qResult);
+      return new ExecutionResponse(202, "{ \"result\": \"Command accepted for asynchronous execution\"}");
+    } else {
 
-    if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
-      qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
+      final ResultSet qResult = executeCommand(database, language, command, paramMap);
 
-    httpServer.getServer().getServerMetrics().meter("http.command").hit();
+      final JSONObject response = createResult(user, database);
 
-    return new ExecutionResponse(200, response.toString());
-  }
+      serializeResultSet(database, serializer, limit, response, qResult);
 
-  private ResultSet executeScript(final Database database, String command, final Map<String, Object> paramMap) {
-    final Object params = mapParams(paramMap);
+      if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
+        qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
 
-    if (!command.endsWith(";"))
-      command += ";";
+      httpServer.getServer().getServerMetrics().meter("http.command").hit();
 
-    if (params instanceof Object[])
-      return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Object[]) params);
-
-    return database.command("sqlscript", command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
+      return new ExecutionResponse(200, response.toString());
+    }
   }
 
   protected ResultSet executeCommand(final Database database, final String language, final String command,
       final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
-    if (params instanceof Object[])
-      return database.command(language, command, httpServer.getServer().getConfiguration(), (Object[]) params);
+    return database.command(language, command, httpServer.getServer().getConfiguration(),
+      params instanceof Object[] ? (Object[]) params : (Map<String, Object>) params);
+  }
 
-    return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
+  protected void executeCommandAsync(final Database database, final String language, final String command,
+      final Map<String, Object> paramMap) {
+    final Object params = mapParams(paramMap);
+
+    database.async().command(language, command, new AsyncResultsetCallback() {
+        @Override
+        public void onComplete(final ResultSet rs) {
+          LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
+        }
+
+        @Override
+        public void onError(final Exception exception) {
+          LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
+          LogManager.instance().log(this, Level.SEVERE, "", exception);
+        }
+      }, params instanceof Object[] ? (Object[]) params : (Map<String, Object>) params);
   }
 }
