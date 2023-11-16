@@ -35,8 +35,8 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   private static final String URL               = "remote:localhost:2480/console root " + DEFAULT_PASSWORD_FOR_TESTS;
   private static final String URL_SHORT         = "remote:localhost/console root " + DEFAULT_PASSWORD_FOR_TESTS;
   private static final String URL_NOCREDENTIALS = "remote:localhost/console";
-  private static final String URL_WRONGPASSWD = "remote:localhost/console root wrong";
-  private static final String URL_NEW_DB      = "remote:localhost/consoleNew root " + DEFAULT_PASSWORD_FOR_TESTS;
+  private static final String URL_WRONGPASSWD   = "remote:localhost/console root wrong";
+  private static final String URL_NEW_DB        = "remote:localhost/consoleNew root " + DEFAULT_PASSWORD_FOR_TESTS;
 
   private static Console console;
 
@@ -249,10 +249,12 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     Assertions.assertTrue(console.parse("ALTER PROPERTY doc.prop CUSTOM test = true;"));
 
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
-        console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
+        console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
+            .getProperty("type"));
 
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
-        console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
+        console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
+            .getProperty("type"));
   }
 
   @Test

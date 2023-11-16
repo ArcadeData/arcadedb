@@ -23,6 +23,7 @@ package performance;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 
@@ -56,8 +57,10 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
   }
 
   public void run() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    database.create();
+    new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).create(DATABASE_NAME);
+
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "create vertex type User buckets " + BUCKETS);
 
@@ -93,7 +96,8 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
       totalRecordsOnClusters += database.countBucket("User_" + i);
 
     final List<Long> allIds = new ArrayList<>();
-    getServer(0).getDatabase(DATABASE_NAME).iterateType("User", true).forEachRemaining((a) -> allIds.add(a.getRecord().asVertex().getLong("id")));
+    getServer(0).getDatabase(DATABASE_NAME).iterateType("User", true)
+        .forEachRemaining((a) -> allIds.add(a.getRecord().asVertex().getLong("id")));
     allIds.sort(Long::compareTo);
 
     long last = -1;
@@ -126,7 +130,8 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
   }
 
   private void executeInThread(final int threadId) {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     try {
 
       for (AtomicInteger threadCounter = new AtomicInteger(); threadCounter.get() < TOTAL; ) {
@@ -169,8 +174,8 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
 
     beginTime = System.currentTimeMillis();
     System.out.println(
-        ((globalCounter.get() - lastCounter.get()) * PRINT_EVERY_MS / (float) delta) + " req/sec (counter=" + globalCounter.get() + "/" + TOTAL + ", conflicts="
-            + concurrentExceptions.get() + ", errors=" + errors.get() + ")");
+        ((globalCounter.get() - lastCounter.get()) * PRINT_EVERY_MS / (float) delta) + " req/sec (counter=" + globalCounter.get()
+            + "/" + TOTAL + ", conflicts=" + concurrentExceptions.get() + ", errors=" + errors.get() + ")");
     lastCounter.set(globalCounter.get());
 
     return beginTime;

@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.FileUtils;
@@ -79,6 +80,7 @@ public class Console {
   private              boolean              asyncMode                = false;
   private              long                 transactionBatchSize     = 0L;
   protected            long                 currentOperationsInBatch = 0L;
+  private              RemoteServer         remoteServer;
 
   public Console(final DatabaseInternal database) throws IOException {
     this();
@@ -99,9 +101,9 @@ public class Console {
   }
 
   public void interactiveMode() throws IOException {
-    final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
-        "create user", "drop database", "drop user", "export", "import", "help", "info types", "list databases", "load", "exit", "quit", "set", "match",
-        "select", "insert into", "update", "delete", "pwd");
+    final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close",
+        "connect", "create database", "create user", "drop database", "drop user", "export", "import", "help", "info types",
+        "list databases", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
 
     final LineReader lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history")
         .history(new DefaultHistory()).completer(completer).build();
@@ -368,18 +370,14 @@ public class Console {
 
     outputLine(3, "Databases:");
     if (url.startsWith(REMOTE_PREFIX)) {
-      final RemoteDatabase holdRemoteDatabase = getRemoteDatabase();
-
       connectToRemoteServer(url, false);
-      for (final Object f : getRemoteDatabase().databases()) {
+      for (final Object f : getRemoteServer().databases()) {
         outputLine(3, "- " + f.toString());
       }
 
-      databaseProxy = holdRemoteDatabase;
-
     } else if (isRemoteDatabase()) {
       // REMOTE DATABASE
-      for (final Object f : getRemoteDatabase().databases()) {
+      for (final Object f : getRemoteServer().databases()) {
         outputLine(3, "- " + f.toString());
       }
     } else {
@@ -430,7 +428,7 @@ public class Console {
 
     if (url.startsWith(REMOTE_PREFIX)) {
       connectToRemoteServer(url, true);
-      getRemoteDatabase().create();
+      getRemoteServer().create(databaseProxy.getName());
 
     } else {
       final String localUrl = parseLocalUrl(url);
@@ -480,7 +478,7 @@ public class Console {
     checkIsEmpty("User password", password);
     checkHasSpaces("User password", password);
 
-    getRemoteDatabase().createUser(userName, password, databases);
+    getRemoteServer().createUser(userName, password, databases);
 
     outputLine(3, "User '%s' created (on the server)", userName);
     flushOutput();
@@ -518,7 +516,7 @@ public class Console {
     checkIsEmpty("User name", userName);
     checkHasSpaces("User name", userName);
 
-    getRemoteDatabase().dropUser(userName);
+    getRemoteServer().dropUser(userName);
 
     outputLine(3, "User '%s' deleted (on the server)", userName);
     flushOutput();
@@ -697,8 +695,8 @@ public class Console {
           final float statusPerc = byteReadFromFile * 100F / fileSize;
           final float etaInMinutes = (elapsed * (fileSize - byteReadFromFile) / (float) byteReadFromFile) / 60_000F;
 
-          output(2, "\n- executed %d commands (%.2f%% of file processed - %d commands/sec - eta %.1f more minutes)", executedLines, statusPerc, commandsPerSec,
-              etaInMinutes);
+          output(2, "\n- executed %d commands (%.2f%% of file processed - %d commands/sec - eta %.1f more minutes)", executedLines,
+              statusPerc, commandsPerSec, etaInMinutes);
           flushOutput();
 
           lastLapTime = System.currentTimeMillis();
@@ -915,7 +913,9 @@ public class Console {
   }
 
   private void connectToRemoteServer(final String url, final Boolean needsDatabase) {
-    final String conn = url.startsWith(REMOTE_PREFIX + "//") ? url.substring((REMOTE_PREFIX + "//").length()) : url.substring(REMOTE_PREFIX.length());
+    final String conn = url.startsWith(REMOTE_PREFIX + "//") ?
+        url.substring((REMOTE_PREFIX + "//").length()) :
+        url.substring(REMOTE_PREFIX.length());
 
     final String[] serverUserPassword = conn.trim().split(" ");
     if (serverUserPassword.length != 3)
@@ -937,7 +937,9 @@ public class Console {
       remotePort = Integer.parseInt(serverParts[0].substring(portPos + 1));
     }
 
-    databaseProxy = new RemoteDatabase(remoteServer, remotePort, needsDatabase ? serverParts[1] : "", serverUserPassword[1], serverUserPassword[2]);
+    databaseProxy = new RemoteDatabase(remoteServer, remotePort, needsDatabase ? serverParts[1] : "", serverUserPassword[1],
+        serverUserPassword[2]);
+    this.remoteServer = new RemoteServer(remoteServer, remotePort, serverUserPassword[1], serverUserPassword[2]);
   }
 
   private void flushOutput() {
@@ -984,7 +986,7 @@ public class Console {
     return databaseProxy instanceof RemoteDatabase;
   }
 
-  private RemoteDatabase getRemoteDatabase() {
-    return ((RemoteDatabase) databaseProxy);
+  private RemoteServer getRemoteServer() {
+    return remoteServer;
   }
 }

@@ -126,18 +126,16 @@ public class RemoteSchemaIT extends BaseGraphServerTest {
   @BeforeEach
   public void beginTest() {
     super.beginTest();
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    if (!database.exists())
-      database.create();
+    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    if (!server.exists(DATABASE_NAME))
+      server.create(DATABASE_NAME);
   }
 
   @AfterEach
   public void endTest() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    if (database.exists())
-      database.drop();
+    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    if (server.exists(DATABASE_NAME))
+      server.drop(DATABASE_NAME);
     super.endTest();
   }
 }
