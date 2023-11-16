@@ -227,6 +227,45 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void checkAsyncCommand() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, new JSONObject().put("language","sql").put("command", "create document type doc;").put("awaitResponse",false));
+      connection.connect();
+
+      try {
+        Assertions.assertEquals(202, connection.getResponseCode());
+      } finally {
+        connection.disconnect();
+      }
+
+      connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+              + "/sql/select%20name%20from%20schema%3Atypes").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(response.contains("doc"));
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
   public void checkCommandNoDuplication() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
