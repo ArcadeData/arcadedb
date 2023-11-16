@@ -18,7 +18,9 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -28,6 +30,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
 import java.util.*;
+import java.util.logging.*;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
@@ -151,9 +154,31 @@ public class PostCommandHandler extends AbstractQueryHandler {
       command += ";";
 
     if (params instanceof Object[])
-      database.async().command("sqlscript", command, null, (Object[]) params);
+      database.async().command("sqlscript", command, new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet rs) {
+            LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
+          }
+
+          @Override
+          public void onError(final Exception exception) {
+            LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
+            LogManager.instance().log(this, Level.SEVERE, "", exception);
+          }
+        }, (Object[]) params);
     else
-      database.async().command("sqlscript", command, null, (Map<String, Object>) params);
+      database.async().command("sqlscript", command, new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet rs) {
+            LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
+          }
+
+          @Override
+          public void onError(final Exception exception) {
+            LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
+            LogManager.instance().log(this, Level.SEVERE, "", exception);
+          }
+        }, (Map<String, Object>) params);
   }
 
   protected void executeCommandAsync(final Database database, final String language, final String command,
@@ -161,8 +186,30 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final Object params = mapParams(paramMap);
 
     if (params instanceof Object[])
-      database.async().command(language, command, null, (Object[]) params);
+      database.async().command(language, command, new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet rs) {
+            LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
+          }
+
+          @Override
+          public void onError(final Exception exception) {
+            LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
+            LogManager.instance().log(this, Level.SEVERE, "", exception);
+          }
+        }, (Object[]) params);
     else
-      database.async().command(language, command, null, (Map<String, Object>) params);
+      database.async().command(language, command, new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet rs) {
+            LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
+          }
+
+          @Override
+          public void onError(final Exception exception) {
+            LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
+            LogManager.instance().log(this, Level.SEVERE, "", exception);
+          }
+        }, (Map<String, Object>) params);
   }
 }
