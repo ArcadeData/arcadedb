@@ -39,6 +39,11 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
+/**
+ * Postgres Reference for Protocol Messages: https://www.postgresql.org/docs/9.6/protocol-message-formats.html
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class PostgresNetworkExecutor extends Thread {
   public enum ERROR_SEVERITY {FATAL, ERROR}
 
@@ -160,6 +165,10 @@ public class PostgresNetworkExecutor extends Thread {
                 closeCommand();
                 break;
 
+              case 'H':
+                flushCommand();
+                break;
+
               case 'X':
                 // TERMINATE
                 shutdown = true;
@@ -211,6 +220,12 @@ public class PostgresNetworkExecutor extends Thread {
     writeReadyForQueryMessage();
   }
 
+  private void flushCommand() {
+    if (DEBUG)
+      LogManager.instance().log(this, Level.INFO, "PSQL: flush (thread=%s)", Thread.currentThread().getId());
+    writeReadyForQueryMessage();
+  }
+
   private void closeCommand() throws IOException {
     final byte closeType = channel.readByte();
     final String prepStatementOrPortal = readString();
@@ -222,8 +237,8 @@ public class PostgresNetworkExecutor extends Thread {
       getPortal(prepStatementOrPortal, true);
 
     if (DEBUG)
-      LogManager.instance()
-          .log(this, Level.INFO, "PSQL: close '%s' type=%s (thread=%s)", prepStatementOrPortal, (char) closeType, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.INFO, "PSQL: close '%s' type=%s (thread=%s)", prepStatementOrPortal, (char) closeType,
+          Thread.currentThread().getId());
 
     writeMessage("close complete", null, '3', 4);
   }
@@ -233,8 +248,9 @@ public class PostgresNetworkExecutor extends Thread {
     final String portalName = readString();
 
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL: describe '%s' type=%s (errorInTransaction=%s thread=%s)", portalName, (char) type, errorInTransaction,
-          Thread.currentThread().getId());
+      LogManager.instance()
+          .log(this, Level.INFO, "PSQL: describe '%s' type=%s (errorInTransaction=%s thread=%s)", portalName, (char) type,
+              errorInTransaction, Thread.currentThread().getId());
 
     if (errorInTransaction)
       return;
@@ -282,7 +298,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (DEBUG)
         LogManager.instance()
-            .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal, Thread.currentThread().getId());
+            .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal,
+                Thread.currentThread().getId());
 
       if (portal.ignoreExecution)
         writeNoData();
@@ -452,12 +469,15 @@ public class PostgresNetworkExecutor extends Thread {
       bufferDescription.put(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.
       bufferDescription.put((byte) 0);
 
-      bufferDescription.putInt(0); //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
+      bufferDescription.putInt(
+          0); //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
       bufferDescription.putShort(
           (short) 0); //If the field can be identified as a column of a specific table, the attribute number of the column; otherwise zero.
       bufferDescription.putInt(columnType.code);// The object ID of the field's data type.
-      bufferDescription.putShort((short) columnType.size);// The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
-      bufferDescription.putInt(columnType.modifier);// The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
+      bufferDescription.putShort(
+          (short) columnType.size);// The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
+      bufferDescription.putInt(
+          columnType.modifier);// The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
       bufferDescription.putShort(
           (short) 0); // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
     }
@@ -533,8 +553,8 @@ public class PostgresNetworkExecutor extends Thread {
     channel.flush();
 
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row data (%s) (thread=%s)", resultSet.size(), FileUtils.getSizeAsString(bufferData.limit()),
-          Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row data (%s) (thread=%s)", resultSet.size(),
+          FileUtils.getSizeAsString(bufferData.limit()), Thread.currentThread().getId());
   }
 
   private void bindCommand() {
@@ -550,8 +570,8 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       if (DEBUG)
-        LogManager.instance()
-            .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement, Thread.currentThread().getId());
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,
+            Thread.currentThread().getId());
 
       final int paramFormatCount = channel.readShort();
       if (paramFormatCount > 0) {
@@ -613,8 +633,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (DEBUG)
         LogManager.instance()
-            .log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d) (errorInTransaction=%s thread=%s)", portalName, portal.query, paramCount,
-                errorInTransaction, Thread.currentThread().getId());
+            .log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d) (errorInTransaction=%s thread=%s)", portalName,
+                portal.query, paramCount, errorInTransaction, Thread.currentThread().getId());
 
       if (errorInTransaction)
         return;
@@ -876,7 +896,8 @@ public class PostgresNetworkExecutor extends Thread {
           channel.writeByte((byte) 'N');
           channel.flush();
 
-          LogManager.instance().log(this, Level.INFO, "PSQL: received not supported SSL connection request. Sending back error message to the client");
+          LogManager.instance().log(this, Level.INFO,
+              "PSQL: received not supported SSL connection request. Sending back error message to the client");
 
           // REPEAT
           return readStartupMessage(false);
@@ -966,7 +987,8 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-  private void writeMessage(final String messageName, final WriteMessageCallback callback, final char messageCode, final long length) {
+  private void writeMessage(final String messageName, final WriteMessageCallback callback, final char messageCode,
+      final long length) {
     try {
       channel.writeByte((byte) messageCode);
       channel.writeUnsignedInt((int) length);
@@ -975,8 +997,8 @@ public class PostgresNetworkExecutor extends Thread {
       channel.flush();
 
       if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL:-> %s (%s - %s) (thread=%s)", null, messageName, messageCode, FileUtils.getSizeAsString(length),
-            Thread.currentThread().getId());
+        LogManager.instance().log(this, Level.INFO, "PSQL:-> %s (%s - %s) (thread=%s)", null, messageName, messageCode,
+            FileUtils.getSizeAsString(length), Thread.currentThread().getId());
 
     } catch (final IOException e) {
       setErrorInTx();
