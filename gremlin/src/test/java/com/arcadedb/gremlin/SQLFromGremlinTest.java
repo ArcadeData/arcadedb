@@ -33,7 +33,7 @@ import java.io.*;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLTest {
+public class SQLFromGremlinTest {
   @Test
   public void testSQL()  {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testsql");

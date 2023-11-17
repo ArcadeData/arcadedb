@@ -20,6 +20,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -55,7 +56,7 @@ public class CypherQueryEngineTest {
     config.setProperty(ArcadeGraph.CONFIG_DIRECTORY, DB_PATH);
 
     final ArcadeGraph graph = ArcadeGraph.open(config);
-    try (final Database database = graph.getDatabase()) {
+    try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
         final Schema schema = database.getSchema();
         schema.getOrCreateVertexType("V");
@@ -68,7 +69,8 @@ public class CypherQueryEngineTest {
         v1.newEdge("E", v2, true);
         v1.newEdge("E", v3, true);
         try (final ResultSet query = database.query("cypher",
-            "match(parent:V)-[e:E]-(child:V) where id(parent) = $p return parent as parent, collect(child) as children", "p", v1.getIdentity().toString())) {
+            "match(parent:V)-[e:E]-(child:V) where id(parent) = $p return parent as parent, collect(child) as children", "p",
+            v1.getIdentity().toString())) {
 
           // Ensure that the result (set) has the desired format
           final List<Result> results = IteratorUtils.toList(query, 1);
@@ -92,7 +94,8 @@ public class CypherQueryEngineTest {
           final List<Map<String, Object>> children = childrenAsResult.stream().map(Result::toMap).collect(Collectors.toList());
           children.forEach(c -> c.computeIfPresent("@rid", (k, v) -> Objects.toString(v)));
           children.forEach(c -> c.put("@cat", "v"));
-          final List<Map<String, Object>> childVertices = Stream.of(v2, v3).map(MutableVertex::toJSON).map(JSONObject::toMap).collect(Collectors.toList());
+          final List<Map<String, Object>> childVertices = Stream.of(v2, v3).map(MutableVertex::toJSON).map(JSONObject::toMap)
+              .collect(Collectors.toList());
           assertThat(children, containsInAnyOrder(childVertices.toArray()));
         }
 
@@ -108,13 +111,15 @@ public class CypherQueryEngineTest {
   @Test
   public void returnPath() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
-    try (final Database database = graph.getDatabase()) {
+    try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
         database.command("cypher", "CREATE (n:Transaction {id:'T1'}) RETURN n");
         database.command("cypher", "CREATE (n:City {id:'C1'}) RETURN n");
-        database.command("cypher", "MATCH (t:Transaction), (c:City) WHERE t.id = 'T1' AND c.id = 'C1' CREATE path = (t)-[r:IS_IN]->(c) RETURN type(r)");
+        database.command("cypher",
+            "MATCH (t:Transaction), (c:City) WHERE t.id = 'T1' AND c.id = 'C1' CREATE path = (t)-[r:IS_IN]->(c) RETURN type(r)");
 
-        try (final ResultSet query = database.query("cypher", "MATCH path = (t:City{id:'C1'})-[r]-(c:Transaction{id:'T1'}) RETURN path")) {
+        try (final ResultSet query = database.query("cypher",
+            "MATCH path = (t:City{id:'C1'})-[r]-(c:Transaction{id:'T1'}) RETURN path")) {
           Assertions.assertTrue(query.hasNext());
           final Result r1 = query.next();
           Assertions.assertTrue(query.hasNext());
@@ -136,7 +141,7 @@ public class CypherQueryEngineTest {
   @Test
   public void inheritance() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
-    try (final Database database = graph.getDatabase()) {
+    try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
         database.command("sql", "CREATE VERTEX TYPE Node");
         database.command("sql", "CREATE VERTEX TYPE Transaction EXTENDS Node");
@@ -163,7 +168,7 @@ public class CypherQueryEngineTest {
   @Test
   public void testNullReturn() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
-    try (final Database database = graph.getDatabase()) {
+    try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
         try (final ResultSet query = database.command("cypher", "CREATE (n:Person) return n.name")) {
           Assertions.assertTrue(query.hasNext());
@@ -182,7 +187,7 @@ public class CypherQueryEngineTest {
   @Test
   public void testReturnOrder() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
-    try (final Database database = graph.getDatabase()) {
+    try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
         database.command("cypher", "CREATE (foo:Order {name: \"hi\", field1: \"value1\", field2: \"value2\"}) RETURN foo;\n");
         try (final ResultSet query = database.command("cypher", "MATCH (foo:Order) RETURN foo.name, foo.field2, foo.field1;")) {

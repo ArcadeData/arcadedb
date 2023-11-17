@@ -166,17 +166,19 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
-      context.setParentWithoutOverridingChild(parentcontext);
+    if (parentContext != null) {
+      context.setParentWithoutOverridingChild(parentContext);
     }
     context.setDatabase(db);
     final Map<String, Object> params = new HashMap<>();
     if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(String.valueOf(i), args[i]);
-      }
+      if (args.length == 1 && args[0] instanceof Map)
+        params.putAll((Map<? extends String, ?>) args[0]);
+      else
+        for (int i = 0; i < args.length; i++)
+          params.put(String.valueOf(i), args[i]);
     }
 
     setProfilingConstraints((DatabaseInternal) db);
@@ -188,11 +190,12 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext,
+      final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentContext != null) {
+    if (parentContext != null)
       context.setParentWithoutOverridingChild(parentContext);
-    }
+
     context.setDatabase(db);
 
     setProfilingConstraints((DatabaseInternal) db);

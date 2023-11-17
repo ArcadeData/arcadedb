@@ -343,6 +343,51 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
+  public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
+    String query = "select from `" + typeName + "`";
+    if (!polymorphic)
+      query += " where @type = '" + typeName + "'";
+
+    final ResultSet resultSet = query("sql", query);
+    return new Iterator<>() {
+      @Override
+      public boolean hasNext() {
+        return resultSet.hasNext();
+      }
+
+      @Override
+      public Record next() {
+        return resultSet.next().getElement().get();
+      }
+    };
+  }
+
+  @Override
+  public Iterator<Record> iterateBucket(final String bucketName) {
+    final ResultSet resultSet = query("sql", "select from bucket:`" + bucketName + "`");
+    return new Iterator<>() {
+      @Override
+      public boolean hasNext() {
+        return resultSet.hasNext();
+      }
+
+      @Override
+      public Record next() {
+        return resultSet.next().getElement().get();
+      }
+    };
+  }
+
+  @Override
+  public ResultSet command(final String language, final String command, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    stats.commands.incrementAndGet();
+
+    return (ResultSet) databaseCommand("command", language, command, params, true,
+        (connection, response) -> createResultSet(response));
+  }
+
+  @Override
   public ResultSet command(final String language, final String command, final ContextConfiguration configuration,
       final Object... args) {
     return command(language, command, args);
@@ -359,12 +404,21 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
-  public ResultSet query(final String language, final String command, final Object... args) {
+  public ResultSet query(final String language, final String query, final Object... args) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
 
     final Map<String, Object> params = mapArgs(args);
-    return (ResultSet) databaseCommand("query", language, command, params, false,
+    return (ResultSet) databaseCommand("query", language, query, params, false,
+        (connection, response) -> createResultSet(response));
+  }
+
+  @Override
+  public ResultSet query(final String language, final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    stats.commands.incrementAndGet();
+
+    return (ResultSet) databaseCommand("query", language, query, params, false,
         (connection, response) -> createResultSet(response));
   }
 

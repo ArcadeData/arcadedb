@@ -21,6 +21,8 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
@@ -60,8 +62,9 @@ public class ArcadeGremlin extends ArcadeQuery {
   @Override
   public ResultSet execute() {
     try {
-      final boolean profileExecution =
-          parameters != null && parameters.containsKey("$profileExecution") ? (Boolean) parameters.remove("$profileExecution") : false;
+      final boolean profileExecution = parameters != null && parameters.containsKey("$profileExecution") ?
+          (Boolean) parameters.remove("$profileExecution") :
+          false;
 
       final Iterator resultSet = executeStatement();
 
@@ -183,7 +186,11 @@ public class ArcadeGremlin extends ArcadeQuery {
   }
 
   private Iterator executeStatement() throws ScriptException {
-    String gremlinEngine = graph.getDatabase().getConfiguration().getValueAsString(GlobalConfiguration.GREMLIN_ENGINE);
+    final BasicDatabase database = graph.getDatabase();
+    String gremlinEngine = database instanceof Database ?
+        ((Database) database).getConfiguration().getValueAsString(GlobalConfiguration.GREMLIN_ENGINE) :
+        "auto";
+
     if ("auto".equals(gremlinEngine)) {
       if (parameters == null || parameters.isEmpty()) {
         // NO PARAMETERS, USES THE NEW ENGINE
@@ -191,7 +198,8 @@ public class ArcadeGremlin extends ArcadeQuery {
           return executeStatement("java");
         } catch (ScriptException e) {
           // EXCEPTION PARSING, TRYING WITH OLD GROOVY PARSER
-          LogManager.instance().log(this, Level.FINE, "The gremlin query '%s' could not be parsed, using the legacy `groovy` parser", e, query);
+          LogManager.instance()
+              .log(this, Level.FINE, "The gremlin query '%s' could not be parsed, using the legacy `groovy` parser", e, query);
         }
       }
       gremlinEngine = "groovy";

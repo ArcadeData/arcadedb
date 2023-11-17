@@ -21,6 +21,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.cypher.ArcadeCypher;
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
@@ -35,8 +36,9 @@ import com.arcadedb.gremlin.service.ArcadeServiceRegistry;
 import com.arcadedb.gremlin.service.VectorNeighborsFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.apache.commons.configuration2.BaseConfiguration;
 import org.apache.commons.configuration2.Configuration;
@@ -78,7 +80,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final        ArcadeGraphTransaction    transaction;
-  protected final      Database                  database;
+  protected final      BasicDatabase             database;
   protected final      BaseConfiguration         configuration  = new BaseConfiguration();
   private final static Iterator<Vertex>          EMPTY_VERTICES = Collections.emptyIterator();
   private final static Iterator<Edge>            EMPTY_EDGES    = Collections.emptyIterator();
@@ -115,7 +117,7 @@ public class ArcadeGraph implements Graph, Closeable {
     init();
   }
 
-  protected ArcadeGraph(final Database database) {
+  protected ArcadeGraph(final BasicDatabase database) {
     this.database = database;
     this.transaction = new ArcadeGraphTransaction(this);
     init();
@@ -140,7 +142,7 @@ public class ArcadeGraph implements Graph, Closeable {
     return open(config);
   }
 
-  public static ArcadeGraph open(final Database database) {
+  public static ArcadeGraph open(final BasicDatabase database) {
     return new ArcadeGraph(database);
   }
 
@@ -191,7 +193,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
     if (!this.database.getSchema().existsType(typeName))
       this.database.getSchema().createVertexType(typeName);
-    else if (!(this.database.getSchema().getType(typeName) instanceof EmbeddedVertexType))
+    else if (!(this.database.getSchema().getType(typeName) instanceof VertexType))
       throw new IllegalArgumentException("Type '" + typeName + "' is not a vertex");
 
     final MutableVertex modifiableVertex = this.database.newVertex(typeName);
@@ -221,7 +223,7 @@ public class ArcadeGraph implements Graph, Closeable {
       final Collection<? extends DocumentType> types = this.database.getSchema().getTypes();
       final Set<Bucket> buckets = new HashSet<>();
       for (final DocumentType t : types)
-        if (t instanceof EmbeddedVertexType)
+        if (t instanceof VertexType)
           buckets.addAll(t.getBuckets(true));
 
       if (buckets.isEmpty())
@@ -284,7 +286,7 @@ public class ArcadeGraph implements Graph, Closeable {
       final Collection<? extends DocumentType> types = this.database.getSchema().getTypes();
       final Set<Bucket> buckets = new HashSet<>();
       for (final DocumentType t : types)
-        if (t instanceof EmbeddedEdgeType)
+        if (t instanceof EdgeType)
           buckets.addAll(t.getBuckets(true));
 
       if (buckets.isEmpty())
@@ -398,7 +400,7 @@ public class ArcadeGraph implements Graph, Closeable {
     database.deleteRecord(element.getBaseElement().getRecord());
   }
 
-  public Database getDatabase() {
+  public BasicDatabase getDatabase() {
     return database;
   }
 

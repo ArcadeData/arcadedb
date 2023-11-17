@@ -20,6 +20,7 @@
  */
 package com.arcadedb.gremlin.io;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import org.apache.tinkerpop.gremlin.structure.io.AbstractIoRegistry;
@@ -32,17 +33,17 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
   public static final  String           BUCKET_POSITION = "bucketPosition";
   private static final ArcadeIoRegistry INSTANCE        = new ArcadeIoRegistry();
 
-  private final Database database;
+  private final BasicDatabase database;
 
   public ArcadeIoRegistry() {
     this(null);
   }
 
-  public ArcadeIoRegistry(final Database database) {
+  public ArcadeIoRegistry(final BasicDatabase database) {
     this.database = database;
   }
 
-  public Database getDatabase() {
+  public BasicDatabase getDatabase() {
     return database;
   }
 
@@ -50,7 +51,7 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
     return newRID(this.database, obj);
   }
 
-  public static RID newRID(final Database database, final Object obj) {
+  public static RID newRID(final BasicDatabase database, final Object obj) {
     if (obj == null)
       return null;
     if (obj instanceof RID)

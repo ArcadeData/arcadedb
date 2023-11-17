@@ -20,24 +20,22 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedVertexType;
-import org.apache.tinkerpop.gremlin.process.traversal.Compare;
-import org.apache.tinkerpop.gremlin.process.traversal.Contains;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Configuring;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.AbstractStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.Parameters;
 import org.apache.tinkerpop.gremlin.process.traversal.util.FastNoSuchElementException;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Element;
-import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.util.CloseableIterator;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
@@ -56,7 +54,8 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
   private             Iterator<E>           iterator   = EmptyIterator.instance();
   protected transient Supplier<Iterator<E>> iteratorSupplier;
 
-  public ArcadeFilterByTypeStep(final Traversal.Admin traversal, final Class returnClass, final boolean isStart, final String typeName) {
+  public ArcadeFilterByTypeStep(final Traversal.Admin traversal, final Class returnClass, final boolean isStart,
+      final String typeName) {
     super(traversal);
     this.returnClass = returnClass;
     this.isStart = isStart;
@@ -84,12 +83,14 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
 
     final DocumentType type = graph.getDatabase().getSchema().getType(this.typeName);
 
+    final Database database = (Database) graph.getDatabase();
+
     if (Vertex.class.isAssignableFrom(this.returnClass)) {
-      if (!(type instanceof EmbeddedVertexType))
+      if (!(type instanceof VertexType))
         throw new IllegalArgumentException("Type '" + this.typeName + "' is not a vertex type");
 
       final Iterator<Record> rawIterator =
-          bucketName == null ? graph.getDatabase().iterateType(this.typeName, true) : graph.getDatabase().iterateBucket(bucketName);
+          bucketName == null ? database.iterateType(this.typeName, true) : database.iterateBucket(bucketName);
       iteratorSupplier = () -> new Iterator<>() {
         @Override
         public boolean hasNext() {
@@ -103,11 +104,11 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
       };
 
     } else if (Edge.class.isAssignableFrom(this.returnClass)) {
-      if (!(type instanceof EmbeddedEdgeType))
+      if (!(type instanceof EdgeType))
         throw new IllegalArgumentException("Type '" + this.typeName + "' is not an edge type");
 
       final Iterator<Record> rawIterator =
-          bucketName == null ? graph.getDatabase().iterateType(this.typeName, true) : graph.getDatabase().iterateBucket(bucketName);
+          bucketName == null ? database.iterateType(this.typeName, true) : database.iterateBucket(bucketName);
       iteratorSupplier = () -> new Iterator<>() {
         @Override
         public boolean hasNext() {
@@ -135,26 +136,6 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
   @Override
   public void configure(final Object... keyValues) {
     this.parameters.set(null, keyValues);
-  }
-
-  public Class<E> getReturnClass() {
-    return this.returnClass;
-  }
-
-  public boolean isStartStep() {
-    return this.isStart;
-  }
-
-  public static boolean isStartStep(final Step<?, ?> step) {
-    return step instanceof GraphStep && ((GraphStep) step).isStartStep();
-  }
-
-  public boolean returnsVertex() {
-    return this.returnClass.equals(Vertex.class);
-  }
-
-  public boolean returnsEdge() {
-    return this.returnClass.equals(Edge.class);
   }
 
   @Override
@@ -213,22 +194,5 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
   @Override
   public void close() {
     CloseableIterator.closeIterator(iterator);
-  }
-
-  /**
-   * Helper method for providers that want to "fold in" {@link HasContainer}'s based on id checking into the ids of the {@link GraphStep}.
-   *
-   * @param graphStep    the GraphStep to potentially {@link GraphStep#addIds(Object...)}.
-   * @param hasContainer The {@link HasContainer} to check for id validation.
-   *
-   * @return true if the {@link HasContainer} updated ids and thus, was processed.
-   */
-  public static boolean processHasContainerIds(final GraphStep<?, ?> graphStep, final HasContainer hasContainer) {
-    if (hasContainer.getKey().equals(T.id.getAccessor()) && graphStep.getIds().length == 0 && (hasContainer.getBiPredicate() == Compare.eq
-        || hasContainer.getBiPredicate() == Contains.within)) {
-      graphStep.addIds(hasContainer.getValue());
-      return true;
-    }
-    return false;
   }
 }

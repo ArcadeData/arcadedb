@@ -25,7 +25,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
+import com.arcadedb.schema.EdgeType;
 import org.apache.tinkerpop.gremlin.structure.Direction;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Graph;
@@ -76,7 +76,7 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     if (!this.graph.getDatabase().getSchema().existsType(typeName))
       this.graph.getDatabase().getSchema().createEdgeType(typeName);
-    else if (!(this.graph.getDatabase().getSchema().getType(typeName) instanceof EmbeddedEdgeType))
+    else if (!(this.graph.getDatabase().getSchema().getType(typeName) instanceof EdgeType))
       throw new IllegalArgumentException("Type '" + typeName + "' is not a edge");
 
     final com.arcadedb.graph.Vertex baseElement = getBaseElement();

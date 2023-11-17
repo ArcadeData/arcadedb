@@ -57,17 +57,6 @@ public interface Database extends BasicDatabase {
   /**
    * Executes a command by specifying the language and arguments in a map.
    *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
-   * @param query    The command to be interpreted in the specified language as a string
-   * @param args     Arguments to pass to the command as a map of name/values.
-   *
-   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
-   */
-  ResultSet command(String language, String query, Map<String, Object> args);
-
-  /**
-   * Executes a command by specifying the language and arguments in a map.
-   *
    * @param language      The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
    * @param query         The command to be interpreted in the specified language as a string
    * @param configuration Configuration to use. When executed from a server, the server configuration is used. If null, an empty configuration will be used
@@ -76,17 +65,6 @@ public interface Database extends BasicDatabase {
    * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
    */
   ResultSet command(String language, String query, ContextConfiguration configuration, Map<String, Object> args);
-
-  /**
-   * Executes a query as an idempotent (read only) command by specifying the language and arguments in a map.
-   *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
-   * @param query    The command to be interpreted in the specified language as a string
-   * @param args     Arguments to pass to the command as a map of name/values.
-   *
-   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
-   */
-  ResultSet query(String language, String query, Map<String, Object> args);
 
   @Deprecated
   ResultSet execute(String language, String script, Map<String, Object> args);
@@ -174,26 +152,6 @@ public interface Database extends BasicDatabase {
    * @throws IllegalArgumentException If an index is not defined on the `type.keyNames` property
    */
   IndexCursor lookupByKey(String type, String[] keyNames, Object[] keyValues);
-
-  /**
-   * Iterates the records contained in all the buckets defined by a type. This operation iterates in sequence each bucket.
-   *
-   * @param typeName    The name of the type
-   * @param polymorphic true if the records of all the subtypes must be included, otherwise only the records strictly contained in the #typeName
-   *                    will be scanned
-   *
-   * @return The number of records found
-   */
-  Iterator<Record> iterateType(String typeName, boolean polymorphic);
-
-  /**
-   * Iterates the records contained in a bucket.
-   *
-   * @param bucketName The name of the bucket
-   *
-   * @return The number of records found
-   */
-  Iterator<Record> iterateBucket(String bucketName);
 
   /**
    * Creates a new edge between two vertices specifying the key/value pairs to lookup for both source and destination vertices. The direction of the edge is from source
