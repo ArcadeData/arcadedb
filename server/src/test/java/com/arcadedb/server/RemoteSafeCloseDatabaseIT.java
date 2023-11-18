@@ -37,7 +37,7 @@ import java.time.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RemoteSafeCloseDatabaseT {
+public class RemoteSafeCloseDatabaseIT {
 
   @Test
   public void testCreateDatabaseThenStartAndStopServer() {
