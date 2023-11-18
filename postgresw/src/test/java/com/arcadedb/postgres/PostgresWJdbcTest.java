@@ -31,7 +31,7 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class PostgresWTest extends BaseGraphServerTest {
+public class PostgresWJdbcTest extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();

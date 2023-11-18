@@ -34,6 +34,7 @@
 
     <properties>
         <postgres.version>42.6.0</postgres.version>
+        <tomcat-jdbc.version>10.0.27</tomcat-jdbc.version>
     </properties>
 
     <dependencies>
@@ -55,6 +56,12 @@
             <version>${project.parent.version}</version>
             <scope>test</scope>
             <type>test-jar</type>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tomcat</groupId>
+            <artifactId>tomcat-jdbc</artifactId>
+            <version>${tomcat-jdbc.version}</version>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
