@@ -673,8 +673,13 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (upperCaseText.equals("SELECT CURRENT_SCHEMA()")) {
         createResultSet(portal, "CURRENT_SCHEMA", database.getName());
 
+      } else if (upperCaseText.equals("SHOW TRANSACTION ISOLATION LEVEL")) {
+        final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
+        final String level = dbIsolationLevel.name().replace('_', ' ');
+        createResultSet(portal, "LEVEL", level);
+
       } else if (upperCaseText.startsWith("SHOW ")) {
-        portal.ignoreExecution = true;
+        createResultSet(portal, "CURRENT_SCHEMA", database.getName());
 
       } else if ("dbvis".equals(connectionProperties.get("application_name"))) {
         // SPECIAL CASES

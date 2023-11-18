@@ -29,6 +29,8 @@ import org.postgresql.util.PSQLException;
 import java.sql.*;
 import java.util.*;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 public class PostgresWTest extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
@@ -232,6 +234,22 @@ public class PostgresWTest extends BaseGraphServerTest {
 
           Assertions.assertEquals(2, numberOfPeople);
           st.execute("commit");
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1325#issuecomment-1816145926
+   *
+   * @throws Exception
+   */
+  @Test
+  public void showTxIsolationLevel() throws Exception {
+    try (final Connection conn = getConnection()) {
+      try (final Statement st = conn.createStatement()) {
+        try (final ResultSet rs = st.executeQuery("SHOW TRANSACTION ISOLATION LEVEL")) {
+          assertThat(rs.next()).isTrue();
         }
       }
     }
