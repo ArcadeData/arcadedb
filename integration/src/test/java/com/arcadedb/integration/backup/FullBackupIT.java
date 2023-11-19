@@ -62,7 +62,8 @@ public class FullBackupIT {
     new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o").split(" ")).restoreDatabase();
 
     try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY)) {
-      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(ComponentFile.MODE.READ_ONLY)) {
+      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(
+          ComponentFile.MODE.READ_ONLY)) {
         new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
     }
@@ -80,7 +81,8 @@ public class FullBackupIT {
 
       new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
 
-      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(ComponentFile.MODE.READ_ONLY)) {
+      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(
+          ComponentFile.MODE.READ_ONLY)) {
         new DatabaseComparator().compare(importedDatabase, restoredDatabase);
       }
     }
@@ -108,7 +110,8 @@ public class FullBackupIT {
     final Database importedDatabase = importDatabase();
     try {
 
-      final VertexType type = importedDatabase.getSchema().buildVertexType().withName("BackupTest").withTotalBuckets(CONCURRENT_THREADS).create();
+      final VertexType type = importedDatabase.getSchema().buildVertexType().withName("BackupTest")
+          .withTotalBuckets(CONCURRENT_THREADS).create();
 
       importedDatabase.transaction(() -> {
         type.createProperty("thread", Type.INTEGER);
@@ -132,7 +135,8 @@ public class FullBackupIT {
             for (int j = 0; j < 500; j++) {
               importedDatabase.begin();
               for (int k = 0; k < 500; k++) {
-                final MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
+                final MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId)
+                    .set("id", totalPerThread.getAndIncrement()).save();
                 Assertions.assertEquals(threadBucket.getFileId(), v.getIdentity().getBucketId());
 
                 if (k + 1 % 100 == 0) {
@@ -216,7 +220,8 @@ public class FullBackupIT {
   private Database importDatabase() throws Exception {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-    final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
+    final OrientDBImporter importer = new OrientDBImporter(
+        ("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
     final Database importedDatabase = importer.run();
 
     Assertions.assertFalse(importer.isError());

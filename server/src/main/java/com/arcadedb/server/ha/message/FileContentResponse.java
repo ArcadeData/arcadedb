@@ -20,8 +20,8 @@ package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
@@ -34,7 +34,6 @@ import com.arcadedb.server.ha.ReplicationException;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
-import java.util.*;
 import java.util.logging.*;
 
 public class FileContentResponse extends HAAbstractCommand {
@@ -120,9 +119,9 @@ public class FileContentResponse extends HAAbstractCommand {
                   .getFile(file.getFileId())).getPageSize());
         }
 
-        if (component instanceof Bucket)
+        if (component instanceof EmbeddedBucket)
           // RESET CACHED RECORD COUNT
-          ((Bucket) component).setCachedRecordCount(-1);
+          ((EmbeddedBucket) component).setCachedRecordCount(-1);
 
       } else
         LogManager.instance().log(this, Level.SEVERE, "Cannot write not paginated file %s from the leader", fileName);

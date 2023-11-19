@@ -92,8 +92,8 @@ public class DatabaseChecker {
 
         database.getSchema().dropIndex(idx.getName());
 
-        database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()])).withType(indexType).withUnique(unique)
-            .withPageSize(pageSize).withNullStrategy(nullStrategy).create();
+        database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
+            .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
       }
 
     if (verboseLevel > 0)
@@ -181,7 +181,8 @@ public class DatabaseChecker {
     result.put("totalAllocatedEdges", 0L);
     result.put("totalActiveEdges", 0L);
 
-    for (final Bucket bucket : database.getSchema().getBuckets()) {
+    for (final Bucket b : database.getSchema().getBuckets()) {
+      final EmbeddedBucket bucket = (EmbeddedBucket) b;
       if (buckets != null && !buckets.isEmpty())
         if (!buckets.contains(bucket.componentName))
           continue;

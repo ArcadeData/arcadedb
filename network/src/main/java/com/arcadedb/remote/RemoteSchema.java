@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
@@ -56,21 +57,17 @@ import java.util.stream.*;
  */
 public class RemoteSchema implements Schema {
   private final RemoteDatabase                  remoteDatabase;
-  private       Map<String, RemoteDocumentType> types = null;
+  private       Map<String, RemoteDocumentType> types   = null;
+  private       Map<String, RemoteBucket>       buckets = null;
 
   public RemoteSchema(final RemoteDatabase remoteDatabase) {
     this.remoteDatabase = remoteDatabase;
   }
 
   @Override
-  public DocumentType getOrCreateDocumentType(String typeName) {
-    remoteDatabase.command("sql", "create document type `" + typeName + "` if not exists");
-    return null;
-  }
-
-  @Override
   public boolean existsType(final String typeName) {
-    return remoteDatabase.command("sql", "select from schema:types where name = '" + typeName + "'").hasNext();
+    checkSchemaIsLoaded();
+    return types.containsKey(typeName);
   }
 
   @Override
@@ -91,6 +88,7 @@ public class RemoteSchema implements Schema {
   @Override
   public void dropType(final String typeName) {
     remoteDatabase.command("sql", "drop type `" + typeName + "`");
+    invalidateSchema();
   }
 
   @Override
@@ -99,7 +97,7 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
-  public Bucket createBucket(final String bucketName) {
+  public EmbeddedBucket createBucket(final String bucketName) {
     final ResultSet result = remoteDatabase.command("sql", "create bucket `" + bucketName + "`");
     return null;
   }
@@ -137,6 +135,14 @@ public class RemoteSchema implements Schema {
   @Override
   public DocumentType createDocumentType(final String typeName, final int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "` buckets " + buckets);
+    if (result.hasNext())
+      return reload().getType(typeName);
+    throw new SchemaException("Error on creating document type '" + typeName + "'");
+  }
+
+  @Override
+  public DocumentType getOrCreateDocumentType(final String typeName) {
+    final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "` if not exists");
     if (result.hasNext())
       return reload().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
@@ -452,8 +458,11 @@ public class RemoteSchema implements Schema {
 
   @Deprecated
   @Override
-  public Bucket getBucketByName(final String name) {
-    throw new UnsupportedOperationException();
+  public RemoteBucket getBucketByName(final String name) {
+    final RemoteBucket b = buckets.get(name);
+    if (b == null)
+      throw new SchemaException("Bucket '" + name + "' not found");
+    return b;
   }
 
   @Deprecated
@@ -464,13 +473,13 @@ public class RemoteSchema implements Schema {
 
   @Deprecated
   @Override
-  public Collection<Bucket> getBuckets() {
-    throw new UnsupportedOperationException();
+  public Collection<? extends Bucket> getBuckets() {
+    return buckets.values();
   }
 
   @Deprecated
   @Override
-  public Bucket getBucketById(final int id) {
+  public EmbeddedBucket getBucketById(final int id) {
     throw new UnsupportedOperationException();
   }
 
@@ -591,13 +600,25 @@ public class RemoteSchema implements Schema {
    */
   public RemoteSchema reload() {
     final ResultSet result = remoteDatabase.command("sql", "select from schema:types");
-    while (result.hasNext()) {
-      final Result record = result.next();
 
+    final List<Result> cached = new ArrayList<>();
+    while (result.hasNext())
+      cached.add(result.next());
+
+    if (types == null) {
+      types = new HashMap<>();
+      buckets = new HashMap<>();
+    } else
+      buckets.clear();
+
+    for (Result record : cached) {
+      final List<String> typeBucketNames = record.getProperty("buckets");
+      for (String typeBucketName : typeBucketNames)
+        buckets.computeIfAbsent(typeBucketName, (name) -> new RemoteBucket(name));
+    }
+
+    for (Result record : cached) {
       final String typeName = record.getProperty("name");
-
-      if (types == null)
-        types = new HashMap<>();
 
       RemoteDocumentType type = types.get(typeName);
       if (type == null) {

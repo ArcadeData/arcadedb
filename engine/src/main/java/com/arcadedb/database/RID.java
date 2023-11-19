@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
@@ -210,6 +211,6 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
   public PageId getPageId() {
     return new PageId(bucketId,
-        (int) (getPosition() / ((DatabaseInternal) database).getSchema().getBucketById(bucketId).getMaxRecordsInPage()));
+        (int) (getPosition() / ((EmbeddedBucket) database.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));
   }
 }

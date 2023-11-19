@@ -33,6 +33,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -83,7 +84,7 @@ public class EmbeddedSchema implements Schema {
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
   private final       List<Component>                        files                    = new ArrayList<>();
-  private final       Map<String, Bucket>                    bucketMap                = new HashMap<>();
+  private final       Map<String, EmbeddedBucket>            bucketMap                = new HashMap<>();
   private             Map<Integer, EmbeddedDocumentType>     bucketId2TypeMap         = new HashMap<>();
   private             Map<Integer, EmbeddedDocumentType>     bucketId2InvolvedTypeMap = new HashMap<>();
   protected final     Map<String, IndexInternal>             indexMap                 = new HashMap<>();
@@ -109,7 +110,7 @@ public class EmbeddedSchema implements Schema {
 
     componentFactory = new ComponentFactory(database);
     componentFactory.registerComponent(Dictionary.DICT_EXT, new Dictionary.PaginatedComponentFactoryHandler());
-    componentFactory.registerComponent(Bucket.BUCKET_EXT, new Bucket.PaginatedComponentFactoryHandler());
+    componentFactory.registerComponent(EmbeddedBucket.BUCKET_EXT, new EmbeddedBucket.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
         new LSMTreeIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT,
@@ -176,8 +177,8 @@ public class EmbeddedSchema implements Schema {
         if (pf != null) {
           final Object mainComponent = pf.getMainComponent();
 
-          if (mainComponent instanceof Bucket)
-            bucketMap.put(pf.getName(), (Bucket) mainComponent);
+          if (mainComponent instanceof EmbeddedBucket)
+            bucketMap.put(pf.getName(), (EmbeddedBucket) mainComponent);
           else if (mainComponent instanceof IndexInternal)
             indexMap.put(pf.getName(), (IndexInternal) mainComponent);
 
@@ -266,7 +267,7 @@ public class EmbeddedSchema implements Schema {
   }
 
   @Override
-  public Collection<Bucket> getBuckets() {
+  public Collection<? extends Bucket> getBuckets() {
     return Collections.unmodifiableCollection(bucketMap.values());
   }
 
@@ -283,22 +284,22 @@ public class EmbeddedSchema implements Schema {
   }
 
   @Override
-  public Bucket getBucketById(final int id) {
+  public EmbeddedBucket getBucketById(final int id) {
     if (id < 0 || id >= files.size())
       throw new SchemaException("Bucket with id '" + id + "' was not found");
 
     final Component p = files.get(id);
-    if (!(p instanceof Bucket))
+    if (!(p instanceof EmbeddedBucket))
       throw new SchemaException("Bucket with id '" + id + "' was not found");
-    return (Bucket) p;
+    return (EmbeddedBucket) p;
   }
 
   @Override
-  public Bucket createBucket(final String bucketName) {
+  public EmbeddedBucket createBucket(final String bucketName) {
     return createBucket(bucketName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
-  public Bucket createBucket(final String bucketName, final int pageSize) {
+  public EmbeddedBucket createBucket(final String bucketName, final int pageSize) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucketMap.containsKey(bucketName))
@@ -306,9 +307,9 @@ public class EmbeddedSchema implements Schema {
 
     return recordFileChanges(() -> {
       try {
-        final Bucket bucket = new Bucket(database, bucketName, databasePath + File.separator + bucketName,
-            ComponentFile.MODE.READ_WRITE, pageSize, Bucket.CURRENT_VERSION);
-        registerFile(bucket);
+        final EmbeddedBucket bucket = new EmbeddedBucket(database, bucketName, databasePath + File.separator + bucketName,
+            ComponentFile.MODE.READ_WRITE, pageSize, EmbeddedBucket.CURRENT_VERSION);
+        registerFile((Component) bucket);
         bucketMap.put(bucketName, bucket);
 
         return bucket;
@@ -603,7 +604,7 @@ public class EmbeddedSchema implements Schema {
       }
 
       for (Map.Entry<String, Object> entry : json.toMap().entrySet()) {
-        final Bucket bucket = bucketMap.get(entry.getKey());
+        final EmbeddedBucket bucket = bucketMap.get(entry.getKey());
         if (bucket != null)
           bucket.setCachedRecordCount(((Number) entry.getValue()).longValue());
       }
@@ -621,7 +622,7 @@ public class EmbeddedSchema implements Schema {
 
     try {
       final JSONObject json = new JSONObject();
-      for (Map.Entry<String, Bucket> b : bucketMap.entrySet()) {
+      for (Map.Entry<String, EmbeddedBucket> b : bucketMap.entrySet()) {
         final long cachedCount = b.getValue().getCachedRecordCount();
         if (cachedCount > -1)
           json.put(b.getKey(), cachedCount);

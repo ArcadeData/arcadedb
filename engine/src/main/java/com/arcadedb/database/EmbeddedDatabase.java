@@ -28,6 +28,7 @@ import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
@@ -91,7 +92,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(Dictionary.DICT_EXT,
-      Bucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
+      EmbeddedBucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, HnswVectorIndex.FILE_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
@@ -815,13 +816,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
     try {
-      final Bucket bucket;
+      final EmbeddedBucket bucket;
 
       if (bucketName == null && record instanceof Document) {
         final Document doc = (Document) record;
-        bucket = doc.getType().getBucketIdByRecord(doc, DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
+        bucket = (EmbeddedBucket) doc.getType()
+            .getBucketIdByRecord(doc, DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
       } else
-        bucket = schema.getBucketByName(bucketName);
+        bucket = (EmbeddedBucket) schema.getBucketByName(bucketName);
 
       ((RecordInternal) record).setIdentity(bucket.createRecord(record, discardRecordAfter));
 
@@ -976,7 +978,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
     try {
-      final Bucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
+      final EmbeddedBucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
 
       if (record instanceof Document)
         indexer.deleteDocument((Document) record);
@@ -1733,7 +1735,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       // RESET THE COUNT OF RECORD IN CASE THE DATABASE WAS NOT CLOSED PROPERLY
       for (Bucket b : schema.getBuckets())
-        b.setCachedRecordCount(-1);
+        ((EmbeddedBucket) b).setCachedRecordCount(-1);
 
       executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
 

@@ -20,8 +20,8 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 
 import java.util.*;
 
@@ -44,8 +44,10 @@ public class EmbeddedVertexType extends EmbeddedDocumentType implements VertexTy
     return result;
   }
 
+  @Override
   protected void addBucketInternal(final Bucket bucket) {
     super.addBucketInternal(bucket);
-    additionalBuckets.addAll(((DatabaseInternal) schema.getDatabase()).getGraphEngine().createVertexAdditionalBuckets(bucket));
+    additionalBuckets.addAll(
+        ((DatabaseInternal) schema.getDatabase()).getGraphEngine().createVertexAdditionalBuckets((EmbeddedBucket) bucket));
   }
 }

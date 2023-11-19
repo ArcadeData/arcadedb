@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -63,7 +64,7 @@ public class GraphEngine {
     }
   }
 
-  public List<Bucket> createVertexAdditionalBuckets(final Bucket b) {
+  public List<Bucket> createVertexAdditionalBuckets(final EmbeddedBucket b) {
     final Bucket[] outInBuckets = new Bucket[2];
     if (database.getSchema().existsBucket(b.getName() + OUT_EDGES_SUFFIX))
       outInBuckets[0] = database.getSchema().getBucketByName(b.getName() + OUT_EDGES_SUFFIX);
@@ -86,7 +87,8 @@ public class GraphEngine {
     }
   }
 
-  public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex, final boolean bidirectional) {
+  public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
+      final boolean bidirectional) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -101,16 +103,16 @@ public class GraphEngine {
 
     final RID edgeRID = new RID(database, database.getSchema().getType(edgeTypeName).getFirstBucketId(), -1l);
 
-    final ImmutableLightEdge edge = new ImmutableLightEdge(database, database.getSchema().getType(edgeTypeName), edgeRID, fromVertexRID,
-        toVertex.getIdentity());
+    final ImmutableLightEdge edge = new ImmutableLightEdge(database, database.getSchema().getType(edgeTypeName), edgeRID,
+        fromVertexRID, toVertex.getIdentity());
 
     connectEdge(fromVertex, toVertex, edge, bidirectional);
 
     return edge;
   }
 
-  public MutableEdge newEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex, final boolean bidirectional,
-      final Object... edgeProperties) {
+  public MutableEdge newEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex,
+      final boolean bidirectional, final Object... edgeProperties) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -163,7 +165,8 @@ public class GraphEngine {
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
   }
 
-  public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections, final boolean bidirectional) {
+  public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,
+      final boolean bidirectional) {
 
     if (connections == null || connections.isEmpty())
       return Collections.emptyList();
@@ -228,7 +231,9 @@ public class GraphEngine {
       try {
         inChunk = (EdgeSegment) database.lookupByRID(inEdgesHeadChunk, true);
       } catch (final RecordNotFoundException e) {
-        LogManager.instance().log(this, Level.WARNING, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", inEdgesHeadChunk, toVertex);
+        LogManager.instance()
+            .log(this, Level.WARNING, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", inEdgesHeadChunk,
+                toVertex);
         inEdgesHeadChunk = null;
       }
 
@@ -253,7 +258,8 @@ public class GraphEngine {
         outChunk = (EdgeSegment) database.lookupByRID(outEdgesHeadChunk, true);
       } catch (final RecordNotFoundException e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk, fromVertex.getIdentity());
+            .log(this, Level.WARNING, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk,
+                fromVertex.getIdentity());
         outEdgesHeadChunk = null;
       }
 
@@ -315,7 +321,8 @@ public class GraphEngine {
           outEdges.removeEdge(edge);
       }
     } catch (final SchemaException | RecordNotFoundException e) {
-      LogManager.instance().log(this, Level.FINE, "Error on loading outgoing vertex %s from edge %s", e, edge.getOut(), edge.getIdentity());
+      LogManager.instance()
+          .log(this, Level.FINE, "Error on loading outgoing vertex %s from edge %s", e, edge.getOut(), edge.getIdentity());
     }
 
     try {
@@ -326,7 +333,8 @@ public class GraphEngine {
           inEdges.removeEdge(edge);
       }
     } catch (final SchemaException | RecordNotFoundException e) {
-      LogManager.instance().log(this, Level.FINE, "Error on loading incoming vertex %s from edge %s", e, edge.getIn(), edge.getIdentity());
+      LogManager.instance()
+          .log(this, Level.FINE, "Error on loading incoming vertex %s from edge %s", e, edge.getIn(), edge.getIdentity());
     }
 
     final RID edgeRID = edge.getIdentity();
@@ -364,7 +372,8 @@ public class GraphEngine {
         } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance()
-              .log(this, Level.FINE, "Error on deleting outgoing vertex %s connected from vertex %s (record not found)", inV, vertex.getIdentity());
+              .log(this, Level.FINE, "Error on deleting outgoing vertex %s connected from vertex %s (record not found)", inV,
+                  vertex.getIdentity());
         }
       }
 
@@ -395,7 +404,8 @@ public class GraphEngine {
           }
         } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
         }
       }
 
@@ -553,7 +563,8 @@ public class GraphEngine {
     return false;
   }
 
-  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex, final Vertex.DIRECTION direction, final String edgeType) {
+  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex, final Vertex.DIRECTION direction,
+      final String edgeType) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -563,7 +574,8 @@ public class GraphEngine {
     if (edgeType == null)
       throw new IllegalArgumentException("Edge type is null");
 
-    final int[] bucketFilter = vertex.getDatabase().getSchema().getType(edgeType).getBuckets(true).stream().mapToInt(x -> x.getFileId()).toArray();
+    final int[] bucketFilter = vertex.getDatabase().getSchema().getType(edgeType).getBuckets(true).stream()
+        .mapToInt(x -> x.getFileId()).toArray();
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
@@ -612,7 +624,8 @@ public class GraphEngine {
         try {
           return new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, (EdgeSegment) vertex.getDatabase().lookupByRID(rid, true));
         } catch (final RecordNotFoundException e) {
-          LogManager.instance().log(this, Level.WARNING, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
+          LogManager.instance()
+              .log(this, Level.WARNING, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
         }
       }
     } else if (direction == Vertex.DIRECTION.IN) {
@@ -621,7 +634,8 @@ public class GraphEngine {
         try {
           return new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, (EdgeSegment) vertex.getDatabase().lookupByRID(rid, true));
         } catch (final RecordNotFoundException e) {
-          LogManager.instance().log(this, Level.WARNING, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
+          LogManager.instance()
+              .log(this, Level.WARNING, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
         }
       }
     }
@@ -680,7 +694,8 @@ public class GraphEngine {
                     try {
                       edge.getInVertex().asVertex(true);
                     } catch (final RecordNotFoundException e) {
-                      warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+                      warnings.add(
+                          "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
                       corruptedRecords.add(edge.getIn());
@@ -688,7 +703,8 @@ public class GraphEngine {
                     } catch (final Exception e) {
                       // UNKNOWN ERROR ON LOADING
                       warnings.add(
-                          "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")");
+                          "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
+                              + e.getMessage() + ")");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
                       corruptedRecords.add(edge.getIn());
@@ -696,12 +712,14 @@ public class GraphEngine {
                   }
 
                   if (!edge.getOut().equals(vertex.getIdentity())) {
-                    warnings.add("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertex.getIdentity());
+                    warnings.add("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected "
+                        + vertex.getIdentity());
                     corruptedRecords.add(edgeRID);
                     removeEntry = true;
                     invalidLinks.incrementAndGet();
                   } else if (!edge.getIn().equals(vertexRID)) {
-                    warnings.add("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID);
+                    warnings.add(
+                        "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID);
                     corruptedRecords.add(edgeRID);
                     removeEntry = true;
                     invalidLinks.incrementAndGet();
@@ -761,7 +779,8 @@ public class GraphEngine {
                     try {
                       edge.getOutVertex().asVertex(true);
                     } catch (final RecordNotFoundException e) {
-                      warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+                      warnings.add(
+                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
                       corruptedRecords.add(edge.getOut());
@@ -769,7 +788,8 @@ public class GraphEngine {
                     } catch (final Exception e) {
                       // UNKNOWN ERROR ON LOADING
                       warnings.add(
-                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage() + ")");
+                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
+                              + e.getMessage() + ")");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
                       corruptedRecords.add(edge.getOut());
@@ -777,12 +797,14 @@ public class GraphEngine {
                   }
 
                   if (!edge.getIn().equals(vertex.getIdentity())) {
-                    warnings.add("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertex.getIdentity());
+                    warnings.add("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected "
+                        + vertex.getIdentity());
                     corruptedRecords.add(edgeRID);
                     removeEntry = true;
                     invalidLinks.incrementAndGet();
                   } else if (!edge.getOut().equals(vertexRID)) {
-                    warnings.add("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID);
+                    warnings.add(
+                        "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID);
                     corruptedRecords.add(edgeRID);
                     removeEntry = true;
                     invalidLinks.incrementAndGet();
@@ -894,7 +916,8 @@ public class GraphEngine {
               invalidLinks.incrementAndGet();
             } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
-              warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")");
+              warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
+                  + e.getMessage() + ")");
               corruptedRecords.add(edgeRID);
               corruptedRecords.add(edge.getIn());
             }
@@ -913,7 +936,9 @@ public class GraphEngine {
               invalidLinks.incrementAndGet();
             } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
-              warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage() + ")");
+              warnings.add(
+                  "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
+                      + e.getMessage() + ")");
               corruptedRecords.add(edgeRID);
               corruptedRecords.add(edge.getOut());
             }

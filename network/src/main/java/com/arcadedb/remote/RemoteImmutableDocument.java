@@ -52,7 +52,8 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     map.remove("@cat");
   }
 
-  protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes, final String typeName, final RID rid) {
+  protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes,
+      final String typeName, final RID rid) {
     super(null, null, rid, null);
     this.remoteDatabase = remoteDatabase;
     this.map = new HashMap<>(attributes);

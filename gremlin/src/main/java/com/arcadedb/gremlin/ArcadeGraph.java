@@ -38,7 +38,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.apache.commons.configuration2.BaseConfiguration;
 import org.apache.commons.configuration2.Configuration;

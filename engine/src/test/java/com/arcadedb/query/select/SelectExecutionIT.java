@@ -18,16 +18,13 @@
  */
 package com.arcadedb.query.select;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.Component;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
-import com.oracle.truffle.js.builtins.GlobalBuiltins;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -73,7 +70,7 @@ public class SelectExecutionIT extends TestHelper {
   public void okFromBuckets() {
     {
       final SelectCompiled select = database.select().fromBuckets(
-              database.getSchema().getType("Vertex").getBuckets(true).stream().map(Component::getName).collect(Collectors.toList())
+              database.getSchema().getType("Vertex").getBuckets(true).stream().map(Bucket::getName).collect(Collectors.toList())
                   .toArray(new String[database.getSchema().getType("Vertex").getBuckets(true).size()]))//
           .where().property("id").eq().parameter("value")//
           .and().property("name").eq().value("Elon").compile();

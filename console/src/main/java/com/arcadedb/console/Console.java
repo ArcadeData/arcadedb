@@ -771,7 +771,7 @@ public class Console {
       }
 
       final List<TableFormatter.TableMapRow> rows = new ArrayList<>();
-      for (final DocumentType type : ((DatabaseInternal) databaseProxy).getSchema().getTypes()) {
+      for (final DocumentType type : databaseProxy.getSchema().getTypes()) {
         final TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
         row.setField("NAME", type.getName());
 

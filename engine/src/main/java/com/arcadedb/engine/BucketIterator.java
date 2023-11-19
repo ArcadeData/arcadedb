@@ -34,9 +34,9 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 public class BucketIterator implements Iterator<Record> {
   private final static int              PREFETCH_SIZE = 1_024;
-  private final        DatabaseInternal database;
-  private final        Bucket           bucket;
-  final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
+  private final DatabaseInternal database;
+  private final EmbeddedBucket   bucket;
+  final         Record[]         nextBatch     = new Record[PREFETCH_SIZE];
   private              int              prefetchIndex = 0;
   final                long             limit;
   int      nextPageNumber      = 0;
@@ -47,7 +47,7 @@ public class BucketIterator implements Iterator<Record> {
   long     browsed             = 0;
   private int writeIndex = 0;
 
-  BucketIterator(final Bucket bucket, final Database db) {
+  BucketIterator(final EmbeddedBucket bucket, final Database db) {
     ((DatabaseInternal) db).checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     this.database = (DatabaseInternal) db;
@@ -68,7 +68,7 @@ public class BucketIterator implements Iterator<Record> {
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;
     currentPage = database.getTransaction().getPage(new PageId(position.getBucketId(), nextPageNumber), bucket.pageSize);
-    recordCountInCurrentPage = currentPage.readShort(Bucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+    recordCountInCurrentPage = currentPage.readShort(EmbeddedBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
 
   @Override
@@ -105,19 +105,19 @@ public class BucketIterator implements Iterator<Record> {
             return null;
           }
           currentPage = database.getTransaction().getPage(new PageId(bucket.file.getFileId(), nextPageNumber), bucket.pageSize);
-          recordCountInCurrentPage = currentPage.readShort(Bucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+          recordCountInCurrentPage = currentPage.readShort(EmbeddedBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
         }
 
         if (recordCountInCurrentPage > 0 && currentRecordInPage < recordCountInCurrentPage) {
           try {
             final int recordPositionInPage = (int) currentPage.readUnsignedInt(
-                Bucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
+                EmbeddedBucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
             if (recordPositionInPage == 0)
               // CLEANED CORRUPTED RECORD
               continue;
 
             final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
-            if (recordSize[0] > 0 || recordSize[0] == Bucket.FIRST_CHUNK) {
+            if (recordSize[0] > 0 || recordSize[0] == EmbeddedBucket.FIRST_CHUNK) {
               // NOT DELETED
               final RID rid = new RID(database, bucket.fileId,
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
@@ -127,7 +127,7 @@ public class BucketIterator implements Iterator<Record> {
 
               nextBatch[writeIndex++] = rid.getRecord(false);
 
-            } else if (recordSize[0] == Bucket.RECORD_PLACEHOLDER_POINTER) {
+            } else if (recordSize[0] == EmbeddedBucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
               final RID rid = new RID(database, bucket.fileId,
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);

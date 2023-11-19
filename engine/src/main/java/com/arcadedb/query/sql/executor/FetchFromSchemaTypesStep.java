@@ -30,7 +30,7 @@ import java.util.*;
 import java.util.stream.*;
 
 /**
- * Returns an OResult containing metadata regarding the schema types.
+ * Returns an Result containing metadata regarding the schema types.
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
@@ -53,7 +53,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
       try {
         final Schema schema = context.getDatabase().getSchema();
 
-        final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase).collect(Collectors.toList());
+        final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase)
+            .collect(Collectors.toList());
         for (final String typeName : orderedTypes) {
           final DocumentType type = schema.getType(typeName);
 
@@ -79,8 +80,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
 
-          final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase).map(name -> type.getProperty(name))
-              .map(property -> {
+          final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase)
+              .map(name -> type.getProperty(name)).map(property -> {
                 final ResultInternal propRes = new ResultInternal();
                 propRes.setProperty("id", property.getId());
                 propRes.setProperty("name", property.getName());
@@ -112,16 +113,17 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
               }).collect(Collectors.toList());
           r.setProperty("properties", propertiesTypes);
 
-          final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName)).map(typeIndex -> {
-            final ResultInternal propRes = new ResultInternal();
-            propRes.setProperty("name", typeIndex.getName());
-            propRes.setProperty("typeName", typeIndex.getTypeName());
-            propRes.setProperty("type", typeIndex.getType());
-            propRes.setProperty("unique", typeIndex.isUnique());
-            propRes.setProperty("properties", typeIndex.getPropertyNames());
-            propRes.setProperty("automatic", typeIndex.isAutomatic());
-            return propRes;
-          }).collect(Collectors.toList());
+          final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName))
+              .map(typeIndex -> {
+                final ResultInternal propRes = new ResultInternal();
+                propRes.setProperty("name", typeIndex.getName());
+                propRes.setProperty("typeName", typeIndex.getTypeName());
+                propRes.setProperty("type", typeIndex.getType());
+                propRes.setProperty("unique", typeIndex.isUnique());
+                propRes.setProperty("properties", typeIndex.getPropertyNames());
+                propRes.setProperty("automatic", typeIndex.isAutomatic());
+                return propRes;
+              }).collect(Collectors.toList());
           r.setProperty("indexes", indexes);
 
           final Map<String, Object> customs = new HashMap<>();

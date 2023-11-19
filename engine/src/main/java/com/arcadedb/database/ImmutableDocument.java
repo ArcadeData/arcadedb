@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.schema.DocumentType;
@@ -70,8 +71,8 @@ public class ImmutableDocument extends BaseDocument {
         // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
         try {
           // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-          database.getTransaction()
-              .getPageToModify(rid.getPageId(), database.getSchema().getBucketById(rid.getBucketId()).getPageSize(), false);
+          database.getTransaction().getPageToModify(rid.getPageId(),
+              ((EmbeddedBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
           reload();
         } catch (final IOException e) {
           throw new DatabaseOperationException("Error on reloading document " + rid, e);

@@ -40,7 +40,7 @@ public interface Schema {
 
   Component getFileByIdIfExists(int id);
 
-  Collection<Bucket> getBuckets();
+  Collection<? extends Bucket> getBuckets();
 
   Bucket getBucketById(int id);
 

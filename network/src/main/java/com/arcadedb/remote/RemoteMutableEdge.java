@@ -23,7 +23,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
@@ -130,5 +132,15 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   protected void checkForUpgradeLightWeight() {
     // NO ACTIONS
+  }
+
+  @Override
+  public Edge asEdge() {
+    return this;
+  }
+
+  @Override
+  public Edge asEdge(final boolean loadContent) {
+    return this;
   }
 }

@@ -84,4 +84,14 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
     return null;
   }
+
+  @Override
+  public Edge asEdge() {
+    return this;
+  }
+
+  @Override
+  public Edge asEdge(final boolean loadContent) {
+    return this;
+  }
 }

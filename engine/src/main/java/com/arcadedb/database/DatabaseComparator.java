@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.ArcadeDBException;
@@ -49,8 +50,8 @@ public class DatabaseComparator {
   }
 
   public void compareBuckets(final DatabaseInternal db1, final DatabaseInternal db2) {
-    final Collection<Bucket> buckets1 = db1.getSchema().getBuckets();
-    final Collection<Bucket> buckets2 = db2.getSchema().getBuckets();
+    final Collection<? extends Bucket> buckets1 = db1.getSchema().getBuckets();
+    final Collection<? extends Bucket> buckets2 = db2.getSchema().getBuckets();
     if (buckets1.size() != buckets2.size())
       throw new DatabaseAreNotIdentical("Buckets: DB1 %d <> DB2 %d", buckets1.size(), buckets2.size());
 
@@ -70,8 +71,9 @@ public class DatabaseComparator {
       if (!types2Map.containsKey(entry.getName()))
         throw new DatabaseAreNotIdentical("Bucket '%s' is not present in DB1", entry.getName());
 
-    for (final Bucket bucket1 : buckets1) {
-      final Bucket bucket2 = types2Map.get(bucket1.getName());
+    for (final Bucket bucket1i : buckets1) {
+      final EmbeddedBucket bucket1 = (EmbeddedBucket) bucket1i;
+      final EmbeddedBucket bucket2 = (EmbeddedBucket) types2Map.get(bucket1.getName());
 
       if (bucket1.getPageSize() != bucket2.getPageSize())
         throw new DatabaseAreNotIdentical("Bucket '%s' has different page size in two databases. DB1 %d <> DB2 %d",

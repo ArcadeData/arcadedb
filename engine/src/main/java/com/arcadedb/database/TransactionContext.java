@@ -20,8 +20,8 @@ package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.BasePage;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -157,7 +157,7 @@ public class TransactionContext implements Transaction {
     final int bucketId = rid.getBucketId();
     final long pos = rid.getPosition();
 
-    final Bucket bucket = database.getSchema().getBucketById(bucketId);
+    final EmbeddedBucket bucket = (EmbeddedBucket) database.getSchema().getBucketById(bucketId);
 
     final long pageNum = pos / bucket.getMaxRecordsInPage();
 
@@ -244,7 +244,7 @@ public class TransactionContext implements Transaction {
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();
     if (updatedRecords.put(record.getIdentity(), record) == null)
-      database.getSchema().getBucketById(rid.getBucketId()).fetchPageInTransaction(rid);
+      ((EmbeddedBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
   }
@@ -646,7 +646,7 @@ public class TransactionContext implements Transaction {
 
       // UPDATE RECORD COUNT
       for (Map.Entry<Integer, AtomicInteger> entry : bucketRecordDelta.entrySet()) {
-        final Bucket bucket = database.getSchema().getBucketById(entry.getKey());
+        final EmbeddedBucket bucket = (EmbeddedBucket) database.getSchema().getBucketById(entry.getKey());
         if (bucket.getCachedRecordCount() > -1)
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
           bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue().get());

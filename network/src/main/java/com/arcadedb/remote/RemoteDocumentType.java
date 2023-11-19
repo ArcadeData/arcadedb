@@ -29,7 +29,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -214,15 +213,14 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
     remoteDatabase.getSchema().createTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
     return null;
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
-      final String... propertyNames) {
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
     remoteDatabase.getSchema().getOrCreateTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
     return null;
@@ -299,6 +297,40 @@ public class RemoteDocumentType implements DocumentType {
     return remoteDatabase.getSchema().getType(type).isSubTypeOf(name);
   }
 
+  @Override
+  public List<Bucket> getBuckets(final boolean polymorphic) {
+    if (!polymorphic)
+      return buckets.stream().map((bucketName) -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList());
+
+    final List<Bucket> result = new ArrayList<>();
+    result.addAll(buckets.stream().map((bucketName) -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList()));
+    for (String parent : parentTypes)
+      result.addAll(getSchema().getType(parent).getBuckets(true));
+    return result;
+  }
+
+  @Override
+  public List<TypeIndex> getIndexesByProperties(Collection<String> properties) {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public TypeIndex getPolymorphicIndexByProperties(String... properties) {
+    // NEVER USES THE INDEX
+    return null;
+  }
+
+  @Override
+  public TypeIndex getPolymorphicIndexByProperties(List<String> properties) {
+    // NEVER USES THE INDEX
+    return null;
+  }
+
+  @Override
+  public boolean hasBucket(final String bucketName) {
+    return buckets.contains(bucketName);
+  }
+
   // UNSUPPORTED METHODS. OPEN A NEW ISSUE TO REQUEST THE SUPPORT OF ADDITIONAL METHODS IN REMOTE
   @Override
   public boolean instanceOf(final String type) {
@@ -316,37 +348,37 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
-      final String[] propertyNames, final int pageSize) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
-      final String[] propertyNames, final int pageSize, Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize) {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize, Index.BuildIndexCallback callback) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
+      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
@@ -378,11 +410,6 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public List<Bucket> getInvolvedBuckets() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public List<Bucket> getBuckets(boolean polymorphic) {
     throw new UnsupportedOperationException();
   }
 
@@ -438,26 +465,6 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public List<TypeIndex> getIndexesByProperties(String property1, String... propertiesN) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public List<TypeIndex> getIndexesByProperties(Collection<String> properties) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public TypeIndex getPolymorphicIndexByProperties(String... properties) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public TypeIndex getPolymorphicIndexByProperties(List<String> properties) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public boolean hasBucket(String bucketName) {
     throw new UnsupportedOperationException();
   }
 

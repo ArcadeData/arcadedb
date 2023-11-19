@@ -120,7 +120,7 @@ public class RemoteVertex {
     if (!bidirectional)
       throw new UnsupportedOperationException("Creating unidirectional edges is not supported from remote database");
 
-    String query = "create edge " + edgeType + " from " + vertex.getIdentity() + " to " + toVertex.getIdentity();
+    String query = "create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity();
     if (properties.length > 0) {
       query += " set ";
       for (int i = 0; i < properties.length; i += 2) {

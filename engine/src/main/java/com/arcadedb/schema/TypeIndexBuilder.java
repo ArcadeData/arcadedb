@@ -22,6 +22,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
@@ -79,7 +80,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
     if (index != null)
       throw new IllegalArgumentException(
-          "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames) + "' for type '" + typeName + "'");
+          "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames)
+              + "' for type '" + typeName + "'");
 
     // CHECK ALL THE PROPERTIES EXIST
     final Type[] keyTypes = new Type[propertyNames.length];
@@ -91,7 +93,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       } else {
         final Property property = type.getPolymorphicPropertyIfExists(propertyName);
         if (property == null)
-          throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+          throw new SchemaException(
+              "Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
         keyTypes[i++] = property.getType();
       }
@@ -106,9 +109,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           final int finalIdx = idx;
           database.transaction(() -> {
 
-            final Bucket bucket = buckets.get(finalIdx);
-            indexes[finalIdx] = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames,
-                null, batchSize);
+            final EmbeddedBucket bucket = (EmbeddedBucket) buckets.get(finalIdx);
+            indexes[finalIdx] = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize,
+                nullStrategy, callback, propertyNames, null, batchSize);
 
           }, false, maxAttempts, null, (error) -> {
             for (int j = 0; j < indexes.length; j++) {
@@ -130,7 +133,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw e;
     } catch (final Throwable e) {
       schema.dropIndex(typeName + Arrays.toString(propertyNames));
-      throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames), e);
+      throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames),
+          e);
     }
   }
 

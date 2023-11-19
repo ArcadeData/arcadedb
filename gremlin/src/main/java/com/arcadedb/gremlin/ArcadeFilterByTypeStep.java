@@ -83,7 +83,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
 
     final DocumentType type = graph.getDatabase().getSchema().getType(this.typeName);
 
-    final Database database = (Database) graph.getDatabase();
+    final BasicDatabase database = graph.getDatabase();
 
     if (Vertex.class.isAssignableFrom(this.returnClass)) {
       if (!(type instanceof VertexType))

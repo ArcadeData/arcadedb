@@ -31,7 +31,8 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
   public final NewRecordCallback onOkCallback;
   public final ErrorCallback     onErrorCallback;
 
-  public DatabaseAsyncCreateRecord(final Record record, final Bucket bucket, final NewRecordCallback callback, final ErrorCallback onErrorCallback) {
+  public DatabaseAsyncCreateRecord(final Record record, final Bucket bucket, final NewRecordCallback callback,
+      final ErrorCallback onErrorCallback) {
     this.record = record;
     this.bucket = bucket;
     this.onOkCallback = callback;
@@ -47,7 +48,8 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
         onOkCallback.call(record);
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on executing async create record operation (threadId=%d)", e, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.SEVERE, "Error on executing async create record operation (threadId=%d)", e,
+          Thread.currentThread().getId());
 
       async.onError(e);
 

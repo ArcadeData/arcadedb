@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.RangeIndex;
@@ -1123,15 +1124,16 @@ public class SelectExecutionPlanner {
 
   private void handleSchemaAsTarget(final SelectExecutionPlan plan, final SchemaIdentifier metadata, final CommandContext context,
       final boolean profilingEnabled) {
-    if (metadata.getName().equalsIgnoreCase("types")) {
+    if (metadata.getName().equalsIgnoreCase("types"))
       plan.chain(new FetchFromSchemaTypesStep(context, profilingEnabled));
-    } else if (metadata.getName().equalsIgnoreCase("indexes")) {
+    else if (metadata.getName().equalsIgnoreCase("indexes"))
       plan.chain(new FetchFromSchemaIndexesStep(context, profilingEnabled));
-    } else if (metadata.getName().equalsIgnoreCase("database")) {
+    else if (metadata.getName().equalsIgnoreCase("database"))
       plan.chain(new FetchFromSchemaDatabaseStep(context, profilingEnabled));
-    } else {
+    else if (metadata.getName().equalsIgnoreCase("buckets"))
+      plan.chain(new FetchFromSchemaBucketsStep(context, profilingEnabled));
+    else
       throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
-    }
   }
 
   private void handleRidsAsTarget(final SelectExecutionPlan plan, final List<Rid> rids, final CommandContext context,
