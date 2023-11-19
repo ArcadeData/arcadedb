@@ -70,11 +70,8 @@ cd /d %ARCADEDB_HOME%
 rem Get remaining unshifted command line arguments and save them in the
 set CMD_LINE_ARGS=
 
-:setArgs
-if ""%1""=="""" goto doneSetArgs
-set CMD_LINE_ARGS=%CMD_LINE_ARGS% %1
-shift
-goto setArgs
+:rem Get full command line arguments for the batch file
+set CMD_LINE_ARGS=%*
 
 :doneSetArgs
 
@@ -90,13 +87,14 @@ rem -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=1044
 rem AND ATTACH TO THE CURRENT HOST, PORT 1044
 
 "%JAVACMD%" ^
-  -server %JAVA_OPTS% ^
-  %ARCADEDB_OPTS_MEMORY% ^
-  %JAVA_OPTS_SCRIPT% ^
-  %ARCADEDB_JMX% ^
-  %ARCADEDB_SETTINGS% ^
-  -cp "%ARCADEDB_HOME%\lib\*" ^
-  %CMD_LINE_ARGS% com.arcadedb.server.ArcadeDBServer
+ -server %JAVA_OPTS% ^
+ %ARCADEDB_OPTS_MEMORY% ^
+ %JAVA_OPTS_SCRIPT% ^
+ %ARCADEDB_JMX% ^
+ %ARCADEDB_SETTINGS% ^
+ %CMD_LINE_ARGS% ^
+ -cp "%ARCADEDB_HOME%\lib\*" ^
+ com.arcadedb.server.ArcadeDBServer
 
 if ERRORLEVEL 1 goto error
 goto end

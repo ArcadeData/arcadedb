@@ -14,6 +14,7 @@
 @REM limitations under the License.
 @REM
 
+@echo off
 @setlocal
 
 set ERROR_CODE=0
@@ -55,27 +56,20 @@ echo ARCADEDB home directory      = %ARCADEDB_HOME%
 rem Always change directory to HOME directory
 cd /d %ARCADEDB_HOME%
 
-rem Get remaining unshifted command line arguments and save them in the
-set CMD_LINE_ARGS=
+rem Get full command line arguments for the batch file
+set CMD_LINE_ARGS=%*
 
-:setArgs
-if ""%1""=="""" goto doneSetArgs
-set CMD_LINE_ARGS=%CMD_LINE_ARGS% %1
-shift
-goto setArgs
-
-:doneSetArgs
 set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8 -Dpolyglot.engine.WarnInterpreterOnly=false
 
 "%JAVACMD%" ^
-  -client ^
-  %JAVA_OPTS% ^
-  %JAVA_OPTS_SCRIPT% ^
-  %ARCADEDB_OPTS_MEMORY% ^
-  %ARCADEDB_JMX% ^
-  %ARCADEDB_SETTINGS% ^
-  -cp "%ARCADEDB_HOME%\lib\*" ^
-  %CMD_LINE_ARGS% ^
-  com.arcadedb.console.Console
+ -client ^
+ %JAVA_OPTS% ^
+ %JAVA_OPTS_SCRIPT% ^
+ %ARCADEDB_OPTS_MEMORY% ^
+ %ARCADEDB_JMX% ^
+ %ARCADEDB_SETTINGS% ^
+ %CMD_LINE_ARGS% ^
+ -cp "%ARCADEDB_HOME%\lib\*" ^
+ com.arcadedb.console.Console
 
 :end
