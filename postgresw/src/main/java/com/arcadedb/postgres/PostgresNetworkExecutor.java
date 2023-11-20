@@ -178,7 +178,7 @@ public class PostgresNetworkExecutor extends Thread {
                 throw new PostgresProtocolException("Message '" + type + "' not managed");
               }
 
-            }, 'D', 'P', 'B', 'E', 'Q', 'S', 'C', 'X');
+            }, 'P', 'B', 'E', 'Q', 'S', 'D', 'C', 'H', 'X');
 
           } catch (final Exception e) {
             setErrorInTx();
@@ -814,7 +814,7 @@ public class PostgresNetworkExecutor extends Thread {
           final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
           portal.sqlStatement = sqlEngine.parse(queryText, (DatabaseInternal) database);
 
-          if (portal.query.equalsIgnoreCase("BEGIN")) {
+          if (portal.query.equalsIgnoreCase("BEGIN") || portal.query.equalsIgnoreCase("BEGIN TRANSACTION")) {
             explicitTransactionStarted = true;
             setEmptyResultSet(portal);
           } else if (portal.query.equalsIgnoreCase("COMMIT")) {
@@ -1116,7 +1116,7 @@ public class PostgresNetworkExecutor extends Thread {
       tag = "UPDATE " + resultSetCount;
     else if (upperCaseText.startsWith("DELETE"))
       tag = "DELETE " + resultSetCount;
-    else if (upperCaseText.equals("BEGIN"))
+    else if (upperCaseText.equals("BEGIN") || upperCaseText.equals("BEGIN TRANSACTION"))
       tag = "BEGIN";
 
     final String finalTag = tag;
