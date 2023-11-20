@@ -46,13 +46,13 @@ import java.util.*;
 import java.util.logging.*;
 
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY;
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE;
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 
 public class ServerSecurity implements ServerPlugin, com.arcadedb.security.SecurityManager {
 
-  public static final  int                             LATEST_VERSION             = 1;
-  private static final int                             CHECK_USER_RELOAD_EVERY_MS = 5_000;
+  public static final  int                             LATEST_VERSION       = 1;
   private final        ArcadeDBServer                  server;
   private final        SecurityUserFileRepository      usersRepository;
   private final        SecurityGroupFileRepository     groupRepository;
@@ -60,15 +60,17 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
   private final        SecretKeyFactory                secretKeyFactory;
   private final        Map<String, String>             saltCache;
   private final        int                             saltIteration;
-  private final        Map<String, ServerSecurityUser> users                      = new HashMap<>();
-  private              CredentialsValidator            credentialsValidator       = new DefaultCredentialsValidator();
-  private static final Random                          RANDOM                     = new SecureRandom();
-  public static final  int                             SALT_SIZE                  = 32;
+  private final        Map<String, ServerSecurityUser> users                = new HashMap<>();
+  private final        int                             checkConfigReloadEveryMs;
+  private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
+  private static final Random                          RANDOM               = new SecureRandom();
+  public static final  int                             SALT_SIZE            = 32;
   private              Timer                           reloadConfigurationTimer;
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
     this.algorithm = configuration.getValueAsString(SERVER_SECURITY_ALGORITHM);
+    this.checkConfigReloadEveryMs = configuration.getValueAsInteger(SERVER_SECURITY_RELOAD_EVERY);
 
     final int cacheSize = configuration.getValueAsInteger(SERVER_SECURITY_SALT_CACHE_SIZE);
 
@@ -80,9 +82,9 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
     usersRepository = new SecurityUserFileRepository(configPath);
-    groupRepository = new SecurityGroupFileRepository(configPath).onReload((latestConfiguration) -> {
+    groupRepository = new SecurityGroupFileRepository(configPath, checkConfigReloadEveryMs).onReload((latestConfiguration) -> {
       for (final String databaseName : server.getDatabaseNames()) {
-        updateSchema((DatabaseInternal) server.getDatabase(databaseName));
+        updateSchema(server.getDatabase(databaseName));
       }
       return null;
     });
@@ -135,7 +137,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
               loadUsers();
             }
           }
-        }, CHECK_USER_RELOAD_EVERY_MS, CHECK_USER_RELOAD_EVERY_MS);
+        }, checkConfigReloadEveryMs, checkConfigReloadEveryMs);
       }
 
     } catch (final IOException e) {
@@ -307,7 +309,8 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     try {
       usersRepository.save(usersToJSON());
     } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityUserFileRepository.FILE_NAME);
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityUserFileRepository.FILE_NAME);
     }
   }
 
@@ -315,7 +318,8 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     try {
       groupRepository.save(groupsToJSON());
     } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityGroupFileRepository.FILE_NAME);
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityGroupFileRepository.FILE_NAME);
     }
   }
 
@@ -325,11 +329,14 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
 
     if (rootPassword == null) {
-      if (server != null ? server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_K8S) : GlobalConfiguration.HA_K8S.getValueAsBoolean()) {
+      if (server != null ?
+          server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_K8S) :
+          GlobalConfiguration.HA_K8S.getValueAsBoolean()) {
         // UNDER KUBERNETES IF THE ROOT PASSWORD IS NOT SET (USUALLY WITH A SECRET) THE POD MUST TERMINATE
-        LogManager.instance()
-            .log(this, Level.SEVERE, "Unable to start a server under Kubernetes if the environment variable `arcadedb.server.rootPassword` is not set");
-        throw new ServerSecurityException("Unable to start a server under Kubernetes if the environment variable `arcadedb.server.rootPassword` is not set");
+        LogManager.instance().log(this, Level.SEVERE,
+            "Unable to start a server under Kubernetes if the environment variable `arcadedb.server.rootPassword` is not set");
+        throw new ServerSecurityException(
+            "Unable to start a server under Kubernetes if the environment variable `arcadedb.server.rootPassword` is not set");
       }
 
       LogManager.instance().flush();
@@ -364,11 +371,13 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
 
         if (rootPassword == null) {
           rootPassword = credentialsValidator.generateRandomPassword();
-          System.out.print(AnsiCode.format("Automatic generated password: $ANSI{green " + rootPassword + "}. Please save it in a safe place.\n"));
+          System.out.print(AnsiCode.format(
+              "Automatic generated password: $ANSI{green " + rootPassword + "}. Please save it in a safe place.\n"));
         }
 
         if (rootPassword != null) {
-          System.out.print(AnsiCode.format("$ANSI{yellow Please type the root password for confirmation (copy and paste will not work): }"));
+          System.out.print(
+              AnsiCode.format("$ANSI{yellow Please type the root password for confirmation (copy and paste will not work): }"));
 
           String rootConfirmPassword = console.readPassword();
           if (rootConfirmPassword != null) {
@@ -378,7 +387,8 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
           }
 
           if (!rootPassword.equals(rootConfirmPassword)) {
-            System.out.println(AnsiCode.format("$ANSI{red ERROR: Passwords do not match, please reinsert both of them, or press ENTER to auto generate it}"));
+            System.out.println(AnsiCode.format(
+                "$ANSI{red ERROR: Passwords do not match, please reinsert both of them, or press ENTER to auto generate it}"));
             try {
               Thread.sleep(500);
             } catch (final InterruptedException e) {
@@ -394,7 +404,9 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
               break;
             } catch (final ServerSecurityException ex) {
               System.out.println(AnsiCode.format(
-                  "$ANSI{red ERROR: Root password does not match the password policies" + (ex.getMessage() != null ? ": " + ex.getMessage() : "") + "}"));
+                  "$ANSI{red ERROR: Root password does not match the password policies" + (ex.getMessage() != null ?
+                      ": " + ex.getMessage() :
+                      "") + "}"));
               try {
                 Thread.sleep(500);
               } catch (final InterruptedException e) {

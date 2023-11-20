@@ -31,20 +31,21 @@ import java.util.*;
 import java.util.logging.*;
 
 public class SecurityGroupFileRepository {
-  public static final  String                     FILE_NAME               = "server-groups.json";
-  private final        String                     securityConfPath;
-  private              JSONObject                 latestGroupConfiguration;
-  private final static int                        CHECK_FOR_UPDATES_EVERY = 5;
-  private              long                       fileLastUpdated         = 0L;
-  private              Timer                      checkFileUpdatedTimer;
-  private final        File                       file;
-  private              Callable<Void, JSONObject> reloadCallback          = null;
+  public static final String                     FILE_NAME       = "server-groups.json";
+  private final       String                     securityConfPath;
+  private final       File                       file;
+  private final       int                        checkConfigReloadEveryMs;
+  private             long                       fileLastUpdated = 0L;
+  private             Timer                      checkFileUpdatedTimer;
+  private             Callable<Void, JSONObject> reloadCallback  = null;
+  private volatile    JSONObject                 latestGroupConfiguration;
 
-  public SecurityGroupFileRepository(String securityConfPath) {
+  public SecurityGroupFileRepository(String securityConfPath, final int checkConfigReloadEveryMs) {
     if (!securityConfPath.endsWith(File.separator))
       securityConfPath += File.separator;
     this.securityConfPath = securityConfPath;
     file = new File(securityConfPath, FILE_NAME);
+    this.checkConfigReloadEveryMs = checkConfigReloadEveryMs;
   }
 
   public void stop() {
@@ -66,9 +67,9 @@ public class SecurityGroupFileRepository {
     if (latestGroupConfiguration == null)
       return;
 
-    LogManager.instance()
-        .log(this, Level.SEVERE, "Error on loading file '%s', using the default configuration and saving the corrupt file as 'config/server-groups-error.json'",
-            e, FILE_NAME);
+    LogManager.instance().log(this, Level.SEVERE,
+        "Error on loading file '%s', using the default configuration and saving the corrupt file as 'config/server-groups-error.json'",
+        e, FILE_NAME);
 
     final String fileName = securityConfPath + FILE_NAME;
     final int pos = fileName.lastIndexOf(".");
@@ -121,7 +122,7 @@ public class SecurityGroupFileRepository {
               LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
             }
         }
-      }, CHECK_FOR_UPDATES_EVERY * 1_000, CHECK_FOR_UPDATES_EVERY * 1_000);
+      }, checkConfigReloadEveryMs, checkConfigReloadEveryMs);
     }
 
     JSONObject json = null;
@@ -152,10 +153,11 @@ public class SecurityGroupFileRepository {
         .put("groups", new JSONObject()//
             .put("admin", new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L)//
                 .put("access", new JSONArray(new String[] { "updateSecurity", "updateSchema", "updateDatabaseSettings" }))//
-                .put("types", new JSONObject().put(SecurityManager.ANY,
-                    new JSONObject().put("access", new JSONArray(new String[] { "createRecord", "readRecord", "updateRecord", "deleteRecord" })))))//
+                .put("types", new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access",
+                    new JSONArray(new String[] { "createRecord", "readRecord", "updateRecord", "deleteRecord" })))))//
             .put(SecurityManager.ANY, new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L)//
-                .put("access", new JSONArray()).put("types", new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access", new JSONArray())))));
+                .put("access", new JSONArray())
+                .put("types", new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access", new JSONArray())))));
 
     json.put("databases", new JSONObject().put(SecurityManager.ANY, defaultDatabase));
     json.put("version", ServerSecurity.LATEST_VERSION);

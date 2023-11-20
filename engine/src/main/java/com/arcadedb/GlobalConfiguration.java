@@ -344,6 +344,9 @@ public enum GlobalConfiguration {
   SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", SCOPE.SERVER,
       "Default encryption algorithm used for passwords hashing", String.class, "PBKDF2WithHmacSHA256"),
 
+  SERVER_SECURITY_RELOAD_EVERY("arcadedb.server.reloadEvery", SCOPE.SERVER,
+      "Time in milliseconds of checking if the server security files have been modified to be reloaded", Integer.class, 5_000),
+
   SERVER_SECURITY_SALT_CACHE_SIZE("arcadedb.server.securitySaltCacheSize", SCOPE.SERVER,
       "Cache size of hashed salt passwords. The cache works as LRU. Use 0 to disable the cache", Integer.class, 64),
 

@@ -117,7 +117,10 @@ public class ServerSecurityIT {
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
-    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, 100);
+
+    final ServerSecurity security = new ServerSecurity(null, cfg, "./target");
 
     final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
         .put("databases", new JSONObject().put("dbtest", new JSONObject()));
@@ -140,7 +143,7 @@ public class ServerSecurityIT {
     repository.save(SecurityUserFileRepository.createDefault());
 
     try {
-      Thread.sleep(5_500);
+      Thread.sleep(200);
     } catch (final InterruptedException e) {
       e.printStackTrace();
     }

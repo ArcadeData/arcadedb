@@ -164,7 +164,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
     final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
 
-    for (int i = 0; i < files.size(); ++i) {
+    for (int i = 0; i < newFileAccessMap.length; ++i) {
       final DocumentType type = database.getSchema().getInvolvedTypeByBucketId(i);
       if (type == null)
         continue;
@@ -219,7 +219,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     fileAccessMap = newFileAccessMap;
   }
 
-  public static boolean[] updateAccessArray(final boolean[] array, final JSONArray access) {
+  private static boolean[] updateAccessArray(final boolean[] array, final JSONArray access) {
     for (int i = 0; i < access.length(); i++) {
       switch (access.getString(i)) {
       case "createRecord":

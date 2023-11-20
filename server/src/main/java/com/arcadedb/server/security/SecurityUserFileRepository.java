@@ -35,7 +35,7 @@ public class SecurityUserFileRepository {
   private              long   fileLastModified = -1;
 
   public SecurityUserFileRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith(File.separator) )
+    if (!securityConfPath.endsWith(File.separator))
       securityConfPath += File.separator;
     this.securityConfPath = securityConfPath;
   }
@@ -88,8 +88,8 @@ public class SecurityUserFileRepository {
 
   public static List<JSONObject> createDefault() {
     // ROOT USER
-    return Collections.singletonList(
-        new JSONObject().put("name", "root").put("databases", new JSONObject().put(SecurityManager.ANY, new JSONArray(new String[] { "admin" }))));
+    return Collections.singletonList(new JSONObject().put("name", "root")
+        .put("databases", new JSONObject().put(SecurityManager.ANY, new JSONArray(new String[] { "admin" }))));
   }
 
   public long getFileLastModified() {
