@@ -30,7 +30,7 @@
     </parent>
 
     <properties>
-        <jline-terminal.version>3.24.1</jline-terminal.version>
+        <jline.version>3.24.1</jline.version>
     </properties>
 
     <artifactId>arcadedb-console</artifactId>
@@ -64,12 +64,17 @@
         <dependency>
             <groupId>org.jline</groupId>
             <artifactId>jline-terminal</artifactId>
-            <version>${jline-terminal.version}</version>
+            <version>${jline.version}</version>
         </dependency>
         <dependency>
             <groupId>org.jline</groupId>
             <artifactId>jline-reader</artifactId>
-            <version>${jline-terminal.version}</version>
+            <version>${jline.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal-jansi</artifactId>
+            <version>${jline.version}</version>
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
