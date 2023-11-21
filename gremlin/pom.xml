@@ -77,6 +77,12 @@
             <groupId>org.apache.tinkerpop</groupId>
             <artifactId>gremlin-groovy</artifactId>
             <version>${gremlin.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>jline</groupId>
+                    <artifactId>jline</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
