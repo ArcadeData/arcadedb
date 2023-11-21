@@ -30,9 +30,10 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class DateUtils {
-  public static final  long                                         MS_IN_A_DAY       = 24 * 60 * 60 * 1000L; // 86_400_000
-  private static final ZoneId                                       UTC_ZONE_ID       = ZoneId.of("UTC");
-  private static       ConcurrentHashMap<String, DateTimeFormatter> CACHED_FORMATTERS = new ConcurrentHashMap<>();
+  public static final  String                                       DATE_TIME_ISO_8601_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
+  public static final  long                                         MS_IN_A_DAY               = 24 * 60 * 60 * 1000L; // 86_400_000
+  private static final ZoneId                                       UTC_ZONE_ID               = ZoneId.of("UTC");
+  private static       ConcurrentHashMap<String, DateTimeFormatter> CACHED_FORMATTERS         = new ConcurrentHashMap<>();
 
   public static Object dateTime(final Database database, final long timestamp, final ChronoUnit sourcePrecision,
       final Class dateTimeImplementation, final ChronoUnit destinationPrecision) {

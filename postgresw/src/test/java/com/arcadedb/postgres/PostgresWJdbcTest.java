@@ -256,6 +256,15 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   }
 
   @Test
+  public void testISODateFormat() throws Exception {
+    try (final Connection conn = getConnection()) {
+      try (final Statement st = conn.createStatement()) {
+        st.execute("SET datestyle TO 'ISO'");
+      }
+    }
+  }
+
+  @Test
   @Disabled
   public void testWaitForConnectionFromExternal() throws InterruptedException {
     Thread.sleep(1000000);

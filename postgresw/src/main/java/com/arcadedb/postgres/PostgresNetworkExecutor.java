@@ -356,14 +356,19 @@ public class PostgresNetworkExecutor extends Thread {
 
       final ResultSet resultSet;
       if (queryText.startsWith("SET ")) {
-        resultSet = new IteratorResultSet(Collections.emptyIterator());
-      } else if (queryText.equals("SELECT VERSION()")) {
+        setConfiguration(queryText);
+        resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
+      } else if (queryText.equals("SELECT VERSION()"))
         resultSet = new IteratorResultSet(createResultSet("VERSION", "11.0.0").iterator());
-      } else if (queryText.equals("SELECT CURRENT_SCHEMA()")) {
+      else if (queryText.equals("SELECT CURRENT_SCHEMA()"))
         resultSet = new IteratorResultSet(createResultSet("CURRENT_SCHEMA", database.getName()).iterator());
-      } else if (ignoreQueries.contains(queryText)) {
+      else if (queryText.equalsIgnoreCase("BEGIN") || queryText.equalsIgnoreCase("BEGIN TRANSACTION")) {
+        explicitTransactionStarted = true;
+        database.begin();
         resultSet = new IteratorResultSet(Collections.emptyIterator());
-      } else
+      } else if (ignoreQueries.contains(queryText))
+        resultSet = new IteratorResultSet(Collections.emptyIterator());
+      else
         resultSet = database.command(language, queryText);
 
       final List<Result> cachedResultset = browseAndCacheResultSet(resultSet, 0);
@@ -655,17 +660,7 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (upperCaseText.startsWith("SAVEPOINT ")) {
         portal.ignoreExecution = true;
       } else if (upperCaseText.startsWith("SET ")) {
-        final String q = portal.query.substring("SET ".length());
-        final String[] parts = q.split("=");
-
-        parts[0] = parts[0].trim();
-        parts[1] = parts[1].trim();
-
-        if (parts[1].startsWith("'") || parts[1].startsWith("\""))
-          parts[1] = parts[1].substring(1, parts[1].length() - 1);
-
-        connectionProperties.put(parts[0], parts[1]);
-
+        setConfiguration(portal.query);
         portal.ignoreExecution = true;
       } else if (upperCaseText.equals("SELECT VERSION()")) {
         createResultSet(portal, "VERSION", "11.0.0");
@@ -821,7 +816,6 @@ public class PostgresNetworkExecutor extends Thread {
             explicitTransactionStarted = false;
             setEmptyResultSet(portal);
           }
-
           break;
 
         default:
@@ -844,6 +838,28 @@ public class PostgresNetworkExecutor extends Thread {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), "XX000");
     }
+  }
+
+  private void setConfiguration(final String query) {
+    final String q = query.substring("SET ".length());
+    String[] parts = q.split("=");
+    if (parts.length < 2)
+      parts = q.split(" TO ");
+
+    parts[0] = parts[0].trim();
+    parts[1] = parts[1].trim();
+
+    if (parts[1].startsWith("'") || parts[1].startsWith("\""))
+      parts[1] = parts[1].substring(1, parts[1].length() - 1);
+
+    if (parts[0].equals("datestyle")) {
+      if (parts[1].equals("ISO"))
+        database.getSchema().setDateTimeFormat(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+      else
+        LogManager.instance().log(this, Level.INFO, "datestyle '%s' not supported", parts[1]);
+    }
+
+    connectionProperties.put(parts[0], parts[1]);
   }
 
   private void setEmptyResultSet(final PostgresPortal portal) {
