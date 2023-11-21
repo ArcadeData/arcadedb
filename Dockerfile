@@ -56,7 +56,8 @@ EXPOSE 2480
 EXPOSE 2424
 
 # Gremlin Server (Apache TinkerPop)
-EXPOSE 8182
+# Commented out for now, the gremlin server bypasses most of the data access enforcements that have been added
+# EXPOSE 8182
 
 # Postgres protocol
 EXPOSE 5432

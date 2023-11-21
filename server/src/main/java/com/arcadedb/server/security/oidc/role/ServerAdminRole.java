@@ -10,6 +10,7 @@ import lombok.Getter;
 public enum ServerAdminRole {
     CREATE_DATABASE(Constants.CREATE_DATABASE, Constants.CREATE_DATABASE),
     DROP_DATABASE(Constants.DROP_DATABASE, Constants.DROP_DATABASE),
+    BACKUP_DATABASE(Constants.BACKUP_DATABASE, Constants.BACKUP_DATABASE),
     ALL(Constants.ALL, Constants.ALL);
 
     @Getter
@@ -39,6 +40,7 @@ public enum ServerAdminRole {
     public static class Constants {
         public static final String CREATE_DATABASE = "createDatabase";
         public static final String DROP_DATABASE = "dropDatabase";
+        public static final String BACKUP_DATABASE = "backupDatabase";
         public static final String ALL = "*";
     }
 }

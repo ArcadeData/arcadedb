@@ -1327,4 +1327,8 @@ public class EmbeddedSchema implements Schema {
 
     bucketId2TypeMap = newBucketId2TypeMap;
   }
+
+  public boolean shouldBackup() {
+      return true;
+  }
 }

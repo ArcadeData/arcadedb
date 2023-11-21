@@ -60,6 +60,11 @@ public class ServerSecurityUser implements SecurityUser {
       final JSONObject userDatabases = userConfiguration.getJSONObject("databases");
       databasesNames = Collections.unmodifiableSet(userDatabases.keySet());
 
+      if (databasesNames.contains(ArcadeRole.ALL_WILDCARD)) {
+        // User has some level of access to all databases
+        databasesNames = Collections.unmodifiableSet(server.getDatabaseNames());
+      }
+
     } else {
       databasesNames = Collections.emptySet();
     }

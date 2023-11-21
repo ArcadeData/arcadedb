@@ -32,10 +32,12 @@ import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.server.security.ServerSecurityException;
+
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
+
 import org.xnio.Options;
 
 import javax.net.ssl.KeyManager;
@@ -133,6 +135,7 @@ public class HttpServer implements ServerPlugin {
             .get("/ready", new GetReadyHandler(this))
             .post("/login", new PostLoginHandler(this))
             .post("/refreshToken", new PostRefreshTokenHandler(this))
+            .post("/backup", new PostBackupHandler(this))
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
