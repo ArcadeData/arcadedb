@@ -31,7 +31,6 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;

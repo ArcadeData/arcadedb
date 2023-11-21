@@ -42,24 +42,24 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
-public class EmbeddedDocumentType implements DocumentType {
-  protected final EmbeddedSchema                    schema;
-  protected final String                            name;
-  protected final List<EmbeddedDocumentType>        superTypes                   = new ArrayList<>();
-  protected final List<EmbeddedDocumentType>        subTypes                     = new ArrayList<>();
-  protected       List<Bucket>                      buckets                      = new ArrayList<>();
-  protected       List<Bucket>                      cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       List<Integer>                     bucketIds                    = new ArrayList<>();
-  protected       List<Integer>                     cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
-  protected final Map<String, Property>             properties                   = new HashMap<>();
+public class LocalDocumentType implements DocumentType {
+  protected final LocalSchema schema;
+  protected final String      name;
+  protected final List<LocalDocumentType> superTypes                 = new ArrayList<>();
+  protected final List<LocalDocumentType> subTypes                   = new ArrayList<>();
+  protected       List<Bucket>            buckets                    = new ArrayList<>();
+  protected       List<Bucket>            cachedPolymorphicBuckets   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  protected       List<Integer>           bucketIds                  = new ArrayList<>();
+  protected       List<Integer>           cachedPolymorphicBucketIds = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  protected       BucketSelectionStrategy bucketSelectionStrategy    = new RoundRobinBucketSelectionStrategy();
+  protected final Map<String, Property>   properties                 = new HashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
   protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
 
-  public EmbeddedDocumentType(final EmbeddedSchema schema, final String name) {
+  public LocalDocumentType(final LocalSchema schema, final String name) {
     this.schema = schema;
     this.name = name;
   }
@@ -85,7 +85,7 @@ public class EmbeddedDocumentType implements DocumentType {
       return propertiesWithDefaultDefined;
 
     final HashSet<String> set = new HashSet<>(propertiesWithDefaultDefined);
-    for (final EmbeddedDocumentType superType : superTypes)
+    for (final LocalDocumentType superType : superTypes)
       set.addAll(superType.propertiesWithDefaultDefined);
     return set;
   }
@@ -129,11 +129,11 @@ public class EmbeddedDocumentType implements DocumentType {
         // ALREADY REMOVED SUPER TYPE
         return null;
 
-      ((EmbeddedDocumentType) superType).subTypes.remove(this);
+      ((LocalDocumentType) superType).subTypes.remove(this);
 
       // TODO: CHECK THE EDGE CASE WHERE THE SAME TYPE IS INHERITED ON MULTIPLE LEVEL AND YOU DON'T NEED TO REMOVE THE BUCKETS
       // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE
-      ((EmbeddedDocumentType) superType).updatePolymorphicBucketsCache(false, buckets, bucketIds);
+      ((LocalDocumentType) superType).updatePolymorphicBucketsCache(false, buckets, bucketIds);
 
       return null;
     });
@@ -256,7 +256,7 @@ public class EmbeddedDocumentType implements DocumentType {
    * @param propertyType Property type by type name @{@link String}
    */
   @Override
-  public EmbeddedProperty createProperty(final String propertyName, final String propertyType) {
+  public LocalProperty createProperty(final String propertyName, final String propertyType) {
     return createProperty(propertyName, Type.getTypeByName(propertyType));
   }
 
@@ -273,7 +273,7 @@ public class EmbeddedDocumentType implements DocumentType {
 
   @Override
   public Property createProperty(final String propName, final JSONObject prop) {
-    final EmbeddedProperty p = createProperty(propName, prop.getString("type"));
+    final LocalProperty p = createProperty(propName, prop.getString("type"));
 
     if (prop.has("of"))
       p.setOfType(prop.getString("of"));
@@ -306,7 +306,7 @@ public class EmbeddedDocumentType implements DocumentType {
    * @param propertyType Property type as @{@link Type}
    */
   @Override
-  public EmbeddedProperty createProperty(final String propertyName, final Type propertyType) {
+  public LocalProperty createProperty(final String propertyName, final Type propertyType) {
     return createProperty(propertyName, propertyType, null);
   }
 
@@ -318,7 +318,7 @@ public class EmbeddedDocumentType implements DocumentType {
    * @param ofType       Linked type. For List the type contained in the list. For RID the schema type name.
    */
   @Override
-  public EmbeddedProperty createProperty(final String propertyName, final Type propertyType, final String ofType) {
+  public LocalProperty createProperty(final String propertyName, final Type propertyType, final String ofType) {
     if (properties.containsKey(propertyName))
       throw new SchemaException(
           "Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
@@ -327,7 +327,7 @@ public class EmbeddedDocumentType implements DocumentType {
       throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
           + "' because it was already defined in a super type");
 
-    final EmbeddedProperty property = new EmbeddedProperty(this, propertyName, propertyType);
+    final LocalProperty property = new LocalProperty(this, propertyName, propertyType);
 
     if (ofType != null)
       property.setOfType(ofType);
@@ -425,52 +425,52 @@ public class EmbeddedDocumentType implements DocumentType {
   }
 
   @Override
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).create();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).create();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).create();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withNullStrategy(nullStrategy).withCallback(callback).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique,
       final String... propertyNames) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique,
       final String[] propertyNames, final int pageSize) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique,
       final String[] propertyNames, final int pageSize, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique,
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique,
       final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
@@ -685,7 +685,7 @@ public class EmbeddedDocumentType implements DocumentType {
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final EmbeddedDocumentType that = (EmbeddedDocumentType) o;
+    final LocalDocumentType that = (LocalDocumentType) o;
     if (!Objects.equals(name, that.name))
       return false;
 
@@ -693,10 +693,10 @@ public class EmbeddedDocumentType implements DocumentType {
       return false;
 
     final Set<String> set = new HashSet<>();
-    for (final EmbeddedDocumentType t : superTypes)
+    for (final LocalDocumentType t : superTypes)
       set.add(t.name);
 
-    for (final EmbeddedDocumentType t : that.superTypes)
+    for (final LocalDocumentType t : that.superTypes)
       set.remove(t.name);
 
     if (!set.isEmpty())
@@ -705,10 +705,10 @@ public class EmbeddedDocumentType implements DocumentType {
     if (subTypes.size() != that.subTypes.size())
       return false;
 
-    for (final EmbeddedDocumentType t : subTypes)
+    for (final LocalDocumentType t : subTypes)
       set.add(t.name);
 
-    for (final EmbeddedDocumentType t : that.subTypes)
+    for (final LocalDocumentType t : that.subTypes)
       set.remove(t.name);
 
     if (!set.isEmpty())
@@ -795,7 +795,7 @@ public class EmbeddedDocumentType implements DocumentType {
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
-    final EmbeddedDocumentType that = (EmbeddedDocumentType) o;
+    final LocalDocumentType that = (LocalDocumentType) o;
     return name.equals(that.name);
   }
 
@@ -839,7 +839,7 @@ public class EmbeddedDocumentType implements DocumentType {
     for (final IndexInternal idx : index.getIndexesOnBuckets())
       removeBucketIndexInternal(idx);
 
-    for (final EmbeddedDocumentType superType : superTypes)
+    for (final LocalDocumentType superType : superTypes)
       superType.removeTypeIndexInternal(index);
   }
 
@@ -969,9 +969,9 @@ public class EmbeddedDocumentType implements DocumentType {
     final JSONObject type = new JSONObject();
 
     final String kind;
-    if (this instanceof EmbeddedVertexType)
+    if (this instanceof LocalVertexType)
       kind = "v";
-    else if (this instanceof EmbeddedEdgeType)
+    else if (this instanceof LocalEdgeType)
       kind = "e";
     else
       kind = "d";
@@ -1025,7 +1025,7 @@ public class EmbeddedDocumentType implements DocumentType {
       cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
     }
 
-    for (EmbeddedDocumentType s : superTypes)
+    for (LocalDocumentType s : superTypes)
       s.updatePolymorphicBucketsCache(add, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
   }
 
@@ -1044,7 +1044,7 @@ public class EmbeddedDocumentType implements DocumentType {
       }
 
     recordFileChanges(() -> {
-      final EmbeddedDocumentType embeddedSuperType = (EmbeddedDocumentType) superType;
+      final LocalDocumentType embeddedSuperType = (LocalDocumentType) superType;
 
       superTypes.add(embeddedSuperType);
       embeddedSuperType.subTypes.add(this);

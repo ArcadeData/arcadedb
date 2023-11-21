@@ -24,7 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.EmbeddedBucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -64,7 +64,7 @@ public class GraphEngine {
     }
   }
 
-  public List<Bucket> createVertexAdditionalBuckets(final EmbeddedBucket b) {
+  public List<Bucket> createVertexAdditionalBuckets(final LocalBucket b) {
     final Bucket[] outInBuckets = new Bucket[2];
     if (database.getSchema().existsBucket(b.getName() + OUT_EDGES_SUFFIX))
       outInBuckets[0] = database.getSchema().getBucketByName(b.getName() + OUT_EDGES_SUFFIX);

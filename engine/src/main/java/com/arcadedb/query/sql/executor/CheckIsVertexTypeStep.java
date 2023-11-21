@@ -22,7 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 
 /**
@@ -63,7 +63,7 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
         throw new CommandExecutionException("Type not found: " + this.targetClass);
       }
 
-      if (targettypez instanceof EmbeddedVertexType) {
+      if (targettypez instanceof LocalVertexType) {
         found = true;
       }
       if (!found) {

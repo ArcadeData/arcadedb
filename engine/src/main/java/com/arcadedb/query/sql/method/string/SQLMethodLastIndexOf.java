@@ -20,8 +20,8 @@ package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.utility.FileUtils;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.utility.FileUtils;
 
 /**
  * @author Luca Garulli (l.garulli--(at)--gmail.com)

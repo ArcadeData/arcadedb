@@ -30,8 +30,8 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
@@ -57,7 +57,7 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class EmbeddedBucket extends PaginatedComponent implements Bucket {
+public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    String     BUCKET_EXT                       = "bucket";
   public static final    int        CURRENT_VERSION                  = 0;
   public static final    long       RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
@@ -85,14 +85,14 @@ public class EmbeddedBucket extends PaginatedComponent implements Bucket {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
         final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new EmbeddedBucket(database, name, filePath, id, mode, pageSize, version);
+      return new LocalBucket(database, name, filePath, id, mode, pageSize, version);
     }
   }
 
   /**
    * Called at creation time.
    */
-  public EmbeddedBucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
+  public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
       final int pageSize, final int version) throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
@@ -102,7 +102,7 @@ public class EmbeddedBucket extends PaginatedComponent implements Bucket {
   /**
    * Called at load time.
    */
-  public EmbeddedBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
+  public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
       final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
@@ -274,10 +274,10 @@ public class EmbeddedBucket extends PaginatedComponent implements Bucket {
 
   @Override
   public boolean equals(final Object obj) {
-    if (!(obj instanceof EmbeddedBucket))
+    if (!(obj instanceof LocalBucket))
       return false;
 
-    return ((EmbeddedBucket) obj).fileId == this.fileId;
+    return ((LocalBucket) obj).fileId == this.fileId;
   }
 
   @Override
@@ -484,10 +484,10 @@ public class EmbeddedBucket extends PaginatedComponent implements Bucket {
     stats.put("totalMaxOffset", totalMaxOffset);
 
     final DocumentType type = database.getSchema().getTypeByBucketId(fileId);
-    if (type instanceof EmbeddedVertexType) {
+    if (type instanceof LocalVertexType) {
       stats.put("totalAllocatedVertices", totalAllocatedRecords);
       stats.put("totalActiveVertices", totalActiveRecords);
-    } else if (type instanceof EmbeddedEdgeType) {
+    } else if (type instanceof LocalEdgeType) {
       stats.put("totalAllocatedEdges", totalAllocatedRecords);
       stats.put("totalActiveEdges", totalActiveRecords);
     } else {

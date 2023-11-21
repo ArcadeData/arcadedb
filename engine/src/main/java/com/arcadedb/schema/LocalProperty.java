@@ -19,21 +19,13 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.Record;
-import com.arcadedb.exception.*;
-import com.arcadedb.index.Index;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.parser.Expression;
-import com.arcadedb.query.sql.parser.ParseException;
-import com.arcadedb.query.sql.parser.SqlParser;
-import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.exception.SchemaException;
 
-import java.io.*;
 import java.util.*;
 
-public class EmbeddedProperty extends AbstractProperty {
+public class LocalProperty extends AbstractProperty {
 
-  public EmbeddedProperty(final EmbeddedDocumentType owner, final String name, final Type type) {
+  public LocalProperty(final LocalDocumentType owner, final String name, final Type type) {
     super(owner, name, type, owner.getSchema().getDictionary().getIdByName(name, true));
   }
 
@@ -50,12 +42,12 @@ public class EmbeddedProperty extends AbstractProperty {
       this.defaultValue = convertedValue;
 
       // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
-      final Set<String> propertiesWithDefaultDefined = new HashSet<>(((EmbeddedDocumentType) owner).propertiesWithDefaultDefined);
+      final Set<String> propertiesWithDefaultDefined = new HashSet<>(((LocalDocumentType) owner).propertiesWithDefaultDefined);
       if (convertedValue == DEFAULT_NOT_SET)
         propertiesWithDefaultDefined.remove(name);
       else
         propertiesWithDefaultDefined.add(name);
-      ((EmbeddedDocumentType) owner).propertiesWithDefaultDefined = Collections.unmodifiableSet(propertiesWithDefaultDefined);
+      ((LocalDocumentType) owner).propertiesWithDefaultDefined = Collections.unmodifiableSet(propertiesWithDefaultDefined);
 
       owner.getSchema().getEmbedded().saveConfiguration();
     }
@@ -66,7 +58,7 @@ public class EmbeddedProperty extends AbstractProperty {
   public Property setOfType(String ofType) {
     final boolean changed = !Objects.equals(this.ofType, ofType);
     if (changed) {
-      final EmbeddedSchema schema = (EmbeddedSchema) owner.getSchema();
+      final LocalSchema schema = (LocalSchema) owner.getSchema();
       if (type == Type.LIST || type == Type.MAP) {
         if (Type.getTypeByName(ofType) != null) {
           ofType = ofType.toUpperCase(Locale.ENGLISH);

@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.schema.EmbeddedEdgeType;
+import com.arcadedb.schema.LocalEdgeType;
 
 import java.util.*;
 import java.util.stream.*;
@@ -56,13 +56,13 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
           for (final String propName : propNames.stream().filter(x -> x.startsWith("in_") || x.startsWith("out_")).collect(Collectors.toList())) {
             final Object val = elem.getProperty(propName);
             if (val instanceof Document) {
-              if (((Document) val).getType() instanceof EmbeddedEdgeType) {
+              if (((Document) val).getType() instanceof LocalEdgeType) {
                 elem.removeProperty(propName);
               }
             } else if (val instanceof Iterable) {
               for (final Object o : (Iterable) val) {
                 if (o instanceof Document) {
-                  if (((Document) o).getType() instanceof EmbeddedEdgeType) {
+                  if (((Document) o).getType() instanceof LocalEdgeType) {
                     elem.removeProperty(propName);
                     break;
                   }

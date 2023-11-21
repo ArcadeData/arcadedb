@@ -26,9 +26,9 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedSchema;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -83,7 +83,7 @@ public class DatabaseChecker {
     if (fix)
       for (final Index idx : affectedIndexes) {
         final String bucketName = database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName();
-        final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
+        final Schema.INDEX_TYPE indexType = idx.getType();
         final boolean unique = idx.isUnique();
         final List<String> propNames = idx.getPropertyNames();
         final String typeName = idx.getTypeName();
@@ -111,7 +111,7 @@ public class DatabaseChecker {
         if (type == null || !types.contains(type.getName()))
           continue;
 
-      if (type instanceof EmbeddedEdgeType) {
+      if (type instanceof LocalEdgeType) {
         final Map<String, Object> stats = database.getGraphEngine().checkEdges(type.getName(), fix, verboseLevel);
 
         updateStats(stats);
@@ -131,7 +131,7 @@ public class DatabaseChecker {
         if (type == null || !types.contains(type.getName()))
           continue;
 
-      if (type instanceof EmbeddedVertexType) {
+      if (type instanceof LocalVertexType) {
         final Map<String, Object> stats = database.getGraphEngine().checkVertices(type.getName(), fix, verboseLevel);
 
         updateStats(stats);
@@ -182,7 +182,7 @@ public class DatabaseChecker {
     result.put("totalActiveEdges", 0L);
 
     for (final Bucket b : database.getSchema().getBuckets()) {
-      final EmbeddedBucket bucket = (EmbeddedBucket) b;
+      final LocalBucket bucket = (LocalBucket) b;
       if (buckets != null && !buckets.isEmpty())
         if (!buckets.contains(bucket.componentName))
           continue;

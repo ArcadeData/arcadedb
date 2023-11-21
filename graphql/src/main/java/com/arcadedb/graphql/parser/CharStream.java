@@ -20,7 +20,7 @@
 /* ParserGeneratorCCOptions:SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.io.IOException;
+import java.io.*;
 
 /**
  * This interface describes a character stream that maintains line and

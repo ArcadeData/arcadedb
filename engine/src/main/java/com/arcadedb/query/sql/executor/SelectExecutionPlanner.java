@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.RangeIndex;
@@ -69,7 +68,7 @@ import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
@@ -940,7 +939,7 @@ public class SelectExecutionPlanner {
 
     if (paramValue == null) {
       result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
-    } else if (paramValue instanceof EmbeddedDocumentType) {
+    } else if (paramValue instanceof LocalDocumentType) {
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);

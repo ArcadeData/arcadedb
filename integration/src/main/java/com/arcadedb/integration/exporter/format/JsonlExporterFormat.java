@@ -27,9 +27,9 @@ import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedSchema;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -83,7 +83,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       final long now = System.currentTimeMillis();
       writeJsonLine("db", new JSONObject().put("name", database.getName()).put("executedOn", dateFormat.format(now)).put("executedOnTimestamp", now));
 
-      writeJsonLine("schema", ((EmbeddedSchema) database.getSchema()).toJSON());
+      writeJsonLine("schema", ((LocalSchema) database.getSchema()).toJSON());
 
       final List<String> vertexTypes = new ArrayList<>();
       final List<String> edgeTypes = new ArrayList<>();
@@ -97,9 +97,9 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         if (settings.excludeTypes != null && settings.excludeTypes.contains(typeName))
           continue;
 
-        if (type instanceof EmbeddedVertexType)
+        if (type instanceof LocalVertexType)
           vertexTypes.add(typeName);
-        else if (type instanceof EmbeddedEdgeType)
+        else if (type instanceof LocalEdgeType)
           edgeTypes.add(typeName);
         else
           documentTypes.add(typeName);

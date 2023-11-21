@@ -18,14 +18,13 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.log.LogManager;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.async.AsyncResultsetCallback;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.CodeUtils;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;

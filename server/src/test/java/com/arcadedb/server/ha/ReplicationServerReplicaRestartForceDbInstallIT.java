@@ -19,13 +19,10 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.concurrent.atomic.*;

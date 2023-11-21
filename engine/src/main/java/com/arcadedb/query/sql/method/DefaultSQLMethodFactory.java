@@ -19,10 +19,7 @@
 package com.arcadedb.query.sql.method;
 
 import com.arcadedb.exception.CommandExecutionException;
-
 import com.arcadedb.query.sql.executor.SQLMethod;
-
-// Collections
 import com.arcadedb.query.sql.method.collection.SQLMethodField;
 import com.arcadedb.query.sql.method.collection.SQLMethodKeys;
 import com.arcadedb.query.sql.method.collection.SQLMethodRemove;
@@ -30,8 +27,6 @@ import com.arcadedb.query.sql.method.collection.SQLMethodRemoveAll;
 import com.arcadedb.query.sql.method.collection.SQLMethodSize;
 import com.arcadedb.query.sql.method.collection.SQLMethodTransform;
 import com.arcadedb.query.sql.method.collection.SQLMethodValues;
-
-// Conversions
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsBoolean;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsByte;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsDate;
@@ -49,12 +44,8 @@ import com.arcadedb.query.sql.method.conversion.SQLMethodAsSet;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsShort;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsString;
 import com.arcadedb.query.sql.method.conversion.SQLMethodConvert;
-
-// Geometrics
 import com.arcadedb.query.sql.method.geo.SQLMethodIntersectsWith;
 import com.arcadedb.query.sql.method.geo.SQLMethodIsWithin;
-
-// Misc
 import com.arcadedb.query.sql.method.misc.SQLMethodExclude;
 import com.arcadedb.query.sql.method.misc.SQLMethodHash;
 import com.arcadedb.query.sql.method.misc.SQLMethodIfNull;
@@ -63,8 +54,6 @@ import com.arcadedb.query.sql.method.misc.SQLMethodJavaType;
 import com.arcadedb.query.sql.method.misc.SQLMethodPrecision;
 import com.arcadedb.query.sql.method.misc.SQLMethodToJSON;
 import com.arcadedb.query.sql.method.misc.SQLMethodType;
-
-// String
 import com.arcadedb.query.sql.method.string.SQLMethodAppend;
 import com.arcadedb.query.sql.method.string.SQLMethodCapitalize;
 import com.arcadedb.query.sql.method.string.SQLMethodCharAt;

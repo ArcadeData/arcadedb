@@ -20,9 +20,9 @@ package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.PatternConst;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.text.*;
 

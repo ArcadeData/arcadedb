@@ -20,11 +20,8 @@
 /* ParserGeneratorCCOptions:SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.Reader;
-import java.nio.charset.Charset;
+import java.io.*;
+import java.nio.charset.*;
 
 /**
  * An implementation of interface CharStream, where the stream is assumed to

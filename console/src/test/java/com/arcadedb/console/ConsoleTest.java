@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -197,7 +196,8 @@ public class ConsoleTest {
     Assertions.assertTrue(console.parse("insert into D set name = 'Jay', lastname='Miner'"));
     Assertions.assertTrue(console.parse("insert into V set name = 'Jay', lastname='Miner'"));
     Assertions.assertTrue(console.parse("insert into V set name = 'Elon', lastname='Musk'"));
-    Assertions.assertTrue(console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='Elon')"));
+    Assertions.assertTrue(
+        console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='Elon')"));
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
@@ -459,13 +459,15 @@ public class ConsoleTest {
     Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
     Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING;"));
     Assertions.assertTrue(console.parse("ALTER PROPERTY doc.prop CUSTOM test = true;"));
-    Assertions.assertEquals(true, ((EmbeddedDatabase) console.getDatabase()).getSchema().getType("doc").getProperty("prop").getCustomValue("test"));
+    Assertions.assertEquals(true, console.getDatabase().getSchema().getType("doc").getProperty("prop").getCustomValue("test"));
 
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
-        console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
+        console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
+            .getProperty("type"));
 
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
-        console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next().getProperty("type"));
+        console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
+            .getProperty("type"));
   }
 
   /**
@@ -476,7 +478,7 @@ public class ConsoleTest {
     Assertions.assertTrue(console.parse("connect " + DB_NAME));
     Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
     Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING (notnull);"));
-    Assertions.assertTrue(((EmbeddedDatabase) console.getDatabase()).getSchema().getType("doc").getProperty("prop").isNotNull());
+    Assertions.assertTrue(console.getDatabase().getSchema().getType("doc").getProperty("prop").isNotNull());
 
     Assertions.assertTrue(console.parse("INSERT INTO doc set a = null;"));
 

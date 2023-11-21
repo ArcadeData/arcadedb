@@ -18,11 +18,8 @@
  */
 package com.arcadedb.schema;
 
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.graph.Edge;
-
-public class EmbeddedEdgeType extends EmbeddedDocumentType implements EdgeType {
-  public EmbeddedEdgeType(final EmbeddedSchema schema, final String name) {
+public class LocalEdgeType extends LocalDocumentType implements EdgeType {
+  public LocalEdgeType(final LocalSchema schema, final String name) {
     super(schema, name);
   }
 }

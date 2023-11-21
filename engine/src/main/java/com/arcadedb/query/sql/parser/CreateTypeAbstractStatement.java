@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
@@ -93,7 +93,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
   protected DocumentType[] getSuperTypes(final Schema schema) {
     if (supertypes == null)
-      return new EmbeddedDocumentType[] {};
+      return new LocalDocumentType[] {};
 
     return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList())
         .toArray(new DocumentType[] {});

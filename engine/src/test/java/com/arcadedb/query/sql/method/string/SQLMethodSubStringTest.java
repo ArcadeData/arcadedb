@@ -20,7 +20,6 @@
  */
 package com.arcadedb.query.sql.method.string;
 
-import com.arcadedb.query.sql.method.string.SQLMethodSubString;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

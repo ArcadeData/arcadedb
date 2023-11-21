@@ -18,7 +18,6 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 
-import java.io.*;
 import java.util.*;
 
 /**

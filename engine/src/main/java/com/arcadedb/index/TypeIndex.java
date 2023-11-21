@@ -24,10 +24,9 @@ import com.arcadedb.database.IndexCursorCollection;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
@@ -191,7 +190,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public EmbeddedSchema.INDEX_TYPE getType() {
+  public Schema.INDEX_TYPE getType() {
     checkIsValid();
     if (indexesOnBuckets.isEmpty())
       return null;

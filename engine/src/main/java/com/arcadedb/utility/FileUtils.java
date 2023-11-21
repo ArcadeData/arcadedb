@@ -24,7 +24,7 @@ import com.arcadedb.log.LogManager;
 
 import java.io.*;
 import java.lang.management.*;
-import java.net.URLEncoder;
+import java.net.*;
 import java.nio.channels.*;
 import java.nio.file.FileSystem;
 import java.nio.file.*;

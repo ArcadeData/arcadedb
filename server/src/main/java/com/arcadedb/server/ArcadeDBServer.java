@@ -24,7 +24,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
@@ -356,7 +356,7 @@ public class ArcadeDBServer {
       }
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-        embeddedDatabase = new ReplicatedDatabase(this, (EmbeddedDatabase) embeddedDatabase);
+        embeddedDatabase = new ReplicatedDatabase(this, (LocalDatabase) embeddedDatabase);
 
       serverDatabase = new ServerDatabase(embeddedDatabase);
 
@@ -461,7 +461,7 @@ public class ArcadeDBServer {
         }
 
         if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-          embDatabase = new ReplicatedDatabase(this, (EmbeddedDatabase) embDatabase);
+          embDatabase = new ReplicatedDatabase(this, (LocalDatabase) embDatabase);
 
         db = new ServerDatabase(embDatabase);
 

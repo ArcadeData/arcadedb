@@ -22,7 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.network.binary.NetworkProtocolException;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.utility.FileUtils;
@@ -44,7 +44,7 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
     final DatabaseInternal db = server.getServer().getOrCreateDatabase(databaseName);
 
-    final File file = new File(db.getDatabasePath() + File.separator + EmbeddedSchema.SCHEMA_FILE_NAME);
+    final File file = new File(db.getDatabasePath() + File.separator + LocalSchema.SCHEMA_FILE_NAME);
     try {
       final String schemaJson;
       if (file.exists()) {

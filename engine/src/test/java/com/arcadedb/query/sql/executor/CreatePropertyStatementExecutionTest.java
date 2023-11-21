@@ -18,11 +18,15 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.*;
-import com.arcadedb.database.*;
-import com.arcadedb.exception.*;
-import com.arcadedb.schema.*;
-import org.junit.jupiter.api.*;
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.ValidationException;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.*;
 

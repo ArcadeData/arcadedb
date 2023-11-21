@@ -314,7 +314,7 @@ public interface Schema {
 
   void setEncoding(String encoding);
 
-  EmbeddedSchema getEmbedded();
+  LocalSchema getEmbedded();
 
   /**
    * Registers a function library.

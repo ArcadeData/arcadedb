@@ -21,8 +21,8 @@ package com.arcadedb.query.sql.method.string;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.utility.DateUtils;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.utility.DateUtils;
 
 import java.util.*;
 

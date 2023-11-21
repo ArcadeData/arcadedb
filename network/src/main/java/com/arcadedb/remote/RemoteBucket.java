@@ -25,7 +25,6 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.RawRecordCallback;
 
-import java.io.*;
 import java.util.*;
 
 /**

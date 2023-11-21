@@ -25,7 +25,6 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.Json;
 import com.arcadedb.query.sql.parser.JsonArray;
-import com.arcadedb.serializer.json.JSONArray;
 
 import java.util.*;
 

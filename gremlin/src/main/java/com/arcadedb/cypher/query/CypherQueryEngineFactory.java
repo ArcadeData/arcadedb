@@ -22,9 +22,9 @@ package com.arcadedb.cypher.query;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.gremlin.ArcadeGraph;
 
 import java.util.logging.*;
 

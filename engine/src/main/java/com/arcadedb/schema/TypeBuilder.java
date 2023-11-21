@@ -38,9 +38,9 @@ public class TypeBuilder<T> {
   final DatabaseInternal database;
   final Class<T>         type;
   boolean                    ignoreIfExists  = false;
-  String                     typeName;
-  List<EmbeddedDocumentType> superTypes;
-  List<Bucket>               bucketInstances = Collections.emptyList();
+  String                  typeName;
+  List<LocalDocumentType> superTypes;
+  List<Bucket>            bucketInstances = Collections.emptyList();
   int                        buckets;
   int                        pageSize;
 
@@ -57,11 +57,11 @@ public class TypeBuilder<T> {
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
 
-    final EmbeddedSchema schema = database.getSchema().getEmbedded();
+    final LocalSchema schema = database.getSchema().getEmbedded();
 
-    final EmbeddedDocumentType t = schema.types.get(typeName);
+    final LocalDocumentType t = schema.types.get(typeName);
     if (t != null) {
-      if (t.getClass().equals(type))
+      if (type.isAssignableFrom(t.getClass()))
         return (T) t;
 
       final String expectedType = type.isAssignableFrom(VertexType.class) ?
@@ -80,13 +80,13 @@ public class TypeBuilder<T> {
       throw new SchemaException("Type '" + typeName + "' already exists");
 
     return schema.recordFileChanges(() -> {
-      final EmbeddedDocumentType c;
+      final LocalDocumentType c;
       if (type.equals(VertexType.class))
-        c = new EmbeddedVertexType(schema, typeName);
+        c = new LocalVertexType(schema, typeName);
       else if (type.equals(EdgeType.class))
-        c = new EmbeddedEdgeType(schema, typeName);
+        c = new LocalEdgeType(schema, typeName);
       else {
-        c = new EmbeddedDocumentType(schema, typeName);
+        c = new LocalDocumentType(schema, typeName);
 
         // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
         schema.getDictionary().getIdByName(typeName, true);
@@ -110,7 +110,7 @@ public class TypeBuilder<T> {
       }
 
       if (superTypes != null)
-        for (EmbeddedDocumentType sup : superTypes)
+        for (LocalDocumentType sup : superTypes)
           c.addSuperType(sup);
 
       schema.saveConfiguration();
@@ -128,7 +128,7 @@ public class TypeBuilder<T> {
   public TypeBuilder<T> withSuperType(final String superType) {
     if (superTypes == null)
       superTypes = new ArrayList<>();
-    superTypes.add((EmbeddedDocumentType) database.getSchema().getType(superType));
+    superTypes.add((LocalDocumentType) database.getSchema().getType(superType));
     return this;
   }
 

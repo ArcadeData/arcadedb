@@ -19,8 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.EmbeddedBucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -243,7 +242,7 @@ public class CheckDatabaseTest extends TestHelper {
   @Test
   public void checkBrokenPage() {
     database.transaction(() -> {
-      final EmbeddedBucket bucket = (EmbeddedBucket) database.getSchema().getBucketById(root.getIdentity().bucketId);
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(root.getIdentity().bucketId);
 
       try {
         final MutablePage page = ((DatabaseInternal) database).getTransaction()

@@ -31,7 +31,6 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -329,7 +328,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public EmbeddedSchema.INDEX_TYPE getType() {
+  public Schema.INDEX_TYPE getType() {
     return Schema.INDEX_TYPE.FULL_TEXT;
   }
 

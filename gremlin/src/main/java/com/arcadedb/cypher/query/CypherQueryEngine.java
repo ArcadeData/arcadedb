@@ -21,12 +21,12 @@
 package com.arcadedb.cypher.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.cypher.ArcadeCypher;
-import com.arcadedb.gremlin.ArcadeGraph;
 
 import java.util.*;
 import java.util.stream.*;

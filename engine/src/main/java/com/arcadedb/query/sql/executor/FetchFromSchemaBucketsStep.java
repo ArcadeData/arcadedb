@@ -18,13 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.Vertex;
-import com.arcadedb.index.Index;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;

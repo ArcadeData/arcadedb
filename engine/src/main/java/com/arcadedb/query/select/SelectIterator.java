@@ -17,13 +17,11 @@ package com.arcadedb.query.select;/*
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.logging.*;
 
 /**
  * Query iterator returned from queries. Extends the base Java iterator with convenient methods.

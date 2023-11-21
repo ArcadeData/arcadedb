@@ -18,29 +18,12 @@
  */
 package com.arcadedb.remote;
 
-import com.arcadedb.database.Document;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RecordEvents;
-import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
-import com.arcadedb.engine.Bucket;
-import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexInternal;
-import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.AbstractProperty;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
-import com.arcadedb.schema.EmbeddedProperty;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
-import java.util.stream.*;
 
 /**
  * Property used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or

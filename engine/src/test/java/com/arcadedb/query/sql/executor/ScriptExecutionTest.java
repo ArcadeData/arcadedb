@@ -2,7 +2,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
@@ -240,8 +240,8 @@ public class ScriptExecutionTest extends TestHelper {
 
     database.async().waitCompletion();
 
-    ImmutablePage page = ((EmbeddedDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
-        ((PaginatedComponentFile) ((EmbeddedDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
+    ImmutablePage page = ((LocalDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
+        ((PaginatedComponentFile) ((LocalDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
     Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
   }
@@ -295,8 +295,8 @@ public class ScriptExecutionTest extends TestHelper {
 
     database.async().waitCompletion();
 
-    ImmutablePage page = ((EmbeddedDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
-        ((PaginatedComponentFile) ((EmbeddedDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
+    ImmutablePage page = ((LocalDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
+        ((PaginatedComponentFile) ((LocalDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
     Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
 

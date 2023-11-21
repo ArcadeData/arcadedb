@@ -32,8 +32,6 @@ import java.net.*;
 import java.util.*;
 import java.util.logging.*;
 
-import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
-
 public class HTTPDocumentIT extends BaseGraphServerTest {
   private final static String DATABASE_NAME = "httpDocument";
 

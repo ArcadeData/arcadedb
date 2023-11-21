@@ -19,7 +19,7 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
@@ -39,7 +39,7 @@ public class DatabaseAsyncIndexCompaction implements DatabaseAsyncTask {
       database.commit();
 
     try {
-      ((EmbeddedDatabase) database.getEmbedded()).indexCompactions.incrementAndGet();
+      ((LocalDatabase) database.getEmbedded()).indexCompactions.incrementAndGet();
       index.compact();
     } catch (final Exception e) {
       if (e instanceof IllegalArgumentException && e.getMessage().contains("File with id ") && e.getMessage().contains("was not found"))

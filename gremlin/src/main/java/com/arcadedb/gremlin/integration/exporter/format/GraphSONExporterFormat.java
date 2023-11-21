@@ -27,8 +27,8 @@ import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.exporter.format.AbstractExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
-import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 import com.arcadedb.serializer.json.JSONObject;
+import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
 import java.io.*;
 import java.util.zip.*;

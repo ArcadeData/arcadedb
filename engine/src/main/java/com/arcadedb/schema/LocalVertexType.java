@@ -20,15 +20,15 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.EmbeddedBucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.MutableVertex;
 
 import java.util.*;
 
-public class EmbeddedVertexType extends EmbeddedDocumentType implements VertexType {
+public class LocalVertexType extends LocalDocumentType implements VertexType {
   private List<Bucket> additionalBuckets = new ArrayList<>();
 
-  public EmbeddedVertexType(final EmbeddedSchema schema, final String name) {
+  public LocalVertexType(final LocalSchema schema, final String name) {
     super(schema, name);
   }
 
@@ -48,6 +48,6 @@ public class EmbeddedVertexType extends EmbeddedDocumentType implements VertexTy
   protected void addBucketInternal(final Bucket bucket) {
     super.addBucketInternal(bucket);
     additionalBuckets.addAll(
-        ((DatabaseInternal) schema.getDatabase()).getGraphEngine().createVertexAdditionalBuckets((EmbeddedBucket) bucket));
+        ((DatabaseInternal) schema.getDatabase()).getGraphEngine().createVertexAdditionalBuckets((LocalBucket) bucket));
   }
 }

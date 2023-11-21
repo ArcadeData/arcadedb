@@ -22,7 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 
 import java.util.*;
 
@@ -66,7 +66,7 @@ public interface Index {
 
   long countEntries();
 
-  EmbeddedSchema.INDEX_TYPE getType();
+  Schema.INDEX_TYPE getType();
 
   String getTypeName();
 

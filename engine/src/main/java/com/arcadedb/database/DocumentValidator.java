@@ -18,8 +18,10 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.exception.*;
-import com.arcadedb.schema.*;
+import com.arcadedb.exception.ValidationException;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.math.*;
 import java.util.*;
@@ -368,7 +370,7 @@ public class DocumentValidator {
 
     if (p.isReadonly()) {
       if (document.isDirty() && document.getIdentity() != null) {
-        final Document originalDocument = ((EmbeddedDatabase) document.getDatabase()).getOriginalDocument(document);
+        final Document originalDocument = ((LocalDatabase) document.getDatabase()).getOriginalDocument(document);
         final Object originalFieldValue = originalDocument.get(p.getName());
         if (!Objects.equals(fieldValue, originalFieldValue))
           throwValidationException(p, "is immutable and cannot be altered. Field value is: " + fieldValue);

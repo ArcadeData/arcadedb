@@ -33,8 +33,8 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -583,9 +583,9 @@ public class OrientDBImporter {
             if (!checkForNullIndexes(attributes, type))
               return null;
 
-            if (type instanceof EmbeddedVertexType)
+            if (type instanceof LocalVertexType)
               record = database.newVertex(className);
-            else if (type instanceof EmbeddedEdgeType)
+            else if (type instanceof LocalEdgeType)
               // SKIP IT. EDGES ARE CREATED FROM VERTICES
               return null;
             else
@@ -625,7 +625,7 @@ public class OrientDBImporter {
 
             final RID recordRID = record.getIdentity();
 
-            if (type instanceof EmbeddedVertexType)
+            if (type instanceof LocalVertexType)
               context.createdVertices.incrementAndGet();
             else
               context.createdDocuments.incrementAndGet();
@@ -723,7 +723,7 @@ public class OrientDBImporter {
       return;
 
     final DocumentType type = database.getSchema().getType(className);
-    if (!(type instanceof EmbeddedEdgeType))
+    if (!(type instanceof LocalEdgeType))
       return;
 
     if (!checkForNullIndexes(attributes, type))

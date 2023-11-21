@@ -26,7 +26,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.DocumentIndexer;
-import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.EmbeddedModifier;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
@@ -79,12 +79,12 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 public class ReplicatedDatabase implements DatabaseInternal {
-  private final ArcadeDBServer   server;
-  private final EmbeddedDatabase proxied;
-  private final HAServer.QUORUM  quorum;
+  private final ArcadeDBServer  server;
+  private final LocalDatabase   proxied;
+  private final HAServer.QUORUM quorum;
   private final long             timeout;
 
-  public ReplicatedDatabase(final ArcadeDBServer server, final EmbeddedDatabase proxied) {
+  public ReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied) {
     if (!server.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL))
       throw new ConfigurationException("Cannot use replicated database if transaction WAL is disabled");
 
@@ -230,7 +230,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public EmbeddedDatabase getEmbedded() {
+  public LocalDatabase getEmbedded() {
     return proxied;
   }
 

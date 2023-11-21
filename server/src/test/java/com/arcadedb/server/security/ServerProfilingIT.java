@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.security;
 
-import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;

@@ -22,7 +22,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.EmbeddedBucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
@@ -56,7 +56,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (database.isAsyncProcessing())
       throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
 
-    final EmbeddedSchema schema = database.getSchema().getEmbedded();
+    final LocalSchema schema = database.getSchema().getEmbedded();
     if (ignoreIfExists) {
       final DocumentType type = schema.getType(typeName);
       final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
@@ -75,7 +75,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
-    final EmbeddedDocumentType type = schema.getType(typeName);
+    final LocalDocumentType type = schema.getType(typeName);
 
     final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
     if (index != null)
@@ -88,7 +88,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     int i = 0;
 
     for (final String propertyName : propertyNames) {
-      if (type instanceof EmbeddedEdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
+      if (type instanceof LocalEdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
         keyTypes[i++] = Type.LINK;
       } else {
         final Property property = type.getPolymorphicPropertyIfExists(propertyName);
@@ -109,7 +109,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           final int finalIdx = idx;
           database.transaction(() -> {
 
-            final EmbeddedBucket bucket = (EmbeddedBucket) buckets.get(finalIdx);
+            final LocalBucket bucket = (LocalBucket) buckets.get(finalIdx);
             indexes[finalIdx] = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize,
                 nullStrategy, callback, propertyNames, null, batchSize);
 

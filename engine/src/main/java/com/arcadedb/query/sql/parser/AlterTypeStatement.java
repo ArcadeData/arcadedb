@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
 
 import java.util.*;
 import java.util.stream.*;

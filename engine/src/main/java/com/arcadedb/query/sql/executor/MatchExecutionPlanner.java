@@ -44,7 +44,6 @@ import com.arcadedb.query.sql.parser.Skip;
 import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.Pair;
 

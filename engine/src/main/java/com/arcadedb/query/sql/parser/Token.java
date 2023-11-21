@@ -20,7 +20,7 @@
 /* JavaCCOptions:TOKEN_EXTENDS=,KEEP_LINE_COL=null,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.io.Serializable;
+import java.io.*;
 
 /**
  * Describes the input token stream.

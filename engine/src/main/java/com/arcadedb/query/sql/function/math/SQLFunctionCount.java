@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.math.SQLFunctionMathAbstract;
 
 /**
  * Count the record that contains a field. Use * to indicate the record instead of the field. Uses the context to save the counter

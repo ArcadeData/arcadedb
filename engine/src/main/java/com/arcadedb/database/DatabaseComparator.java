@@ -19,8 +19,8 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.EmbeddedBucket;
 import com.arcadedb.engine.ImmutablePage;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.index.Index;
@@ -72,8 +72,8 @@ public class DatabaseComparator {
         throw new DatabaseAreNotIdentical("Bucket '%s' is not present in DB1", entry.getName());
 
     for (final Bucket bucket1i : buckets1) {
-      final EmbeddedBucket bucket1 = (EmbeddedBucket) bucket1i;
-      final EmbeddedBucket bucket2 = (EmbeddedBucket) types2Map.get(bucket1.getName());
+      final LocalBucket bucket1 = (LocalBucket) bucket1i;
+      final LocalBucket bucket2 = (LocalBucket) types2Map.get(bucket1.getName());
 
       if (bucket1.getPageSize() != bucket2.getPageSize())
         throw new DatabaseAreNotIdentical("Bucket '%s' has different page size in two databases. DB1 %d <> DB2 %d",

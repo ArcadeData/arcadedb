@@ -38,7 +38,7 @@ import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 
 import java.util.*;
 import java.util.stream.*;
@@ -135,7 +135,7 @@ public class TraverseExecutionPlanner {
     final Object paramValue = inputParam.getValue(context.getInputParameters());
     if (paramValue == null) {
       result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
-    } else if (paramValue instanceof EmbeddedDocumentType) {
+    } else if (paramValue instanceof LocalDocumentType) {
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);

@@ -3,7 +3,7 @@ package com.arcadedb.query.polyglot;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.QueryEngine;
@@ -53,7 +53,7 @@ public class PolyglotQueryTest extends TestHelper {
     }
 
     // ALLOW ACCESSING TO BIG DECIMAL CLASS
-    ((EmbeddedDatabase) database).registerReusableQueryEngine(
+    ((LocalDatabase) database).registerReusableQueryEngine(
         new PolyglotQueryEngine.PolyglotQueryEngineFactory("js").setAllowedPackages(Collections.singletonList("java.math.BigDecimal"))
             .getInstance((DatabaseInternal) database));
 

@@ -29,8 +29,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.VertexType;
 
 public class RecordFactory {
@@ -69,9 +69,9 @@ public class RecordFactory {
   }
 
   public Record newMutableRecord(final Database database, final DocumentType type) {
-    if (type instanceof EmbeddedVertexType)
+    if (type instanceof LocalVertexType)
       return new MutableVertex(database, (VertexType) type, null);
-    if (type instanceof EmbeddedEdgeType)
+    if (type instanceof LocalEdgeType)
       return new MutableEdge(database, (EdgeType) type, null);
     return new MutableDocument(database, type, null);
   }

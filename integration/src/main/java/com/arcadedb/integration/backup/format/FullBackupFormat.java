@@ -20,12 +20,12 @@ package com.arcadedb.integration.backup.format;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
@@ -76,8 +76,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
           final long beginTime = System.currentTimeMillis();
 
           long databaseOrigSize = 0L;
-          databaseOrigSize += compressFile(zipFile, ((EmbeddedDatabase) database.getEmbedded()).getConfigurationFile());
-          databaseOrigSize += compressFile(zipFile, ((EmbeddedSchema) database.getSchema()).getConfigurationFile());
+          databaseOrigSize += compressFile(zipFile, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
+          databaseOrigSize += compressFile(zipFile, ((LocalSchema) database.getSchema()).getConfigurationFile());
 
           final Collection<ComponentFile> files = database.getFileManager().getFiles();
 

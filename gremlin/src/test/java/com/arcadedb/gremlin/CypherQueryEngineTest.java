@@ -21,7 +21,6 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.BasicDatabase;
-import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;

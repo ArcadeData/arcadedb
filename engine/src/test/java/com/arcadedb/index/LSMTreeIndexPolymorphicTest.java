@@ -24,7 +24,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;

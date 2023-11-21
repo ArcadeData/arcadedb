@@ -22,10 +22,10 @@ package com.arcadedb.gremlin.query;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.query.QueryEngine;
 import com.arcadedb.gremlin.ArcadeGraph;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.gremlin.ArcadeGremlin;
+import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 

@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.method.collection;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -49,7 +49,7 @@ class SQLMethodFieldTest {
 
     final Database database = Mockito.mock(Database.class);
 
-    final DocumentType type = Mockito.mock(EmbeddedDocumentType.class);
+    final DocumentType type = Mockito.mock(LocalDocumentType.class);
 
 //        MutableDocument doc = new MutableDocument(database, type, null);
 //        doc.set("name", "Foo");

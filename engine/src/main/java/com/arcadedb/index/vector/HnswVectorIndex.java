@@ -39,7 +39,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -1197,8 +1196,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
-  public EmbeddedSchema.INDEX_TYPE getType() {
-    return EmbeddedSchema.INDEX_TYPE.HSNW;
+  public Schema.INDEX_TYPE getType() {
+    return Schema.INDEX_TYPE.HSNW;
   }
 
   @Override

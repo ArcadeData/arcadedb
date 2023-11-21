@@ -18,10 +18,10 @@
  */
 package com.arcadedb.query.sql.function.misc;
 
-import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 
 /**
  * Computes the aggregate "and" over a field.

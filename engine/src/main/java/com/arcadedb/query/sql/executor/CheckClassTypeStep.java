@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
 import com.arcadedb.schema.Schema;
 
 /**

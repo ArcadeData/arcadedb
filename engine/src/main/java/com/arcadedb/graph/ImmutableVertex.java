@@ -24,7 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.engine.EmbeddedBucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
@@ -75,7 +75,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
       try {
         // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
         database.getTransaction().getPageToModify(rid.getPageId(),
-            ((EmbeddedBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
+            ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
         reload();
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on reloading vertex " + rid, e);

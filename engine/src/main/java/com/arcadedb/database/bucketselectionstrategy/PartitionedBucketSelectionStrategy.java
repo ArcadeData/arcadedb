@@ -21,7 +21,7 @@ package com.arcadedb.database.bucketselectionstrategy;
 import com.arcadedb.database.Document;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedDocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -36,8 +36,8 @@ import java.util.*;
  * @author Luca Garulli
  */
 public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectionStrategy {
-  private       EmbeddedDocumentType type;
-  private final List<String>         propertyNames;
+  private       LocalDocumentType type;
+  private final List<String>      propertyNames;
 
   public PartitionedBucketSelectionStrategy(final List<String> propertyNames) {
     this.propertyNames = Collections.unmodifiableList(propertyNames);
@@ -60,7 +60,7 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
   }
 
   @Override
-  public void setType(final EmbeddedDocumentType type) {
+  public void setType(final LocalDocumentType type) {
     super.setType(type);
     this.type = type;
 

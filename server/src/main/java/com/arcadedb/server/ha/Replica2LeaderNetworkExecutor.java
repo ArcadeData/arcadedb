@@ -28,7 +28,7 @@ import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
 import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.message.DatabaseStructureRequest;
@@ -445,7 +445,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     final DatabaseInternal database = server.getServer().getOrCreateDatabase(db);
 
     // WRITE THE SCHEMA
-    try (final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + File.separator + EmbeddedSchema.SCHEMA_FILE_NAME,
+    try (final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + File.separator + LocalSchema.SCHEMA_FILE_NAME,
         DatabaseFactory.getDefaultCharset())) {
       schemaFile.write(dbStructure.getSchemaJson());
     }

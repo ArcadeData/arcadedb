@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;

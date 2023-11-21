@@ -47,7 +47,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
     if (database.isAsyncProcessing())
       throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
 
-    final EmbeddedSchema schema = database.getSchema().getEmbedded();
+    final LocalSchema schema = database.getSchema().getEmbedded();
 
     if (ignoreIfExists) {
       final IndexInternal index = schema.indexMap.get(indexName);

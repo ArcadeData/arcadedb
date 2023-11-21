@@ -21,9 +21,9 @@
 package com.arcadedb.cypher;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.cypher.query.CypherQueryEngine;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGremlin;
-import com.arcadedb.cypher.query.CypherQueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;

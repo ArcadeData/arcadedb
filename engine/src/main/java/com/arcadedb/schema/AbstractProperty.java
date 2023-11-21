@@ -62,7 +62,7 @@ public abstract class AbstractProperty implements Property {
    * @return The index instance
    */
   @Override
-  public Index createIndex(final EmbeddedSchema.INDEX_TYPE type, final boolean unique) {
+  public Index createIndex(final Schema.INDEX_TYPE type, final boolean unique) {
     return owner.createTypeIndex(type, unique, name);
   }
 
@@ -75,7 +75,7 @@ public abstract class AbstractProperty implements Property {
    * @return The index instance
    */
   @Override
-  public Index getOrCreateIndex(final EmbeddedSchema.INDEX_TYPE type, final boolean unique) {
+  public Index getOrCreateIndex(final Schema.INDEX_TYPE type, final boolean unique) {
     return owner.getSchema().buildTypeIndex(owner.getName(), new String[] { name }).withType(type).withUnique(unique)
         .withIgnoreIfExists(true).create();
   }

@@ -21,7 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.Dictionary;
-import com.arcadedb.engine.EmbeddedBucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
@@ -33,7 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.BucketIndexBuilder;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.ManualIndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -97,7 +97,7 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
-  public EmbeddedBucket createBucket(final String bucketName) {
+  public LocalBucket createBucket(final String bucketName) {
     final ResultSet result = remoteDatabase.command("sql", "create bucket `" + bucketName + "`");
     return null;
   }
@@ -235,7 +235,7 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
-  public EmbeddedSchema getEmbedded() {
+  public LocalSchema getEmbedded() {
     return null;
   }
 
@@ -479,7 +479,7 @@ public class RemoteSchema implements Schema {
 
   @Deprecated
   @Override
-  public EmbeddedBucket getBucketById(final int id) {
+  public LocalBucket getBucketById(final int id) {
     throw new UnsupportedOperationException();
   }
 

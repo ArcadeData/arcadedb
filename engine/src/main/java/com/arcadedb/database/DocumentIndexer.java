@@ -20,7 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
-import com.arcadedb.engine.EmbeddedBucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -30,9 +30,9 @@ import com.arcadedb.schema.DocumentType;
 import java.util.*;
 
 public class DocumentIndexer {
-  private final EmbeddedDatabase database;
+  private final LocalDatabase database;
 
-  protected DocumentIndexer(final EmbeddedDatabase database) {
+  protected DocumentIndexer(final LocalDatabase database) {
     this.database = database;
   }
 
@@ -50,7 +50,7 @@ public class DocumentIndexer {
     return modifiedRecord.getType().getPolymorphicBucketIndexByBucketId(bucketId, null);
   }
 
-  public void createDocument(final Document record, final DocumentType type, final EmbeddedBucket bucket) {
+  public void createDocument(final Document record, final DocumentType type, final LocalBucket bucket) {
     final RID rid = record.getIdentity();
     if (rid == null)
       throw new IllegalArgumentException("Cannot index a non persistent record");

@@ -18,8 +18,8 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.utility.SystemVariableResolver;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.SystemVariableResolver;
 
 import java.io.*;
 import java.util.*;

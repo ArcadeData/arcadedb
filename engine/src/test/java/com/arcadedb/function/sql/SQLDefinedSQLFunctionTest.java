@@ -4,7 +4,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.parser.ParseException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 

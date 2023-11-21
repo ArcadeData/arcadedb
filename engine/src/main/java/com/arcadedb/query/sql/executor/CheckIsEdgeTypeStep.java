@@ -22,7 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
+import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.Schema;
 
 /**
@@ -68,7 +68,7 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
         throw new CommandExecutionException("Type not found: " + this.targetClass);
       }
 
-      if (targettypez instanceof EmbeddedEdgeType) {
+      if (targettypez instanceof LocalEdgeType) {
         found = true;
       }
       if (!found) {

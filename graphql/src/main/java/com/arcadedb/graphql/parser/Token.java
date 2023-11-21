@@ -20,7 +20,7 @@
 /* ParserGeneratorCCOptions:TOKEN_EXTENDS=,KEEP_LINE_COLUMN=true,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.io.Serializable;
+import java.io.*;
 
 /**
  * Describes the input token stream.

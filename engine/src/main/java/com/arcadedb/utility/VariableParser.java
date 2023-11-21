@@ -19,7 +19,6 @@
 package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
-import org.apache.lucene.codecs.CodecUtil;
 
 import java.util.logging.*;
 

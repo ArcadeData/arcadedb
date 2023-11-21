@@ -21,7 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -90,7 +90,7 @@ public class JSONSerializer {
 
       final DocumentType type = database.getSchema().getType(embeddedTypeName);
 
-      if (type instanceof EmbeddedVertexType) {
+      if (type instanceof LocalVertexType) {
         final MutableVertex v = database.newVertex(embeddedTypeName);
         v.fromJSON((JSONObject) value);
         value = v;

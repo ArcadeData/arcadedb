@@ -27,8 +27,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedVertexType;
+import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -203,10 +203,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         type = database.getSchema().getTypeByBucketId(rid.getBucketId());
       }
 
-      if (type instanceof EmbeddedVertexType) {
+      if (type instanceof LocalVertexType) {
         if (includedVertices.add((Identifiable) value))
           vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
-      } else if (type instanceof EmbeddedEdgeType) {
+      } else if (type instanceof LocalEdgeType) {
         final Edge edge = ((Identifiable) value).asEdge(true);
 
         edges.put(serializerImpl.serializeGraphElement(edge));

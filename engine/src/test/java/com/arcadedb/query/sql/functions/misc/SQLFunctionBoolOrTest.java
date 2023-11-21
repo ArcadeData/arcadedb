@@ -20,9 +20,7 @@ package com.arcadedb.query.sql.functions.misc;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.function.misc.SQLFunctionBoolOr;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**

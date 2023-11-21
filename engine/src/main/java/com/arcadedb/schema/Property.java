@@ -25,9 +25,9 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public interface Property {
-  Index createIndex(EmbeddedSchema.INDEX_TYPE type, boolean unique);
+  Index createIndex(Schema.INDEX_TYPE type, boolean unique);
 
-  Index getOrCreateIndex(EmbeddedSchema.INDEX_TYPE type, boolean unique);
+  Index getOrCreateIndex(Schema.INDEX_TYPE type, boolean unique);
 
   String getName();
 

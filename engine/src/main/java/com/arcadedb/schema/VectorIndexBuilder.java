@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -100,7 +99,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     filePath = database.getDatabasePath() + File.separator + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_" + System.nanoTime() + "."
         + database.getFileManager().newFileId() + ".v" + HnswVectorIndex.CURRENT_VERSION + "." + HnswVectorIndex.FILE_EXT;
 
-    final EmbeddedSchema schema = database.getSchema().getEmbedded();
+    final LocalSchema schema = database.getSchema().getEmbedded();
     if (ignoreIfExists) {
       Index index = schema.getIndexByName(indexName);
       if (index instanceof HnswVectorIndex) {
@@ -120,7 +119,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     schema.registerFile(index.getComponent());
     schema.indexMap.put(index.getName(), index);
 
-    index.build(origin, EmbeddedSchema.BUILD_TX_BATCH_SIZE, vertexCreationCallback, callback);
+    index.build(origin, LocalSchema.BUILD_TX_BATCH_SIZE, vertexCreationCallback, callback);
 
     return index;
   }

@@ -25,11 +25,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
@@ -42,7 +42,6 @@ import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -200,7 +199,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public EmbeddedSchema.INDEX_TYPE getType() {
+  public Schema.INDEX_TYPE getType() {
     return Schema.INDEX_TYPE.LSM_TREE;
   }
 

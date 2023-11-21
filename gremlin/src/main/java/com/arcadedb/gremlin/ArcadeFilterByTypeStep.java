@@ -21,9 +21,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.BasicDatabase;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;

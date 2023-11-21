@@ -21,7 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.security.SecurityManager;
 
 import java.io.*;
@@ -54,9 +54,9 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public boolean exists() {
-    boolean exists = new File(databasePath + File.separator + EmbeddedSchema.SCHEMA_FILE_NAME).exists();
+    boolean exists = new File(databasePath + File.separator + LocalSchema.SCHEMA_FILE_NAME).exists();
     if (!exists)
-      exists = new File(databasePath + File.separator + EmbeddedSchema.SCHEMA_PREV_FILE_NAME).exists();
+      exists = new File(databasePath + File.separator + LocalSchema.SCHEMA_PREV_FILE_NAME).exists();
     return exists;
   }
 
@@ -71,7 +71,7 @@ public class DatabaseFactory implements AutoCloseable {
   public synchronized Database open(final ComponentFile.MODE mode) {
     checkForActiveInstance(databasePath);
 
-    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, mode, contextConfiguration, security, callbacks);
+    final LocalDatabase database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.open();
 
@@ -83,7 +83,7 @@ public class DatabaseFactory implements AutoCloseable {
   public synchronized Database create() {
     checkForActiveInstance(databasePath);
 
-    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
+    final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.create();
 
@@ -139,7 +139,7 @@ public class DatabaseFactory implements AutoCloseable {
       throw new DatabaseOperationException("Found active instance of database '" + databasePath + "' already in use");
   }
 
-  private static void registerActiveInstance(final EmbeddedDatabase database) {
+  private static void registerActiveInstance(final LocalDatabase database) {
     if (ACTIVE_INSTANCES.putIfAbsent(database.databasePath, database) != null) {
       database.close();
       throw new DatabaseOperationException("Found active instance of database '" + database.databasePath + "' already in use");

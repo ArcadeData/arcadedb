@@ -21,7 +21,6 @@
 package com.arcadedb.gremlin.io;
 
 import com.arcadedb.database.BasicDatabase;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import org.apache.tinkerpop.gremlin.structure.io.AbstractIoRegistry;
 

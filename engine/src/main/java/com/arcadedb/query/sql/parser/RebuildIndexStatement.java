@@ -35,8 +35,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.schema.Schema;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
@@ -138,7 +138,7 @@ public class RebuildIndexStatement extends DDLStatement {
         if (((IndexInternal) idx).isCompacting())
           throw new NeedRetryException("Cannot rebuild the index '" + idx.getName() + "' while is compacting");
 
-        final EmbeddedSchema.INDEX_TYPE type = idx.getType();
+        final Schema.INDEX_TYPE type = idx.getType();
         final String typeName = idx.getTypeName();
         final boolean unique = idx.isUnique();
         final List<String> propertyNames = idx.getPropertyNames();

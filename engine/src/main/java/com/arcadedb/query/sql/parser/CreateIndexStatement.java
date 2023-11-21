@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
@@ -82,7 +81,7 @@ public class CreateIndexStatement extends DDLStatement {
 
     final String[] fields = calculateProperties(context);
 
-    final EmbeddedSchema.INDEX_TYPE indexType;
+    final Schema.INDEX_TYPE indexType;
     boolean unique = false;
 
     final String typeAsString = type.getStringValue();

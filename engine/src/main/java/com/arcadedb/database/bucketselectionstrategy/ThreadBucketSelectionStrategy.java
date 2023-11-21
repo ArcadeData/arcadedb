@@ -19,7 +19,7 @@
 package com.arcadedb.database.bucketselectionstrategy;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.schema.EmbeddedDocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 
 /**
  * Threaded implementation that returns the bucket partitioned with the thread id. In this way there is no conflict between documents created by concurrent threads.
@@ -30,7 +30,7 @@ public class ThreadBucketSelectionStrategy implements BucketSelectionStrategy {
   protected int total;
 
   @Override
-  public void setType(final EmbeddedDocumentType type) {
+  public void setType(final LocalDocumentType type) {
     this.total = type.getBuckets(false).size();
   }
 

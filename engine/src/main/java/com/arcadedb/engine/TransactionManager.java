@@ -372,7 +372,7 @@ public class TransactionManager {
     }
 
     for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
-      final EmbeddedBucket bucket = (EmbeddedBucket) database.getSchema().getBucketById(entry.getKey());
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
       if (bucket.getCachedRecordCount() > -1)
         // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
         bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());

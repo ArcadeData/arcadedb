@@ -20,8 +20,8 @@ package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.schema.Type;
 
 /**
  * Returns the value's Arcadedb Type.

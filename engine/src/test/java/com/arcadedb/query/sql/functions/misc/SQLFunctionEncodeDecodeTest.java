@@ -22,7 +22,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.misc.SQLFunctionDecode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionEncode;
-import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

@@ -20,11 +20,7 @@
 /* JavaCCOptions:STATIC=false,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.Reader;
-import java.io.UnsupportedEncodingException;
+import java.io.*;
 
 /**
  * An implementation of interface CharStream, where the stream is assumed to

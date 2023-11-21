@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
@@ -70,11 +70,11 @@ public class AlterDatabaseStatement extends DDLStatement {
     switch (cfg) {
     case DATE_FORMAT:
       db.getSchema().setDateFormat(finalValue.toString());
-      ((EmbeddedSchema) db.getSchema()).saveConfiguration();
+      ((LocalSchema) db.getSchema()).saveConfiguration();
       break;
     case DATE_TIME_FORMAT:
       db.getSchema().setDateTimeFormat(finalValue.toString());
-      ((EmbeddedSchema) db.getSchema()).saveConfiguration();
+      ((LocalSchema) db.getSchema()).saveConfiguration();
       break;
     case DATE_IMPLEMENTATION:
       try {

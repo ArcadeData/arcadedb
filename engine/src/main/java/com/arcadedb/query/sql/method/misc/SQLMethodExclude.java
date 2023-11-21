@@ -27,10 +27,10 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedEdgeType;
-import com.arcadedb.schema.EmbeddedVertexType;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalVertexType;
 
 import java.util.*;
 
@@ -121,9 +121,9 @@ public class SQLMethodExclude extends AbstractSQLMethod {
     final DocumentType type = document.getDatabase().getSchema().getType(document.getTypeName());
 
     final MutableDocument doc;
-    if (type instanceof EmbeddedVertexType)
+    if (type instanceof LocalVertexType)
       doc = document.getDatabase().newVertex(document.getTypeName());
-    else if (type instanceof EmbeddedEdgeType)
+    else if (type instanceof LocalEdgeType)
       throw new IllegalArgumentException("Cannot copy an edge");
     else
       doc = document.getDatabase().newDocument(document.getTypeName());

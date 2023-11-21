@@ -21,7 +21,7 @@ package com.arcadedb.server.ha.message;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.engine.EmbeddedBucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
@@ -119,9 +119,9 @@ public class FileContentResponse extends HAAbstractCommand {
                   .getFile(file.getFileId())).getPageSize());
         }
 
-        if (component instanceof EmbeddedBucket)
+        if (component instanceof LocalBucket)
           // RESET CACHED RECORD COUNT
-          ((EmbeddedBucket) component).setCachedRecordCount(-1);
+          ((LocalBucket) component).setCachedRecordCount(-1);
 
       } else
         LogManager.instance().log(this, Level.SEVERE, "Cannot write not paginated file %s from the leader", fileName);
