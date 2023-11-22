@@ -48,7 +48,7 @@ fi
 
 
 if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
-    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError --add-opens java.base/java.io=ALL-UNNAMED -Dpolyglot.engine.WarnInterpreterOnly=false -Djava.awt.headless=true -Dfile.encoding=UTF8 --illegal-access=deny"
+    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError --add-opens java.base/java.io=ALL-UNNAMED -Dpolyglot.engine.WarnInterpreterOnly=false -Djava.awt.headless=true -Dfile.encoding=UTF8"
 fi
 
 if [ $# -gt 0 ] ; then
