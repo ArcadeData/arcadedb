@@ -407,3 +407,4 @@ server/backups
 integration/server-users.jsonl
 server/replication/
 replication/
+*.pyc
