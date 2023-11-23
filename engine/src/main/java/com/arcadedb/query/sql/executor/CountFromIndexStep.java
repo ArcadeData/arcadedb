@@ -34,7 +34,7 @@ public class CountFromIndexStep extends AbstractExecutionStep {
   private final String          alias;
 
   private boolean executed = false;
-  private int     cost     = -1;
+  private long    cost     = -1;
 
   /**
    * @param targetIndex      the index name as it is parsed by the SQL parsed
