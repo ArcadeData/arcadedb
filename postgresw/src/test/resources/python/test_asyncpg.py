@@ -1,6 +1,6 @@
 import asyncio
 import asyncpg
-import nest_asyncio
+# import nest_asyncio
 
 # Apply nest_asyncio to enable nested event loops in Jupyter-notebook
 # nest_asyncio.apply()
