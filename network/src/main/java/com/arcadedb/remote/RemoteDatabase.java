@@ -380,17 +380,23 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public ResultSet command(final String language, final String command, final Map<String, Object> params) {
-    checkDatabaseIsOpen();
-    stats.commands.incrementAndGet();
-
-    return (ResultSet) databaseCommand("command", language, command, params, true,
-        (connection, response) -> createResultSet(response));
+    return command(language, command, null, params);
   }
 
   @Override
   public ResultSet command(final String language, final String command, final ContextConfiguration configuration,
       final Object... args) {
     return command(language, command, args);
+  }
+
+  @Override
+  public ResultSet command(final String language, final String command, final ContextConfiguration configuration,
+      final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    stats.commands.incrementAndGet();
+
+    return (ResultSet) databaseCommand("command", language, command, params, true,
+        (connection, response) -> createResultSet(response));
   }
 
   @Override

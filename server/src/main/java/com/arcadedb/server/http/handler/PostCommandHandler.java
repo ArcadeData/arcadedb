@@ -98,11 +98,11 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
     boolean awaitResponse = true;
     if (requestMap.containsKey("awaitResponse") && requestMap.get("awaitResponse") instanceof Boolean) {
-        awaitResponse = (Boolean) requestMap.get("awaitResponse");
+      awaitResponse = (Boolean) requestMap.get("awaitResponse");
     }
 
     if (!awaitResponse) {
-        executeCommandAsync(database, language, command, paramMap);
+      executeCommandAsync(database, language, command, paramMap);
 
       return new ExecutionResponse(202, "{ \"result\": \"Command accepted for asynchronous execution\"}");
     } else {
@@ -126,8 +126,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
-    return database.command(language, command, httpServer.getServer().getConfiguration(),
-      params instanceof Object[] ? (Object[]) params : (Map<String, Object>) params);
+    if (params instanceof Object[])
+      return database.command(language, command, httpServer.getServer().getConfiguration(), (Object[]) params);
+    return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }
 
   protected void executeCommandAsync(final Database database, final String language, final String command,
@@ -135,16 +136,16 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final Object params = mapParams(paramMap);
 
     database.async().command(language, command, new AsyncResultsetCallback() {
-        @Override
-        public void onComplete(final ResultSet rs) {
-          LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.",null,database.getName());
-        }
+      @Override
+      public void onComplete(final ResultSet rs) {
+        LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.", null, database.getName());
+      }
 
-        @Override
-        public void onError(final Exception exception) {
-          LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.",null,database.getName());
-          LogManager.instance().log(this, Level.SEVERE, "", exception);
-        }
-      }, params instanceof Object[] ? (Object[]) params : (Map<String, Object>) params);
+      @Override
+      public void onError(final Exception exception) {
+        LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.", null, database.getName());
+        LogManager.instance().log(this, Level.SEVERE, "", exception);
+      }
+    }, params instanceof Object[] ? (Object[]) params : (Map<String, Object>) params);
   }
 }

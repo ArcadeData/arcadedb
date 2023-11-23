@@ -153,7 +153,8 @@ public class Neo4jImporter {
       final long elapsed = (System.currentTimeMillis() - context.startedOn) / 1000;
 
       log("***************************************************************************************************");
-      log("Import of Neo4j database completed in %,d secs with %,d errors and %,d warnings.", elapsed, context.errors.get(), context.warnings.get());
+      log("Import of Neo4j database completed in %,d secs with %,d errors and %,d warnings.", elapsed, context.errors.get(),
+          context.warnings.get());
       log("\nSUMMARY\n");
       log("- Vertices.............: %,d", totalVerticesParsed);
       for (final Map.Entry<String, Long> entry : totalVerticesByType.entrySet()) {
@@ -197,18 +198,23 @@ public class Neo4jImporter {
       case "node":
         final Pair<String, List<String>> labels = typeNameFromLabels(json);
 
-        if (!database.getSchema().existsType(labels.getFirst())) {
-          final VertexType type = database.getSchema().buildVertexType().withName(labels.getFirst()).withTotalBuckets(bucketsPerType).withIgnoreIfExists(true)
-              .create();
-          if (labels.getSecond() != null)
-            for (final String parent : labels.getSecond())
-              type.addSuperType(parent);
+        database.transaction(() -> {
+          if (!database.getSchema().existsType(labels.getFirst())) {
+            final VertexType type = database.getSchema().buildVertexType().withName(labels.getFirst())
+                .withTotalBuckets(bucketsPerType).withIgnoreIfExists(true).create();
+            if (labels.getSecond() != null) {
+              for (final String parent : labels.getSecond()) {
+                final VertexType parentType = database.getSchema().getOrCreateVertexType(parent);
+                parentType.getOrCreateProperty("id", Type.STRING);
+                parentType.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" }, indexPageSize);
+                type.addSuperType(parentType);
+              }
+            }
 
-          database.transaction(() -> {
-            type.createProperty("id", Type.STRING);
-            type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" }, indexPageSize);
-          });
-        }
+            type.getOrCreateProperty("id", Type.STRING);
+            type.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" }, indexPageSize);
+          }
+        });
 
         inferPropertyType(json, labels.getFirst());
 
@@ -217,7 +223,8 @@ public class Neo4jImporter {
       case "relationship":
         final String edgeLabel = json.has("label") && !json.isNull("label") ? json.getString("label") : null;
         if (edgeLabel != null)
-          database.getSchema().buildEdgeType().withName(edgeLabel).withTotalBuckets(bucketsPerType).withIgnoreIfExists(true).create();
+          database.getSchema().buildEdgeType().withName(edgeLabel).withTotalBuckets(bucketsPerType).withIgnoreIfExists(true)
+              .create();
 
         inferPropertyType(json, edgeLabel);
         break;
@@ -277,8 +284,8 @@ public class Neo4jImporter {
         ++totalVerticesParsed;
         if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
           final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
-          log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(), context.skippedEdges.get(),
-              (context.createdVertices.get() / elapsed * 1000));
+          log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
+              context.skippedEdges.get(), (context.createdVertices.get() / elapsed * 1000));
         }
 
         final Pair<String, List<String>> type = typeNameFromLabels(json);
@@ -322,8 +329,9 @@ public class Neo4jImporter {
 
     final long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;
 
-    log("- Creation of vertices completed: created %,d vertices, skipped %,d edges (%,d vertices/sec elapsed=%,d secs)", context.createdVertices.get(),
-        context.skippedEdges.get(), elapsedInSecs > 0 ? (context.createdVertices.get() / elapsedInSecs) : 0, elapsedInSecs);
+    log("- Creation of vertices completed: created %,d vertices, skipped %,d edges (%,d vertices/sec elapsed=%,d secs)",
+        context.createdVertices.get(), context.skippedEdges.get(),
+        elapsedInSecs > 0 ? (context.createdVertices.get() / elapsedInSecs) : 0, elapsedInSecs);
   }
 
   private void parseEdges() throws IOException {
@@ -360,8 +368,8 @@ public class Neo4jImporter {
 
         final IndexCursor beginCursor = database.lookupByKey(startType.getFirst(), "id", startId);
         if (!beginCursor.hasNext()) {
-          log("- cannot create relationship with id '%s'. Vertex id '%s' not found in type '%s'. Skip it.", json.getString("id"), startId,
-              startType.getFirst());
+          log("- cannot create relationship with id '%s'. Vertex id '%s' not found in type '%s'. Skip it.", json.getString("id"),
+              startId, startType.getFirst());
           context.warnings.incrementAndGet();
           return null;
         }
@@ -374,7 +382,8 @@ public class Neo4jImporter {
 
         final IndexCursor endCursor = database.lookupByKey(endType.getFirst(), "id", endId);
         if (!endCursor.hasNext()) {
-          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), endId);
+          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"),
+              endId);
           context.warnings.incrementAndGet();
           return null;
         }
@@ -558,8 +567,9 @@ public class Neo4jImporter {
     if (nodeLabels != null && nodeLabels.length() > 0) {
       if (nodeLabels.length() > 1) {
         // MULTI LABEL, CREATE A NEW MIXED TYPE THAT EXTEND ALL THE LABELS BY USING INHERITANCE
-        final Stream<String> list = nodeLabels.toList().stream().map(String.class::cast).sorted(Comparator.naturalOrder());
-        return new Pair<>(list.collect(Collectors.joining("_")), list.collect(Collectors.toList()));
+        final List<String> list = nodeLabels.toList().stream().map(String.class::cast).sorted(Comparator.naturalOrder())
+            .collect(Collectors.toList());
+        return new Pair<>(list.stream().collect(Collectors.joining("_")), list);
       } else
         return new Pair<>((String) nodeLabels.get(0), null);
     }

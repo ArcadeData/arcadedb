@@ -50,7 +50,8 @@ public class Neo4jImporterIT {
     try {
       final URL inputFile = Neo4jImporterIT.class.getClassLoader().getResource("neo4j-export-mini.jsonl");
 
-      final Neo4jImporter importer = new Neo4jImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o -decimalType double").split(" "));
+      final Neo4jImporter importer = new Neo4jImporter(
+          ("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o -decimalType double").split(" "));
       importer.run();
 
       Assertions.assertFalse(importer.isError());
@@ -121,7 +122,8 @@ public class Neo4jImporterIT {
       for (int i = 0; i < TOTAL; i += 2) {
         content.append("{\"type\":\"node\",\"id\":\"").append(i).append(
             "\",\"labels\":[\"User\"],\"properties\":{\"born\":\"2015-07-04T19:32:24\",\"name\":\"Adam\",\"place\":{\"crs\":\"wgs-84\",\"latitude\":33.46789,\"longitude\":13.1,\"height\":null},\"age\":42,\"male\":true,\"kids\":[\"Sam\",\"Anna\",\"Grace\"]}}\n");
-        content.append("{\"type\":\"node\",\"id\":\"").append(i + 1).append("\",\"labels\":[\"User\"],\"properties\":{\"name\":\"Jim\",\"age\":42}}\n");
+        content.append("{\"type\":\"node\",\"id\":\"").append(i + 1)
+            .append("\",\"labels\":[\"User\"],\"properties\":{\"name\":\"Jim\",\"age\":42}}\n");
         content.append(
                 "{\"id\":\"0\",\"type\":\"relationship\",\"label\":\"KNOWS\",\"properties\":{\"since\":1993,\"bffSince\":\"P5M1DT12H\"},\"start\":{\"id\":\"")
             .append(i).append("\",\"labels\":[\"User\"]},\"end\":{\"id\":\"").append(i + 1).append("\",\"labels\":[\"User\"]}}\n");
@@ -210,4 +212,41 @@ public class Neo4jImporterIT {
       FileUtils.deleteRecursively(databaseDirectory);
     }
   }
+
+  @Test
+  public void testImportNeo4jMultiTypes() throws IOException {
+    final File databaseDirectory = new File(DATABASE_PATH);
+
+    try {
+      final URL inputFile = Neo4jImporterIT.class.getClassLoader().getResource("neo4j-export-multitypes.jsonl");
+
+      final Neo4jImporter importer = new Neo4jImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH).split(" "));
+      importer.run();
+
+      Assertions.assertFalse(importer.isError());
+
+      Assertions.assertTrue(databaseDirectory.exists());
+
+      try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+        try (final Database database = factory.open()) {
+          final DocumentType placeType = database.getSchema().getType("Place");
+          Assertions.assertNotNull(placeType);
+          Assertions.assertEquals(1, database.countType("Place", true));
+
+          final DocumentType cityType = database.getSchema().getType("City");
+          Assertions.assertNotNull(cityType);
+          Assertions.assertEquals(1, database.countType("City", true));
+
+          IndexCursor cursor = database.lookupByKey("City_Place", "id", "0");
+          Assertions.assertTrue(cursor.hasNext());
+          Vertex v = cursor.next().asVertex();
+          Assertions.assertEquals("Test", v.get("name"));
+        }
+      }
+      TestHelper.checkActiveDatabases();
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+  }
+
 }

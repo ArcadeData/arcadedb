@@ -217,6 +217,18 @@ public interface BasicDatabase extends AutoCloseable {
   /**
    * Executes a command by specifying the language and an optional variable array of arguments.
    *
+   * @param language      The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
+   * @param query         The command to be interpreted in the specified language as a string
+   * @param configuration Configuration to use. When executed from a server, the server configuration is used. If null, an empty configuration will be used
+   * @param args          Arguments to pass to the command as a map of name/values.
+   *
+   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
+   */
+  ResultSet command(String language, String query, ContextConfiguration configuration, Map<String, Object> args);
+
+  /**
+   * Executes a command by specifying the language and an optional variable array of arguments.
+   *
    * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
    * @param query    The command to be interpreted in the specified language as a string
    * @param args     (optional) Arguments to pass to the command as a variable length array
