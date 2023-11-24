@@ -26,6 +26,8 @@ import com.arcadedb.security.SecurityManager;
 
 import java.io.*;
 import java.nio.charset.*;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -33,7 +35,7 @@ public class DatabaseFactory implements AutoCloseable {
   private              SecurityManager                                            security;
   private              boolean                                                    autoTransaction      = false;
   private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
-  private static final Map<String, Database>                                      ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
+  private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
@@ -122,12 +124,19 @@ public class DatabaseFactory implements AutoCloseable {
     callbacks.add(callback);
   }
 
+  private static Path getNormalizedPath(final String path) {
+    return Paths.get(path).toAbsolutePath().normalize();
+  }
+
+
   public static Database getActiveDatabaseInstance(final String databasePath) {
-    return ACTIVE_INSTANCES.get(databasePath);
+    var normalizedPath = getNormalizedPath(databasePath);
+    return ACTIVE_INSTANCES.get(normalizedPath);
   }
 
   protected static void removeActiveDatabaseInstance(final String databasePath) {
-    ACTIVE_INSTANCES.remove(databasePath);
+    var normalizedPath = getNormalizedPath(databasePath);
+    ACTIVE_INSTANCES.remove(normalizedPath);
   }
 
   public static Collection<Database> getActiveDatabaseInstances() {
@@ -135,14 +144,16 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   private static void checkForActiveInstance(final String databasePath) {
-    if (ACTIVE_INSTANCES.get(databasePath) != null)
-      throw new DatabaseOperationException("Found active instance of database '" + databasePath + "' already in use");
+    var normalizedPath = getNormalizedPath(databasePath);
+    if (ACTIVE_INSTANCES.get(normalizedPath) != null)
+      throw new DatabaseOperationException("Found active instance of database '" + normalizedPath + "' already in use");
   }
 
   private static void registerActiveInstance(final LocalDatabase database) {
-    if (ACTIVE_INSTANCES.putIfAbsent(database.databasePath, database) != null) {
+    var normalizedPath = getNormalizedPath(database.databasePath);
+    if (ACTIVE_INSTANCES.putIfAbsent(normalizedPath, database) != null) {
       database.close();
-      throw new DatabaseOperationException("Found active instance of database '" + database.databasePath + "' already in use");
+      throw new DatabaseOperationException("Found active instance of database '" + normalizedPath + "' already in use");
     }
   }
 }
