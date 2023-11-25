@@ -22,10 +22,10 @@ repos:
       - id: prettier
         types: [ java ]
         additional_dependencies:
-          - prettier@2.7.1
-          - prettier-plugin-java@1.6.2
+          - prettier@3.1.0
+          - prettier-plugin-java@2.4.0
+          - prettier-plugin-xml
         args:
           - --write
           - --list-different
           - --ignore-unknown
-          - --plugin=prettier-plugin-java

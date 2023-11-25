@@ -1,6 +1,10 @@
 # Prettier configuration
 overrides:
   - files:
+      - "**/*.*"
+    options:
+      printWidth: 160
+  - files:
       - "**/*.java"
     options:
       printWidth: 160
