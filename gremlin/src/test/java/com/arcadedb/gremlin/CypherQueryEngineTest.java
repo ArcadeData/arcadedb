@@ -30,6 +30,8 @@ import com.arcadedb.utility.FileUtils;
 import org.apache.commons.collections.IteratorUtils;
 import org.apache.commons.configuration2.BaseConfiguration;
 import org.apache.commons.configuration2.Configuration;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,8 +56,8 @@ public class CypherQueryEngineTest {
     final Configuration config = new BaseConfiguration();
     config.setProperty(ArcadeGraph.CONFIG_DIRECTORY, DB_PATH);
 
-    final ArcadeGraph graph = ArcadeGraph.open(config);
-    try (final BasicDatabase database = graph.getDatabase()) {
+    try (final ArcadeGraph graph = ArcadeGraph.open(config)) {
+      final BasicDatabase database = graph.getDatabase();
       database.transaction(() -> {
         final Schema schema = database.getSchema();
         schema.getOrCreateVertexType("V");
@@ -97,10 +99,7 @@ public class CypherQueryEngineTest {
               .collect(Collectors.toList());
           assertThat(children, containsInAnyOrder(childVertices.toArray()));
         }
-
       });
-    } finally {
-      graph.drop();
     }
   }
 
