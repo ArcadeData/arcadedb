@@ -20,7 +20,7 @@ repos:
     rev: v3.1.0
     hooks:
       - id: prettier
-        types: [ java ]
+        #        types: [ java ]
         additional_dependencies:
           - prettier@3.1.0
           - prettier-plugin-java@2.4.0
