@@ -61,8 +61,8 @@ public class ConsoleAsyncInsertTest {
   static final String DATABASE_NAME              = "ConsoleAsyncInsertTest";
   static final int    PARALLEL_LEVEL             = 6;
   static final String RECORD_TIME_FORMAT_PATTERN = "yyyyMMdd'_'HHmmss.SSSSSS";
-  final        String userName                   = "root";
-  final        String password                   = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+  static final String userName                   = "user";
+  static final String password                   = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
   AtomicInteger autoIncrementOrderId = new AtomicInteger(0);
 
