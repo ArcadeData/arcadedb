@@ -126,8 +126,13 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
   }
 
   @Override
-  public Map<String, Object> getMap(String propertyName) {
+  public Map<String, Object> getMap(final String propertyName) {
     return (Map<String, Object>) Type.convert(database, get(propertyName), Map.class);
+  }
+
+  @Override
+  public <T> List<T> getList(final String propertyName) {
+    return (List<T>) Type.convert(database, get(propertyName), List.class);
   }
 
   @Override

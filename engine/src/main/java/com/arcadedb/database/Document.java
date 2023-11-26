@@ -99,6 +99,8 @@ public interface Document extends Record {
 
   Map<String, Object> getMap(String propertyName);
 
+  <T> List<T> getList(String propertyName);
+
   EmbeddedDocument getEmbedded(String propertyName);
 
   Set<String> getPropertyNames();
