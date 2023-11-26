@@ -96,7 +96,7 @@
                 <exclude>com.arcadedb:arcadedb-redisw</exclude>
                 <exclude>com.arcadedb:arcadedb-mongodbw</exclude>
                 <exclude>com.arcadedb:arcadedb-graphql</exclude>
-                <exclude>com.arcadedb:arcadedb-web</exclude>
+                <exclude>com.arcadedb:arcadedb-studio</exclude>
             </excludes>
         </dependencySet>
     </dependencySets>

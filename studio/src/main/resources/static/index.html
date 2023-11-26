@@ -1,0 +1,195 @@
+<!doctype html>
+<html class="no-js" lang="en">
+  <head>
+    <meta charset="utf-8" />
+
+    <!--====== Title ======-->
+    <title>ArcadeDB - The Next Generation Multi-Model DBMS</title>
+    <link rel="shortcut icon" href="images/arcade-favico.png" type="image/png" />
+
+    <link rel="stylesheet" href="css/bootstrap.min.css" />
+    <link rel="stylesheet" href="components/DataTables/datatables.min.css" />
+    <link rel="stylesheet" href="components/codemirror/css/codemirror.css" />
+    <link rel="stylesheet" href="components/codemirror/css/neo.css" />
+    <link rel="stylesheet" href="components/fontawesome/css/fontawesome.min.css" />
+    <link rel="stylesheet" href="components/fontawesome/css/solid.min.css" />
+    <link rel="stylesheet" href="components/fontawesome-iconpicker/css/fontawesome-iconpicker.min.css" />
+    <link rel="stylesheet" href="components/bootstrap-colorselector/css/bootstrap-colorselector.min.css" />
+    <link rel="stylesheet" href="css/apexcharts.css" />
+
+    <link rel="stylesheet" href="css/studio.css" />
+
+    <script src="js/popper.min.js"></script>
+    <script src="js/jquery-1.12.4.min.js"></script>
+    <script src="js/bootstrap.min.js"></script>
+    <script src="js/bootstrap-notify.min.js"></script>
+    <script src="js/sweetalert2.all.min.js"></script>
+    <script src="js/clipboard.min.js"></script>
+    <script src="components/codemirror/js/codemirror.js"></script>
+    <script src="components/codemirror/js/cypher.js"></script>
+    <script src="components/codemirror/js/javascript.js"></script>
+    <script src="components/codemirror/js/sql.js"></script>
+
+    <script src="components/DataTables/datatables.min.js"></script>
+
+    <script src="components/fontawesome/js/fontawesome.min.js"></script>
+    <script src="components/fontawesome/js/solid.min.js"></script>
+    <script src="components/fontawesome-iconpicker/js/fontawesome-iconpicker.min.js"></script>
+    <script src="components/bootstrap-colorselector/js/bootstrap-colorselector.min.js"></script>
+
+    <script src="js/cytoscape.min.js"></script>
+    <script src="js/cytoscape-node-html-label.min.js"></script>
+    <script src="js/cola.min.js"></script>
+    <script src="js/cytoscape-cola.js"></script>
+    <script src="js/cytoscape-cxtmenu.js"></script>
+    <script src="js/cytoscape-graphml.js"></script>
+
+    <script src="js/apexcharts.min.js"></script>
+
+    <script src="js/studio-utils.js"></script>
+    <script src="js/studio-database.js"></script>
+    <script src="js/studio-server.js"></script>
+    <script src="js/studio-cluster.js"></script>
+    <script src="js/studio-table.js"></script>
+    <script src="js/studio-graph.js"></script>
+    <script src="js/studio-graph-widget.js"></script>
+    <script src="js/studio-graph-functions.js"></script>
+  </head>
+  <body>
+    <div class="container" id="welcomePanel">
+      <div class="row" style="height: 400px"></div>
+
+      <div class="row">
+        <div class="col-12 text-center">
+          <img src="images/arcadedb-logo-small.png" />
+          <br /><br />
+        </div>
+      </div>
+    </div>
+
+    <div id="studioPanel" class="card-hover-shadow-2x mb-3 card" style="display: none">
+      <div class="card-header-tab card-header">
+        <div class="row">
+          <div class="col-1">
+            <ul class="nav nav-tabs flex-column" id="tabs" style="height: 100%; background-color: white">
+              <li class="nav-item text-center" style="height: 85px; padding: 5px"><img src="images/arcadedb-logo-mini.png" style="width: 100%" /></li>
+              <li class="nav-item">
+                <a data-toggle="tab" href="#tab-query" class="vertical-tab nav-link active show" id="tab-query-sel">
+                  <h3>
+                    <center><i class="fa fa-terminal"></i></center>
+                  </h3>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-toggle="tab" href="#tab-database" class="vertical-tab nav-link" id="tab-database-sel">
+                  <h3>
+                    <center><i class="fa fa-database"></i></center>
+                  </h3>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-toggle="tab" href="#tab-server" class="vertical-tab nav-link" id="tab-server-sel">
+                  <h3>
+                    <center><i class="fa fa-server"></i></center>
+                  </h3>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-toggle="tab" href="#tab-cluster" class="vertical-tab nav-link" id="tab-cluster-sel">
+                  <h3>
+                    <center><i class="fa fa-network-wired"></i></center>
+                  </h3>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel">
+                  <h3>
+                    <center><i class="fa fa-plug"></i></center>
+                  </h3>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-toggle="tab" href="#tab-resources" class="vertical-tab nav-link" id="tab-resources-sel">
+                  <h3>
+                    <center><i class="fa fa-info-circle"></i></center>
+                  </h3>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a
+                  href="javascript:globalConfirm('Log Out','Are you sure you want to log out?','warning',function(){window.location.href=window.location.href})"
+                  class="vertical-tab nav-link"
+                  id="logout-sel"
+                >
+                  <h3>
+                    <center><i class="fa fa-power-off"></i></center>
+                  </h3>
+                </a>
+              </li>
+            </ul>
+          </div>
+
+          <div class="col-11">
+            <div class="tab-content">
+              ${include:query.html} ${include:database.html} ${include:server.html} ${include:cluster.html} ${include:api.html} ${include:resources.html}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal fade" id="popup" tabindex="-1" role="dialog" aria-labelledby="popupLabel" aria-hidden="true" style="z-index: 10000">
+      <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="popupLabel"></h5>
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div id="popupBody" class="modal-body"></div>
+        </div>
+      </div>
+    </div>
+    ${include:popup-login.html}
+
+    <div style="text-align: center; vertical-align: bottom">Copyright 2021 <a href="https://arcadedb.com" rel="nofollow">Arcade Data Ltd</a></div>
+
+    <script>
+      var studioCurrentTab = "query";
+
+      $(function () {
+        $("#loginForm").keypress(function (e) {
+          if (e.which == 13) {
+            login();
+          }
+        });
+
+        $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
+          var activeTab = this.id;
+          if (activeTab == "tab-query-sel") {
+            studioCurrentTab = "query";
+            editorFocus();
+          } else if (activeTab == "tab-server-sel") {
+            studioCurrentTab = "server";
+            updateServer();
+          } else if (activeTab == "tab-cluster-sel") {
+            studioCurrentTab = "cluster";
+            updateCluster();
+          } else if (activeTab == "tab-database-sel") {
+            studioCurrentTab = "database";
+          } else if (activeTab == "tab-api-sel") {
+            studioCurrentTab = "api";
+          } else if (activeTab == "tab-resources-sel") {
+            studioCurrentTab = "resources";
+          }
+        });
+
+        $("#loginPopup").on("shown.bs.modal", function () {
+          $("#inputUserName").delay(1000).focus().select();
+        });
+
+        if (globalCredentials == null) showLoginPopup();
+      });
+    </script>
+  </body>
+</html>

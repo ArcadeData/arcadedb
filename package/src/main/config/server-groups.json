@@ -3,20 +3,12 @@
     "*": {
       "groups": {
         "admin": {
-          "access": [
-            "updateSecurity",
-            "updateSchema"
-          ],
+          "access": ["updateSecurity", "updateSchema"],
           "resultSetLimit": -1,
           "readTimeout": -1,
           "types": {
             "*": {
-              "access": [
-                "createRecord",
-                "readRecord",
-                "updateRecord",
-                "deleteRecord"
-              ]
+              "access": ["createRecord", "readRecord", "updateRecord", "deleteRecord"]
             }
           }
         },
@@ -26,9 +18,7 @@
           "readTimeout": -1,
           "types": {
             "*": {
-              "access": [
-                "readRecord"
-              ]
+              "access": ["readRecord"]
             }
           }
         },

@@ -21,8 +21,8 @@ services:
   arcade:
     image: arcadedata/arcadedb:latest
     ports:
-      - 2480:2480  # host : container port
-      - 2424:2424  # host : container port
+      - 2480:2480 # host : container port
+      - 2424:2424 # host : container port
     environment:
       JAVA_OPTS: >
         -Darcadedb.server.rootPassword=playwithdata

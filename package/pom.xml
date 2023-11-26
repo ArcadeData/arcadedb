@@ -116,7 +116,7 @@
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-web</artifactId>
+            <artifactId>arcadedb-studio</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>

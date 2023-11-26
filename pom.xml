@@ -121,7 +121,7 @@
         <module>redisw</module>
         <module>postgresw</module>
         <module>coverage</module>
-        <module>web</module>
+        <module>studio</module>
         <module>package</module>
         <module>e2e</module>
     </modules>
