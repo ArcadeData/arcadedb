@@ -76,22 +76,23 @@ class DatabaseFactoryTest extends TestHelper {
 
   @Test
   void testDatabaseRegistrationWithDifferentPathTypes() {
-    final DatabaseFactory f = new DatabaseFactory("path/to/database");
-    final Database db = f.create();
+    final DatabaseFactory f = new DatabaseFactory("target/path/to/database");
+    final Database db = f.exists() ? f.open() : f.create();
 
-    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("path/to/database"));
-    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("path\\to\\database"));
-    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("./path/../path/to/database"));
+    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("target/path/to/database"));
+    if (System.getProperty("os.name").toLowerCase().contains("windows"))
+      Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("target\\path\\to\\database"));
+    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("./target/path/../../target/path/to/database"));
 
     db.drop();
     f.close();
   }
-  
+
   @Test
   void testDuplicatedDatabaseCreationWithDifferentPathTypes() {
     final DatabaseFactory f1 = new DatabaseFactory("path/to/database");
     final Database db = f1.create();
-    
+
     final DatabaseFactory f2 = new DatabaseFactory(".\\path\\to\\database");
     Assertions.assertThrows(DatabaseOperationException.class, () -> f2.create());
 
