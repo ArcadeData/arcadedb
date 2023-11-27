@@ -30,7 +30,7 @@
     </parent>
 
     <properties>
-        <testcontainers.version>1.19.2</testcontainers.version>
+        <testcontainers.version>1.19.3</testcontainers.version>
         <postgresql.version>42.7.0</postgresql.version>
         <logback-classic.version>1.4.11</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
