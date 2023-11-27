@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.security.SecurityManager;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -71,5 +72,31 @@ class DatabaseFactoryTest extends TestHelper {
 
     db.drop();
     f.close();
+  }
+
+  @Test
+  void testDatabaseRegistrationWithDifferentPathTypes() {
+    final DatabaseFactory f = new DatabaseFactory("path/to/database");
+    final Database db = f.create();
+
+    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("path/to/database"));
+    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("path\\to\\database"));
+    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("./path/../path/to/database"));
+
+    db.drop();
+    f.close();
+  }
+  
+  @Test
+  void testDuplicatedDatabaseCreationWithDifferentPathTypes() {
+    final DatabaseFactory f1 = new DatabaseFactory("path/to/database");
+    final Database db = f1.create();
+    
+    final DatabaseFactory f2 = new DatabaseFactory(".\\path\\to\\database");
+    Assertions.assertThrows(DatabaseOperationException.class, () -> f2.create());
+
+    db.drop();
+    f1.close();
+    f2.close();
   }
 }
