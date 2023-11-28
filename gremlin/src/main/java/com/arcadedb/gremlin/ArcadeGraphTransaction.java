@@ -41,12 +41,20 @@ public class ArcadeGraphTransaction extends AbstractThreadLocalTransaction {
 
   @Override
   protected void doCommit() throws TransactionException {
-    graph.getDatabase().commit();
+    try {
+      graph.getDatabase().commit();
+    } catch (Exception e) {
+      throw new TransactionException(e);
+    }
   }
 
   @Override
   protected void doRollback() throws TransactionException {
-    graph.getDatabase().rollback();
+    try {
+      graph.getDatabase().rollback();
+    } catch (Exception e) {
+      throw new TransactionException(e);
+    }
   }
 
   @Override
