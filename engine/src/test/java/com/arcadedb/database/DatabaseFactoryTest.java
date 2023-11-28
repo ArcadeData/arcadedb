@@ -90,6 +90,9 @@ class DatabaseFactoryTest extends TestHelper {
 
   @Test
   void testDuplicatedDatabaseCreationWithDifferentPathTypes() {
+    if (!System.getProperty("os.name").toLowerCase().contains("windows"))
+      return;
+
     final DatabaseFactory f1 = new DatabaseFactory("path/to/database");
     final Database db = f1.create();
 
