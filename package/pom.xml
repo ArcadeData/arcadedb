@@ -54,7 +54,7 @@
                         </goals>
                         <configuration>
                             <appendAssemblyId>false</appendAssemblyId>
-                            <finalName>arcadedb-package-${project.version}</finalName>
+                            <finalName>arcadedb-${project.version}</finalName>
                             <descriptors>
                                 <descriptor>./src/main/assembly/full.xml</descriptor>
                             </descriptors>
