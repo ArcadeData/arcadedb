@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       releaseversion:
-        description: 'Release version'
+        description: "Release version"
         required: true
-        default: '2.4.0'
+        default: "2.4.0"
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -31,7 +31,7 @@ jobs:
         with:
           distribution: "temurin"
           java-version: 11
-          cache: 'maven'
+          cache: "maven"
           server-id: ossrh
           server-username: MAVEN_USERNAME
           server-password: MAVEN_PASSWORD

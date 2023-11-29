@@ -9,7 +9,7 @@ scriptEngines:
         classImports:
           - java.lang.Math
         methodImports:
-          - 'java.lang.Math#*'
+          - "java.lang.Math#*"
       org.apache.tinkerpop.gremlin.jsr223.ScriptFileGremlinPlugin:
         files:
           - ./target/config/gremlin-server.groovy

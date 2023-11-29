@@ -9,14 +9,13 @@ on:
     branches:
       - main
 
-
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest ]
-        continue-on-error: [ false ]
+        os: [ubuntu-latest]
+        continue-on-error: [false]
         include:
           - os: windows-latest
             continue-on-error: true
@@ -44,11 +43,11 @@ jobs:
       - name: Set up GraalVM 11
         uses: graalvm/setup-graalvm@v1
         with:
-          version: '22.3.2'
+          version: "22.3.2"
           gds-token: ${{ secrets.GDS_TOKEN }}
-          java-version: '11'
-          cache: 'maven'
-          components: 'native-image,js'
+          java-version: "11"
+          cache: "maven"
+          components: "native-image,js"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install jars
@@ -74,9 +73,9 @@ jobs:
         if: success() || failure()
         with:
           name: Test Report - ${{ matrix.os }}
-          path: '**/surefire-reports/TEST*.xml'
-          list-suites: 'failed'
-          list-tests: 'failed'
+          path: "**/surefire-reports/TEST*.xml"
+          list-suites: "failed"
+          list-tests: "failed"
           reporter: java-junit
 
       - name: Get coverage files

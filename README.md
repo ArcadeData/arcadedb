@@ -50,7 +50,6 @@
 	<a href="https://blog.arcadedb.com/"><img height="25" src="/server/src/main/resources/static/images/social/blog.svg" alt="Blog"></a>
 </p>
 
-
 ArcadeDB is a Multi-Model DBMS (created originally as a fork
 from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand-new
 engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
@@ -106,7 +105,7 @@ imported `OpenBeer` database to find your favorite beer.
 
 ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#Docker) and [Kubernetes](https://docs.arcadedb.com/#Kubernetes) support.
 
-You can also [download the latest release](https://github.com/ArcadeData/arcadedb/releases), unpack it on your local hard drive and start the server with ```bin/server.sh``` or ```bin/server.bat``` for Windows.
+You can also [download the latest release](https://github.com/ArcadeData/arcadedb/releases), unpack it on your local hard drive and start the server with `bin/server.sh` or `bin/server.bat` for Windows.
 
 ### Community
 

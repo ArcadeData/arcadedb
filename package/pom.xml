@@ -47,7 +47,7 @@
                 <version>${maven-assembly-plugin.version}</version>
                 <executions>
                     <execution>
-                        <id>distribution-package</id>
+                        <id>full-package</id>
                         <phase>package</phase>
                         <goals>
                             <goal>single</goal>
@@ -56,7 +56,39 @@
                             <appendAssemblyId>false</appendAssemblyId>
                             <finalName>arcadedb-${project.version}</finalName>
                             <descriptors>
-                                <descriptor>./src/main/assembly/archive.xml</descriptor>
+                                <descriptor>./src/main/assembly/full.xml</descriptor>
+                            </descriptors>
+                            <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
+                            <tarLongFileMode>gnu</tarLongFileMode>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>minimal-package</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <finalName>arcadedb-minimal-${project.version}</finalName>
+                            <descriptors>
+                                <descriptor>./src/main/assembly/minimal.xml</descriptor>
+                            </descriptors>
+                            <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
+                            <tarLongFileMode>gnu</tarLongFileMode>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>headless-package</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <finalName>arcadedb-headless-${project.version}</finalName>
+                            <descriptors>
+                                <descriptor>./src/main/assembly/headless.xml</descriptor>
                             </descriptors>
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
                             <tarLongFileMode>gnu</tarLongFileMode>
@@ -80,6 +112,11 @@
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-studio</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
@@ -160,13 +197,53 @@
                         <version>${maven-resources-plugin.version}</version>
                         <executions>
                             <execution>
-                                <id>copy-resources</id>
+                                <id>copy-resources-full</id>
                                 <phase>validate</phase>
                                 <goals>
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}.dir
+                                    <outputDirectory>${project.build.directory}/arcadedb-package-${project.version}.dir
+                                    </outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>src/main/docker</directory>
+                                            <includes>
+                                                <include>Dockerfile</include>
+                                            </includes>
+                                            <filtering>false</filtering>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>copy-resources-minimal</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/arcadedb-minimal-${project.version}.dir
+                                    </outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>src/main/docker</directory>
+                                            <includes>
+                                                <include>Dockerfile</include>
+                                            </includes>
+                                            <filtering>false</filtering>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>copy-resources-headless</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/arcadedb-headless-${project.version}.dir
                                     </outputDirectory>
                                     <resources>
                                         <resource>
@@ -207,7 +284,39 @@
                                 <image>
                                     <name>arcadedata/arcadedb</name>
                                     <build>
-                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
+                                        <contextDir>${project.build.directory}/arcadedb-package-${project.version}.dir
+                                        </contextDir>
+                                        <buildx>
+                                            <platforms>
+                                                <platform>${docker-maven-plugin.platform}</platform>
+                                            </platforms>
+                                        </buildx>
+                                        <tags>
+                                            <tag>latest</tag>
+                                            <tag>${project.version}</tag>
+                                        </tags>
+                                    </build>
+                                </image>
+                                <image>
+                                    <name>arcadedata/arcadedb-minimal</name>
+                                    <build>
+                                        <contextDir>${project.build.directory}/arcadedb-minimal-${project.version}.dir
+                                        </contextDir>
+                                        <buildx>
+                                            <platforms>
+                                                <platform>${docker-maven-plugin.platform}</platform>
+                                            </platforms>
+                                        </buildx>
+                                        <tags>
+                                            <tag>latest</tag>
+                                            <tag>${project.version}</tag>
+                                        </tags>
+                                    </build>
+                                </image>
+                                <image>
+                                    <name>arcadedata/arcadedb-headless</name>
+                                    <build>
+                                        <contextDir>${project.build.directory}/arcadedb-headless-${project.version}.dir
                                         </contextDir>
                                         <buildx>
                                             <platforms>
@@ -227,5 +336,4 @@
             </build>
         </profile>
     </profiles>
-
 </project>

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+
+    Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+-->
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 https://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <id>full</id>
+
+    <formats>
+        <format>dir</format>
+        <format>tar.gz</format>
+        <format>zip</format>
+    </formats>
+
+    <fileSets>
+        <!--
+         | copy scripts
+        -->
+        <fileSet>
+            <directory>${basedir}/src/main/scripts</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>*.sh</include>
+                <include>*.bat</include>
+            </includes>
+            <fileMode>755</fileMode>
+            <filtered>true</filtered>
+        </fileSet>
+
+        <fileSet>
+            <directory>${basedir}/src/main/config</directory>
+            <outputDirectory>config</outputDirectory>
+            <includes>
+                <include>*.yaml</include>
+                <include>*.json</include>
+                <include>*.groovy</include>
+                <include>*.properties</include>
+            </includes>
+            <fileMode>755</fileMode>
+            <filtered>true</filtered>
+        </fileSet>
+        <fileSet> <!-- Create empty directory -->
+            <outputDirectory>databases</outputDirectory>
+            <excludes><exclude>**/*</exclude></excludes>
+        </fileSet>
+        <fileSet> <!-- Create empty directory -->
+            <outputDirectory>log</outputDirectory>
+            <excludes><exclude>**/*</exclude></excludes>
+        </fileSet>
+
+    </fileSets>
+
+    <!--
+     | includes legals
+    -->
+    <files>
+        <file>
+            <source>${basedir}/../README.md</source>
+            <fileMode>666</fileMode>
+        </file>
+        <file>
+            <source>${basedir}/../LICENSE</source>
+            <fileMode>666</fileMode>
+        </file>
+    </files>
+    <!--
+     | all artifacts in a /lib dir
+    -->
+    <dependencySets>
+        <dependencySet>
+            <outputDirectory>lib</outputDirectory>
+            <includes>
+                <include>*:jar:*</include>
+            </includes>
+        </dependencySet>
+    </dependencySets>
+
+</assembly>

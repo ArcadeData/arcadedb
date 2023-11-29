@@ -17,15 +17,15 @@ repos:
       - id: check-json
       - id: check-xml
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.0.0-alpha.4
+    rev: v3.1.0
     hooks:
       - id: prettier
-        types: [ java ]
+        #        types: [ java ]
         additional_dependencies:
-          - prettier@2.7.1
-          - prettier-plugin-java@1.6.2
+          - prettier@3.1.0
+          - prettier-plugin-java@2.4.0
+          - prettier-plugin-xml
         args:
           - --write
           - --list-different
           - --ignore-unknown
-          - --plugin=prettier-plugin-java

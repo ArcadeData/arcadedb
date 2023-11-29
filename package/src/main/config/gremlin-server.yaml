@@ -11,9 +11,9 @@ scriptEngines:
           - org.opencypher.gremlin.traversal.CustomFunctions
           - org.opencypher.gremlin.traversal.CustomPredicate
         methodImports:
-          - 'java.lang.Math#*'
-          - 'org.opencypher.gremlin.traversal.CustomPredicate#*'
-          - 'org.opencypher.gremlin.traversal.CustomFunctions#*'
+          - "java.lang.Math#*"
+          - "org.opencypher.gremlin.traversal.CustomPredicate#*"
+          - "org.opencypher.gremlin.traversal.CustomFunctions#*"
       org.apache.tinkerpop.gremlin.jsr223.ScriptFileGremlinPlugin:
         files:
           - ./config/gremlin-server.groovy
@@ -31,4 +31,4 @@ serializers:
       ioRegistries:
         - com.arcadedb.gremlin.io.ArcadeIoRegistry
 processors:
-  - { className: org.apache.tinkerpop.gremlin.server.op.session.SessionOpProcessor, config: { sessionTimeout: 28800000 }}
+  - { className: org.apache.tinkerpop.gremlin.server.op.session.SessionOpProcessor, config: { sessionTimeout: 28800000 } }

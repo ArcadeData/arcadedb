@@ -1,0 +1,423 @@
+<div class="tab-pane fade show active" id="tab-query" role="tabpanel">
+  <div class="row" id="queryPanel">
+    <div class="col-1" style="padding: 0px">
+      <select
+        id="inputLanguage"
+        class="col-12 form-control"
+        style="color: #00aeee; font-family: Courier; font-size: 1em; height: 53px; text-align: center; padding-left: 0px; padding-right: 0px"
+      >
+        <option value="sql" selected>SQL</option>
+        <option value="sqlScript">SQL Script</option>
+        <option value="gremlin">Gremlin</option>
+        <option value="cypher">Cypher</option>
+        <option value="graphql">GraphQL</option>
+        <option value="mongo">MongoDB</option>
+      </select>
+    </div>
+
+    <div class="col-11">
+      <textarea id="inputCommand" name="inputCommand"></textarea>
+      <button class="btn btn-primary" onclick="executeCommand()" style="z-index: 100; position: absolute; top: 10px; right: 20px">
+        <i class="fa fa-play"></i>
+        <img id="executeSpinner" class="ui-loading" src="/images/color-spin-small.svg" style="display: none" />
+      </button>
+    </div>
+
+    <div class="col-1"></div>
+    <div class="col-11">
+      <select id="inputHistory" class="btn btn-secondary" style="width: 100%">
+        <option selected>Query History</option>
+      </select>
+    </div>
+
+    <div class="col-1"></div>
+    <div class="col-6 text-left">
+      <label
+        >Current database:&nbsp;<a href="#" onclick="globalActivateTab('tab-database');" class="link"><span id="currentDatabase"></span></a
+      ></label>
+    </div>
+    <div class="col-2 text-left">
+      <label
+        >Auto Limit &nbsp;
+        <i
+          class="fa fa-question-circle"
+          data-toggle="tooltip"
+          data-html="true"
+          title="If the limit is not set in the query, then the following automatic limit is used."
+        ></i>
+        <select id="inputLimit">
+          <option value="25">25</option>
+          <option value="100">100</option>
+          <option value="500">500</option>
+          <option value="-1">No Limits</option>
+        </select>
+      </label>
+    </div>
+    <div class="col-3 text-right">
+      <label>Returned <span id="result-num"></span>&nbsp;records in <span id="result-elapsed"></span>ms</label>
+    </div>
+
+    <div class="col-12">
+      <ul class="nav nav-tabs" id="tabs-command">
+        <li class="nav-item">
+          <a data-toggle="tab" href="#tab-graph" class="active show nav-link" id="tab-graph-sel">
+            <center><i class="fa fa-project-diagram"></i> <span class="mini-text">Graph</span></center>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a data-toggle="tab" href="#tab-table" class="nav-link" id="tab-table-sel">
+            <center><i class="fa fa-table"></i> <span class="mini-text">Table</span></center>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a data-toggle="tab" href="#tab-json" class="nav-link" id="tab-json-sel">
+            <center><i class="fa fa-file-code"></i> <span class="mini-text">Json</span></center>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a data-toggle="tab" href="#tab-explain" class="nav-link" id="tab-explain-sel">
+            <center><i class="fa fa-list"></i> <span class="mini-text">Explain</span></center>
+          </a>
+        </li>
+      </ul>
+
+      <div class="tab-content">
+        <div class="tab-pane fade show active" id="tab-graph" role="tabpanel">
+          <div class="row">
+            <div class="col-12">
+              <nav class="navbar navbar-expand-lg navbar-light">
+                <button
+                  class="navbar-toggler"
+                  type="button"
+                  data-toggle="collapse"
+                  data-target="#navbarSupportedContent"
+                  aria-controls="navbarSupportedContent"
+                  aria-expanded="false"
+                  aria-label="Toggle navigation"
+                >
+                  <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <div class="collapse navbar-collapse" id="navbarSupportedContent">
+                  <div class="form-inline my-2 my-lg-0">
+                    <input id="inputGraphSearch" class="form-control mr-sm-2" type="search" placeholder="Search" aria-label="Search" autocomplete="off" />
+                    <button class="btn btn-secondary" onclick="searchInGraph()" href="#"><i class="fa fa-search"></i></button>
+                  </div>
+                  <ul class="navbar-nav mr-auto">
+                    <li class="nav-item"></li>
+                  </ul>
+                  <ul class="navbar-nav">
+                    <li class="nav-item">
+                      <a class="nav-link btn btn-secondary" href="#" onclick="renderGraph()"><i class="fa fa-sync"></i> Redraw</a>
+                    </li>
+                    <li class="nav-item dropdown">
+                      <a
+                        class="nav-link dropdown-toggle btn btn-secondary"
+                        href="#"
+                        role="button"
+                        aria-haspopup="true"
+                        aria-expanded="false"
+                        class="dropdown-toggle"
+                        data-toggle="dropdown"
+                      >
+                        <i class="fa fa-hand-pointer"></i> Select
+                      </a>
+                      <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="selectNeighbors(1)" disabled>Direct Neighbors</a>
+                        </li>
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="selectOrphanVertices()" disabled>Orphan Vertices</a>
+                        </li>
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="invertVertexSelection()" disabled>Invert Node Selection</a>
+                        </li>
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="shortestPath()" disabled>Shortest Path</a>
+                        </li>
+                      </ul>
+                    </li>
+                    <li class="nav-item">
+                      <a class="nav-link btn btn-secondary" href="#" onclick="cutSelection()"><i class="fa fa-cut"></i> Cut</a>
+                    </li>
+                    <li class="nav-item">
+                      <a class="nav-link btn btn-secondary" href="#" onclick="cropSelection()"><i class="fa fa-crop"></i> Crop</a>
+                    </li>
+                    <li class="nav-item dropdown">
+                      <a
+                        class="nav-link dropdown-toggle btn btn-secondary"
+                        href="#"
+                        role="button"
+                        aria-haspopup="true"
+                        aria-expanded="false"
+                        class="dropdown-toggle"
+                        data-toggle="dropdown"
+                      >
+                        <i class="fa fa-upload"></i> Import
+                      </a>
+                      <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="importGraph('json')">JSON</a>
+                        </li>
+
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" disabled>GraphML</a>
+                        </li>
+
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="importSettings()">Settings</a>
+                        </li>
+                      </ul>
+                    </li>
+                    <li class="nav-item dropdown">
+                      <a
+                        class="nav-link dropdown-toggle btn btn-secondary"
+                        href="#"
+                        role="button"
+                        aria-haspopup="true"
+                        aria-expanded="false"
+                        class="dropdown-toggle"
+                        data-toggle="dropdown"
+                      >
+                        <i class="fa fa-download"></i> Export
+                      </a>
+                      <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="exportGraph('json')">JSON</a>
+                        </li>
+
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="exportGraph('graphml')">GraphML</a>
+                        </li>
+
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="exportGraph('png')">PNG image</a>
+                        </li>
+
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="exportGraph('jpeg')">JPEG image</a>
+                        </li>
+
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="exportSettings()">Settings</a>
+                        </li>
+                      </ul>
+                    </li>
+                    <li class="nav-item dropdown">
+                      <a
+                        class="nav-link dropdown-toggle btn btn-secondary"
+                        href="#"
+                        role="button"
+                        aria-haspopup="true"
+                        aria-expanded="false"
+                        class="dropdown-toggle"
+                        data-toggle="dropdown"
+                      >
+                        <i class="fa fa-sliders-h"></i> Settings
+                      </a>
+                      <ul class="dropdown-menu dropdown-menu-right" aria-labelledby="navbarDropdown" style="width: 300px">
+                        <li class="dropdown-item">
+                          <label for="graphSpacing" class="form-label">Graph Spacing</label>
+                          <input
+                            id="graphSpacing"
+                            class="form-control"
+                            type="range"
+                            class="custom-range"
+                            min="10"
+                            max="100"
+                            step="10"
+                            value="20"
+                            style="width: 100%"
+                          />
+                        </li>
+
+                        <li
+                          class="dropdown-item"
+                          onclick="globalToggleCheckbox('#cumulativeSelection');globalGraphSettings.cumulativeSelection = $('#cumulativeSelection').prop('checked')"
+                        >
+                          <div class="form-check">
+                            <input id="cumulativeSelection" class="form-check-input" type="checkbox" />
+                            <label for="cumulativeSelection" class="form-label">Cumulative Selection</label>
+                            <i
+                              class="fa fa-question-circle"
+                              data-toggle="tooltip"
+                              data-html="true"
+                              title="If enabled, any new selection of elements will be added to the current selection, otherwise it will replace it."
+                            ></i>
+                          </div>
+                        </li>
+                      </ul>
+                    </li>
+                    <li class="nav-item">
+                      <button
+                        type="button"
+                        class="btn"
+                        data-toggle="tooltip"
+                        data-placement="top"
+                        data-html="true"
+                        title="1) Hold MOUSE CLICK for context menu<br>2) CMD + MOUSE for block selection"
+                      >
+                        <i class="fa fa-question-circle"></i>
+                      </button>
+                    </li>
+                    <li class="nav-item">
+                      <a class="nav-link btn btn-secondary" onclick="toggleSidebar()" href="#" id="toggleSidebar"
+                        ><i class="fa fa-eye-slash"></i> Hide Properties</a
+                      >
+                    </li>
+                  </ul>
+                </div>
+              </nav>
+            </div>
+          </div>
+
+          <div class="row" style="overflow-x: hidden">
+            <div class="col-9" id="graphMainPanel">
+              <div id="graph" style="height: 800px; width: 100%"></div>
+            </div>
+            <div class="col-3" id="graphPropertiesPanel">
+              <div class="card-header-tab card-header" style="height: 100%">
+                <span id="graphPropertiesType">Select an element to see its properties</span>
+                <table id="graphPropertiesTable" class="table table-striped table-sm" style="border: 0px; width: 100%; table-layout: fixed"></table>
+                <span id="graphActions"></span>
+                <span id="graphLayout"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="col-12" id="graphStatus" style="height: 25px">
+              <span>&nbsp;</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-pane fade" id="tab-table" role="tabpanel">
+          <div class="table-responsive">
+            <table id="result" class="table table-striped table-sm" style="width: 100%; table-layout: fixed"></table>
+          </div>
+        </div>
+
+        <div class="tab-pane fade" id="tab-json" role="tabpanel">
+          <ul class="navbar-nav">
+            <li class="nav-item">
+              <a id="jsonToClipboard" type="button" data-clipboard-target="#resultJson" class="clipboard-trigger nav-link btn btn-secondary">
+                <i class="fa fa-copy"></i> Copy to clipboard
+              </a>
+            </li>
+          </ul>
+          <textarea id="resultJson" style="width: 100%; height: 600px" readonly></textarea>
+        </div>
+
+        <div class="tab-pane fade" id="tab-explain" role="tabpanel">
+          <nav class="navbar navbar-expand-lg navbar-light">
+            <ul class="navbar-nav">
+              <li class="nav-item">
+                <div class="form-check">
+                  <input id="profileCommand" class="form-check-input" type="checkbox" />
+                  <label for="profileCommand" class="form-label">Profile Execution</label>
+                  <i
+                    class="fa fa-question-circle"
+                    data-toggle="tooltip"
+                    data-html="true"
+                    title="If enabled, the command is profiled (only SQL and Gremlin apply) and statistics are returned. Executing a command with profiling is more expensive, use it only when needed."
+                  ></i>
+                </div>
+              </li>
+            </ul>
+          </nav>
+          <textarea id="resultExplain" style="width: 100%; height: 600px; font-family: courier" readonly></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  var editor = null;
+  function initQuery() {
+    $('[data-toggle="tooltip"]').tooltip();
+
+    $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
+      let activeTab = $("#tabs-command .active").attr("id");
+      if (activeTab == "tab-table-sel") renderTable();
+      else if (activeTab == "tab-graph-sel" && globalCy == null) renderGraph();
+    });
+
+    $("#graphSpacing").change(function () {
+      globalGraphSettings.graphSpacing = parseInt($("#graphSpacing").val());
+      renderGraph();
+    });
+
+    $("#inputLanguage").change(function () {
+      editor.setOption("mode", getEditorMode());
+    });
+
+    $(".dropdown-menu").on("click.bs.dropdown", function (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    });
+
+    new ClipboardJS("#jsonToClipboard").on("success", function (e) {
+      globalNotify("Content", "successfully copied in the clipboard", "success");
+    });
+
+    renderCodeEditor();
+    executeCommand();
+
+    // APPLY SETTINGS FROM URL
+    var dbPar = getURLParameter("db");
+    if (dbPar != null && dbPar != "null") setCurrentDatabase(dbPar);
+
+    var limitPar = getURLParameter("limit");
+    if (limitPar != null && limitPar != "null") {
+      if (limitPar != "25" && limitPar != "100" && limitPar != "500" && limitPar != "-1")
+        $("#inputLimit").append("<option value='" + limitPar + "' selected='selected'>" + limitPar + "</option>");
+      $("#inputLimit").val(escapeHtml(limitPar));
+    }
+
+    loadQueryHistory();
+
+    $("#inputHistory").change(function () {
+      copyQueryFromHistory();
+    });
+  }
+
+  function renderCodeEditor() {
+    editor = CodeMirror.fromTextArea(document.getElementById("inputCommand"), {
+      mode: getEditorMode(),
+      indentWithTabs: false,
+      smartIndent: true,
+      lineNumbers: false,
+      matchBrackets: true,
+      autofocus: true,
+      viewportMargin: Infinity,
+      theme: "neo",
+    });
+
+    editor.addKeyMap({
+      "Ctrl-Enter": function (cm) {
+        executeCommand();
+      },
+      "Cmd-Enter": function (cm) {
+        executeCommand();
+      },
+    });
+
+    setTimeout(function () {
+      editor.refresh();
+    }, 1);
+  }
+
+  function getEditorMode() {
+    let language = $("#inputLanguage").val();
+    let mime = null;
+    if (language == "sql") mime = "text/x-sql";
+    else if (language == "sqlScript") mime = "text/x-sql";
+    else if (language == "cypher") mime = "application/x-cypher-query";
+    else if (language == "gremlin") mime = "sql";
+    else if (language == "mongodb") mime = "application/json";
+    else if (language == "graphql") mime = "application/json";
+    return mime;
+  }
+</script>
