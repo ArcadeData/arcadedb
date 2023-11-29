@@ -29,7 +29,12 @@ public class GraalPolyglotEngine implements AutoCloseable {
   private static Set<String>  supportedLanguages;
 
   static {
-    supportedLanguages = Engine.create().getLanguages().keySet();
+    try {
+      supportedLanguages = Engine.create().getLanguages().keySet();
+    } catch (Throwable e) {
+      LogManager.instance().log(GraalPolyglotEngine.class, Level.SEVERE, "GraalVM Polyglot Engine: no languages found");
+      supportedLanguages = Collections.emptySet();
+    }
   }
 
   private GraalPolyglotEngine(final Database database, final Engine engine, final String language, final OutputStream output,
@@ -53,7 +58,8 @@ public class GraalPolyglotEngine implements AutoCloseable {
             allowEnvironmentAccess(EnvironmentAccess.NONE).//
             allowCreateThread(false).//
             allowPolyglotAccess(PolyglotAccess.ALL).//
-            allowHostClassLookup((s) -> this.allowedPackages.stream().map(e -> s.matches(e)).filter(f -> f).findFirst().isPresent());
+            allowHostClassLookup(
+            (s) -> this.allowedPackages.stream().map(e -> s.matches(e)).filter(f -> f).findFirst().isPresent());
 
     if (output != null)
       builder.out(output);

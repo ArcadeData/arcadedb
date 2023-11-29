@@ -174,8 +174,12 @@ public class ArcadeDBServer {
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, msg);
 
-    if (!"production".equals(mode))
-      LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://%s:%d ", hostAddress, httpServer.getPort());
+    if (!"production".equals(mode)) {
+      final InputStream file = getClass().getClassLoader().getResourceAsStream("static/index.html");
+      if (file != null)
+        LogManager.instance()
+            .log(this, Level.INFO, "Studio web tool available at http://%s:%d ", hostAddress, httpServer.getPort());
+    }
 
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_UP, null);
