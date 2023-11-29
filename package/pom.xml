@@ -203,7 +203,7 @@
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/arcadedb-package-${project.version}.dir
+                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}.dir
                                     </outputDirectory>
                                     <resources>
                                         <resource>
@@ -284,7 +284,7 @@
                                 <image>
                                     <name>arcadedata/arcadedb</name>
                                     <build>
-                                        <contextDir>${project.build.directory}/arcadedb-package-${project.version}.dir
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
                                         </contextDir>
                                         <buildx>
                                             <platforms>
