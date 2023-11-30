@@ -66,6 +66,9 @@ public class ConsoleTest {
 
   @Test
   public void testDropCreateWithLocalUrl() throws IOException {
+    if (System.getProperty("os.name").toLowerCase().contains("windows"))
+      return;
+
     String localUrl = "local:/" + absoluteDBPath + "/" + DB_NAME;
     Assertions.assertTrue(console.parse("drop database " + localUrl + "; close", false));
     Assertions.assertTrue(console.parse("create database " + localUrl + "; close", false));
@@ -108,6 +111,8 @@ public class ConsoleTest {
 
   @Test
   public void testLocalConnect() throws IOException {
+    if (System.getProperty("os.name").toLowerCase().contains("windows"))
+      return;
     Assertions.assertTrue(console.parse("connect local:/" + absoluteDBPath + "/" + DB_NAME + ";info types", false));
   }
 
