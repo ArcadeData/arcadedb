@@ -49,7 +49,7 @@ public class ConsoleTest {
   @BeforeEach
   public void populate() throws IOException {
     File dbFile = new File("./target/databases");
-    absoluteDBPath = dbFile.getAbsolutePath();
+    absoluteDBPath = dbFile.getAbsolutePath().replace('\\', '/');
     FileUtils.deleteRecursively(dbFile);
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     console = new Console();
@@ -440,7 +440,7 @@ public class ConsoleTest {
   @Test
   public void testLoad() throws IOException {
     Assertions.assertTrue(console.parse("connect " + DB_NAME));
-    Assertions.assertTrue(console.parse("load " + new File("src/test/resources/console-batch.sql")));
+    Assertions.assertTrue(console.parse("load " + new File("src/test/resources/console-batch.sql").toString().replace('\\', '/')));
 
     final String[] urls = new String[] { "http://arcadedb.com", "https://www.arcadedb.com", "file://this/is/myfile.txt" };
 

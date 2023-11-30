@@ -269,7 +269,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testPlusAssignCollection() {
-    ResultSet result = database.command("sql", "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
+    ResultSet result = database.command("sql",
+        "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
     final RID rid = result.next().getIdentity().get();
     result = database.command("sql", "update " + rid + " set listStrings += '!', listNumbers += 9");
     Assertions.assertTrue(result.hasNext());
@@ -391,7 +392,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testMinusAssignCollection() {
-    ResultSet result = database.command("sql", "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
+    ResultSet result = database.command("sql",
+        "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
     final RID rid = result.next().getIdentity().get();
     result = database.command("sql", "update " + rid + " set listStrings -= 'a', listNumbers -= 2");
     Assertions.assertTrue(result.hasNext());
@@ -558,7 +560,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
     final List<Bucket> buckets = database.getSchema().getType(className).getBuckets(false);
 
     // BY BUCKET ID
-    ResultSet result = database.command("sql", "update bucket:" + buckets.get(0).getName() + " set foo = 'bar' upsert where name = 'name1'");
+    ResultSet result = database.command("sql",
+        "update bucket:" + buckets.get(0).getName() + " set foo = 'bar' upsert where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -567,7 +570,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
     result.close();
 
     // BY BUCKET ID
-    result = database.command("sql", "update bucket:" + buckets.get(0).getFileId() + " set foo = 'bar' upsert where name = 'name1'");
+    result = database.command("sql",
+        "update bucket:" + buckets.get(0).getFileId() + " set foo = 'bar' upsert where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
     item = result.next();
     Assertions.assertNotNull(item);
@@ -649,7 +653,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE vertex TYPE extra_node");
     database.command("sql", "CREATE PROPERTY extra_node.extraitem STRING");
     database.command("sql", "CREATE INDEX ON extra_node (extraitem) UNIQUE");
-    final ResultSet result = database.command("sql", "update extra_node set extraitem = 'Hugo2' upsert return after $current where extraitem = 'Hugo'");
+    final ResultSet result = database.command("sql",
+        "update extra_node set extraitem = 'Hugo2' upsert return after $current where extraitem = 'Hugo'");
 
     Assertions.assertTrue(result.hasNext());
     final Result item = result.next();
@@ -662,7 +667,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testUpsertAndReturn() {
-    final ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert  return after  where name = 'name1' ");
+    final ResultSet result = database.command("sql",
+        "update " + className + " set foo = 'bar' upsert  return after  where name = 'name1' ");
 
     Assertions.assertTrue(result.hasNext());
     final Result item = result.next();
@@ -844,7 +850,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testReturnBefore() {
-    final ResultSet result = database.command("sql", "update " + className + " set name = 'foo' RETURN BEFORE where name = 'name1'");
+    final ResultSet result = database.command("sql",
+        "update " + className + " set name = 'foo' RETURN BEFORE where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
     final Result item = result.next();
     Assertions.assertNotNull(item);
@@ -906,6 +913,10 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testLocalDateTimeUpsertWithIndex() throws ClassNotFoundException {
+    if (System.getProperty("os.name").startsWith("Windows"))
+      // NOTE: ON WINDOWS MICROSECONDS ARE NOT HANDLED CORRECTLY
+      return;
+
     database.transaction(() -> {
       if (database.getSchema().existsType("Product"))
         database.getSchema().dropType("Product");
@@ -925,10 +936,10 @@ public class UpdateStatementExecutionTest extends TestHelper {
     for (int i = 0; i < 10; i++) {
       database.transaction(() -> {
         final LocalDateTime stop = LocalDateTime.now();
-        ResultSet resultSet = database.command("sql", "UPDATE Product SET start = ?, stop = ? UPSERT WHERE start = ? and stop = ?", start, stop);
+        database.command("sql", "UPDATE Product SET start = ?, stop = ? UPSERT WHERE start = ? and stop = ?", start, stop);
 
         Result result;
-        resultSet = database.query("sql", "SELECT from Product");
+        ResultSet resultSet = database.query("sql", "SELECT from Product");
         while (resultSet.hasNext()) {
           result = resultSet.next();
           Assertions.assertNotNull(result.getProperty("start"));
@@ -975,10 +986,12 @@ public class UpdateStatementExecutionTest extends TestHelper {
        2022-03-18T21:55:23 - 2022-11-29T00:23:22
        2022-03-18T21:55:23 - 2022-03-20T00:23:21
        *     */
-      LocalDateTime start = LocalDateTime.parse("2022-03-19T00:26:24.404379", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
-      LocalDateTime stop = LocalDateTime.parse("2022-03-19T00:28:26.525650", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
-      try (ResultSet resultSet = database.query("sql", "SELECT start, stop FROM Product WHERE start <= ? AND stop >= ? ORDER BY start DESC, stop DESC LIMIT 1",
-          start, stop)) {
+      LocalDateTime start = LocalDateTime.parse("2022-03-19T00:26:24.404379",
+          DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+      LocalDateTime stop = LocalDateTime.parse("2022-03-19T00:28:26.525650",
+          DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+      try (ResultSet resultSet = database.query("sql",
+          "SELECT start, stop FROM Product WHERE start <= ? AND stop >= ? ORDER BY start DESC, stop DESC LIMIT 1", start, stop)) {
 
         Assertions.assertTrue(resultSet.hasNext());
 
@@ -1049,7 +1062,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     database.transaction(() -> {
       Object[] parameters2 = { "PENDING" };
-      try (ResultSet resultSet1 = database.query("sql", "SELECT id, status FROM Order WHERE status = 'PENDING' OR status = 'READY' ORDER BY id ASC LIMIT 1")) {
+      try (ResultSet resultSet1 = database.query("sql",
+          "SELECT id, status FROM Order WHERE status = 'PENDING' OR status = 'READY' ORDER BY id ASC LIMIT 1")) {
         Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
       }
     });
