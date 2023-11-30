@@ -79,7 +79,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, new BasicCommandContext());
+    return executeInternal(statements, context);
   }
 
   @Override
@@ -94,7 +94,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, new BasicCommandContext());
+    return executeInternal(statements, context);
   }
 
   @Override
@@ -105,7 +105,6 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-
     return executeInternal(statements, context);
   }
 
