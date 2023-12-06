@@ -109,20 +109,20 @@ public class FileContentResponse extends HAAbstractCommand {
               pageId, page.getVersion());
         }
 
-        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(file.getFileId());
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(file.getFileId());
+        if (component != null) {
+          final int lastPageNumber = pageFromInclusive + totalPages;
+          if (lastPageNumber > component.getTotalPages()) {
+            component.setPageCount(lastPageNumber);
+            database.getFileManager().setVirtualFileSize(file.getFileId(),
+                (long) component.getTotalPages() * ((PaginatedComponentFile) database.getFileManager()
+                    .getFile(file.getFileId())).getPageSize());
+          }
 
-        final int lastPageNumber = pageFromInclusive + totalPages;
-        if (lastPageNumber > component.getTotalPages()) {
-          component.setPageCount(lastPageNumber);
-          database.getFileManager().setVirtualFileSize(file.getFileId(),
-              (long) component.getTotalPages() * ((PaginatedComponentFile) database.getFileManager()
-                  .getFile(file.getFileId())).getPageSize());
+          if (component instanceof LocalBucket)
+            // RESET CACHED RECORD COUNT
+            ((LocalBucket) component).setCachedRecordCount(-1);
         }
-
-        if (component instanceof LocalBucket)
-          // RESET CACHED RECORD COUNT
-          ((LocalBucket) component).setCachedRecordCount(-1);
-
       } else
         LogManager.instance().log(this, Level.SEVERE, "Cannot write not paginated file %s from the leader", fileName);
 
