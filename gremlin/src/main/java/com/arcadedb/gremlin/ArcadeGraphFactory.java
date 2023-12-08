@@ -21,6 +21,9 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.remote.RemoteDatabase;
 import org.apache.commons.configuration2.Configuration;
 
@@ -36,6 +39,7 @@ import java.util.concurrent.atomic.*;
 
 public class ArcadeGraphFactory implements Closeable {
   private final ConcurrentLinkedQueue<PooledArcadeGraph> pooledInstances       = new ConcurrentLinkedQueue();
+  private final Database                                 localDatabase;
   private final String                                   host;
   private final int                                      port;
   private final String                                   databaseName;
@@ -84,11 +88,31 @@ public class ArcadeGraphFactory implements Closeable {
     this.databaseName = databaseName;
     this.userName = userName;
     this.userPassword = userPassword;
+    this.localDatabase = null;
+  }
+
+  /**
+   * Creates a new ArcadeGraphFactory with local database connection. By default maximum 32 instances of ArcadeGraph
+   * can be created. You can change this configuration with the method #setMaxInstances().
+   *
+   * @param databasePath ArcadeDB local database path
+   */
+  private ArcadeGraphFactory(final String databasePath) {
+    this.localDatabase = new DatabaseFactory(databasePath).open();
+    this.host = null;
+    this.port = 0;
+    this.databaseName = null;
+    this.userName = null;
+    this.userPassword = null;
   }
 
   public static ArcadeGraphFactory withRemote(final String host, final int port, final String databaseName, final String userName,
       final String userPassword) {
     return new ArcadeGraphFactory(host, port, databaseName, userName, userPassword);
+  }
+
+  public static ArcadeGraphFactory withLocal(final String databasePath) {
+    return new ArcadeGraphFactory(databasePath);
   }
 
   /**
@@ -101,6 +125,9 @@ public class ArcadeGraphFactory implements Closeable {
       if (instance != null)
         instance.dispose();
     }
+
+    if (localDatabase != null)
+      localDatabase.close();
   }
 
   public ArcadeGraph get() {
@@ -110,7 +137,10 @@ public class ArcadeGraphFactory implements Closeable {
         throw new IllegalArgumentException("Unable to create more than " + maxInstances
             + " instances in the pool. Assure the instances were correctly released with Graph.close()");
 
-      instance = new PooledArcadeGraph(this, new RemoteDatabase(host, port, databaseName, userName, userPassword));
+      if (localDatabase != null)
+        instance = new PooledArcadeGraph(this, localDatabase);
+      else
+        instance = new PooledArcadeGraph(this, new RemoteDatabase(host, port, databaseName, userName, userPassword));
       totalInstancesCreated.incrementAndGet();
     }
     return instance;
