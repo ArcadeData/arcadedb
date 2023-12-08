@@ -841,7 +841,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
               final Identifiable next = it.next();
               if (next != null) {
                 final Vertex vertex = next.asVertex();
-                for (int level = 0; level < getMaxLevelFromVertex(vertex); level++) {
+                for (int level = 0; level <= getMaxLevelFromVertex(vertex); level++) {
                   try {
                     for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
                       e.delete();
