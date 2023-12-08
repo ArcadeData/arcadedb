@@ -581,4 +581,12 @@ public class InsertStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(res.hasProperty("results"));
   }
 
+  @Test
+  public void testInsertEncoding() {
+    database.getSchema().createDocumentType("RegInfoDoc");
+    final ResultSet result = database.command("sql",
+        "insert into RegInfoDoc set payload = \"(Pn/m)*1000kg/kW, with \\\"Pn\\\" being the\\n\\np  and \\\"m\\\" (kg)\"");
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertEquals("(Pn/m)*1000kg/kW, with \"Pn\" being the\n\np  and \"m\" (kg)", result.next().getProperty("payload"));
+  }
 }
