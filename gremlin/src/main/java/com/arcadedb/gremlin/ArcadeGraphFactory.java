@@ -77,13 +77,18 @@ public class ArcadeGraphFactory implements Closeable {
    * @param userName     User name
    * @param userPassword User password
    */
-  public ArcadeGraphFactory(final String host, final int port, final String databaseName, final String userName,
+  private ArcadeGraphFactory(final String host, final int port, final String databaseName, final String userName,
       final String userPassword) {
     this.host = host;
     this.port = port;
     this.databaseName = databaseName;
     this.userName = userName;
     this.userPassword = userPassword;
+  }
+
+  public static ArcadeGraphFactory withRemote(final String host, final int port, final String databaseName, final String userName,
+      final String userPassword) {
+    return new ArcadeGraphFactory(host, port, databaseName, userName, userPassword);
   }
 
   /**

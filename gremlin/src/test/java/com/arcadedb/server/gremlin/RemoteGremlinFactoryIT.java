@@ -44,7 +44,7 @@ public class RemoteGremlinFactoryIT extends BaseGraphServerTest {
 
   @Test
   public void okPoolRelease() {
-    try (ArcadeGraphFactory pool = new ArcadeGraphFactory("127.0.0.1", 2480, DATABASE_NAME, "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       for (int i = 0; i < 1_000; i++) {
         final ArcadeGraph instance = pool.get();
@@ -58,7 +58,7 @@ public class RemoteGremlinFactoryIT extends BaseGraphServerTest {
 
   @Test
   public void errorPoolRelease() {
-    try (ArcadeGraphFactory pool = new ArcadeGraphFactory("127.0.0.1", 2480, DATABASE_NAME, "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       for (int i = 0; i < pool.getMaxInstances(); i++) {
         final ArcadeGraph instance = pool.get();
