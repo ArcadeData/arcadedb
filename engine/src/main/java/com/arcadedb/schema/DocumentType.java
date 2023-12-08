@@ -64,7 +64,9 @@ public interface DocumentType {
 
   Set<String> getPropertyNames();
 
-  Collection<Property> getProperties();
+  Collection<? extends Property> getProperties();
+
+  Collection<? extends Property> getPolymorphicProperties();
 
   Set<String> getPolymorphicPropertyNames();
 

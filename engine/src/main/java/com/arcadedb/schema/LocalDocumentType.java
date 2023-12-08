@@ -43,16 +43,16 @@ import java.util.concurrent.*;
 import java.util.logging.*;
 
 public class LocalDocumentType implements DocumentType {
-  protected final LocalSchema schema;
-  protected final String      name;
-  protected final List<LocalDocumentType> superTypes                 = new ArrayList<>();
-  protected final List<LocalDocumentType> subTypes                   = new ArrayList<>();
-  protected       List<Bucket>            buckets                    = new ArrayList<>();
-  protected       List<Bucket>            cachedPolymorphicBuckets   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       List<Integer>           bucketIds                  = new ArrayList<>();
-  protected       List<Integer>           cachedPolymorphicBucketIds = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       BucketSelectionStrategy bucketSelectionStrategy    = new RoundRobinBucketSelectionStrategy();
-  protected final Map<String, Property>   properties                 = new HashMap<>();
+  protected final LocalSchema                       schema;
+  protected final String                            name;
+  protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
+  protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
+  protected       List<Bucket>                      buckets                      = new ArrayList<>();
+  protected       List<Bucket>                      cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  protected       List<Integer>                     bucketIds                    = new ArrayList<>();
+  protected       List<Integer>                     cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
+  protected final Map<String, Property>             properties                   = new HashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
@@ -227,8 +227,24 @@ public class LocalDocumentType implements DocumentType {
   }
 
   @Override
-  public Collection<Property> getProperties() {
+  public Collection<? extends Property> getProperties() {
     return properties.values();
+  }
+
+  /**
+   * Returns all the properties defined in the type and subtypes.
+   *
+   * @see {@link #getPolymorphicPropertyNames()}, {@link #getProperties()}
+   */
+  @Override
+  public Collection<? extends Property> getPolymorphicProperties() {
+    if (superTypes.isEmpty())
+      return getProperties();
+
+    final Set<Property> allProperties = new HashSet<>(getProperties());
+    for (final DocumentType p : superTypes)
+      allProperties.addAll(p.getPolymorphicProperties());
+    return allProperties;
   }
 
   /**
@@ -450,29 +466,27 @@ public class LocalDocumentType implements DocumentType {
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique,
-      final String... propertyNames) {
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique,
-      final String[] propertyNames, final int pageSize) {
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique,
-      final String[] propertyNames, final int pageSize, final Index.BuildIndexCallback callback) {
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
-      final Index.BuildIndexCallback callback) {
+  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withNullStrategy(nullStrategy).withCallback(callback).withIgnoreIfExists(true).create();
   }

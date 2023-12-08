@@ -344,7 +344,7 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public Set<String> getPropertyNames() {
-    throw new UnsupportedOperationException();
+    return properties.keySet();
   }
 
   @Override
@@ -399,13 +399,30 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
-  public Collection<Property> getProperties() {
-    throw new UnsupportedOperationException();
+  public Collection<? extends Property> getProperties() {
+    return properties.values();
+  }
+
+  @Override
+  public Collection<? extends Property> getPolymorphicProperties() {
+    if (parentTypes.isEmpty())
+      return getProperties();
+
+    final Set<Property> allProperties = new HashSet<>(getProperties());
+    for (final String parentName : parentTypes)
+      allProperties.addAll(getSchema().getType(parentName).getPolymorphicProperties());
+    return allProperties;
   }
 
   @Override
   public Set<String> getPolymorphicPropertyNames() {
-    throw new UnsupportedOperationException();
+    if (parentTypes.isEmpty())
+      return getPropertyNames();
+
+    final Set<String> allProperties = new HashSet<>(getPropertyNames());
+    for (final String parentName : parentTypes)
+      allProperties.addAll(getSchema().getType(parentName).getPropertyNames());
+    return allProperties;
   }
 
   @Override

@@ -34,7 +34,7 @@ import java.util.*;
 public class DocumentValidator {
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
-    for (Property entry : document.getType().getProperties())
+    for (Property entry : document.getType().getPolymorphicProperties())
       validateField(document, entry);
   }
 

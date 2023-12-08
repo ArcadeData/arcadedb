@@ -810,7 +810,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public VertexType createVertexType(final String typeName) {
-    return (VertexType) buildVertexType().withName(typeName).create();
+    return buildVertexType().withName(typeName).create();
   }
 
   @Override
@@ -855,7 +855,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public EdgeType createEdgeType(final String typeName) {
-    return (EdgeType) buildEdgeType().withName(typeName).create();
+    return buildEdgeType().withName(typeName).create();
   }
 
   @Override

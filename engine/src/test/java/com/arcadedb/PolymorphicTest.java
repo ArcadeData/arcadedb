@@ -20,6 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
@@ -142,7 +143,7 @@ public class PolymorphicTest extends TestHelper {
   }
 
   @Test
-  public void scan() throws Exception {
+  public void scan() {
     database.begin();
     try {
       Assertions.assertEquals(0, scanAndCountType(database, "Vehicle", false));
@@ -170,6 +171,31 @@ public class PolymorphicTest extends TestHelper {
 
     } finally {
       database.commit();
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1368
+   */
+  @Test
+  public void testConstraintsInInheritance() {
+    database.command("sql", "CREATE VERTEX TYPE V1");
+    database.command("sql", "CREATE PROPERTY V1.prop1 STRING (mandatory true)");
+    database.command("sql", "CREATE VERTEX TYPE V2 EXTENDS V1");
+    try {
+      database.command("sql",
+          "INSERT INTO V1 SET prop2 = 'test'"); // this throws the exception as expected since I didn't set the mandatory prop1
+      Assertions.fail();
+    } catch (ValidationException e) {
+      // EXPECTED
+    }
+
+    try {
+      database.command("sql",
+          "INSERT INTO V2 SET prop2 = 'test'"); // this ignores the constraint on prop1 and insert the record although I didn't set the value
+      Assertions.fail();
+    } catch (ValidationException e) {
+      // EXPECTED
     }
   }
 
