@@ -89,6 +89,8 @@ public class RemoteGremlinFactoryIT extends BaseGraphServerTest {
         }
 
         Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().next());
+
+        Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().toList().get(0));
       }
     }
   }
