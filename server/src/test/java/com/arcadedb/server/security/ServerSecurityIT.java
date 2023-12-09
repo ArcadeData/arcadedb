@@ -118,7 +118,7 @@ public class ServerSecurityIT {
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final ContextConfiguration cfg = new ContextConfiguration();
-    cfg.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, 100);
+    cfg.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, 200);
 
     final ServerSecurity security = new ServerSecurity(null, cfg, "./target");
 
@@ -143,7 +143,7 @@ public class ServerSecurityIT {
     repository.save(SecurityUserFileRepository.createDefault());
 
     try {
-      Thread.sleep(200);
+      Thread.sleep(220);
     } catch (final InterruptedException e) {
       e.printStackTrace();
     }

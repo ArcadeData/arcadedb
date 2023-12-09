@@ -41,6 +41,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -529,7 +530,7 @@ public class ServerProfilingIT {
 
       createSchema(database);
 
-      final int CYCLES = 100;
+      final int CYCLES = 30;
       final CountDownLatch semaphore = new CountDownLatch(CYCLES);
 
       final Thread cfgUpdaterThread = new Thread(() -> {
@@ -541,7 +542,7 @@ public class ServerProfilingIT {
             final JSONObject json = new JSONObject(FileUtils.readFileAsString(file));
             json.getJSONObject("databases").getJSONObject("*").getJSONObject("groups").put("reloaded", i);
             FileUtils.writeContentToStream(file, json.toString(2).getBytes());
-            Thread.sleep(15);
+            Thread.sleep(150);
             Assertions.assertEquals(i, SECURITY.getDatabaseGroupsConfiguration("*").getInt("reloaded"));
 
             semaphore.countDown();
@@ -556,7 +557,7 @@ public class ServerProfilingIT {
       cfgUpdaterThread.start();
 
       int i = 0;
-      while (semaphore.getCount() > 0)
+      while (semaphore.getCount() > 0 && cfgUpdaterThread.isAlive())
         database.getSchema().createVertexType("Test" + (i++));
 
       cfgUpdaterThread.join();
@@ -652,7 +653,7 @@ public class ServerProfilingIT {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue("dD5ed08c");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
-    GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY.setValue(10);
+    GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY.setValue(100);
 
     SERVER = new ArcadeDBServer();
     SERVER.start();

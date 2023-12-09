@@ -184,6 +184,10 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     return users.containsKey(userName);
   }
 
+  public Set<String> getUsers() {
+    return users.keySet();
+  }
+
   public ServerSecurityUser getUser(final String userName) {
     return users.get(userName);
   }
