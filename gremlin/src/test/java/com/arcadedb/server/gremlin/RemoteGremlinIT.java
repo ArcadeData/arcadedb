@@ -54,18 +54,19 @@ public class RemoteGremlinIT extends BaseGraphServerTest {
       try (final ArcadeGraph graph = ArcadeGraph.open(database)) {
         graph.getDatabase().getSchema().createVertexType("inputstructure");
 
-        //long beginTime = System.currentTimeMillis();
-
         for (int i = 0; i < 1_000; i++) {
           var v = graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"Elon\"}");
         }
 
-        //System.out.println("TOTAL INSERT: " + (System.currentTimeMillis() - beginTime));
-        //beginTime = System.currentTimeMillis();
-
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\")").execute()) {
-          //System.out.println("TOTAL QUERY " + list.stream().count() + ": " + (System.currentTimeMillis() - beginTime));
+          Assertions.assertEquals(1_000, list.stream().count());
         }
+
+        try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\").count()").execute()) {
+          Assertions.assertEquals(1_000L, (Long) list.nextIfAvailable().getProperty("result"));
+        }
+
+        Assertions.assertEquals(1_000L, graph.traversal().V().hasLabel("inputstructure").count().next());
       }
     });
   }

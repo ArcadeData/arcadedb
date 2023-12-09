@@ -76,6 +76,23 @@ public class RemoteGremlinFactoryIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  public void executeTraversal() {
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+      try (final ArcadeGraph graph = pool.get()) {
+        for (int i = 0; i < 1_000; i++)
+          graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"Elon\"}");
+
+        try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\").count()").execute()) {
+          Assertions.assertEquals(1_000, (Long) list.nextIfAvailable().getProperty("result"));
+        }
+
+        Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().next());
+      }
+    }
+  }
+
   @BeforeEach
   public void beginTest() {
     super.beginTest();
