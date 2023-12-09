@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -91,6 +92,25 @@ public class RemoteGremlinFactoryIT extends BaseGraphServerTest {
         Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().next());
 
         Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().toList().get(0));
+      }
+    }
+  }
+
+  @Test
+  public void executeTraversal2() {
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+      try (final ArcadeGraph arcadeGraph = pool.get()) {
+        GraphTraversalSource g = arcadeGraph.traversal();
+        try {
+          g.tx().begin();
+          g.addV("Country").property("id", 0).property("country", "USA").property("code", 11).iterate();
+          g.tx().commit();
+        } catch (Exception e) {
+          g.tx().rollback();
+        }
+
+        Assertions.assertEquals(1, arcadeGraph.traversal().V().hasLabel("Country").count().toList().get(0));
       }
     }
   }
