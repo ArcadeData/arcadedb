@@ -19,9 +19,12 @@
 package com.arcadedb.server.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
@@ -35,60 +38,15 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
-public class GremlinServerSecurityTest extends BaseGraphServerTest {
+public class GremlinServerSecurityTest extends AbstractGremlinServerIT {
 
   @Test
   public void getAllVertices() {
-    try {
-      final GraphTraversalSource g = traversal();
-      final var vertices = g.V().limit(3).toList();
-      Assertions.assertEquals(3, vertices.size());
-
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", "test")) {
       Assertions.fail("Expected security exception");
-    } catch (final Exception e) {
-      Assertions.assertTrue(e.getMessage().contains(ServerSecurityException.class.getSimpleName()));
+    } catch (final SecurityException e) {
+      Assertions.assertTrue(e.getMessage().contains("User/Password"));
     }
   }
 
-  @Override
-  public void setTestConfiguration() {
-    super.setTestConfiguration();
-
-    // COPY GREMLIN SERVER FILES BEFORE STARTING THE GREMLIN SERVER
-    new File("./target/config").mkdirs();
-
-    try {
-      FileUtils.writeFile(new File("./target/config/gremlin-server.yaml"),
-          FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.yaml"), "utf8"));
-
-      FileUtils.writeFile(new File("./target/config/gremlin-server.properties"),
-          FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.properties"), "utf8"));
-
-      FileUtils.writeFile(new File("./target/config/gremlin-server.groovy"),
-          FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.groovy"), "utf8"));
-
-      GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
-
-    } catch (final IOException e) {
-      Assertions.fail(e);
-    }
-  }
-
-  @AfterEach
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
-  }
-
-  private Cluster createCluster() {
-    final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
-        new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
-
-    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182).credentials("root", "test").serializer(serializer).create();
-  }
-
-  private GraphTraversalSource traversal() {
-    return AnonymousTraversalSource.traversal().withRemote(DriverRemoteConnection.using(createCluster(), "graph"));
-  }
 }

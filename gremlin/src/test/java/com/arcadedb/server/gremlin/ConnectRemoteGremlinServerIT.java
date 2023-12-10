@@ -36,7 +36,7 @@ import java.util.*;
 /**
  * Manual test against a Gremlin Server.
  */
-public class ConnectRemoteGremlinServer {
+public class ConnectRemoteGremlinServerIT {
 
   @Disabled
   @Test
@@ -54,8 +54,8 @@ public class ConnectRemoteGremlinServer {
     final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
         new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
-    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182).credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)
-        .serializer(serializer).create();
+    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182)
+        .credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).serializer(serializer).create();
   }
 
   private GraphTraversalSource traversal() {

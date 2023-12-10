@@ -25,16 +25,13 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.in;
 import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.select;
 
-public class RemoteGremlinIT extends BaseGraphServerTest {
-  private static final String DATABASE_NAME = "remote-database";
+public class RemoteGremlinIT extends AbstractGremlinServerIT {
 
   @Override
   protected boolean isCreateDatabases() {
@@ -46,25 +43,26 @@ public class RemoteGremlinIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       Assertions.assertTrue(
           new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
-              DATABASE_NAME));
+              getDatabaseName()));
 
-      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       try (final ArcadeGraph graph = ArcadeGraph.open(database)) {
         graph.getDatabase().getSchema().createVertexType("inputstructure");
 
-        for (int i = 0; i < 1_000; i++) {
-          var v = graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"Elon\"}");
-        }
+        for (int i = 0; i < 1_000; i++)
+          graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"Elon\"}");
 
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\")").execute()) {
           Assertions.assertEquals(1_000, list.stream().count());
         }
 
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\").count()").execute()) {
-          Assertions.assertEquals(1_000L, (Long) list.nextIfAvailable().getProperty("result"));
+          Assertions.assertEquals(1_000, (Integer) list.nextIfAvailable().getProperty("result"));
         }
+
+        graph.tx().commit();
 
         Assertions.assertEquals(1_000L, graph.traversal().V().hasLabel("inputstructure").count().next());
       }
@@ -74,7 +72,7 @@ public class RemoteGremlinIT extends BaseGraphServerTest {
   @Test
   public void dropVertex() throws Exception {
     testEachServer((serverIndex) -> {
-      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       try (final ArcadeGraph graph = ArcadeGraph.open(database)) {
@@ -121,21 +119,5 @@ public class RemoteGremlinIT extends BaseGraphServerTest {
             constant("deleted").next();
       }
     });
-  }
-
-  @BeforeEach
-  public void beginTest() {
-    super.beginTest();
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    if (!server.exists(DATABASE_NAME))
-      server.create(DATABASE_NAME);
-  }
-
-  @AfterEach
-  public void endTest() {
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    if (server.exists(DATABASE_NAME))
-      server.drop(DATABASE_NAME);
-    super.endTest();
   }
 }

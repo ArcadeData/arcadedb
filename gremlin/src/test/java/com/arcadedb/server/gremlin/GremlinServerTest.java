@@ -34,37 +34,13 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
-public class GremlinServerTest extends BaseGraphServerTest {
+public class GremlinServerTest extends AbstractGremlinServerIT {
 
   @Test
   public void getAllVertices() {
     final GraphTraversalSource g = traversal();
     final var vertices = g.V().limit(3).toList();
     Assertions.assertEquals(3, vertices.size());
-  }
-
-  @Override
-  public void setTestConfiguration() {
-    super.setTestConfiguration();
-
-    // COPY GREMLIN SERVER FILES BEFORE STARTING THE GREMLIN SERVER
-    new File("./target/config").mkdirs();
-
-    try {
-      FileUtils.writeFile(new File("./target/config/gremlin-server.yaml"),
-          FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.yaml"), "utf8"));
-
-      FileUtils.writeFile(new File("./target/config/gremlin-server.properties"),
-          FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.properties"), "utf8"));
-
-      FileUtils.writeFile(new File("./target/config/gremlin-server.groovy"),
-          FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.groovy"), "utf8"));
-
-      GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
-
-    } catch (final IOException e) {
-      Assertions.fail(e);
-    }
   }
 
   @AfterEach
@@ -78,8 +54,8 @@ public class GremlinServerTest extends BaseGraphServerTest {
     final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
         new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
-    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182).credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)
-        .serializer(serializer).create();
+    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182)
+        .credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).serializer(serializer).create();
   }
 
   private GraphTraversalSource traversal() {

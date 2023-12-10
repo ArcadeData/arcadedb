@@ -28,6 +28,7 @@ globals << [hook : [
         }
 ] as LifeCycleHook]
 
-// define the default TraversalSource to bind queries to - this one will be named "g".
+// define the default TraversalSource to bind queries to - this one will be named "graph".
 globals << [graph : graph.traversal()]
+// define the default TraversalSource to bind queries to - this one will be named "g".
 globals << [g : graph.traversal()]

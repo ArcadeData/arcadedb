@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
@@ -61,6 +62,9 @@ public class ArcadeGremlin extends ArcadeQuery {
 
   @Override
   public ResultSet execute() {
+    if (graph.database instanceof RemoteDatabase)
+      return graph.database.command("gremlin", query);
+
     try {
       final boolean profileExecution = parameters != null && parameters.containsKey("$profileExecution") ?
           (Boolean) parameters.remove("$profileExecution") :

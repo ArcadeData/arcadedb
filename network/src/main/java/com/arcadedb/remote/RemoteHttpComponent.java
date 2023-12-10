@@ -107,6 +107,14 @@ public class RemoteHttpComponent extends RWLockContext {
     this.timeout = timeout;
   }
 
+  public String getUserName() {
+    return userName;
+  }
+
+  public String getUserPassword() {
+    return userPassword;
+  }
+
   List<Pair<String, Integer>> getReplicaServerList() {
     return replicaServerList;
   }
@@ -147,8 +155,7 @@ public class RemoteHttpComponent extends RWLockContext {
             final JSONObject jsonRequest = new JSONObject();
             if (language != null)
               jsonRequest.put("language", language);
-            if (payloadCommand != null)
-              jsonRequest.put("command", payloadCommand);
+            jsonRequest.put("command", payloadCommand);
             jsonRequest.put("serializer", "record");
 
             if (params != null)

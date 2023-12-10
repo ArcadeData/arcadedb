@@ -34,34 +34,43 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.gremlin.service.ArcadeServiceRegistry;
 import com.arcadedb.gremlin.service.VectorNeighborsFactory;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.apache.commons.configuration2.BaseConfiguration;
 import org.apache.commons.configuration2.Configuration;
+import org.apache.tinkerpop.gremlin.driver.Cluster;
+import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.DefaultGremlinScriptEngineManager;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
+import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.structure.Direction;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.io.Io;
+import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
 import org.apache.tinkerpop.gremlin.structure.service.ServiceRegistry;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
+import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
 import org.opencypher.gremlin.traversal.CustomFunctions;
 import org.opencypher.gremlin.traversal.CustomPredicate;
 import org.opencypher.v9_0.util.SyntaxException;
 
 import java.io.*;
 import java.util.*;
+import java.util.logging.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -75,7 +84,8 @@ import java.util.*;
 @Graph.OptIn("com.arcadedb.gremlin.structure.DebugStructureSuite")
 public class ArcadeGraph implements Graph, Closeable {
 
-  public static final String CONFIG_DIRECTORY = "gremlin.arcadedb.directory";
+  public static final  String CONFIG_DIRECTORY    = "gremlin.arcadedb.directory";
+  private static final int    GREMLIN_SERVER_PORT = 8182;
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final        ArcadeGraphTransaction    transaction;
@@ -87,6 +97,7 @@ public class ArcadeGraph implements Graph, Closeable {
   private              GremlinLangScriptEngine   gremlinJavaEngine;
   private              GremlinGroovyScriptEngine gremlinGroovyEngine;
   private              ServiceRegistry           serviceRegistry;
+  private              GraphTraversalSource      traversal;
 
   static {
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class,
@@ -159,6 +170,45 @@ public class ArcadeGraph implements Graph, Closeable {
 
   public ArcadeGremlin gremlin(final String query) {
     return new ArcadeGremlin(this, query);
+  }
+
+  /**
+   * Returns a Gremlin traversal. This traversal is executed outside the database's transaction if any.
+   */
+  public GraphTraversalSource traversal() {
+    if (traversal != null)
+      return traversal;
+
+    if (database instanceof RemoteDatabase) {
+      try {
+        final List<String> remoteAddresses = new ArrayList<>();
+        final RemoteDatabase remoteDatabase = (RemoteDatabase) database;
+
+        remoteAddresses.add(remoteDatabase.getLeaderAddress());
+        remoteAddresses.addAll(remoteDatabase.getReplicaAddresses());
+
+        final String[] hosts = new String[remoteAddresses.size()];
+        for (int i = 0; i < remoteAddresses.size(); i++) {
+          final String host = remoteAddresses.get(0);
+          hosts[i] = host.substring(0, host.indexOf(":"));
+        }
+
+        final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
+            new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
+
+        Cluster cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(GREMLIN_SERVER_PORT)
+            .credentials(remoteDatabase.getUserName(), remoteDatabase.getUserPassword()).serializer(serializer).create();
+
+        traversal = AnonymousTraversalSource.traversal().withRemote(DriverRemoteConnection.using(cluster, database.getName()));
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "GremlinServer plugin not available on ArcadeDB server(s). Using slower remote implementation.");
+        traversal = Graph.super.traversal();
+      }
+    } else
+      traversal = Graph.super.traversal();
+
+    return traversal;
   }
 
   public ArcadeSQL sql(final String query) {

@@ -45,15 +45,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     super(httpServer);
   }
 
-  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, Database database) throws Exception;
+  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, Database database)
+      throws Exception;
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
-    final Database database;
+    final DatabaseInternal database;
     HttpSession activeSession = null;
     boolean atomicTransaction = false;
 
-    DatabaseContext.DatabaseContextTL current = null;
+    DatabaseContext.DatabaseContextTL current;
 
     if (requiresDatabase()) {
       final Deque<String> databaseName = exchange.getQueryParameters().get("database");
@@ -73,7 +74,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
       if (current == null)
         // INITIALIZE THE DATABASE CONTEXT
-        current = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
+        current = DatabaseContext.INSTANCE.init(database);
 
       final SecurityDatabaseUser currentUser = current.getCurrentUser();
       if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
@@ -147,7 +148,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     return true;
   }
 
-  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, final ServerSecurityUser user) {
+  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database,
+      final ServerSecurityUser user) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (sessionId != null && !sessionId.isEmpty()) {
       // LOOK UP FOR THE SESSION ID
