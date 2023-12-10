@@ -33,11 +33,6 @@ import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.select
 
 public class RemoteGremlinIT extends AbstractGremlinServerIT {
 
-  @Override
-  protected boolean isCreateDatabases() {
-    return false;
-  }
-
   @Test
   public void insert() throws Exception {
     testEachServer((serverIndex) -> {
