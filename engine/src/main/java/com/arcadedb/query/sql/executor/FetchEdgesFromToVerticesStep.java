@@ -50,8 +50,8 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
   private Edge nextEdge = null;
 
-  public FetchEdgesFromToVerticesStep(final String fromAlias, final String toAlias, final Identifier targetType, final Identifier targetCluster,
-      final CommandContext context, final boolean profilingEnabled) {
+  public FetchEdgesFromToVerticesStep(final String fromAlias, final String toAlias, final Identifier targetType,
+      final Identifier targetCluster, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.targetType = targetType;
     this.targetCluster = targetCluster;
@@ -180,7 +180,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
         }
       }
       final Edge edge = this.currentFromEdgesIter.next();
-      if (toList != null || toList.contains(edge.getIn().getIdentity())) {
+      if (toList.isEmpty() || toList.contains(edge.getIn().getIdentity())) {
         if (matchesClass(edge) && matchesBucket(edge)) {
           this.nextEdge = edge;
           return;
