@@ -28,6 +28,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.HasStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
@@ -102,18 +103,20 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
                   final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
                   if (index != null) {
                     if (c.getBiPredicate().equals(Compare.eq))
-                      indexCursors.add(index.get(c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }));
+                      indexCursors.add(
+                          index.get(c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }));
                     else if (c.getBiPredicate().equals(Compare.gt))
-                      indexCursors.add(
-                          index.iterator(true, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
+                      indexCursors.add(index.iterator(true,
+                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
                     else if (c.getBiPredicate().equals(Compare.gte))
-                      indexCursors.add(index.iterator(true, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
+                      indexCursors.add(index.iterator(true,
+                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
                     else if (c.getBiPredicate().equals(Compare.lt))
-                      indexCursors.add(
-                          index.iterator(false, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
+                      indexCursors.add(index.iterator(false,
+                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
                     else if (c.getBiPredicate().equals(Compare.lte))
-                      indexCursors.add(
-                          index.iterator(false, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
+                      indexCursors.add(index.iterator(false,
+                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
                   }
                 }
               }
@@ -121,12 +124,17 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
             final Step replaceWith;
             if (indexCursors.isEmpty()) {
-              replaceWith = new ArcadeFilterByTypeStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(), prevStepGraph.isStartStep(),
-                  typeNameToMatch);
+              if (i + 1 < steps.size() && steps.get(i + 1) instanceof CountGlobalStep) {
+                traversal.removeStep(i - 1);
+                traversal.removeStep(i - 1);
+                replaceWith = new ArcadeCountGlobalStep(step.getTraversal(), prevStepGraph.getReturnClass(), typeNameToMatch);
+              } else
+                replaceWith = new ArcadeFilterByTypeStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(),
+                    prevStepGraph.isStartStep(), typeNameToMatch);
               replacedWithFilterByType = true;
             } else
-              replaceWith = new ArcadeFilterByIndexStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(), prevStepGraph.isStartStep(),
-                  indexCursors);
+              replaceWith = new ArcadeFilterByIndexStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(),
+                  prevStepGraph.isStartStep(), indexCursors);
 
             //traversal.removeStep(i); // IF THE HAS-LABEL STEP IS REMOVED, FOR SOME REASON DOES NOT WORK
             traversal.removeStep(i - 1);
