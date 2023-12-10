@@ -116,7 +116,7 @@ public class DocumentValidator {
                 final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
                 if (!embSchemaType.instanceOf(ofType))
                   throwValidationException(p,
-                      "has been declared as LIST of '" + ofType + "' but a link to type '" + embSchemaType + "' is used. Value: "
+                      "has been declared as LIST of '" + ofType + "' but a link to type '" + embSchemaType.getName() + "' is used. Value: "
                           + fieldValue);
               }
             }
@@ -138,20 +138,20 @@ public class DocumentValidator {
               if (embType != null) {
                 if (Type.getTypeByValue(item) != embType)
                   throwValidationException(p,
-                      "has been declared as MAP of <String,'" + ofType + "'> but a value of type '" + Type.getTypeByValue(item)
+                      "has been declared as a MAP of <String,'" + ofType + "'> but a value of type '" + Type.getTypeByValue(item)
                           + "' is used. Value: " + fieldValue);
               } else if (item instanceof EmbeddedDocument) {
                 if (!((EmbeddedDocument) item).getType().instanceOf(ofType))
                   throwValidationException(p,
-                      "has been declared as MAP of <String,'" + ofType + "'> but an embedded document of type '" + embType
-                          + "' is used. Value: " + fieldValue);
+                      "has been declared as a MAP of <String," + ofType + "> but an embedded document of type '"
+                          + ((EmbeddedDocument) item).getType().getName() + "' is used. Value: " + fieldValue);
               } else if (item instanceof Identifiable) {
                 final RID rid = ((Identifiable) item).getIdentity();
                 final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
                 if (!embSchemaType.instanceOf(ofType))
                   throwValidationException(p,
-                      "has been declared as LIST of '" + ofType + "' but a link to type '" + embType + "' is used. Value: "
-                          + fieldValue);
+                      "has been declared as a MAP of <String," + ofType + "> but a link to type '" + embSchemaType.getName()
+                          + "' is used. Value: " + fieldValue);
               }
             }
 
