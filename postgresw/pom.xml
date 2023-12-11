@@ -33,7 +33,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <postgres.version>42.7.0</postgres.version>
+        <postgres.version>42.7.1</postgres.version>
         <tomcat-jdbc.version>10.1.16</tomcat-jdbc.version>
     </properties>
 
