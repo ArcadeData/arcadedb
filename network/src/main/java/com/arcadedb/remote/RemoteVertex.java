@@ -120,26 +120,26 @@ public class RemoteVertex {
     if (!bidirectional)
       throw new UnsupportedOperationException("Creating unidirectional edges is not supported from remote database");
 
-    String query = "create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity();
+    StringBuilder query = new StringBuilder("create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
     if (properties.length > 0) {
-      query += " set ";
+      query.append(" set ");
       for (int i = 0; i < properties.length; i += 2) {
         final String propName = (String) properties[i];
         final Object propValue = properties[i + 1];
 
         if (i > 0)
-          query += ", ";
+          query.append(", ");
 
-        query += propName + " = ";
+        query.append(propName + " = ");
 
         if (propValue instanceof String)
-          query += "'";
-        query += propValue;
+          query.append("'");
+        query.append(propValue);
         if (propValue instanceof String)
-          query += "'";
+          query.append("'");
       }
     }
-    final ResultSet resultSet = remoteDatabase.command("sql", query);
+    final ResultSet resultSet = remoteDatabase.command("sql", query.toString());
 
     return new RemoteMutableEdge((RemoteImmutableEdge) resultSet.next().getEdge().get());
   }
@@ -156,13 +156,13 @@ public class RemoteVertex {
   }
 
   private ResultSet fetch(final String suffix, final Vertex.DIRECTION direction, final String[] types) {
-    String query = "select expand( " + direction.toString().toLowerCase(Locale.ENGLISH) + suffix + "(";
+    StringBuilder query = new StringBuilder("select expand( " + direction.toString().toLowerCase(Locale.ENGLISH) + suffix + "(");
     for (int i = 0; i < types.length; ++i) {
       if (i > 0)
-        query += ",";
-      query += "'" + types[i] + "'";
+        query.append(",");
+      query.append("'" + types[i] + "'");
     }
-    query += ") ) from " + vertex.getIdentity();
-    return remoteDatabase.query("sql", query);
+    query.append(") ) from " + vertex.getIdentity());
+    return remoteDatabase.query("sql", query.toString());
   }
 }
