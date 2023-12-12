@@ -147,12 +147,14 @@ public class ServerSecurityUser implements SecurityUser {
     return Objects.hash(name);
   }
 
-  private ServerSecurityDatabaseUser registerDatabaseUser(final ArcadeDBServer server, final Database database, final String databaseName) {
+  private ServerSecurityDatabaseUser registerDatabaseUser(final ArcadeDBServer server, final Database database,
+      final String databasePattern) {
     final JSONObject userDatabases = userConfiguration.getJSONObject("databases");
-    final List<Object> groupList = userDatabases.getJSONArray(databaseName).toList();
-    ServerSecurityDatabaseUser dbu = new ServerSecurityDatabaseUser(databaseName, name, groupList.toArray(new String[groupList.size()]));
+    final List<Object> groupList = userDatabases.getJSONArray(databasePattern).toList();
+    ServerSecurityDatabaseUser dbu = new ServerSecurityDatabaseUser(database.getName(), name,
+        groupList.toArray(new String[groupList.size()]));
 
-    final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(databaseName, dbu);
+    final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(database.getName(), dbu);
     if (prev != null)
       // USE THE EXISTENT ONE
       dbu = prev;

@@ -20,6 +20,7 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
@@ -27,6 +28,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
+import java.util.logging.*;
 
 public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private static final JSONObject  NO_ACCESS_GROUP   = new JSONObject().put("types",
@@ -80,6 +82,13 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
+    if (fileId >= fileAccessMap.length) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error on requesting access to fileId %d because not found in security configuration (registeredFiles=%d)", fileId,
+          fileAccessMap.length);
+      return false;
+    }
+
     final boolean[] permissions = fileAccessMap[fileId];
     final int index = access.ordinal();
     if (permissions != null) {
@@ -160,7 +169,9 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     // WORK ON A COPY AND SWAP IT AT THE END
     final boolean[][] newFileAccessMap = new boolean[files.size()][];
 
-    final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY) ? configuredGroups.getJSONObject(SecurityManager.ANY) : NO_ACCESS_GROUP;
+    final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY) ?
+        configuredGroups.getJSONObject(SecurityManager.ANY) :
+        NO_ACCESS_GROUP;
 
     final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
 
