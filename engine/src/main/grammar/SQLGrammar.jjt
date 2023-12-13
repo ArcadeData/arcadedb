@@ -1087,6 +1087,8 @@ Statement StatementInternal():
         |
         result = SleepStatement()
         |
+        result = ConsoleStatement()
+        |
         result = IfStatement()
         |
         result = ImportDatabaseStatement()

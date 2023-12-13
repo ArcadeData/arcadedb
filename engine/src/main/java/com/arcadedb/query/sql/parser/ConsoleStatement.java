@@ -45,23 +45,25 @@ public class ConsoleStatement extends SimpleExecStatement {
     final ResultInternal item = new ResultInternal();
     final Object msg = "" + message.execute((Identifiable) null, context);
 
-    if (logLevel.getStringValue().equalsIgnoreCase("log")) {
+    final String logLevelAsString = logLevel.getStringValue().toLowerCase(Locale.ENGLISH);
+
+    if (logLevelAsString.equals("log")) {
       LogManager.instance().log(this, Level.INFO, "%s", msg);
-    } else if (logLevel.getStringValue().equalsIgnoreCase("output")) {
+    } else if (logLevelAsString.equals("output")) {
       System.out.println(msg);
-    } else if (logLevel.getStringValue().equalsIgnoreCase("error")) {
+    } else if (logLevelAsString.equals("error")) {
       System.err.println(msg);
       LogManager.instance().log(this, Level.SEVERE, "%s", msg);
-    } else if (logLevel.getStringValue().equalsIgnoreCase("warn")) {
+    } else if (logLevelAsString.equals("warn")) {
       LogManager.instance().log(this, Level.WARNING, "%s", msg);
-    } else if (logLevel.getStringValue().equalsIgnoreCase("debug")) {
+    } else if (logLevelAsString.equals("debug")) {
       LogManager.instance().log(this, Level.FINE, "%s", msg);
     } else {
       throw new CommandExecutionException("Unsupported log level: " + logLevel);
     }
 
     item.setProperty("operation", "console");
-    item.setProperty("level", logLevel.getStringValue());
+    item.setProperty("level", logLevelAsString);
     item.setProperty("message", msg);
     result.add(item);
     return result;
