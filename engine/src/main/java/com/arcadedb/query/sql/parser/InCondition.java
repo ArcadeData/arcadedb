@@ -101,8 +101,6 @@ public class InCondition extends BooleanExpression {
   }
 
   protected static Object executeQuery(final SelectStatement rightStatement, final CommandContext context) {
-    final BasicCommandContext subcontext = new BasicCommandContext();
-    subcontext.setParentWithoutOverridingChild(context);
     final ResultSet result = rightStatement.execute(context.getDatabase(), context.getInputParameters());
     return result.stream().collect(Collectors.toSet());
   }
