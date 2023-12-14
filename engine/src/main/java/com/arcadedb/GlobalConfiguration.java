@@ -201,7 +201,7 @@ public enum GlobalConfiguration {
 
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
-      String.class, "standard", Set.of(new String[] { "standard", "fast" })),
+      String.class, "standard", Set.of((Object[]) new String[] { "standard", "fast" })),
 
   ASYNC_OPERATIONS_QUEUE_SIZE("arcadedb.asyncOperationsQueueSize", SCOPE.DATABASE,
       "Size of the total asynchronous operation queues (it is divided by the number of parallel threads in the pool)",
@@ -286,7 +286,7 @@ public enum GlobalConfiguration {
       String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
-      "development", Set.of(new String[] { "development", "test", "production" })),
+      "development", Set.of((Object[]) new String[] { "development", "test", "production" })),
 
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
 
@@ -359,7 +359,7 @@ public enum GlobalConfiguration {
 
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
       "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",
-      Set.of(new String[] { "any", "replica" })),
+      Set.of((Object[]) new String[] { "any", "replica" })),
 
   HA_CLUSTER_NAME("arcadedb.ha.clusterName", SCOPE.SERVER,
       "Cluster name. By default is 'arcadedb'. Useful in case of multiple clusters in the same network", String.class,
@@ -371,7 +371,7 @@ public enum GlobalConfiguration {
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
       "Default quorum between 'none', 1, 2, 3, 'majority' and 'all' servers. Default is majority", String.class, "majority",
-      Set.of(new String[] { "none", "1", "2", "3", "majority", "all" })),
+      Set.of((Object[]) new String[] { "none", "1", "2", "3", "majority", "all" })),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
