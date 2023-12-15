@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.schema.DocumentType;
 
 /**
@@ -32,7 +31,6 @@ import com.arcadedb.schema.DocumentType;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CheckClusterTypeStep extends AbstractExecutionStep {
-  final Bucket bucket;
   final String bucketName;
   final String targetType;
   boolean found = false;
@@ -41,7 +39,6 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
       final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.bucketName = targetBucketName;
-    this.bucket = null;
     this.targetType = typez;
   }
 
@@ -54,24 +51,19 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
         return new InternalResultSet();
 
       final Database db = context.getDatabase();
-      final com.arcadedb.engine.Bucket bucketObj;
 
+      final com.arcadedb.engine.Bucket bucketObj;
       if (bucketName != null)
         bucketObj = db.getSchema().getBucketByName(bucketName);
-      else if (bucket != null) {
-        if (bucket.getBucketName() != null)
-          bucketObj = db.getSchema().getBucketByName(bucket.getBucketName());
-        else
-          bucketObj = db.getSchema().getBucketById(bucket.getBucketNumber());
-      } else
+      else
         bucketObj = null;
 
       if (bucketObj == null)
-        throw new CommandExecutionException("Bucket not found: " + bucketName);
+        throw new CommandExecutionException("Bucket '" + bucketName + "' not found");
 
       final DocumentType typez = db.getSchema().getType(targetType);
       if (typez == null)
-        throw new CommandExecutionException("Type not found: " + targetType);
+        throw new CommandExecutionException("Type '" + targetType + "' not found");
 
       for (final Integer bucketId : typez.getBucketIds(true)) {
         if (bucketId == bucketObj.getFileId()) {
