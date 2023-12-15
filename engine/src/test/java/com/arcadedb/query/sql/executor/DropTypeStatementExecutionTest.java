@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class DropClassStatementExecutionTest extends TestHelper {
+public class DropTypeStatementExecutionTest extends TestHelper {
   @Test
   public void testPlain() {
     final String className = "testPlain";
