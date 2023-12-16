@@ -66,18 +66,18 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public synchronized void reload() {
+  public void reload() {
     super.reload();
     init();
   }
 
   @Override
-  public synchronized MutableVertex fromMap(final Map<String, Object> map) {
+  public MutableVertex fromMap(final Map<String, Object> map) {
     return (MutableVertex) super.fromMap(map);
   }
 
   @Override
-  public synchronized MutableVertex fromJSON(final JSONObject json) {
+  public MutableVertex fromJSON(final JSONObject json) {
     return (MutableVertex) super.fromJSON(json);
   }
 
@@ -86,18 +86,18 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return (MutableVertex) super.set(name, value);
   }
 
-  public synchronized MutableVertex set(final Object... properties) {
+  public MutableVertex set(final Object... properties) {
     return (MutableVertex) super.set(properties);
   }
 
   @Override
-  public synchronized void setBuffer(final Binary buffer) {
+  public void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);
     init();
   }
 
   @Override
-  public synchronized MutableVertex modify() {
+  public MutableVertex modify() {
     return this;
   }
 
@@ -126,7 +126,8 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return Vertex.RECORD_TYPE;
   }
 
-  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional, final Object... properties) {
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
+      final Object... properties) {
     return database.getGraphEngine().newEdge(this, edgeType, toVertex, bidirectional, properties);
   }
 
@@ -185,7 +186,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+  public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> map = super.toMap(includeMetadata);
     if (includeMetadata)
       map.put("@cat", "v");
@@ -193,7 +194,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)
       json.put("@cat", "v");

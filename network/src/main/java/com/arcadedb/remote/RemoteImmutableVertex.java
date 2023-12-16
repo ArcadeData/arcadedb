@@ -35,7 +35,7 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
-  public synchronized RemoteMutableVertex modify() {
+  public RemoteMutableVertex modify() {
     return new RemoteMutableVertex(this);
   }
 

@@ -61,18 +61,18 @@ public class MutableEdge extends MutableDocument implements Edge {
     init();
   }
 
-  public synchronized MutableEdge modify() {
+  public MutableEdge modify() {
     return this;
   }
 
   @Override
-  public synchronized void reload() {
+  public void reload() {
     super.reload();
     init();
   }
 
   @Override
-  public synchronized Object get(final String propertyName) {
+  public Object get(final String propertyName) {
     if (propertyName.equals("@in"))
       return in;
     else if (propertyName.equals("@out"))
@@ -81,7 +81,7 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public synchronized void setBuffer(final Binary buffer) {
+  public void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);
     init();
   }
@@ -115,31 +115,31 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public synchronized MutableEdge set(final Object... properties) {
+  public MutableEdge set(final Object... properties) {
     super.set(properties);
     checkForUpgradeLightWeight();
     return this;
   }
 
   @Override
-  public synchronized MutableEdge set(final String name, final Object value) {
+  public MutableEdge set(final String name, final Object value) {
     super.set(name, value);
     checkForUpgradeLightWeight();
     return this;
   }
 
   @Override
-  public synchronized MutableEdge fromMap(final Map<String, Object> map) {
+  public MutableEdge fromMap(final Map<String, Object> map) {
     return (MutableEdge) super.fromMap(map);
   }
 
   @Override
-  public synchronized MutableEdge fromJSON(final JSONObject json) {
+  public MutableEdge fromJSON(final JSONObject json) {
     return (MutableEdge) super.fromJSON(json);
   }
 
   @Override
-  public synchronized MutableEdge set(final Map<String, Object> properties) {
+  public MutableEdge set(final Map<String, Object> properties) {
     return (MutableEdge) super.set(properties);
   }
 
@@ -149,7 +149,7 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public synchronized MutableEdge save() {
+  public MutableEdge save() {
     if (getIdentity() != null && getIdentity().getPosition() < 0)
       // LIGHTWEIGHT
       return this;
@@ -158,7 +158,7 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public synchronized MutableEdge save(final String bucketName) {
+  public MutableEdge save(final String bucketName) {
     if (getIdentity() != null && getIdentity().getPosition() < 0)
       // LIGHTWEIGHT
       return this;
@@ -185,7 +185,7 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+  public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> map = super.toMap(includeMetadata);
     if (includeMetadata) {
       map.put("@cat", "e");
@@ -195,7 +195,7 @@ public class MutableEdge extends MutableDocument implements Edge {
     return map;
   }
 
-  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)
       json.put("@cat", "e").put("@in", in).put("@out", out);

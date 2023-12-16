@@ -68,7 +68,7 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
   }
 
   @Override
-  public synchronized MutableEdge modify() {
+  public MutableEdge modify() {
     return new RemoteMutableEdge(this);
   }
 

@@ -64,7 +64,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     return Vertex.RECORD_TYPE;
   }
 
-  public synchronized MutableVertex modify() {
+  public MutableVertex modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
     if (recordInCache != null) {
       if (recordInCache instanceof MutableVertex)
@@ -74,8 +74,9 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
       // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
       try {
         // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-        database.getTransaction().getPageToModify(rid.getPageId(),
-            ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
+        database.getTransaction()
+            .getPageToModify(rid.getPageId(), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(),
+                false);
         reload();
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on reloading vertex " + rid, e);
@@ -95,13 +96,13 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public synchronized RID getOutEdgesHeadChunk() {
+  public RID getOutEdgesHeadChunk() {
     checkForLazyLoading();
     return outEdges;
   }
 
   @Override
-  public synchronized RID getInEdgesHeadChunk() {
+  public RID getInEdgesHeadChunk() {
     checkForLazyLoading();
     return inEdges;
   }
@@ -176,7 +177,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+  public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> map = super.toMap(includeMetadata);
     if (includeMetadata)
       map.put("@cat", "v");
@@ -184,7 +185,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)
       json.put("@cat", "v");

@@ -36,7 +36,7 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
     return EmbeddedDocument.RECORD_TYPE;
   }
 
-  public synchronized MutableEmbeddedDocument modify() {
+  public  MutableEmbeddedDocument modify() {
     if (modifier == null)
       throw new DatabaseOperationException("Cannot modify a detached embedded record");
 

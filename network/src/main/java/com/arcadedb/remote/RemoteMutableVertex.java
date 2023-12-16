@@ -59,21 +59,21 @@ public class RemoteMutableVertex extends MutableVertex {
   }
 
   @Override
-  public synchronized MutableVertex save() {
+  public MutableVertex save() {
     rid = remoteDatabase.saveRecord(this);
     dirty = false;
     return this;
   }
 
   @Override
-  public synchronized MutableVertex save(final String bucketName) {
+  public MutableVertex save(final String bucketName) {
     rid = remoteDatabase.saveRecord(this, bucketName);
     dirty = false;
     return this;
   }
 
   @Override
-  public synchronized void reload() {
+  public void reload() {
     final ResultSet resultSet = remoteDatabase.query("sql", "select from " + rid);
     if (resultSet.hasNext()) {
       final Document document = resultSet.next().toElement();
@@ -86,7 +86,7 @@ public class RemoteMutableVertex extends MutableVertex {
   }
 
   @Override
-  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject result = new JSONSerializer(database).map2json(map);
     if (includeMetadata) {
       result.put("@cat", "v");
@@ -113,7 +113,7 @@ public class RemoteMutableVertex extends MutableVertex {
   }
 
   @Override
-  public synchronized void setBuffer(final Binary buffer) {
+  public void setBuffer(final Binary buffer) {
     throw new UnsupportedOperationException("Raw buffer API not supported in remote database");
   }
 

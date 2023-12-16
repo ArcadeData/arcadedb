@@ -48,7 +48,7 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  public synchronized MutableEdge save() {
+  public MutableEdge save() {
     dirty = true;
     if (rid != null)
       remoteDatabase.command("sql", "update " + rid + " content " + toJSON());
@@ -59,7 +59,7 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  public synchronized MutableEdge save(final String bucketName) {
+  public MutableEdge save(final String bucketName) {
     dirty = true;
     if (rid != null)
       throw new IllegalStateException("Cannot update a record in a custom bucket");
@@ -74,7 +74,7 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  public synchronized void reload() {
+  public void reload() {
     final ResultSet resultSet = remoteDatabase.query("sql", "select from " + rid);
     if (resultSet.hasNext()) {
       final Document document = resultSet.next().toElement();
@@ -87,7 +87,7 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject result = new JSONSerializer(database).map2json(map);
     if (includeMetadata) {
       result.put("@cat", "e");
@@ -114,7 +114,7 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  public synchronized void setBuffer(final Binary buffer) {
+  public void setBuffer(final Binary buffer) {
     throw new UnsupportedOperationException("Raw buffer API not supported in remote database");
   }
 

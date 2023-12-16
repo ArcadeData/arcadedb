@@ -55,14 +55,14 @@ public class RemoteMutableDocument extends MutableDocument {
   }
 
   @Override
-  public synchronized MutableDocument save() {
+  public MutableDocument save() {
     rid = remoteDatabase.saveRecord(this);
     dirty = false;
     return this;
   }
 
   @Override
-  public synchronized MutableDocument save(final String bucketName) {
+  public MutableDocument save(final String bucketName) {
     rid = remoteDatabase.saveRecord(this, bucketName);
     dirty = false;
     return this;
@@ -74,7 +74,7 @@ public class RemoteMutableDocument extends MutableDocument {
   }
 
   @Override
-  public synchronized void reload() {
+  public void reload() {
     final ResultSet resultSet = remoteDatabase.query("sql", "select from " + rid);
     if (resultSet.hasNext()) {
       final Document document = resultSet.next().toElement();
@@ -87,7 +87,7 @@ public class RemoteMutableDocument extends MutableDocument {
   }
 
   @Override
-  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject result = new JSONSerializer(database).map2json(map);
     if (includeMetadata) {
       result.put("@cat", "d");
@@ -99,7 +99,7 @@ public class RemoteMutableDocument extends MutableDocument {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+  public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
       result.put("@cat", "d");
@@ -126,7 +126,7 @@ public class RemoteMutableDocument extends MutableDocument {
   }
 
   @Override
-  public synchronized void setBuffer(final Binary buffer) {
+  public void setBuffer(final Binary buffer) {
     throw new UnsupportedOperationException("Raw buffer API not supported in remote database");
   }
 

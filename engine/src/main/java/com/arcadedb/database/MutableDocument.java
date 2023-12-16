@@ -48,29 +48,29 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     buffer.position(buffer.position() + 1); // SKIP RECORD TYPE
   }
 
-  public synchronized void merge(final Map<String, Object> other) {
+  public void merge(final Map<String, Object> other) {
     for (final Map.Entry<String, Object> entry : other.entrySet())
       set(entry.getKey(), entry.getValue());
   }
 
-  public synchronized boolean isDirty() {
+  public boolean isDirty() {
     return dirty;
   }
 
   @Override
-  public synchronized void setBuffer(final Binary buffer) {
+  public void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);
     dirty = false;
     //map = null; // AVOID RESETTING HERE FOR INDEXES THAT CAN LOOKUP UP FOR FIELDS CAUSING AN UNMARSHALLING
   }
 
   @Override
-  public synchronized void unsetDirty() {
+  public void unsetDirty() {
     //map = null;
     dirty = false;
   }
 
-  public synchronized MutableDocument fromMap(final Map<String, Object> map) {
+  public MutableDocument fromMap(final Map<String, Object> map) {
     this.map = new LinkedHashMap<>(map.size());
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final String key = entry.getKey();
@@ -92,7 +92,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+  public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
@@ -104,12 +104,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     return result;
   }
 
-  public synchronized MutableDocument fromJSON(final JSONObject json) {
+  public MutableDocument fromJSON(final JSONObject json) {
     return fromMap(new JSONSerializer(database).json2map(json));
   }
 
   @Override
-  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
     final JSONObject result = new JSONSerializer(database).map2json(map);
     if (includeMetadata) {
@@ -135,12 +135,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized boolean has(final String propertyName) {
+  public boolean has(final String propertyName) {
     checkForLazyLoadingProperties();
     return map.containsKey(propertyName);
   }
 
-  public synchronized Object get(final String propertyName) {
+  public Object get(final String propertyName) {
     checkForLazyLoadingProperties();
     return map.get(propertyName);
   }
@@ -148,7 +148,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   /**
    * Sets the property value in the document. If the property has been defined in the schema, the value is converted according to the property type.
    */
-  public synchronized MutableDocument set(final String name, Object value) {
+  public MutableDocument set(final String name, Object value) {
     checkForLazyLoadingProperties();
     dirty = true;
     value = setTransformValue(value, name);
@@ -161,7 +161,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @param properties Array containing pairs of name (String) and value (Object)
    */
-  public synchronized MutableDocument set(final Object... properties) {
+  public MutableDocument set(final Object... properties) {
     if (properties == null || properties.length == 0)
       throw new IllegalArgumentException("Empty list of properties");
 
@@ -189,7 +189,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @return MutableEmbeddedDocument instance
    */
-  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
+  public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
     final Object old = get(propertyName);
 
     final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
@@ -213,7 +213,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @return MutableEmbeddedDocument instance
    */
-  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName,
+  public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName,
       final String mapKey) {
     final Object old = get(propertyName);
 
@@ -242,7 +242,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @return MutableEmbeddedDocument instance
    */
-  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName,
+  public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName,
       final Object propertyMapKey) {
     final Object old = get(propertyName);
 
@@ -268,7 +268,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @param properties {@literal Map<String,Object>} containing pairs of name (String) and value (Object)
    */
-  public synchronized MutableDocument set(final Map<String, Object> properties) {
+  public MutableDocument set(final Map<String, Object> properties) {
     checkForLazyLoadingProperties();
     dirty = true;
 
@@ -285,13 +285,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     return this;
   }
 
-  public synchronized Object remove(final String name) {
+  public Object remove(final String name) {
     checkForLazyLoadingProperties();
     dirty = true;
     return map.remove(name);
   }
 
-  public synchronized MutableDocument save() {
+  public MutableDocument save() {
     dirty = true;
     if (rid != null)
       database.updateRecord(this);
@@ -300,7 +300,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     return this;
   }
 
-  public synchronized MutableDocument save(final String bucketName) {
+  public MutableDocument save(final String bucketName) {
     dirty = true;
     if (rid != null) {
       // UPDATE
@@ -315,12 +315,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized void setIdentity(final RID rid) {
+  public void setIdentity(final RID rid) {
     this.rid = rid;
   }
 
   @Override
-  public synchronized String toString() {
+  public String toString() {
     final StringBuilder result = new StringBuilder(256);
     if (rid != null)
       result.append(rid);
@@ -355,17 +355,17 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized Set<String> getPropertyNames() {
+  public Set<String> getPropertyNames() {
     checkForLazyLoadingProperties();
     return map.keySet();
   }
 
-  public synchronized MutableDocument modify() {
+  public MutableDocument modify() {
     return this;
   }
 
   @Override
-  public synchronized void reload() {
+  public void reload() {
     dirty = false;
     map = null;
     buffer = null;

@@ -37,11 +37,11 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public synchronized Object get(final String propertyName) {
+  public Object get(final String propertyName) {
     return null;
   }
 
-  public synchronized MutableEdge modify() {
+  public MutableEdge modify() {
     throw new IllegalStateException("Lightweight edges cannot be modified");
   }
 
@@ -79,7 +79,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public synchronized Set<String> getPropertyNames() {
+  public Set<String> getPropertyNames() {
     return Collections.emptySet();
   }
 
@@ -94,7 +94,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+  public Map<String, Object> toMap(final boolean includeMetadata) {
     return Collections.emptyMap();
   }
 
@@ -109,7 +109,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public synchronized JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)
       json.put("@cat", "e").put("@in", in).put("@out", out);
@@ -117,7 +117,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public synchronized String toString() {
+  public String toString() {
     final StringBuilder buffer = new StringBuilder();
     buffer.append(out.toString());
     buffer.append("<->");
