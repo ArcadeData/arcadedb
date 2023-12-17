@@ -140,6 +140,10 @@ public class Console {
   }
 
   public static void main(final String[] args) throws IOException {
+    final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    if (rootPath == null)
+      GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
+
     try {
       execute(args);
     } finally {

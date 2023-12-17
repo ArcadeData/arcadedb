@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.restore;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.format.AbstractRestoreFormat;
@@ -42,6 +43,10 @@ public class Restore {
   }
 
   public static void main(final String[] args) {
+    final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    if (rootPath == null)
+      GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
+
     new Restore(args).restoreDatabase();
     System.exit(0);
   }

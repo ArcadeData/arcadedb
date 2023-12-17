@@ -137,7 +137,8 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     final File file = new File(path);
     if (!file.exists())
-      throw new RestoreException(String.format("The backup file '%s' does not exist", settings.inputFileURL));
+      throw new RestoreException(String.format("The backup file '%s' does not exist (local path=%s)",//
+          settings.inputFileURL, new File(".").getAbsolutePath()));
 
     return new RestoreInputSource(new FileInputStream(file), file.length());
   }
