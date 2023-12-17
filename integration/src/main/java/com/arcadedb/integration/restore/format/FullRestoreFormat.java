@@ -55,15 +55,18 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     final File databaseDirectory = new File(settings.databaseDirectory);
     if (databaseDirectory.exists()) {
       if (!settings.overwriteDestination)
-        throw new RestoreException(String.format("The database directory '%s' already exist and '-o' setting is false", settings.databaseDirectory));
+        throw new RestoreException(
+            String.format("The database directory '%s' already exist and '-o' setting is false", settings.databaseDirectory));
 
       FileUtils.deleteRecursively(databaseDirectory);
     }
 
     if (!databaseDirectory.mkdirs())
-      throw new RestoreException(String.format("Error on restoring database: the database directory '%s' cannot be created", settings.databaseDirectory));
+      throw new RestoreException(
+          String.format("Error on restoring database: the database directory '%s' cannot be created", settings.databaseDirectory));
 
-    logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.inputFileURL, settings.databaseDirectory);
+    logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.inputFileURL,
+        settings.databaseDirectory);
 
     try (final ZipInputStream zipFile = new ZipInputStream(inputSource.inputStream, DatabaseFactory.getDefaultCharset())) {
       final long beginTime = System.currentTimeMillis();
@@ -80,12 +83,14 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
 
-      logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs, FileUtils.getSizeAsString(databaseOrigSize),
-          FileUtils.getSizeAsString((inputSource.fileSize)), databaseOrigSize > 0 ? (databaseOrigSize - inputSource.fileSize) * 100 / databaseOrigSize : 0);
+      logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
+          FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString((inputSource.fileSize)),
+          databaseOrigSize > 0 ? (databaseOrigSize - inputSource.fileSize) * 100 / databaseOrigSize : 0);
     }
   }
 
-  private long uncompressFile(final ZipInputStream inputFile, final ZipEntry compressedFile, final File databaseDirectory) throws IOException {
+  private long uncompressFile(final ZipInputStream inputFile, final ZipEntry compressedFile, final File databaseDirectory)
+      throws IOException {
     final String fileName = compressedFile.getName();
 
     FileUtils.checkValidName(fileName);
@@ -108,8 +113,8 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     final long origSize = uncompressedFile.length();
     final long compressedSize = compressedFile.getCompressedSize();
 
-    logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize), FileUtils.getSizeAsString(compressedSize),
-        origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+    logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
+        FileUtils.getSizeAsString(compressedSize), origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
 
     return origSize;
   }
@@ -132,7 +137,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     final File file = new File(path);
     if (!file.exists())
-      throw new RestoreException(String.format("The backup file '%s' not exist", settings.inputFileURL));
+      throw new RestoreException(String.format("The backup file '%s' does not exist", settings.inputFileURL));
 
     return new RestoreInputSource(new FileInputStream(file), file.length());
   }
