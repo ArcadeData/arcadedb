@@ -91,15 +91,32 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void executeTraversal2() {
+  public void executeTraversalTxMgmt() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       try (final ArcadeGraph graph = pool.get()) {
-        graph.tx().begin();
-        graph.traversal().addV("Country").property("id", 0).property("country", "USA").property("code", 11).iterate();
-        graph.tx().commit();
+        for (int i = 0; i < 1000; i++) {
+          GraphTraversalSource g = graph.tx().begin();
+          g.addV("Country").property("id", i).property("country", "USA").property("code", i).iterate();
+          g.tx().commit();
+        }
 
-        Assertions.assertEquals(1, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+      }
+    }
+  }
+
+  @Test
+  public void executeTraversalNoTxMgmt() {
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+      try (final ArcadeGraph graph = pool.get()) {
+        for (int i = 0; i < 1000; i++)
+          graph.traversal().addV("Country").property("id", i).property("country", "USA").property("code", i).iterate();
+      }
+
+      try (final ArcadeGraph graph = pool.get()) {
+        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
       }
     }
   }
