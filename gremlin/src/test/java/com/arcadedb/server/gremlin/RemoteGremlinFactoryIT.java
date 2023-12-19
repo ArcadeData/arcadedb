@@ -28,6 +28,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSo
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.*;
+
 public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Override
@@ -91,16 +93,99 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
+  public void executeTraversalTxMgmtMultiThreads() throws InterruptedException {
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+      try (final ArcadeGraph graph = pool.get()) {
+        graph.getDatabase().getSchema().createVertexType("Country");
+      }
+
+      final ExecutorService executorService = Executors.newFixedThreadPool(10);
+
+      for (int i = 0; i < 1000; i++) {
+        final int id = i;
+        executorService.submit(() -> {
+          try (final ArcadeGraph graph = pool.get()) {
+            GraphTraversalSource g = graph.tx().begin();
+            g.addV("Country").property("id", id).property("country", "USA").property("code", id).iterate();
+            g.tx().commit();
+          }
+        });
+      }
+
+      executorService.shutdown();
+      executorService.awaitTermination(60, TimeUnit.SECONDS);
+
+      try (final ArcadeGraph graph = pool.get()) {
+        Assertions.assertTrue(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800);
+      }
+    }
+  }
+
+  @Test
+  public void executeTraversalNoTxMgmtMultiThreads() throws InterruptedException {
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+      try (final ArcadeGraph graph = pool.get()) {
+        graph.getDatabase().getSchema().createVertexType("Country");
+      }
+
+      final ExecutorService executorService = Executors.newFixedThreadPool(10);
+      for (int i = 0; i < 1000; i++) {
+        final int id = i;
+        executorService.submit(() -> {
+          try (final ArcadeGraph graph = pool.get()) {
+            graph.traversal().addV("Country").property("id", id).property("country", "USA").property("code", id).iterate();
+          }
+        });
+      }
+      executorService.shutdown();
+      executorService.awaitTermination(60, TimeUnit.SECONDS);
+
+      try (final ArcadeGraph graph = pool.get()) {
+        Assertions.assertTrue(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800);
+      }
+    }
+  }
+
+  @Test
+  public void executeTraversalTxMgmtHttp() throws InterruptedException {
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+      for (int i = 0; i < 1000; i++) {
+        final int id = i;
+        try (final ArcadeGraph graph = pool.get()) {
+          GraphTraversalSource g = graph.tx().begin();
+          g.addV("Country").property("id", id).property("country", "USA").property("code", id).iterate();
+          g.tx().commit();
+        }
+      }
+
+      try (final ArcadeGraph graph = pool.get()) {
+        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+      }
+    }
+  }
+
+  @Test
   public void executeTraversalTxMgmt() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
-      try (final ArcadeGraph graph = pool.get()) {
-        for (int i = 0; i < 1000; i++) {
-          GraphTraversalSource g = graph.tx().begin();
-          g.addV("Country").property("id", i).property("country", "USA").property("code", i).iterate();
-          g.tx().commit();
-        }
 
+      for (int i = 0; i < 1000; i++) {
+        final int id = i;
+        try (final ArcadeGraph graph = pool.get()) {
+          GraphTraversalSource g = graph.traversal();
+          graph.tx().begin();
+          g.addV("Country").property("id", id).property("country", "USA").property("code", id).iterate();
+          graph.tx().commit();
+        }
+      }
+
+      try (final ArcadeGraph graph = pool.get()) {
         Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
       }
     }
@@ -110,9 +195,12 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   public void executeTraversalNoTxMgmt() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
-      try (final ArcadeGraph graph = pool.get()) {
-        for (int i = 0; i < 1000; i++)
-          graph.traversal().addV("Country").property("id", i).property("country", "USA").property("code", i).iterate();
+
+      for (int i = 0; i < 1000; i++) {
+        final int id = i;
+        try (final ArcadeGraph graph = pool.get()) {
+          graph.traversal().addV("Country").property("id", id).property("country", "USA").property("code", id).iterate();
+        }
       }
 
       try (final ArcadeGraph graph = pool.get()) {
