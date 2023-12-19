@@ -157,7 +157,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
       if (recordPositionInPage == 0)
-        // CLEANED CORRUPTED RECORD
+        // DELETED RECORD (from 23.12.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
         return false;
 
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
@@ -194,7 +194,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               final int recordPositionInPage = (int) page.readUnsignedInt(
                   PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
               if (recordPositionInPage == 0)
-                // CLEANED CORRUPTED RECORD
+                // DELETED RECORD (from 23.12.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
                 continue;
 
               final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
@@ -309,7 +309,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final int recordPositionInPage = (int) page.readUnsignedInt(
                 PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
             if (recordPositionInPage == 0)
-              // CLEANED CORRUPTED RECORD
+              // DELETED RECORD (from 23.12.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
               continue;
 
             final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
@@ -373,7 +373,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
 
           if (recordPositionInPage == 0) {
-            // CLEANED CORRUPTED RECORD
+            // DELETED RECORD (from 23.12.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
             pageDeletedRecords++;
             totalDeletedRecords++;
 
@@ -533,7 +533,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
       if (recordPositionInPage == 0)
-        // CLEANED CORRUPTED RECORD
+        // DELETED RECORD (from 23.12.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
         return null;
 
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
@@ -674,7 +674,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
       if (recordPositionInPage == 0)
-        // CLEANED CORRUPTED RECORD
+        // DELETED RECORD (from 23.12.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
@@ -818,6 +818,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (!discardRecordAfter)
         ((RecordInternal) record).setBuffer(buffer.getNotReusable());
 
+      //compressPage(page);
+
       return true;
 
     } catch (final IOException e) {
@@ -845,7 +847,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
       if (recordPositionInPage < 1)
-        // CLEANED CORRUPTED RECORD
+        // DELETED RECORD (from 23.12.1)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       // AVOID DELETION OF CONTENT IN CORRUPTED RECORD
@@ -897,38 +899,140 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
         }
 
-        // CONTENT SIZE = 0 MEANS DELETED
-        page.writeNumber(recordPositionInPage, 0L);
+        // POINTER = 0 MEANS DELETED
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+
+        if (positionInPage == recordCountInPage - 1) {
+          // LAST POSITION IN THE PAGE, UPDATE THE TOTAL RECORDS IN THE PAGE GOING BACK FROM THE CURRENT RECORD
+          int newRecordCount = -1;
+          for (int i = positionInPage - 1; i > -1; i--) {
+            final int pos = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + i * INT_SERIALIZED_SIZE);
+            if (pos == 0 || page.readNumberAndSize(pos)[0] == 0)
+              // DELETE RECORD,
+              newRecordCount = i;
+            else
+              break;
+          }
+
+          if (newRecordCount > -1)
+            // UPDATE TOTAL RECORDS IN THE PAGE
+            page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) newRecordCount);
+        }
 
       } else {
         // CORRUPTED RECORD: WRITE ZERO AS POINTER TO RECORD
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
       }
 
-      // TODO: EVALUATE COMPACTING THE PAGE FOR REUSING THE SPACE
-//      recordPositionInPage++;
-//
-//      AVOID COMPACTION DURING DELETE
-//      // COMPACT PAGE BY SHIFTING THE RECORDS TO THE LEFT
-//      for (int pos = positionInPage + 1; pos < recordCountInPage; ++pos) {
-//        final int nextRecordPosInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE);
-//        final byte[] record = page.readBytes(nextRecordPosInPage);
-//
-//        final int bytesWritten = page.writeBytes(recordPositionInPage, record);
-//
-//        // OVERWRITE POS TABLE WITH NEW POSITION
-//        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE, recordPositionInPage);
-//
-//        recordPositionInPage += bytesWritten;
-//      }
-//
-//      page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordCountInPage - 1));
+      compressPage(page);
 
       LogManager.instance()
           .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on deletion of record " + rid, e);
+    }
+  }
+
+  private void compressPage(final MutablePage page) {
+    final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+
+    final List<int[]> orderedRecordContentInPage = new ArrayList<>(DEF_MAX_RECORDS_IN_PAGE);
+
+    for (int positionInPage = 0; positionInPage < recordCountInPage; positionInPage++) {
+      final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+      if (recordPositionInPage == 0 || recordPositionInPage >= page.getContentSize())
+        // DELETED RECORD (from 23.12.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
+        continue;
+
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+
+      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+        orderedRecordContentInPage.add(new int[] { recordPositionInPage, LONG_SERIALIZED_SIZE + (int) recordSize[1] });
+      else if (recordSize[0] == FIRST_CHUNK || recordSize[0] == NEXT_CHUNK) {
+        final int chunkSize = page.readInt((recordPositionInPage + (int) recordSize[1]));
+        orderedRecordContentInPage.add(
+            new int[] { recordPositionInPage, chunkSize + (int) recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE });
+      } else if (recordSize[0] != 0)
+        orderedRecordContentInPage.add(new int[] { recordPositionInPage, (int) recordSize[0] + (int) recordSize[1] });
+    }
+
+    if (orderedRecordContentInPage.isEmpty())
+      return;
+
+    orderedRecordContentInPage.sort(Comparator.comparingLong(a -> a[0]));
+
+    final List<int[]> holes = new ArrayList<>(128);
+
+    // USE INT BECAUSE OF THE LIMITED SIZE OF THE PAGE
+    int[] lastPointer = new int[] { PAGE_RECORD_TABLE_OFFSET + maxRecordsInPage * INT_SERIALIZED_SIZE, 0 };
+    for (int i = 0; i < orderedRecordContentInPage.size(); i++) {
+      final int[] pointer = orderedRecordContentInPage.get(i);
+
+      final int lastPointerEnd = lastPointer[0] + lastPointer[1];
+      if (pointer[0] != lastPointerEnd) {
+        final int[] lastHole = holes.isEmpty() ? null : holes.get(holes.size() - 1);
+        if (lastHole != null && lastHole[0] + lastHole[1] == pointer[0])
+          // UPDATE PREVIOUS HOLE
+          lastHole[1] += pointer[1];
+        else
+          // CREATE A NEW HOLE
+          holes.add(new int[] { lastPointerEnd, pointer[0] - lastPointerEnd });
+      }
+      lastPointer = pointer;
+    }
+
+    if (holes.size() > 1)
+      System.out.println("FOUND " + holes.size() + " HOLES");
+
+    for (int i = 0; i < holes.size(); i++) {
+      final int[] hole = holes.get(i);
+      System.out.printf("Hole %d/%d %d-(%d)->%d %n", i + 1, holes.size(), hole[0], hole[1], hole[0] + hole[1]);
+    }
+
+    int gap = 0;
+    for (int i = 0; i < holes.size(); i++) {
+      final int[] hole = holes.get(i);
+      final int marginEnd = i < holes.size() - 1 ? holes.get(i + 1)[0] : page.getContentSize();
+
+      final byte[] buffer = page.content.getContent();
+
+      final int from = hole[0] + hole[1];
+      final int length = marginEnd - from;
+      if (length < 1)
+        System.out.println("ERROR");
+
+      if (BasePage.PAGE_HEADER_SIZE + hole[0] + length > page.getPhysicalSize()) {
+        System.out.printf("hole %d/%d %d <-> %d = %db%n", i + 1, holes.size(), hole[0], hole[0] + hole[1], hole[1]);
+
+        System.out.printf("Moving %d <- %d %d (marginEnd=%d)%n", BasePage.PAGE_HEADER_SIZE + hole[0] + hole[1],//
+            BasePage.PAGE_HEADER_SIZE + hole[0], marginEnd - hole[0] - BasePage.PAGE_HEADER_SIZE,//
+            (BasePage.PAGE_HEADER_SIZE + hole[0]) + (marginEnd - hole[0] - BasePage.PAGE_HEADER_SIZE));
+      }
+
+      System.out.printf("Removing hole %d/%d %d-(%d)->%d MOVING %d<-%d (gap %d)%n", i + 1, holes.size(), hole[0], hole[1],
+          hole[0] + hole[1],//
+          hole[0] - gap, from, gap);
+
+      System.arraycopy(buffer, BasePage.PAGE_HEADER_SIZE + from,//
+          buffer, BasePage.PAGE_HEADER_SIZE + hole[0] - gap, length);
+
+      page.updateModifiedRange(hole[0] - gap, from + length);
+
+      // SHIFT ALL THE POINTERS FROM THE HOLE TO THE LAST
+      for (int positionInPage = 0; positionInPage < recordCountInPage; positionInPage++) {
+        final int recordPositionInPage = (int) page.readUnsignedInt(
+            PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+        if (recordPositionInPage < 1 || recordPositionInPage >= page.getContentSize())
+          // AVOID TOUCHING CORRUPTED RECORD
+          continue;
+
+        if (recordPositionInPage >= from && recordPositionInPage <= from + length)
+          page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE,
+              recordPositionInPage - hole[1] - gap);
+      }
+
+      gap += hole[1];
     }
   }
 
