@@ -123,7 +123,7 @@ public class TextEmbeddingsImporter {
 
     if (settings.documentsSkipEntries != null) {
       for (int i = 0; i < settings.documentsSkipEntries; i++)
-        texts.remove(0);
+        texts.removeFirst();
     }
 
     if (!texts.isEmpty()) {
@@ -185,16 +185,16 @@ public class TextEmbeddingsImporter {
     else if (indexedEmbedding > 0)
       progressPerc = indexedEmbedding * 10F / embeddingsParsed; // 10% OF THE TOTAL PROCESS
 
-    String result = String.format("- %.2f%%", progressPerc);
+    String result = "- %.2f%%".formatted(progressPerc);
 
     if (embeddingsParsed > 0)
-      result += String.format(" - %,d embeddings parsed", embeddingsParsed);
+      result += " - %,d embeddings parsed".formatted(embeddingsParsed);
     if (indexedEmbedding > 0)
-      result += String.format(" - %,d embeddings indexed", indexedEmbedding);
+      result += " - %,d embeddings indexed".formatted(indexedEmbedding);
     if (verticesCreated > 0)
-      result += String.format(" - %,d vertices created", verticesCreated);
+      result += " - %,d vertices created".formatted(verticesCreated);
     if (verticesConnected > 0)
-      result += String.format(" - %,d vertices connected", verticesConnected);
+      result += " - %,d vertices connected".formatted(verticesConnected);
 
     result += " (elapsed " + DateUtils.formatElapsed(System.currentTimeMillis() - beginTime) + ")";
 
@@ -249,7 +249,7 @@ public class TextEmbeddingsImporter {
 
         final List<String> tokens = CodeUtils.split(line, ' ', -1, vectorSize.get());
 
-        String word = tokens.get(0);
+        String word = tokens.getFirst();
 
         float[] vector = new float[tokens.size() - 1];
         for (int i = 1; i < tokens.size() - 1; i++)

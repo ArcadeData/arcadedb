@@ -470,8 +470,8 @@ public class SelectExecutionPlanner {
       final List<BooleanExpression> equalityExpressions = new ArrayList<>();
       final List<BooleanExpression> nonEqualityExpressions = new ArrayList<>();
       for (final BooleanExpression exp : block.getSubBlocks()) {
-        if (exp instanceof BinaryCondition) {
-          if (((BinaryCondition) exp).getOperator() instanceof EqualsCompareOperator) {
+        if (exp instanceof BinaryCondition condition) {
+          if (condition.getOperator() instanceof EqualsCompareOperator) {
             equalityExpressions.add(exp);
           } else {
             nonEqualityExpressions.add(exp);
@@ -758,10 +758,10 @@ public class SelectExecutionPlanner {
       final Collection<Identifiable> records = (Collection<Identifiable>) context.getVariablePath(target.toString());
       if (records != null && !records.isEmpty()) {
         for (Object o : records) {
-          if (o instanceof Identifiable)
-            rids.add(((Identifiable) o).getIdentity());
-          else if (o instanceof Result && ((Result) o).isElement())
-            rids.add(((Result) o).toElement().getIdentity());
+          if (o instanceof Identifiable identifiable)
+            rids.add(identifiable.getIdentity());
+          else if (o instanceof Result result1 && result1.isElement())
+            rids.add(result1.toElement().getIdentity());
         }
         info.fetchExecutionPlan.chain(new FetchFromRidsStep(rids, context));
       } else
@@ -829,8 +829,8 @@ public class SelectExecutionPlanner {
       // FIX TO HANDLE FROM VARIABLES AS TARGET
       final Node child = target.jjtGetChild(0);
 
-      if (child instanceof Identifier && ((Identifier) child).getStringValue().startsWith("$")) {
-        final Object variable = context.getVariable(((Identifier) child).getStringValue());
+      if (child instanceof Identifier identifier && identifier.getStringValue().startsWith("$")) {
+        final Object variable = context.getVariable(identifier.getStringValue());
 
         if (variable instanceof Iterable)
           info.fetchExecutionPlan.chain(new FetchFromRidsStep((Iterable<RID>) variable, context));
@@ -860,14 +860,14 @@ public class SelectExecutionPlanner {
       final CommandContext context) {
     final int thisClusterId = database.getSchema().getBucketByName(bucketName).getFileId();
     for (final BooleanExpression ridRangeCondition : ridRangeConditions.getSubBlocks()) {
-      if (ridRangeCondition instanceof BinaryCondition) {
-        final BinaryCompareOperator operator = ((BinaryCondition) ridRangeCondition).getOperator();
+      if (ridRangeCondition instanceof BinaryCondition condition) {
+        final BinaryCompareOperator operator = condition.getOperator();
 
         final Object obj;
-        if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null)
-          obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, context);
+        if (condition.getRight().getRid() != null)
+          obj = condition.getRight().getRid().toRecordId((Result) null, context);
         else
-          obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, context);
+          obj = condition.getRight().execute((Result) null, context);
 
         final RID conditionRid = ((Identifiable) obj).getIdentity();
 
@@ -895,7 +895,7 @@ public class SelectExecutionPlanner {
       return result;
 
     //TODO optimization: merge multiple conditions
-    for (final BooleanExpression booleanExpression : flattenedWhereClause.get(0).getSubBlocks()) {
+    for (final BooleanExpression booleanExpression : flattenedWhereClause.getFirst().getSubBlocks()) {
       if (isRidRange(booleanExpression, context)) {
         result.getSubBlocks().add(booleanExpression.copy());
       }
@@ -904,8 +904,8 @@ public class SelectExecutionPlanner {
   }
 
   private boolean isRidRange(final BooleanExpression booleanExpression, final CommandContext context) {
-    if (booleanExpression instanceof BinaryCondition) {
-      final BinaryCondition cond = ((BinaryCondition) booleanExpression);
+    if (booleanExpression instanceof BinaryCondition condition) {
+      final BinaryCondition cond =condition;
       final BinaryCompareOperator operator = cond.getOperator();
       if (isRangeOperator(operator) && cond.getLeft().toString().equalsIgnoreCase("@rid")) {
         final Object obj;
@@ -929,8 +929,8 @@ public class SelectExecutionPlanner {
       final QueryPlanningInfo info, final InputParameter inputParam, final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
 
-    if (paramValue instanceof String && RID.is(paramValue))
-      paramValue = new RID(context.getDatabase(), (String) paramValue);
+    if (paramValue instanceof String string && RID.is(paramValue))
+      paramValue = new RID(context.getDatabase(), string);
 
     if (paramValue == null) {
       result.chain(new EmptyStep(context));//nothing to return
@@ -965,10 +965,10 @@ public class SelectExecutionPlanner {
         result.chain(new EmptyStep(context));//nothing to return
       }
 
-    } else if (paramValue instanceof Iterable) {
+    } else if (paramValue instanceof Iterable iterable) {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
-      for (final Object x : (Iterable) paramValue) {
+      for (final Object x : iterable) {
         if (!(x instanceof Identifiable)) {
           throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
         }
@@ -1526,7 +1526,7 @@ public class SelectExecutionPlanner {
     final List<DocumentType> stack = new ArrayList<>();
     stack.add(typez);
     while (!stack.isEmpty()) {
-      final DocumentType current = stack.remove(0);
+      final DocumentType current = stack.removeFirst();
       traversed.add(current);
       for (final DocumentType sub : current.getSubTypes()) {
         if (traversed.contains(sub))
@@ -1618,7 +1618,7 @@ public class SelectExecutionPlanner {
     final List<IndexSearchDescriptor> optimumIndexSearchDescriptors = commonFactor(indexSearchDescriptors);
 
     if (indexSearchDescriptors.size() == 1) {
-      final IndexSearchDescriptor desc = indexSearchDescriptors.get(0);
+      final IndexSearchDescriptor desc = indexSearchDescriptors.getFirst();
       result = new ArrayList<>();
       final Boolean orderAsc = getOrderDirection(info);
       result.add(new FetchFromIndexStep(desc.idx, desc.keyCondition, desc.additionalRangeCondition, !Boolean.FALSE.equals(orderAsc),
@@ -1668,9 +1668,9 @@ public class SelectExecutionPlanner {
 
     for (int i = 0; i < conditions.getSubBlocks().size(); i++) {
       final BooleanExpression item = conditions.getSubBlocks().get(i);
-      if (item instanceof BinaryCondition) {
-        if (((BinaryCondition) item).getOperator() instanceof EqualsCompareOperator) {
-          conditionItems.add(((BinaryCondition) item).getLeft().toString());
+      if (item instanceof BinaryCondition condition) {
+        if (condition.getOperator() instanceof EqualsCompareOperator) {
+          conditionItems.add(condition.getLeft().toString());
         } else if (i != conditions.getSubBlocks().size() - 1) {
           return false;
         }
@@ -1686,8 +1686,8 @@ public class SelectExecutionPlanner {
       if (orderItems.isEmpty()) {
         return true;//nothing to sort, the conditions completely overlap the ORDER BY
       }
-      if (s.equals(orderItems.get(0))) {
-        orderItems.remove(0);
+      if (s.equals(orderItems.getFirst())) {
+        orderItems.removeFirst();
         overlapping = true; //start overlapping
       } else if (overlapping) {
         return false; //overlapping, but next order item does not match...
@@ -1841,7 +1841,7 @@ public class SelectExecutionPlanner {
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst()))
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
           .map(x -> x.getSecond()).collect(Collectors.toList());
     }
 
@@ -1850,7 +1850,7 @@ public class SelectExecutionPlanner {
         .collect(Collectors.toList());
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
+    return descriptors.isEmpty() ? null : descriptors.getLast();
   }
 
   /**
@@ -1957,8 +1957,8 @@ public class SelectExecutionPlanner {
       boolean indexFieldFound = false;
       while (blockIterator.hasNext()) {
         final BooleanExpression singleExp = blockIterator.next();
-        if (singleExp instanceof ContainsTextCondition) {
-          final Expression left = ((ContainsTextCondition) singleExp).getLeft();
+        if (singleExp instanceof ContainsTextCondition textCondition) {
+          final Expression left = textCondition.getLeft();
           if (left.isBaseIdentifier()) {
             final String fieldName = left.getDefaultAlias().getStringValue();
             if (indexField.equals(fieldName)) {
@@ -1966,7 +1966,7 @@ public class SelectExecutionPlanner {
               indexFieldFound = true;
               final ContainsTextCondition condition = new ContainsTextCondition(-1);
               condition.setLeft(left);
-              condition.setRight(((ContainsTextCondition) singleExp).getRight().copy());
+              condition.setRight(textCondition.getRight().copy());
               indexKeyValue.getSubBlocks().add(condition);
               blockIterator.remove();
               break;
@@ -2000,7 +2000,9 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext context, final Index index, final AndBlock block) {
+  private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext context,
+                                                           final Index index,
+                                                           final AndBlock block) {
     final List<String> indexFields = index.getPropertyNames();
     final BinaryCondition keyCondition = new BinaryCondition(-1);
     final Identifier key = new Identifier("key");
@@ -2021,13 +2023,13 @@ public class SelectExecutionPlanner {
       boolean indexFieldFound = false;
       while (blockIterator.hasNext()) {
         final BooleanExpression singleExp = blockIterator.next();
-        if (singleExp instanceof BinaryCondition) {
-          final Expression left = ((BinaryCondition) singleExp).getLeft();
+        if (singleExp instanceof BinaryCondition binaryCondition) {
+          final Expression left = binaryCondition.getLeft();
           if (left.isBaseIdentifier()) {
             final String fieldName = left.getDefaultAlias().getStringValue();
             if (indexField.equals(fieldName)) {
-              final BinaryCompareOperator operator = ((BinaryCondition) singleExp).getOperator();
-              if (!((BinaryCondition) singleExp).getRight().isEarlyCalculated(context)) {
+              final BinaryCompareOperator operator = binaryCondition.getOperator();
+              if (!binaryCondition.getRight().isEarlyCalculated(context)) {
                 continue; //this cannot be used because the value depends on single record
               }
               if (operator instanceof EqualsCompareOperator) {
@@ -2063,48 +2065,48 @@ public class SelectExecutionPlanner {
               }
             }
           }
-        } else if (singleExp instanceof ContainsAnyCondition) {
-          final Expression left = ((ContainsAnyCondition) singleExp).getLeft();
+        } else if (singleExp instanceof ContainsAnyCondition anyCondition) {
+          final Expression left = anyCondition.getLeft();
           if (left.isBaseIdentifier()) {
             final String fieldName = left.getDefaultAlias().getStringValue();
             if (indexField.equals(fieldName)) {
-              if (!((ContainsAnyCondition) singleExp).getRight().isEarlyCalculated(context)) {
+              if (!anyCondition.getRight().isEarlyCalculated(context)) {
                 continue; //this cannot be used because the value depends on single record
               }
               found = true;
               indexFieldFound = true;
               final ContainsAnyCondition condition = new ContainsAnyCondition(-1);
               condition.setLeft(left);
-              condition.setRight(((ContainsAnyCondition) singleExp).getRight().copy());
+              condition.setRight(anyCondition.getRight().copy());
               indexKeyValue.getSubBlocks().add(condition);
               blockIterator.remove();
               break;
             }
           }
-        } else if (singleExp instanceof InCondition) {
-          final Expression left = ((InCondition) singleExp).getLeft();
+        } else if (singleExp instanceof InCondition inCondition) {
+          final Expression left = inCondition.getLeft();
           if (left.isBaseIdentifier()) {
             final String fieldName = left.getDefaultAlias().getStringValue();
             if (indexField.equals(fieldName)) {
-              if (((InCondition) singleExp).getRightMathExpression() != null) {
+              if (inCondition.getRightMathExpression() != null) {
 
-                if (!((InCondition) singleExp).getRightMathExpression().isEarlyCalculated(context)) {
+                if (!inCondition.getRightMathExpression().isEarlyCalculated(context)) {
                   continue; //this cannot be used because the value depends on single record
                 }
                 found = true;
                 indexFieldFound = true;
                 final InCondition condition = new InCondition(-1);
                 condition.setLeft(left);
-                condition.setRightMathExpression(((InCondition) singleExp).getRightMathExpression().copy());
+                condition.setRightMathExpression(inCondition.getRightMathExpression().copy());
                 indexKeyValue.getSubBlocks().add(condition);
                 blockIterator.remove();
                 break;
-              } else if (((InCondition) singleExp).getRightParam() != null) {
+              } else if (inCondition.getRightParam() != null) {
                 found = true;
                 indexFieldFound = true;
                 final InCondition condition = new InCondition(-1);
                 condition.setLeft(left);
-                condition.setRightParam(((InCondition) singleExp).getRightParam().copy());
+                condition.setRightParam(inCondition.getRightParam().copy());
                 indexKeyValue.getSubBlocks().add(condition);
                 blockIterator.remove();
                 break;
@@ -2240,7 +2242,7 @@ public class SelectExecutionPlanner {
       info.orderApplied = true;
 
     if (buckets.size() == 1) {
-      final Bucket parserBucket = buckets.get(0);
+      final Bucket parserBucket = buckets.getFirst();
 
       Integer bucketId = parserBucket.getBucketNumber();
       if (bucketId == null) {
@@ -2405,8 +2407,8 @@ public class SelectExecutionPlanner {
       if (idx == null)
         throw new CommandExecutionException("Index '" + indexName + "' does not exist");
 
-      if (idx instanceof TypeIndex) {
-        for (final Index subIdx : ((TypeIndex) idx).getSubIndexes())
+      if (idx instanceof TypeIndex index) {
+        for (final Index subIdx : index.getSubIndexes())
           result.add(db.getSchema().getBucketById(subIdx.getAssociatedBucketId()).getName());
       } else
         result.add(db.getSchema().getBucketById(idx.getAssociatedBucketId()).getName());
@@ -2423,8 +2425,8 @@ public class SelectExecutionPlanner {
         // RESOLVE VARIABLE
         final Object value = context.getVariable(item.getIdentifier().getStringValue());
         if (value != null) {
-          if (value instanceof RID)
-            item.getRids().add(new Rid((RID) value));
+          if (value instanceof RID iD)
+            item.getRids().add(new Rid(iD));
         }
       } else {
         final String className = item.getIdentifier().getStringValue();

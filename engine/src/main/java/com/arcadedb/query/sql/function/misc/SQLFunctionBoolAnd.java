@@ -40,8 +40,8 @@ public class SQLFunctionBoolAnd extends SQLFunctionConfigurableAbstract {
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     if (iParams.length == 1) {
-      if (iParams[0] instanceof Boolean)
-        and((Boolean) iParams[0]);
+      if (iParams[0] instanceof Boolean boolean1)
+        and(boolean1);
       else if (MultiValue.isMultiValue(iParams[0]))
         for (final Object n : MultiValue.getMultiValueIterable(iParams[0])) {
           and((Boolean) n);

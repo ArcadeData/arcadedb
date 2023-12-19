@@ -42,26 +42,26 @@ public class ReturnStatement extends SimpleExecStatement {
     final InternalResultSet rs = new InternalResultSet();
 
     final Object result = expression == null ? null : expression.execute((Result) null, context);
-    if (result instanceof Result) {
-      rs.add((Result) result);
-    } else if (result instanceof Identifiable) {
-      final ResultInternal res = new ResultInternal((Document) ((Identifiable) result).getRecord());
+    if (result instanceof Result result1) {
+      rs.add(result1);
+    } else if (result instanceof Identifiable identifiable) {
+      final ResultInternal res = new ResultInternal((Document) identifiable.getRecord());
       rs.add(res);
-    } else if (result instanceof Iterable) {
-      for (Object o : (Iterable) result) {
+    } else if (result instanceof Iterable iterable) {
+      for (Object o : iterable) {
         final Result r;
-        if (o instanceof Result)
-          r = (Result) o;
-        else if (o instanceof Map)
-          r = new ResultInternal((Map) o);
+        if (o instanceof Result result1)
+          r = result1;
+        else if (o instanceof Map map)
+          r = new ResultInternal(map);
         else
           r = new ResultInternal(Map.of("value", o));
         rs.add(r);
       }
-    } else if (result instanceof ResultSet) {
-      if (!((ResultSet) result).hasNext()) {
+    } else if (result instanceof ResultSet set) {
+      if (!set.hasNext()) {
         try {
-          ((ResultSet) result).reset();
+          set.reset();
         } catch (final UnsupportedOperationException ignore) {
           // just try to reset the RS, in case it was already used during the script execution
           // already
@@ -71,7 +71,7 @@ public class ReturnStatement extends SimpleExecStatement {
           // this operation does not hurt
         }
       }
-      return (ResultSet) result;
+      return set;
     } else {
       final ResultInternal res = new ResultInternal(context.getDatabase());
       res.setProperty("value", result);

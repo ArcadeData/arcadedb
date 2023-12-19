@@ -39,8 +39,8 @@ public class GeOperator extends SimpleNode implements BinaryCompareOperator {
       return false;
 
     if (!left.getClass().equals(right.getClass())) {
-      if (left instanceof Number && right instanceof Number) {
-        final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
+      if (left instanceof Number numberA && right instanceof Number numberB) {
+        final Number[] couple = Type.castComparableNumber(numberA, numberB);
         left = couple[0];
         right = couple[1];
       } else

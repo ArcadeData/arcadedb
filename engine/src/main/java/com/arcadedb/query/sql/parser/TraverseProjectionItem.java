@@ -58,19 +58,19 @@ public class TraverseProjectionItem extends SimpleNode {
         result.add(val);
 
       } else {
-        if (val instanceof Iterable) {
-          val = ((Iterable) val).iterator();
+        if (val instanceof Iterable iterable) {
+          val = iterable.iterator();
         }
-        if (val instanceof Iterator) {
-          while (((Iterator) val).hasNext()) {
-            final Object sub = ((Iterator) val).next();
+        if (val instanceof Iterator iterator) {
+          while (iterator.hasNext()) {
+            final Object sub = iterator.next();
             if (isOResult(sub) || isValidIdentifiable(sub)) {
               result.add(sub);
             }
           }
-        } else if (val instanceof ResultSet) {
-          while (((ResultSet) val).hasNext()) {
-            result.add(((ResultSet) val).next());
+        } else if (val instanceof ResultSet set) {
+          while (set.hasNext()) {
+            result.add(set.next());
           }
         }
       }

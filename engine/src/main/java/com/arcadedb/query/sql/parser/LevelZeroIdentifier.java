@@ -189,8 +189,8 @@ public class LevelZeroIdentifier extends SimpleNode {
       final LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
       if (functionCall != null) {
         final SimpleNode node = functionCall.splitForAggregation(aggregateProj, context);
-        if (node instanceof FunctionCall) {
-          result.functionCall = (FunctionCall) node;
+        if (node instanceof FunctionCall call) {
+          result.functionCall = call;
         } else {
           return node;
         }

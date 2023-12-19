@@ -36,23 +36,23 @@ public class DetachedDocument extends ImmutableDocument {
     for (final Map.Entry<String, Object> entry : sourceMap.entrySet()) {
       Object value = entry.getValue();
 
-      if (value instanceof List) {
-        for (int i = 0; i < ((List) value).size(); i++) {
-          final Object embValue = ((List) value).get(i);
-          if (embValue instanceof EmbeddedDocument)
-            ((List) value).set(i, ((EmbeddedDocument) embValue).detach());
+      if (value instanceof List list) {
+        for (int i = 0; i < list.size(); i++) {
+          final Object embValue = list.get(i);
+          if (embValue instanceof EmbeddedDocument document)
+            ((List) value).set(i, document.detach());
         }
       } else if (value instanceof Map) {
         final Map<String, Object> map = (Map<String, Object>) value;
 
         for (final String propName : map.keySet()) {
           final Object embValue = map.get(propName);
-          if (embValue instanceof EmbeddedDocument)
-            map.put(propName, ((EmbeddedDocument) embValue).detach());
+          if (embValue instanceof EmbeddedDocument document)
+            map.put(propName, document.detach());
         }
 
-      } else if (value instanceof EmbeddedDocument)
-        value = ((EmbeddedDocument) value).detach();
+      } else if (value instanceof EmbeddedDocument document)
+        value = document.detach();
 
       this.map.put(entry.getKey(), value);
     }

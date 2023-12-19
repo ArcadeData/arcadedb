@@ -48,7 +48,7 @@ public class FromItem extends SimpleNode {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (rids != null && rids.size() > 0) {
       if (rids.size() == 1) {
-        rids.get(0).toString(params, builder);
+        rids.getFirst().toString(params, builder);
         return;
       } else {
         builder.append("[");
@@ -65,7 +65,7 @@ public class FromItem extends SimpleNode {
       }
     } else if (inputParams != null && inputParams.size() > 0) {
       if (inputParams.size() == 1) {
-        inputParams.get(0).toString(params, builder);
+        inputParams.getFirst().toString(params, builder);
         return;
       } else {
         builder.append("[");
@@ -311,14 +311,13 @@ public class FromItem extends SimpleNode {
   }
 
   public void setValue(final Object value) {
-    if (value instanceof Identifiable)
-      rids.add(new Rid(((Identifiable) value).getIdentity()));
-    else if (value instanceof ResultSet) {
-      resultSet = (ResultSet) value;
-    } else if (value instanceof Result) {
-      final Result r = (Result) value;
+    if (value instanceof Identifiable identifiable)
+      rids.add(new Rid(identifiable.getIdentity()));
+    else if (value instanceof ResultSet set) {
+      resultSet = set;
+    } else if (value instanceof Result r) {
       if (r.isElement())
-        setValue(((Result) value).toElement());
+        setValue(r.toElement());
       else
         setValue(r.toMap());
     }

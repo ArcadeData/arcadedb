@@ -57,13 +57,13 @@ public class ArraySingleValuesSelector extends SimpleNode {
         return null;
       }
 
-      if (index instanceof Integer) {
-        result.add(MultiValue.getValue(iResult, ((Integer) index).intValue()));
+      if (index instanceof Integer integer) {
+        result.add(MultiValue.getValue(iResult, integer.intValue()));
       } else {
-        if (iResult instanceof Map) {
-          result.add(((Map) iResult).get(index));
-        } else if (iResult instanceof Result && index instanceof String) {
-          result.add(((Result) iResult).getProperty((String) index));
+        if (iResult instanceof Map map) {
+          result.add(map.get(index));
+        } else if (iResult instanceof Result result1 && index instanceof String string) {
+          result.add(result1.getProperty(string));
         } else if (MultiValue.isMultiValue(iResult)) {
           final Iterator<Object> iter = MultiValue.getMultiValueIterator(iResult);
           while (iter.hasNext()) {
@@ -75,7 +75,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
       }
       if (this.items.size() == 1 && result.size() == 1) {
         //      if (this.items.size() == 1) {
-        return result.get(0);
+        return result.getFirst();
       }
     }
     return result;
@@ -89,13 +89,13 @@ public class ArraySingleValuesSelector extends SimpleNode {
         return null;
       }
 
-      if (index instanceof Integer) {
-        result.add(MultiValue.getValue(iResult, ((Integer) index).intValue()));
+      if (index instanceof Integer integer) {
+        result.add(MultiValue.getValue(iResult, integer.intValue()));
       } else {
-        if (iResult instanceof Map) {
-          result.add(((Map) iResult).get(index));
-        } else if (iResult instanceof Result && index instanceof String) {
-          result.add(((Result) iResult).getProperty((String) index));
+        if (iResult instanceof Map map) {
+          result.add(map.get(index));
+        } else if (iResult instanceof Result result1 && index instanceof String string) {
+          result.add(result1.getProperty(string));
         } else if (MultiValue.isMultiValue(iResult)) {
           final Iterator<Object> iter = MultiValue.getMultiValueIterator(iResult);
           while (iter.hasNext()) {
@@ -107,19 +107,19 @@ public class ArraySingleValuesSelector extends SimpleNode {
       }
       if (this.items.size() == 1 && result.size() == 1) {
         //      if (this.items.size() == 1) {
-        return result.get(0);
+        return result.getFirst();
       }
     }
     return result;
   }
 
   private Object calculateValue(final Object item, final Object index) {
-    if (index instanceof Integer) {
-      return MultiValue.getValue(item, ((Integer) index).intValue());
-    } else if (item instanceof Map) {
-      return ((Map) item).get(index);
-    } else if (item instanceof Result && index instanceof String) {
-      return ((Result) item).getProperty((String) index);
+    if (index instanceof Integer integer) {
+      return MultiValue.getValue(item, integer.intValue());
+    } else if (item instanceof Map map) {
+      return map.get(index);
+    } else if (item instanceof Result result && index instanceof String string) {
+      return result.getProperty(string);
     } else if (MultiValue.isMultiValue(item)) {
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(item);
       final List<Object> result = new ArrayList<>();
@@ -169,18 +169,16 @@ public class ArraySingleValuesSelector extends SimpleNode {
       return;
     }
     final List values = this.items.stream().map(x -> x.getValue(originalRecord, null, context)).collect(Collectors.toList());
-    if (currentValue instanceof List) {
-      final List<Object> list = (List) currentValue;
+    if (currentValue instanceof List list) {
       values.sort(this::compareKeysForRemoval);
       for (final Object val : values) {
-        if (val instanceof Integer) {
-          list.remove((int) (Integer) val);
+        if (val instanceof Integer integer) {
+          list.remove((int) integer);
         } else {
           list.remove(val);
         }
       }
-    } else if (currentValue instanceof Set) {
-      final Set set = (Set) currentValue;
+    } else if (currentValue instanceof Set set) {
       final Iterator iterator = set.iterator();
       final int count = 0;
       while (iterator.hasNext()) {
@@ -189,9 +187,9 @@ public class ArraySingleValuesSelector extends SimpleNode {
           iterator.remove();
         }
       }
-    } else if (currentValue instanceof Map) {
+    } else if (currentValue instanceof Map map) {
       for (final Object val : values) {
-        ((Map) currentValue).remove(val);
+        map.remove(val);
       }
     } else if (currentValue instanceof Result) {
       for (final Object val : values) {
@@ -204,8 +202,8 @@ public class ArraySingleValuesSelector extends SimpleNode {
 
   private int compareKeysForRemoval(final Object o1, final Object o2) {
     if (o1 instanceof Integer) {
-      if (o2 instanceof Integer) {
-        return (int) o2 - (int) o1;
+      if (o2 instanceof Integer integer) {
+        return integer - (int) o1;
       } else {
         return -1;
       }

@@ -142,8 +142,8 @@ public class BucketIterator implements Iterator<Record> {
                   database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
             }
           } catch (final Exception e) {
-            final String msg = String.format("Error on loading record #%d:%d (error: %s)", currentPage.pageId.getFileId(),
-                (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
+            final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
+              (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
             LogManager.instance().log(this, Level.SEVERE, msg);
           } finally {
             currentRecordInPage++;

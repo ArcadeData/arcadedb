@@ -349,24 +349,24 @@ public class TableFormatter {
   public static Object getPrettyFieldValue(Object value, final int multiValueMaxEntries) {
     if (value == null)
       value = "<null>";
-    else if (value instanceof MultiIterator<?>)
-      value = getPrettyFieldMultiValue(((MultiIterator<?>) value).iterator(), multiValueMaxEntries);
-    else if (value instanceof Iterator)
-      value = getPrettyFieldMultiValue((Iterator<?>) value, multiValueMaxEntries);
-    else if (value instanceof Collection<?>)
-      value = getPrettyFieldMultiValue(((Collection<?>) value).iterator(), multiValueMaxEntries);
-    else if (value instanceof Record) {
-      if (((Record) value).getIdentity() == null) {
+    else if (value instanceof MultiIterator<?> iterator)
+      value = getPrettyFieldMultiValue(iterator.iterator(), multiValueMaxEntries);
+    else if (value instanceof Iterator iterator)
+      value = getPrettyFieldMultiValue(iterator, multiValueMaxEntries);
+    else if (value instanceof Collection<?> collection)
+      value = getPrettyFieldMultiValue(collection.iterator(), multiValueMaxEntries);
+    else if (value instanceof Record record) {
+      if (record.getIdentity() == null) {
         value = value.toString();
       } else {
-        value = ((Record) value).getIdentity().toString();
+        value = record.getIdentity().toString();
       }
-    } else if (value instanceof Date) {
+    } else if (value instanceof Date date) {
       synchronized (DEF_DATEFORMAT) {
-        value = DEF_DATEFORMAT.format((Date) value);
+        value = DEF_DATEFORMAT.format(date);
       }
-    } else if (value instanceof byte[])
-      value = "byte[" + ((byte[]) value).length + "]";
+    } else if (value instanceof byte[] bytes)
+      value = "byte[" + bytes.length + "]";
 
     return value;
   }
@@ -417,7 +417,7 @@ public class TableFormatter {
 
       if (colName.length() > column.getValue())
         colName = colName.substring(0, column.getValue());
-      columnRow.append(String.format("%-" + column.getValue() + "s", formatCell(colName, column.getValue(), colName, colName)));
+      columnRow.append(("%-" + column.getValue() + "s").formatted(formatCell(colName, column.getValue(), colName, colName)));
 
       if (!metadataRows.isEmpty()) {
         // METADATA VALUE
@@ -430,7 +430,7 @@ public class TableFormatter {
 
           if (metadataValue.length() > column.getValue())
             metadataValue = metadataValue.substring(0, column.getValue());
-          buffer.append(String.format("%-" + column.getValue() + "s", formatCell(colName, column.getValue(), metadataValue, colName)));
+          buffer.append(("%-" + column.getValue() + "s").formatted(formatCell(colName, column.getValue(), metadataValue, colName)));
         }
       }
 

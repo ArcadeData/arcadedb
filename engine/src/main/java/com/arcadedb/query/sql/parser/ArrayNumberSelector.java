@@ -58,8 +58,8 @@ public class ArrayNumberSelector extends SimpleNode {
     if (result == null) {
       return null;
     }
-    if (result instanceof Number) {
-      return ((Number) result).intValue();
+    if (result instanceof Number number) {
+      return number.intValue();
     }
     return null;
   }
@@ -77,8 +77,8 @@ public class ArrayNumberSelector extends SimpleNode {
     if (result == null) {
       return null;
     }
-    if (result instanceof Number) {
-      return ((Number) result).intValue();
+    if (result instanceof Number number) {
+      return number.intValue();
     }
     return null;
   }

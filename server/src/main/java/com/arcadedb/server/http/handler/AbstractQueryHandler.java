@@ -98,7 +98,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           final Result row = qResult.next();
 
           boolean recordIncluded = true;
-          if (!row.getIdentity().isEmpty()) {
+          if (row.getIdentity().isPresent()) {
             final RID rid = row.getIdentity().get();
             recordIncluded = includedRecords.add(rid);
             if (recordIncluded)
@@ -200,8 +200,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (value instanceof Identifiable) {
 
       final DocumentType type;
-      if (value instanceof Document)
-        type = ((Document) value).getType();
+      if (value instanceof Document document)
+        type = document.getType();
       else {
         final RID rid = ((Identifiable) value).getIdentity();
         type = database.getSchema().getTypeByBucketId(rid.getBucketId());
@@ -220,10 +220,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         if (includedVertices.add(edge.getOut()))
           vertices.put(serializerImpl.serializeGraphElement(edge.getOutVertex()));
       }
-    } else if (value instanceof Result) {
-      analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, (Result) value);
-    } else if (value instanceof Collection) {
-      for (final Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
+    } else if (value instanceof Result result) {
+      analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, result);
+    } else if (value instanceof Collection collection) {
+      for (final Iterator<?> it = collection.iterator(); it.hasNext(); ) {
         analyzePropertyValue(database, serializerImpl, includedVertices, vertices, edges, it.next());
       }
     }

@@ -43,8 +43,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void testServerInfo() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -64,8 +63,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void testServerClusterInfo() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -91,8 +89,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void testServerReady() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/ready").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/ready").toURL().openConnection();
       connection.setRequestMethod("GET");
       try {
         connection.connect();
@@ -108,9 +105,8 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void checkAuthenticationError() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
-              + "/sql/select%20from%20Person%20limit%201").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+        + "/sql/select%20from%20Person%20limit%201").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:wrong".getBytes()));
@@ -129,9 +125,8 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void checkQueryInGet() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
-              + "/sql/select%20from%20Person%20limit%201").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+        + "/sql/select%20from%20Person%20limit%201").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -155,9 +150,8 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void checkQueryInGetWithSqlScript() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
-              + "/sqlscript/select%20from%20Person%20limit%201").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+        + "/sqlscript/select%20from%20Person%20limit%201").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -180,9 +174,8 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void checkQueryCommandEncoding() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
-              + "/sql/select%201%20%2B%201%20as%20result").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+        + "/sql/select%201%20%2B%201%20as%20result").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -205,8 +198,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void checkQueryInPost() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -229,8 +221,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void checkCommand() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -253,8 +244,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void checkAsyncCommand() throws Exception {
     testEachServer((serverIndex) -> {
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -268,9 +258,8 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
         connection.disconnect();
       }
 
-      connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
-              + "/sql/select%20name%20from%20schema%3Atypes").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+        + "/sql/select%20name%20from%20schema%3Atypes").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -292,8 +281,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   @Test
   public void checkCommandNoDuplication() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -323,8 +311,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   public void checkRecordCreate() throws Exception {
     testEachServer((serverIndex) -> {
       // CREATE DOCUMENT
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",

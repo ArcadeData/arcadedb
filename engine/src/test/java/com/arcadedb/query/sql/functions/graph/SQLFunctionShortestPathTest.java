@@ -44,7 +44,7 @@ public class SQLFunctionShortestPathTest {
 
       final List<RID> result = function.execute(null, null, null, new Object[] { vertices.get(1), vertices.get(4) }, new BasicCommandContext());
       assertEquals(3, result.size());
-      assertEquals(vertices.get(1).getIdentity(), result.get(0));
+      assertEquals(vertices.get(1).getIdentity(), result.getFirst());
       assertEquals(vertices.get(3).getIdentity(), result.get(1));
       assertEquals(vertices.get(4).getIdentity(), result.get(2));
     });
@@ -59,7 +59,7 @@ public class SQLFunctionShortestPathTest {
       final List<RID> result = function.execute(null, null, null, new Object[] { vertices.get(1), vertices.get(4), "out", null }, new BasicCommandContext());
 
       assertEquals(4, result.size());
-      assertEquals(vertices.get(1).getIdentity(), result.get(0));
+      assertEquals(vertices.get(1).getIdentity(), result.getFirst());
       assertEquals(vertices.get(2).getIdentity(), result.get(1));
       assertEquals(vertices.get(3).getIdentity(), result.get(2));
       assertEquals(vertices.get(4).getIdentity(), result.get(3));
@@ -75,7 +75,7 @@ public class SQLFunctionShortestPathTest {
       final List<RID> result = function.execute(null, null, null, new Object[] { vertices.get(1), vertices.get(4), null, "Edge1" }, new BasicCommandContext());
 
       assertEquals(4, result.size());
-      assertEquals(vertices.get(1).getIdentity(), result.get(0));
+      assertEquals(vertices.get(1).getIdentity(), result.getFirst());
       assertEquals(vertices.get(2).getIdentity(), result.get(1));
       assertEquals(vertices.get(3).getIdentity(), result.get(2));
       assertEquals(vertices.get(4).getIdentity(), result.get(3));
@@ -92,7 +92,7 @@ public class SQLFunctionShortestPathTest {
           .execute(null, null, null, new Object[] { vertices.get(1), vertices.get(4), "BOTH", asList("Edge1", "Edge2") }, new BasicCommandContext());
 
       assertEquals(3, result.size());
-      assertEquals(vertices.get(1).getIdentity(), result.get(0));
+      assertEquals(vertices.get(1).getIdentity(), result.getFirst());
       assertEquals(vertices.get(3).getIdentity(), result.get(1));
       assertEquals(vertices.get(4).getIdentity(), result.get(2));
     });
@@ -107,7 +107,7 @@ public class SQLFunctionShortestPathTest {
       final List<RID> result = function.execute(null, null, null, new Object[] { vertices.get(1), vertices.get(20) }, new BasicCommandContext());
 
       assertEquals(11, result.size());
-      assertEquals(vertices.get(1).getIdentity(), result.get(0));
+      assertEquals(vertices.get(1).getIdentity(), result.getFirst());
       assertEquals(vertices.get(3).getIdentity(), result.get(1));
       int next = 2;
       for (int i = 4; i <= 20; i += 2) {

@@ -77,8 +77,8 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        if (toIter instanceof ResultSet) {
-          ((ResultSet) toIter).close();
+        if (toIter instanceof ResultSet set) {
+          set.close();
         }
       }
     };
@@ -95,8 +95,8 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
     Object toValues;
 
     toValues = context.getVariable(toAlias);
-    if (toValues instanceof Iterable && !(toValues instanceof Identifiable)) {
-      toValues = ((Iterable) toValues).iterator();
+    if (toValues instanceof Iterable iterable && !(toValues instanceof Identifiable)) {
+      toValues = iterable.iterator();
     } else if (!(toValues instanceof Iterator)) {
       toValues = Collections.singleton(toValues).iterator();
     }
@@ -115,14 +115,14 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
         }
         if (this.toIter.hasNext()) {
           Object from = toIter.next();
-          if (from instanceof Result) {
-            from = ((Result) from).toElement();
+          if (from instanceof Result result) {
+            from = result.toElement();
           }
-          if (from instanceof Identifiable && !(from instanceof Record)) {
-            from = ((Identifiable) from).getRecord();
+          if (from instanceof Identifiable identifiable && !(from instanceof Record)) {
+            from = identifiable.getRecord();
           }
-          if (from instanceof Vertex) {
-            currentToEdgesIter = ((Vertex) from).getEdges(Vertex.DIRECTION.IN).iterator();
+          if (from instanceof Vertex vertex) {
+            currentToEdgesIter = vertex.getEdges(Vertex.DIRECTION.IN).iterator();
           } else {
             throw new CommandExecutionException("Invalid vertex: " + from);
           }

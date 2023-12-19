@@ -69,7 +69,7 @@ public class IfExecutionPlan implements InternalExecutionPlan {
   }
 
   public void setSteps(final List<ExecutionStepInternal> steps) {
-    this.step = (IfStep) steps.get(0);
+    this.step = (IfStep) steps.getFirst();
   }
 
   @Override

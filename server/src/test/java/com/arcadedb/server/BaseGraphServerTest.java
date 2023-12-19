@@ -564,8 +564,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected String command(final int serverIndex, final String command) throws Exception {
-    final HttpURLConnection initialConnection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+    final HttpURLConnection initialConnection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
     try {
 
       initialConnection.setRequestMethod("POST");
@@ -590,8 +589,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected JSONObject executeCommand(final int serverIndex, final String language, final String payloadCommand) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

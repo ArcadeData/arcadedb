@@ -468,7 +468,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     List<SearchResult<TItem, TDistance>> results = new ArrayList<>(topCandidates.size());
     while (!topCandidates.isEmpty()) {
       NodeIdAndDistance<TDistance> pair = topCandidates.poll();
-      results.add(0, new SearchResult<>(nodes.get(pair.nodeId).item, pair.distance, maxValueDistanceComparator));
+      results.addFirst(new SearchResult<>(nodes.get(pair.nodeId).item, pair.distance, maxValueDistanceComparator));
     }
 
     return results;

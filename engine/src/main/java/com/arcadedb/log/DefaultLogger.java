@@ -131,10 +131,10 @@ public class DefaultLogger implements Logger {
     //level = Level.SEVERE;
 
     final String requesterName;
-    if (requester instanceof String)
-      requesterName = (String) requester;
-    else if (requester instanceof Class<?>)
-      requesterName = ((Class<?>) requester).getName();
+    if (requester instanceof String string)
+      requesterName = string;
+    else if (requester instanceof Class<?> class1)
+      requesterName = class1.getName();
     else if (requester != null)
       requesterName = requester.getClass().getName();
     else
@@ -171,7 +171,7 @@ public class DefaultLogger implements Logger {
         System.err.println(msg);
 
       } catch (final Exception e) {
-        System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
+        System.err.print("Error on formatting message '%s'. Exception: %s".formatted(message, e));
       } finally {
         if (level == Level.SEVERE)
           System.err.flush();
@@ -196,7 +196,7 @@ public class DefaultLogger implements Logger {
           flush();
 
       } catch (final Exception e) {
-        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
+        System.err.print("Error on formatting message '%s'. Exception: %s".formatted(message, e));
         System.err.flush();
       }
     }
@@ -206,10 +206,10 @@ public class DefaultLogger implements Logger {
       final Object... args) {
     if (message != null) {
       final String requesterName;
-      if (requester instanceof String)
-        requesterName = (String) requester;
-      else if (requester instanceof Class<?>)
-        requesterName = ((Class<?>) requester).getName();
+      if (requester instanceof String string)
+        requesterName = string;
+      else if (requester instanceof Class<?> class1)
+        requesterName = class1.getName();
       else if (requester != null)
         requesterName = requester.getClass().getName();
       else
@@ -234,7 +234,7 @@ public class DefaultLogger implements Logger {
         try {
           String msg = message;
           if (args.length > 0)
-            msg = String.format(message, args);
+            msg = message.formatted(args);
           System.err.println(msg);
 
         } catch (final Exception e) {
@@ -248,7 +248,7 @@ public class DefaultLogger implements Logger {
 
           String msg = message;
           if (args.length > 0)
-            msg = String.format(message, args);
+            msg = message.formatted(args);
 
           if (log.isLoggable(level)) {
             if (exception != null)

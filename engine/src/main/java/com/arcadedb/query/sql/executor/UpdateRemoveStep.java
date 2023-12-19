@@ -46,9 +46,9 @@ public class UpdateRemoveStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result result = upstream.next();
-        if (result instanceof ResultInternal) {
+        if (result instanceof ResultInternal internal) {
           for (final UpdateRemoveItem item : items) {
-            item.applyUpdate((ResultInternal) result, context);
+            item.applyUpdate(internal, context);
           }
         }
         return result;

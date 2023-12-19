@@ -60,13 +60,13 @@ public class JsonGraphSerializer extends JsonSerializer {
       Object value = prop.getValue();
 
       if (value != null) {
-        if (value instanceof Document)
-          value = serializeGraphElement((Document) value, new JSONObject());
-        else if (value instanceof Collection) {
+        if (value instanceof Document document1)
+          value = serializeGraphElement(document1, new JSONObject());
+        else if (value instanceof Collection collection) {
           final List<Object> list = new ArrayList<>();
-          for (Object o : (Collection) value) {
-            if (o instanceof Document)
-              o = serializeGraphElement((Document) o, new JSONObject());
+          for (Object o : collection) {
+            if (o instanceof Document document1)
+              o = serializeGraphElement(document1, new JSONObject());
             list.add(o);
           }
           value = list;
@@ -98,8 +98,8 @@ public class JsonGraphSerializer extends JsonSerializer {
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    if (document instanceof Vertex) {
-      final Vertex vertex = ((Vertex) document);
+    if (document instanceof Vertex vertex1) {
+      final Vertex vertex =vertex1;
 
       if (expandVertexEdges) {
         final JSONArray outEdges = new JSONArray();
@@ -116,8 +116,8 @@ public class JsonGraphSerializer extends JsonSerializer {
         object.put("o", vertex.countEdges(Vertex.DIRECTION.OUT, null));
       }
 
-    } else if (document instanceof Edge) {
-      final Edge edge = ((Edge) document);
+    } else if (document instanceof Edge edge1) {
+      final Edge edge =edge1;
       object.put("i", edge.getIn().toString());
       object.put("o", edge.getOut().toString());
     }

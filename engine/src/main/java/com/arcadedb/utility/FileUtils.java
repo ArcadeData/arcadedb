@@ -85,8 +85,8 @@ public class FileUtils {
     if (iSize == null)
       throw new IllegalArgumentException("Size is null");
 
-    if (iSize instanceof Number)
-      return ((Number) iSize).longValue();
+    if (iSize instanceof Number number)
+      return number.longValue();
 
     String size = iSize.toString();
 
@@ -142,13 +142,13 @@ public class FileUtils {
 
   public static String getSizeAsString(final long iSize) {
     if (iSize > TERABYTE)
-      return String.format("%2.2fTB", (float) iSize / TERABYTE);
+      return "%2.2fTB".formatted((float) iSize / TERABYTE);
     if (iSize > GIGABYTE)
-      return String.format("%2.2fGB", (float) iSize / GIGABYTE);
+      return "%2.2fGB".formatted((float) iSize / GIGABYTE);
     if (iSize > MEGABYTE)
-      return String.format("%2.2fMB", (float) iSize / MEGABYTE);
+      return "%2.2fMB".formatted((float) iSize / MEGABYTE);
     if (iSize > KILOBYTE)
-      return String.format("%2.2fKB", (float) iSize / KILOBYTE);
+      return "%2.2fKB".formatted((float) iSize / KILOBYTE);
 
     return iSize + "b";
   }
@@ -454,17 +454,17 @@ public class FileUtils {
       result.append(unit);
     }
 
-    result.append(String.format("\n%-" + maxLineDigits + "d: ", 1));
+    result.append(("\n%-" + maxLineDigits + "d: ").formatted(1));
     int line = 1;
     for (int i = 0; i < text.length(); i++) {
       final char current = text.charAt(i);
       final Character next = i + 1 < text.length() ? text.charAt(i) : null;
       if (current == '\n') {
         ++line;
-        result.append(String.format("\n%-" + maxLineDigits + "d: ", line));
+        result.append(("\n%-" + maxLineDigits + "d: ").formatted(line));
       } else if (current == '\r' && (next == null || next == '\n')) {
         ++line;
-        result.append(String.format("\n%-" + maxLineDigits + "d: ", line));
+        result.append(("\n%-" + maxLineDigits + "d: ").formatted(line));
         ++i;
       } else
         result.append(current);

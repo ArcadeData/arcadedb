@@ -204,12 +204,12 @@ public class Select {
       throw new IllegalArgumentException("Invalid condition " + condition);
 
     final Object parsedLeft = condition.get(0);
-    if (parsedLeft instanceof JSONArray)
-      parseJsonCondition((JSONArray) parsedLeft);
-    else if (parsedLeft instanceof String && ((String) parsedLeft).startsWith(":"))
-      property(((String) parsedLeft).substring(1));
-    else if (parsedLeft instanceof String && ((String) parsedLeft).startsWith("#"))
-      parameter(((String) parsedLeft).substring(1));
+    if (parsedLeft instanceof JSONArray array)
+      parseJsonCondition(array);
+    else if (parsedLeft instanceof String string && string.startsWith(":"))
+      property(string.substring(1));
+    else if (parsedLeft instanceof String string && string.startsWith("#"))
+      parameter(string.substring(1));
     else
       throw new IllegalArgumentException("Unsupported value " + parsedLeft);
 
@@ -221,12 +221,12 @@ public class Select {
       setOperator(parsedOperator);
 
     final Object parsedRight = condition.get(2);
-    if (parsedRight instanceof JSONArray)
-      parseJsonCondition((JSONArray) parsedRight);
-    else if (parsedRight instanceof String && ((String) parsedRight).startsWith(":"))
-      property(((String) parsedRight).substring(1));
-    else if (parsedRight instanceof String && ((String) parsedRight).startsWith("#"))
-      parameter(((String) parsedRight).substring(1));
+    if (parsedRight instanceof JSONArray array)
+      parseJsonCondition(array);
+    else if (parsedRight instanceof String string && string.startsWith(":"))
+      property(string.substring(1));
+    else if (parsedRight instanceof String string && string.startsWith("#"))
+      parameter(string.substring(1));
     else
       value(parsedRight);
   }

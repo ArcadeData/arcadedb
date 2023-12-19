@@ -40,8 +40,7 @@ public class ContainsValueCondition extends BooleanExpression {
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     final Object leftValue = left.execute(currentRecord, context);
-    if (leftValue instanceof Map) {
-      final Map map = (Map) leftValue;
+    if (leftValue instanceof Map map) {
       if (condition != null) {
         for (final Object o : map.values()) {
           if (condition.evaluate(o, context)) {
@@ -61,8 +60,7 @@ public class ContainsValueCondition extends BooleanExpression {
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     final Object leftValue = left.execute(currentRecord, context);
-    if (leftValue instanceof Map) {
-      final Map map = (Map) leftValue;
+    if (leftValue instanceof Map map) {
       if (condition != null) {
         for (final Object o : map.values()) {
           if (condition.evaluate(o, context)) {

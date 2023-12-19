@@ -63,7 +63,7 @@ public class AnsiLogFormatter extends LogFormatter {
         buffer.append("$ANSI{white ");
     }
 
-    buffer.append(String.format(" %-5.5s ", level.getName()));
+    buffer.append(" %-5.5s ".formatted(level.getName()));
     if (AnsiCode.supportsColors())
       buffer.append("}");
 
@@ -76,7 +76,7 @@ public class AnsiLogFormatter extends LogFormatter {
     // FORMAT THE MESSAGE
     try {
       if (additionalArgs != null)
-        buffer.append(String.format(message, additionalArgs));
+        buffer.append(message.formatted(additionalArgs));
       else
         buffer.append(message);
     } catch (final IllegalFormatException ignore) {

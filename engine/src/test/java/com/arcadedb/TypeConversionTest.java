@@ -118,9 +118,9 @@ public class TypeConversionTest extends TestHelper {
 
       doc.save();
 
-      Assertions.assertEquals(String.format("%.1f", 33.3F),
+      Assertions.assertEquals("%.1f".formatted(33.3F),
           database.query("sql", "select decimal.format('%.1f') as d from " + doc.getIdentity()).nextIfAvailable().getProperty("d"));
-      Assertions.assertEquals(String.format("%.2f", 33.33F),
+      Assertions.assertEquals("%.2f".formatted(33.33F),
           database.query("sql", "select decimal.format('%.2f') as d from " + doc.getIdentity()).nextIfAvailable().getProperty("d"));
 
       doc.delete();

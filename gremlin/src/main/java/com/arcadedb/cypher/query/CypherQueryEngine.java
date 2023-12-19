@@ -82,15 +82,14 @@ public class CypherQueryEngine implements QueryEngine {
   }
 
   public static Object transformValue(final Object value, final boolean flatArrays) {
-    if (value instanceof Map) {
-      final List<ResultInternal> list = transformMap((Map<?, ?>) value);
+    if (value instanceof Map map) {
+      final List<ResultInternal> list = transformMap(map);
       if (list.size() == 1)
-        return list.get(0);
+        return list.getFirst();
       return list;
-    } else if (value instanceof List) {
-      final List<?> listValue = (List<?>) value;
+    } else if (value instanceof List listValue) {
       final List<Object> transformed = listValue.stream().map(value1 -> transformValue(value1, false)).collect(Collectors.toList());
-      return flatArrays && transformed.size() == 1 ? transformed.iterator().next() : transformed;
+      return flatArrays && transformed.size() == 1 ? transformed.getFirst() : transformed;
     }
     return value;
   }
@@ -110,8 +109,8 @@ public class CypherQueryEngine implements QueryEngine {
         mapStringObject.put("@out", out);
 
       final Object element = map.get("  cypher.element");
-      if (element instanceof Map)
-        result.add(cypherObjectToResult(mapStringObject, (Map) element));
+      if (element instanceof Map map1)
+        result.add(cypherObjectToResult(mapStringObject, map1));
       else if (element instanceof List) {
         final List<Map> list = (List<Map>) element;
         for (final Map mapEntry : list)

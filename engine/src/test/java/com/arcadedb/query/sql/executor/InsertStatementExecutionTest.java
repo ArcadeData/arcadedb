@@ -218,7 +218,7 @@ public class InsertStatementExecutionTest extends TestHelper {
     Assertions.assertNotNull(item);
     List<Integer> list = item.getProperty("test");
     Assertions.assertEquals(1, list.size());
-    Assertions.assertEquals(777, list.get(0));
+    Assertions.assertEquals(777, list.getFirst());
     Assertions.assertFalse(result.hasNext());
   }
 
@@ -234,7 +234,7 @@ public class InsertStatementExecutionTest extends TestHelper {
     Assertions.assertNotNull(item);
     List<Map> list = item.getProperty("test");
     Assertions.assertEquals(1, list.size());
-    Map<String, Integer> map = list.get(0);
+    Map<String, Integer> map = list.getFirst();
     Assertions.assertEquals(777, map.get("777"));
     Assertions.assertEquals(888, map.get("888"));
     Assertions.assertFalse(result.hasNext());

@@ -96,7 +96,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         return aggregateCollection(command, document, opLog);
       else {
         LogManager.instance().log(this, Level.SEVERE, "Received unsupported command from MongoDB client '%s', (document=%s)", null, command, document);
-        throw new UnsupportedOperationException(String.format("Received unsupported command from MongoDB client '%s', (document=%s)", command, document));
+        throw new UnsupportedOperationException("Received unsupported command from MongoDB client '%s', (document=%s)".formatted(command, document));
       }
     } catch (final Exception e) {
       throw new MongoServerException("Error on executing MongoDB '" + command + "' command", e);
@@ -138,15 +138,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     for (final String k : map.keySet()) {
       Object v = map.get(k);
-      if (v instanceof JSONObject)
-        v = json2Document((JSONObject) v);
-      else if (v instanceof JSONArray) {
-        final List<Object> array = new ArrayList<>(((JSONArray) v).length());
+      if (v instanceof JSONObject object)
+        v = json2Document(object);
+      else if (v instanceof JSONArray nArray) {
+        final List<Object> array = new ArrayList<>(nArray.length());
 
-        for (int i = 0; i < ((JSONArray) v).length(); i++) {
-          Object a = ((JSONArray) v).get(i);
-          if (a instanceof JSONObject)
-            a = json2Document((JSONObject) a);
+        for (int i = 0; i < nArray.length(); i++) {
+          Object a = nArray.get(i);
+          if (a instanceof JSONObject object)
+            a = json2Document(object);
 
           array.add(a);
         }
@@ -186,7 +186,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Object pipelineObject = Aggregation.parse(document.get("pipeline"));
     final List<Document> pipeline = Aggregation.parse(pipelineObject);
     if (!pipeline.isEmpty()) {
-      final Document changeStream = (Document) pipeline.get(0).get("$changeStream");
+      final Document changeStream = (Document) pipeline.getFirst().get("$changeStream");
       if (changeStream != null) {
         final Aggregation aggregation = Aggregation.fromPipeline(pipeline.subList(1, pipeline.size()), plugin, this, collection, oplog);
         aggregation.validate(document);
@@ -382,7 +382,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private synchronized void putLastResult(final Channel channel, final Document result) {
     final List<Document> results = this.lastResults.get(channel);
-    final Document last = results.get(results.size() - 1);
+    final Document last = results.getLast();
     if (last != null)
       throw new IllegalStateException("last result already set: " + last);
     results.set(results.size() - 1, result);
@@ -390,8 +390,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private void putLastError(final Channel channel, final MongoServerException ex) {
     final Document error = new Document();
-    if (ex instanceof MongoServerError) {
-      final MongoServerError err = (MongoServerError) ex;
+    if (ex instanceof MongoServerError err) {
       error.put("err", err.getMessage());
       error.put("code", err.getCode());
       error.putIfNotNull("codeName", err.getCodeName());

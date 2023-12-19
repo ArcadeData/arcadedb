@@ -202,8 +202,8 @@ public abstract class TestHelper {
         // EXPECTED
         return;
 
-      if (e instanceof Exception)
-        throw (Exception) e;
+      if (e instanceof Exception exception)
+        throw exception;
 
       throw new Exception(e);
     }

@@ -297,7 +297,7 @@ public class CheckDatabaseTest extends TestHelper {
     final List<TypeIndex> indexes = database.getSchema().getType("Person").getIndexesByProperties("id");
     Assertions.assertEquals(1, indexes.size());
 
-    Assertions.assertEquals((Long) row.getProperty("totalActiveVertices"), indexes.get(0).countEntries());
+    Assertions.assertEquals((Long) row.getProperty("totalActiveVertices"), indexes.getFirst().countEntries());
   }
 
   @Override

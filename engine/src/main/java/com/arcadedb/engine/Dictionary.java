@@ -183,7 +183,7 @@ public class Dictionary extends PaginatedComponent {
 
       final Integer newIndex = dictionaryMap.get(newName);
       if (newIndex == null)
-        dictionaryMap.putIfAbsent(newName, oldIndexes.get(0)); // IF ALREADY PRESENT, USE THE PREVIOUS KEY INDEX
+        dictionaryMap.putIfAbsent(newName, oldIndexes.getFirst()); // IF ALREADY PRESENT, USE THE PREVIOUS KEY INDEX
 
     } catch (final IOException e) {
       try {

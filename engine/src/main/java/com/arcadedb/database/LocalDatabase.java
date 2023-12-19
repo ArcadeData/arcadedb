@@ -171,8 +171,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       graphEngine = new GraphEngine(this);
 
     } catch (final Exception e) {
-      if (e instanceof DatabaseOperationException)
-        throw (DatabaseOperationException) e;
+      if (e instanceof DatabaseOperationException exception)
+        throw exception;
 
       throw new DatabaseOperationException("Error on creating new database instance", e);
     }
@@ -820,14 +820,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     setDefaultValues(record);
 
-    if (record instanceof MutableDocument)
-      ((MutableDocument) record).validate();
+    if (record instanceof MutableDocument document)
+      document.validate();
 
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeCreate(record))
       return;
-    if (record instanceof Document)
-      if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeCreate(record))
+    if (record instanceof Document document)
+      if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeCreate(record))
         return;
 
     boolean success = false;
@@ -835,8 +835,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     try {
       final LocalBucket bucket;
 
-      if (bucketName == null && record instanceof Document) {
-        final Document doc = (Document) record;
+      if (bucketName == null && record instanceof Document doc) {
         bucket = (LocalBucket) doc.getType().getBucketIdByRecord(doc, DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
       } else
         bucket = (LocalBucket) schema.getBucketByName(bucketName);
@@ -847,8 +846,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       transaction.updateRecordInCache(record);
       transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
 
-      if (record instanceof MutableDocument) {
-        final MutableDocument doc = (MutableDocument) record;
+      if (record instanceof MutableDocument doc) {
         indexer.createDocument(doc, doc.getType(), bucket);
       }
 
@@ -858,8 +856,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // INVOKE EVENT CALLBACKS
       events.onAfterCreate(record);
-      if (record instanceof Document)
-        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterCreate(record);
+      if (record instanceof Document document)
+        ((RecordEventsRegistry) document.getType().getEvents()).onAfterCreate(record);
 
     } finally {
       if (implicitTransaction) {
@@ -879,14 +877,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
-    if (record instanceof MutableDocument)
-      ((MutableDocument) record).validate();
+    if (record instanceof MutableDocument document)
+      document.validate();
 
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeUpdate(record))
       return;
-    if (record instanceof Document)
-      if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeUpdate(record))
+    if (record instanceof Document document)
+      if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
         return;
 
     executeInReadLock(() -> {
@@ -897,13 +895,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         try {
           getTransaction().addUpdatedRecord(record);
 
-          if (record instanceof Document) {
+          if (record instanceof Document document) {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
-            final List<IndexInternal> indexes = indexer.getInvolvedIndexes((Document) record);
+            final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
             if (!indexes.isEmpty()) {
               // UPDATE THE INDEXES TOO
               final Document originalRecord = getOriginalDocument(record);
-              indexer.updateDocument(originalRecord, (Document) record, indexes);
+              indexer.updateDocument(originalRecord, document, indexes);
             }
           }
         } catch (final IOException e) {
@@ -914,8 +912,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // INVOKE EVENT CALLBACKS
       events.onAfterUpdate(record);
-      if (record instanceof Document)
-        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterUpdate(record);
+      if (record instanceof Document document)
+        ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
 
       return null;
     });
@@ -937,8 +935,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
     try {
-      final List<IndexInternal> indexes = record instanceof Document ?
-          indexer.getInvolvedIndexes((Document) record) :
+      final List<IndexInternal> indexes = record instanceof Document d ?
+          indexer.getInvolvedIndexes(d) :
           Collections.emptyList();
 
       if (!indexes.isEmpty()) {
@@ -986,8 +984,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeDelete(record))
       return;
-    if (record instanceof Document)
-      if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeDelete(record))
+    if (record instanceof Document document)
+      if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeDelete(record))
         return;
 
     boolean success = false;
@@ -996,11 +994,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     try {
       final LocalBucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
 
-      if (record instanceof Document)
-        indexer.deleteDocument((Document) record);
+      if (record instanceof Document document)
+        indexer.deleteDocument(document);
 
-      if (record instanceof Edge) {
-        graphEngine.deleteEdge((Edge) record);
+      if (record instanceof Edge edge) {
+        graphEngine.deleteEdge(edge);
       } else if (record instanceof Vertex) {
         graphEngine.deleteVertex((VertexInternal) record);
       } else
@@ -1010,8 +1008,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // INVOKE EVENT CALLBACKS
       events.onAfterDelete(record);
-      if (record instanceof Document)
-        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterDelete(record);
+      if (record instanceof Document document)
+        ((RecordEventsRegistry) document.getType().getEvents()).onAfterDelete(record);
 
       final TransactionContext transaction = getTransaction();
       transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
@@ -1606,8 +1604,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     record = events.onAfterRead(record);
     if (record == null)
       return null;
-    if (record instanceof Document) {
-      final DocumentType type = ((Document) record).getType();
+    if (record instanceof Document document) {
+      final DocumentType type = document.getType();
       if (type != null)
         return ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
     }
@@ -1806,8 +1804,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     } catch (final Exception e) {
       open = false;
 
-      if (e instanceof DatabaseOperationException)
-        throw (DatabaseOperationException) e;
+      if (e instanceof DatabaseOperationException exception)
+        throw exception;
 
       throw new DatabaseOperationException("Error on creating new database instance", e);
     }
@@ -1821,8 +1819,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void setDefaultValues(final Record record) {
-    if (record instanceof MutableDocument) {
-      final MutableDocument doc = (MutableDocument) record;
+    if (record instanceof MutableDocument doc) {
       final DocumentType type = doc.getType();
 
       final Set<String> propertiesWithDefaultDefined = type.getPolymorphicPropertiesWithDefaultDefined();

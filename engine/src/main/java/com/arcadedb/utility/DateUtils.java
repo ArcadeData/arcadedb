@@ -111,14 +111,13 @@ public class DateUtils {
 
   public static Long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
     final long timestamp;
-    if (value instanceof Date) {
+    if (value instanceof Date date) {
       // WRITE MILLISECONDS
-      timestamp = convertTimestamp(((Date) value).getTime(), ChronoUnit.MILLIS, precisionToUse);
-    } else if (value instanceof Calendar)
+      timestamp = convertTimestamp(date.getTime(), ChronoUnit.MILLIS, precisionToUse);
+    } else if (value instanceof Calendar calendar)
       // WRITE MILLISECONDS
-      timestamp = convertTimestamp(((Calendar) value).getTimeInMillis(), ChronoUnit.MILLIS, precisionToUse);
-    else if (value instanceof LocalDateTime) {
-      final LocalDateTime localDateTime = (LocalDateTime) value;
+      timestamp = convertTimestamp(calendar.getTimeInMillis(), ChronoUnit.MILLIS, precisionToUse);
+    else if (value instanceof LocalDateTime localDateTime) {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = localDateTime.toInstant(ZoneOffset.UTC).getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
@@ -135,8 +134,7 @@ public class DateUtils {
       else
         // NOT SUPPORTED
         timestamp = 0;
-    } else if (value instanceof ZonedDateTime) {
-      final ZonedDateTime zonedDateTime = (ZonedDateTime) value;
+    } else if (value instanceof ZonedDateTime zonedDateTime) {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = zonedDateTime.toInstant().getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
@@ -149,8 +147,7 @@ public class DateUtils {
       else
         // NOT SUPPORTED
         timestamp = 0;
-    } else if (value instanceof Instant) {
-      final Instant instant = (Instant) value;
+    } else if (value instanceof Instant instant) {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = instant.getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
@@ -162,13 +159,13 @@ public class DateUtils {
       else
         // NOT SUPPORTED
         timestamp = 0;
-    } else if (value instanceof Number)
-      timestamp = ((Number) value).longValue();
-    else if (value instanceof String) {
-      if (FileUtils.isLong((String) value))
+    } else if (value instanceof Number number)
+      timestamp = number.longValue();
+    else if (value instanceof String string) {
+      if (FileUtils.isLong(string))
         timestamp = Long.parseLong(value.toString());
       else
-        return dateTimeToTimestamp(LocalDateTime.parse((String) value), precisionToUse);
+        return dateTimeToTimestamp(LocalDateTime.parse(string), precisionToUse);
     } else
       // UNSUPPORTED
       return null;
@@ -298,12 +295,12 @@ public class DateUtils {
   public static int getNanos(final Object obj) {
     if (obj == null)
       throw new IllegalArgumentException("Object is null");
-    else if (obj instanceof LocalDateTime)
-      return ((LocalDateTime) obj).getNano();
-    else if (obj instanceof ZonedDateTime)
-      return ((ZonedDateTime) obj).getNano();
-    else if (obj instanceof Instant)
-      return ((Instant) obj).getNano();
+    else if (obj instanceof LocalDateTime time)
+      return time.getNano();
+    else if (obj instanceof ZonedDateTime time)
+      return time.getNano();
+    else if (obj instanceof Instant instant)
+      return instant.getNano();
     throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
   }
 
@@ -344,12 +341,12 @@ public class DateUtils {
   }
 
   public static String format(final Object obj, final String format) {
-    if (obj instanceof Date)
-      return getFormatter(format).format(millisToLocalDateTime(((Date) obj).getTime()));
-    else if (obj instanceof Calendar)
-      return getFormatter(format).format(millisToLocalDateTime(((Calendar) obj).getTimeInMillis()));
-    else if (obj instanceof TemporalAccessor)
-      return getFormatter(format).format((TemporalAccessor) obj);
+    if (obj instanceof Date date)
+      return getFormatter(format).format(millisToLocalDateTime(date.getTime()));
+    else if (obj instanceof Calendar calendar)
+      return getFormatter(format).format(millisToLocalDateTime(calendar.getTimeInMillis()));
+    else if (obj instanceof TemporalAccessor accessor)
+      return getFormatter(format).format(accessor);
     return null;
   }
 
@@ -384,21 +381,21 @@ public class DateUtils {
 
     final float minutes = seconds / 60F;
     if (minutes < 60F)
-      return String.format("%.1f minutes", minutes);
+      return "%.1f minutes".formatted(minutes);
 
     final float hours = minutes / 60F;
     if (hours < 24F)
-      return String.format("%.1f hours", hours);
+      return "%.1f hours".formatted(hours);
 
     final float days = hours / 24F;
     if (days < 30F)
-      return String.format("%.1f days", days);
+      return "%.1f days".formatted(days);
 
     final float months = days / 30F;
     if (months < 12F)
-      return String.format("%.1f months", months);
+      return "%.1f months".formatted(months);
 
-    return String.format("%.1f years", months / 12F);
+    return "%.1f years".formatted(months / 12F);
   }
 
   public static boolean areSameDay(final Date d1, final Date d2) {

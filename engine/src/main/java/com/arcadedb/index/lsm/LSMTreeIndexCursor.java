@@ -244,18 +244,18 @@ public class LSMTreeIndexCursor implements IndexCursor {
   public String dumpStats() {
     final StringBuilder buffer = new StringBuilder(1024);
 
-    buffer.append(String.format("%nDUMP OF %s UNDERLYING-CURSORS on index %s", pageCursors.length, index.getName()));
+    buffer.append("%nDUMP OF %s UNDERLYING-CURSORS on index %s".formatted(pageCursors.length, index.getName()));
     for (int i = 0; i < pageCursors.length; ++i) {
       final LSMTreeIndexUnderlyingAbstractCursor cursor = pageCursors[i];
 
       if (cursor == null)
-        buffer.append(String.format("%n- Cursor[%d] = null", i));
+        buffer.append("%n- Cursor[%d] = null".formatted(i));
       else {
-        buffer.append(String.format(
-            "%n- Cursor[%d] %s=%s index=%s compacted=%s totalKeys=%d ascending=%s keyTypes=%s currentPageId=%s currentPosInPage=%d",
-            i, Arrays.toString(cursorKeys[i]), Arrays.toString(cursor.getValue()), cursor.index,
-            cursor instanceof LSMTreeIndexUnderlyingCompactedSeriesCursor, cursor.totalKeys, cursor.ascendingOrder,
-            Arrays.toString(cursor.keyTypes), cursor.getCurrentPageId(), cursor.getCurrentPositionInPage()));
+        buffer.append(
+          "%n- Cursor[%d] %s=%s index=%s compacted=%s totalKeys=%d ascending=%s keyTypes=%s currentPageId=%s currentPosInPage=%d".formatted(
+          i, Arrays.toString(cursorKeys[i]), Arrays.toString(cursor.getValue()), cursor.index,
+          cursor instanceof LSMTreeIndexUnderlyingCompactedSeriesCursor, cursor.totalKeys, cursor.ascendingOrder,
+          Arrays.toString(cursor.keyTypes), cursor.getCurrentPageId(), cursor.getCurrentPositionInPage()));
       }
     }
 

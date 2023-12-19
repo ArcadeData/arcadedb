@@ -190,8 +190,8 @@ public class HttpServer implements ServerPlugin {
     }
 
     httpPortListening = -1;
-    final String msg = String.format("Unable to listen to a HTTP port in the configured port range %d - %d", httpPortRange[0],
-        httpPortRange[1]);
+    final String msg = "Unable to listen to a HTTP port in the configured port range %d - %d".formatted(httpPortRange[0],
+      httpPortRange[1]);
     LogManager.instance().
 
         log(this, Level.SEVERE, msg);
@@ -204,8 +204,8 @@ public class HttpServer implements ServerPlugin {
     int portFrom;
     int portTo;
 
-    if (configuredPort instanceof Number) {
-      portFrom = portTo = ((Number) configuredPort).intValue();
+    if (configuredPort instanceof Number number) {
+      portFrom = portTo = number.intValue();
     } else {
       final String[] parts = configuredPort.toString().split("-");
       if (parts.length > 2) {

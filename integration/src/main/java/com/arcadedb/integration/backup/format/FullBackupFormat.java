@@ -53,11 +53,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
     final File backupFile = new File(fileName);
 
     if (backupFile.exists() && !settings.overwriteFile)
-      throw new BackupException(String.format("The backup file '%s' already exist and '-o' setting is false", settings.file));
+      throw new BackupException("The backup file '%s' already exist and '-o' setting is false".formatted(settings.file));
 
     if (backupFile.getParentFile() != null && !backupFile.getParentFile().exists()) {
       if (!backupFile.getParentFile().mkdirs())
-        throw new BackupException(String.format("The backup file '%s' cannot be created", backupFile));
+        throw new BackupException("The backup file '%s' cannot be created".formatted(backupFile));
     }
 
     if (database.isTransactionActive())

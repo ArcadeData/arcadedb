@@ -408,8 +408,8 @@ public class ReplicationLogFile extends LockContext {
 
   @Override
   protected RuntimeException manageExceptionInLock(final Throwable e) {
-    if (e instanceof ReplicationLogException)
-      throw (ReplicationLogException) e;
+    if (e instanceof ReplicationLogException exception)
+      throw exception;
 
     return new ReplicationLogException("Error in replication log", e);
   }
@@ -421,7 +421,7 @@ public class ReplicationLogFile extends LockContext {
 
     totalArchivedChunks = fileChunks.isEmpty() ? 0 : fileChunks.size() - 1;
 
-    final File lastFile = fileChunks.isEmpty() ? new File(logFile.getAbsolutePath() + ".0") : fileChunks.get(fileChunks.size() - 1);
+    final File lastFile = fileChunks.isEmpty() ? new File(logFile.getAbsolutePath() + ".0") : fileChunks.getLast();
 
     this.lastChunkChannel = new RandomAccessFile(lastFile, "rw").getChannel();
 

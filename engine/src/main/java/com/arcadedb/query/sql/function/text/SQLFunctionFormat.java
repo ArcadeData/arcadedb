@@ -40,7 +40,7 @@ public class SQLFunctionFormat extends SQLFunctionAbstract {
 
     System.arraycopy(params, 1, args, 0, args.length);
 
-    return String.format((String) params[0], args);
+    return ((String) params[0]).formatted(args);
   }
 
   public String getSyntax() {

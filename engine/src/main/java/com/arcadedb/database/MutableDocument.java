@@ -441,12 +441,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   private Object setTransformValue(final Object value, final String propertyName) {
-    if (value instanceof EmbeddedDocument) {
-      if (!((EmbeddedDocument) value).getDatabase().getName().equals(database.getName())) {
+    if (value instanceof EmbeddedDocument document) {
+      if (!document.getDatabase().getName().equals(database.getName())) {
         // SET DIRTY TO FORCE RE-MARSHALL. IF THE RECORD COMES FROM ANOTHER DATABASE WITHOUT A FULL RE-MARSHALL, IT WILL HAVE THE DICTIONARY IDS OF THE OTHER DATABASE
         ((BaseDocument) value).buffer.rewind();
         final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
-            .newMutableRecord(database, ((EmbeddedDocument) value).getType(), null, ((BaseDocument) value).buffer,
+            .newMutableRecord(database, document.getType(), null, ((BaseDocument) value).buffer,
                 new EmbeddedModifierProperty(this, propertyName));
         newRecord.buffer = null;
         newRecord.map = new LinkedHashMap<>();
@@ -454,11 +454,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         newRecord.set(((BaseDocument) value).propertiesAsMap());
         return newRecord;
       }
-    } else if (value instanceof List) {
-      final List<Object> list = (List<Object>) value;
+    } else if (value instanceof List list) {
       for (int i = 0; i < list.size(); i++) {
         final Object v = list.get(i);
-        if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
+        if (v instanceof Document document && !document.getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
               .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
@@ -474,7 +473,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       final Map<String, Object> map = (Map<String, Object>) value;
       for (final Map.Entry<String, Object> entry : map.entrySet()) {
         final Object v = entry.getValue();
-        if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
+        if (v instanceof Document document && !document.getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
               .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,

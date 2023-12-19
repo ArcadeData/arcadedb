@@ -750,7 +750,7 @@ public class HAServer implements ServerPlugin {
 
   public void printClusterConfiguration() {
     final StringBuilder buffer = new StringBuilder("NEW CLUSTER CONFIGURATION\n");
-    final TableFormatter table = new TableFormatter((text, args) -> buffer.append(String.format(text, args)));
+    final TableFormatter table = new TableFormatter((text, args) -> buffer.append(text.formatted(args)));
 
     final List<RecordTableFormatter.TableRecordRow> list = new ArrayList<>();
 

@@ -44,8 +44,8 @@ public class SQLFunctionAverage extends SQLFunctionMathAbstract {
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     if (iParams.length == 1) {
-      if (iParams[0] instanceof Number)
-        sum((Number) iParams[0]);
+      if (iParams[0] instanceof Number number)
+        sum(number);
       else if (MultiValue.isMultiValue(iParams[0]))
         for (final Object n : MultiValue.getMultiValueIterable(iParams[0]))
           sum((Number) n);
@@ -93,8 +93,8 @@ public class SQLFunctionAverage extends SQLFunctionMathAbstract {
       return iSum.floatValue() / iTotal;
     else if (iSum instanceof Double)
       return iSum.doubleValue() / iTotal;
-    else if (iSum instanceof BigDecimal)
-      return ((BigDecimal) iSum).divide(new BigDecimal(iTotal), RoundingMode.HALF_UP);
+    else if (iSum instanceof BigDecimal decimal)
+      return decimal.divide(new BigDecimal(iTotal), RoundingMode.HALF_UP);
 
     return null;
   }

@@ -1626,10 +1626,13 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testOptional3() {
-    final ResultSet qResult = database.query("sql", "select friend.name as name, b from ("
-        + "match {type:Person, as:a, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)},"
-        + "{as:a}.out(){as:b, where:(nonExisting = 12), optional:true}," + "{as:friend}.out(){as:b, optional:true}"
-        + " return friend, b)");
+    final ResultSet qResult = database.query("sql", """
+        select friend.name as name, b from (\
+        match {type:Person, as:a, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)},\
+        {as:a}.out(){as:b, where:(nonExisting = 12), optional:true},\
+        {as:friend}.out(){as:b, optional:true}\
+         return friend, b)\
+        """);
 
     Assertions.assertTrue(qResult.hasNext());
     final Result doc = qResult.next();
@@ -1968,14 +1971,14 @@ public class MatchStatementExecutionTest extends TestHelper {
         Assertions.assertEquals(0, thePath.size());
       } else if (bname.equals("aaa")) {
         Assertions.assertEquals(1, thePath.size());
-        Assertions.assertEquals("bbb", ((Document) thePath.get(0).getRecord()).getString("name"));
+        Assertions.assertEquals("bbb", ((Document) thePath.getFirst().getRecord()).getString("name"));
       } else if (bname.equals("ccc")) {
         Assertions.assertEquals(2, thePath.size());
-        Assertions.assertEquals("bbb", ((Document) thePath.get(0).getRecord()).getString("name"));
+        Assertions.assertEquals("bbb", ((Document) thePath.getFirst().getRecord()).getString("name"));
         Assertions.assertEquals("ccc", ((Document) thePath.get(1).getRecord()).getString("name"));
       } else if (bname.equals("ddd")) {
         Assertions.assertEquals(3, thePath.size());
-        Assertions.assertEquals("bbb", ((Document) thePath.get(0).getRecord()).getString("name"));
+        Assertions.assertEquals("bbb", ((Document) thePath.getFirst().getRecord()).getString("name"));
         Assertions.assertEquals("ccc", ((Document) thePath.get(1).getRecord()).getString("name"));
         Assertions.assertEquals("ddd", ((Document) thePath.get(2).getRecord()).getString("name"));
       }

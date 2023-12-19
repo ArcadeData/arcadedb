@@ -53,14 +53,12 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
   public static RID newRID(final BasicDatabase database, final Object obj) {
     if (obj == null)
       return null;
-    if (obj instanceof RID)
-      return (RID) obj;
-    if (obj instanceof String)
-      return new RID(database, (String) obj);
+    if (obj instanceof RID iD)
+      return iD;
+    if (obj instanceof String string)
+      return new RID(database, string);
 
-    if (obj instanceof Map) {
-      @SuppressWarnings({ "unchecked", "rawtypes" })
-      final Map<String, Number> map = (Map) obj;
+    if (obj instanceof Map map) {
       return new RID(database, map.get(BUCKET_ID).intValue(), map.get(BUCKET_POSITION).longValue());
     }
 

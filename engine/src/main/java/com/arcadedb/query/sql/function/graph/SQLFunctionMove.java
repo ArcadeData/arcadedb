@@ -60,30 +60,30 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
   protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
     if (iRecord != null) {
       final Document rec = (Document) iRecord.getRecord();
-      if (rec instanceof Vertex)
-        return ((Vertex) rec).getVertices(iDirection, iLabels);
+      if (rec instanceof Vertex vertex)
+        return vertex.getVertices(iDirection, iLabels);
     }
     return null;
   }
 
   protected Object v2e(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
-    if (rec instanceof Vertex)
-      return ((Vertex) rec).getEdges(iDirection, iLabels);
+    if (rec instanceof Vertex vertex)
+      return vertex.getEdges(iDirection, iLabels);
     return null;
 
   }
 
   protected Object e2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
-    if (rec instanceof Edge) {
+    if (rec instanceof Edge edge) {
       if (iDirection == Vertex.DIRECTION.BOTH) {
         final List results = new ArrayList();
-        results.add(((Edge) rec).getOutVertex());
-        results.add(((Edge) rec).getInVertex());
+        results.add(edge.getOutVertex());
+        results.add(edge.getInVertex());
         return results;
       }
-      return ((Edge) rec).getVertex(iDirection);
+      return edge.getVertex(iDirection);
     }
 
     return null;

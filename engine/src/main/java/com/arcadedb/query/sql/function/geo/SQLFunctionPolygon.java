@@ -53,10 +53,10 @@ public class SQLFunctionPolygon extends SQLFunctionAbstract {
     for (int i = 0; i < points.size(); i++) {
       final Object point = points.get(i);
 
-      if (point instanceof Point)
-        polygon.pointXY(((Point) point).getX(), ((Point) point).getY());
-      else if (point instanceof List)
-        polygon.pointXY(GeoUtils.getDoubleValue(((List) point).get(0)), GeoUtils.getDoubleValue(((List) point).get(1)));
+      if (point instanceof Point point1)
+        polygon.pointXY(point1.getX(), point1.getY());
+      else if (point instanceof List list)
+        polygon.pointXY(GeoUtils.getDoubleValue(list.getFirst()), GeoUtils.getDoubleValue(list.get(1)));
     }
     return polygon.build();
   }

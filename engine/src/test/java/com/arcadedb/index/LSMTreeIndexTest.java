@@ -62,7 +62,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
         total++;
         Assertions.assertEquals(1, results.size());
-        Assertions.assertEquals(i, (int) results.get(0));
+        Assertions.assertEquals(i, (int) results.getFirst());
       }
 
       Assertions.assertEquals(TOT, total);

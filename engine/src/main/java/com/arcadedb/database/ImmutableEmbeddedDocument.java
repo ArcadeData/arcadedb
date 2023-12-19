@@ -50,9 +50,9 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
       final MutableEmbeddedDocument newRecord = new MutableEmbeddedDocument(database, type, buffer.copyOfContent(), modifier);
       modifier.setEmbeddedDocument(newRecord);
       return newRecord;
-    } else if (mostRecent instanceof MutableEmbeddedDocument) {
+    } else if (mostRecent instanceof MutableEmbeddedDocument document) {
       // A MUTABLE VERSION IS ALREADY ATTACHED TO THE OWNER, USE THIS
-      return (MutableEmbeddedDocument) mostRecent;
+      return document;
     }
 
     // NEWEST IMMUTABLE VERSION, DELEGATE THE MODIFY TO THIS

@@ -58,8 +58,8 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
     }
     executed = true;
     final ResultSet result = statement.executeDDL(this.context);
-    if (result instanceof InternalResultSet) {
-      ((InternalResultSet) result).plan = this;
+    if (result instanceof InternalResultSet set) {
+      set.plan = this;
     }
     return result;
   }

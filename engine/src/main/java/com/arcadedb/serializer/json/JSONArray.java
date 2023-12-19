@@ -79,10 +79,10 @@ public class JSONArray implements Iterable<Object> {
     for (JsonElement e : array.asList()) {
       Object value = JSONObject.elementToObject(e);
 
-      if (value instanceof JSONObject)
-        value = ((JSONObject) value).toMap();
-      else if (value instanceof JSONArray)
-        value = ((JSONArray) value).toList();
+      if (value instanceof JSONObject object)
+        value = object.toMap();
+      else if (value instanceof JSONArray nArray)
+        value = nArray.toList();
 
       result.add(value);
     }

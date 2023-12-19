@@ -360,9 +360,13 @@ public class SelectStatementTest {
 
   @Test
   public void testEval() {
-    checkRightSyntax("  select  sum(weight) , f.name as name from (\n"
-        + "      select weight, if(eval(\"out.name = 'one'\"),out,in) as f  from (\n" + "      select expand(bothE('E')) from V\n"
-        + "  )\n" + "      ) group by name\n");
+    checkRightSyntax("""
+          select  sum(weight) , f.name as name from (
+              select weight, if(eval("out.name = 'one'"),out,in) as f  from (
+              select expand(bothE('E')) from V
+          )
+              ) group by name
+        """);
   }
 
   @Test
@@ -548,10 +552,10 @@ public class SelectStatementTest {
   public void testFlatten() {
     final SelectStatement stm = (SelectStatement) checkRightSyntax("select from ouser where name = 'foo'");
     final List<AndBlock> flattened = stm.whereClause.flatten();
-    assertTrue(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isBaseIdentifier());
-    assertFalse(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isBaseIdentifier());
-    assertFalse(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isEarlyCalculated(new BasicCommandContext()));
-    assertTrue(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isEarlyCalculated(new BasicCommandContext()));
+    assertTrue(((BinaryCondition) flattened.getFirst().subBlocks.get(0)).left.isBaseIdentifier());
+    assertFalse(((BinaryCondition) flattened.getFirst().subBlocks.get(0)).right.isBaseIdentifier());
+    assertFalse(((BinaryCondition) flattened.getFirst().subBlocks.get(0)).left.isEarlyCalculated(new BasicCommandContext()));
+    assertTrue(((BinaryCondition) flattened.getFirst().subBlocks.get(0)).right.isEarlyCalculated(new BasicCommandContext()));
   }
 
   @Test
@@ -587,13 +591,17 @@ public class SelectStatementTest {
   @Test
   public void testSkipLimitInQueryWithNoTarget() {
     // issue #5589
-    checkRightSyntax("SELECT eval('$TotalListsQuery[0].Count') AS TotalLists\n"
-        + "   LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)\n"
-        + " LIMIT 1");
+    checkRightSyntax("""
+        SELECT eval('$TotalListsQuery[0].Count') AS TotalLists
+           LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)
+         LIMIT 1\
+        """);
 
-    checkRightSyntax("SELECT eval('$TotalListsQuery[0].Count') AS TotalLists\n"
-        + "   LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)\n"
-        + " SKIP 10 LIMIT 1");
+    checkRightSyntax("""
+        SELECT eval('$TotalListsQuery[0].Count') AS TotalLists
+           LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)
+         SKIP 10 LIMIT 1\
+        """);
   }
 
   @Test

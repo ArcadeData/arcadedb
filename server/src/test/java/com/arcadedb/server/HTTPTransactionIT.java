@@ -38,8 +38,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   public void simpleTx() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -62,7 +61,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       final JSONObject payload = new JSONObject("{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
 
       // CREATE DOCUMENT
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -98,8 +97,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, sessionId);
 
       // QUERY IN GET
-      connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20Person%20limit%201").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20Person%20limit%201").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -119,7 +117,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // QUERY IN POST
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -139,7 +137,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // COMMIT
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/commit/graph").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/commit/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -166,8 +164,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   public void checkUnique() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
+      HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -188,7 +185,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // CREATE DOCUMENT
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -229,9 +226,8 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       final String rid, final String sessionId) throws IOException {
 
     // QUERY IN GET
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + databaseName + "/sql/select%20from%20%23" + rid.substring(
-            1)).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + databaseName + "/sql/select%20from%20%23" + rid.substring(
+      1)).toURL().openConnection();
 
     connection.setRequestMethod("GET");
     if (sessionId != null)

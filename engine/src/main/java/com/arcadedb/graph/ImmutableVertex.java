@@ -67,8 +67,8 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   public MutableVertex modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
     if (recordInCache != null) {
-      if (recordInCache instanceof MutableVertex)
-        return (MutableVertex) recordInCache;
+      if (recordInCache instanceof MutableVertex vertex)
+        return vertex;
     } else if (!database.getTransaction().hasPageForRecord(rid.getPageId())) {
       // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
       // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD

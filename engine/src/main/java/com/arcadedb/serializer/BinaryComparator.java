@@ -138,8 +138,8 @@ public class BinaryComparator {
 
     case BinaryTypes.TYPE_STRING: {
       if (value1 instanceof byte[]) {
-        if (value2 instanceof byte[])
-          return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1, (byte[]) value2);
+        if (value2 instanceof byte[] bytes)
+          return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1, bytes);
         else
           return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1,
               ((String) value2).getBytes(DatabaseFactory.getDefaultCharset()));
@@ -287,10 +287,8 @@ public class BinaryComparator {
     }
 
     case BinaryTypes.TYPE_BINARY: {
-      switch (type2) {
-      case BinaryTypes.TYPE_BINARY: {
-        return ((Binary) value1).compareTo((Binary) value2);
-      }
+      if (type2 == BinaryTypes.TYPE_BINARY) {
+            return ((Binary) value1).compareTo((Binary) value2);
       }
       throw new UnsupportedOperationException("Comparing binary types");
     }
@@ -378,15 +376,15 @@ public class BinaryComparator {
       return true;
     else if (a == null || b == null)
       return false;
-    else if (a instanceof String && b instanceof String)
-      return equalsString((String) a, (String) b);
-    else if (a instanceof byte[] && b instanceof byte[])
-      return equalsBytes((byte[]) a, (byte[]) b);
-    else if (a instanceof Binary && b instanceof Binary)
-      return equalsBinary((Binary) a, (Binary) b);
+    else if (a instanceof String stringA && b instanceof String stringB)
+      return equalsString(stringA, stringB);
+    else if (a instanceof byte[] bytesA && b instanceof byte[] bytesB)
+      return equalsBytes(bytesA, bytesB);
+    else if (a instanceof Binary binaryA && b instanceof Binary binaryB)
+      return equalsBinary(binaryA, binaryB);
     else if (!a.getClass().equals(b.getClass()) &&//
-        a instanceof Number && b instanceof Number) {
-      final Number[] pair = Type.castComparableNumber((Number) a, (Number) b);
+        a instanceof Number numberA && b instanceof Number numberB) {
+      final Number[] pair = Type.castComparableNumber(numberA, numberB);
       return pair[0].equals(pair[1]);
     }
     return a.equals(b);
@@ -441,12 +439,12 @@ public class BinaryComparator {
       return 1;
     else if (a == null && b != null)
       return -1;
-    else if (a instanceof String && b instanceof String)
-      return compareBytes(((String) a).getBytes(), ((String) b).getBytes(DatabaseFactory.getDefaultCharset()));
-    else if (a instanceof byte[] && b instanceof byte[])
-      return compareBytes((byte[]) a, (byte[]) b);
-    else if (a instanceof Map && b instanceof Map)
-      return CollectionUtils.compare((Map) a, (Map) b);
+    else if (a instanceof String stringA && b instanceof String stringB)
+      return compareBytes(stringA.getBytes(), stringB.getBytes(DatabaseFactory.getDefaultCharset()));
+    else if (a instanceof byte[] bytesA && b instanceof byte[] bytesB)
+      return compareBytes(bytesA, bytesB);
+    else if (a instanceof Map mapA && b instanceof Map mapB)
+      return CollectionUtils.compare(mapA, mapB);
     return ((Comparable<Object>) a).compareTo(b);
   }
 

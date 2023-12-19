@@ -90,30 +90,46 @@ public class InsertStatementTest {
   @Test
   public void testInsertEmbeddedDocs() {
     checkRightSyntax(
-        "INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = { \n" + "      count: 0, \n" + "      latest: [], \n"
-            + "      '@type': 'document', \n" + "      '@type': 'Like'\n" + "    }");
+        """
+        INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = {\s
+              count: 0,\s
+              latest: [],\s
+              '@type': 'document',\s
+              '@type': 'Like'
+            }\
+        """);
 
     checkRightSyntax(
-        "INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = { \n" + "      count: 0, \n" + "      latest: [], \n"
-            + "      '@type': 'document', \n" + "      '@type': 'Like'\n" + "    }");
+        """
+        INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = {\s
+              count: 0,\s
+              latest: [],\s
+              '@type': 'document',\s
+              '@type': 'Like'
+            }\
+        """);
   }
 
   @Test
   public void testJsonEscaping() {
     // issue #5911
-    checkRightSyntax("insert into Bookmark content {\"data\""
-        + ":\"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq"
-        + "1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=\",\"isRead\":\"N\",\"id\":\"52013784-4e32-4e9b-9676-1814ca1256fb\",\"isPrivate\":\"F\",\"is"
-        + "Shared\":0}");
+    checkRightSyntax("""
+        insert into Bookmark content {"data"\
+        :"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq\
+        1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=","isRead":"N","id":"52013784-4e32-4e9b-9676-1814ca1256fb","isPrivate":"F","is\
+        Shared":0}\
+        """);
   }
 
   @Test
   public void testJsonArrayEscaping() {
     // issue #5911
-    checkRightSyntax("insert into Bookmark content [{\"data\""
-        + ":\"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq"
-        + "1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=\",\"isRead\":\"N\",\"id\":\"52013784-4e32-4e9b-9676-1814ca1256fb\",\"isPrivate\":\"F\",\"is"
-        + "Shared\":0}, {}]");
+    checkRightSyntax("""
+        insert into Bookmark content [{"data"\
+        :"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq\
+        1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=","isRead":"N","id":"52013784-4e32-4e9b-9676-1814ca1256fb","isPrivate":"F","is\
+        Shared":0}, {}]\
+        """);
   }
 
   @Test

@@ -73,8 +73,8 @@ public class Expression extends SimpleNode {
       return json.toMap(iCurrentRecord, context);
     else if (booleanValue != null)
       return booleanValue;
-    else if (value instanceof PNumber)
-      return ((PNumber) value).getValue();//only for old executor (manually replaced params)
+    else if (value instanceof PNumber number)
+      return number.getValue();//only for old executor (manually replaced params)
 
     return value;
   }
@@ -94,8 +94,8 @@ public class Expression extends SimpleNode {
       return json.toMap(iCurrentRecord, context);
     else if (booleanValue != null)
       return booleanValue;
-    else if (value instanceof PNumber)
-      return ((PNumber) value).getValue();//only for old executor (manually replaced params)
+    else if (value instanceof PNumber number)
+      return number.getValue();//only for old executor (manually replaced params)
 
     return value;
   }
@@ -104,8 +104,8 @@ public class Expression extends SimpleNode {
     if (mathExpression != null) {
       return mathExpression.isBaseIdentifier();
     }
-    if (value instanceof MathExpression) {//only backward stuff, remote it
-      return ((MathExpression) value).isBaseIdentifier();
+    if (value instanceof MathExpression expression) {//only backward stuff, remote it
+      return expression.isBaseIdentifier();
     }
 
     return false;
@@ -124,8 +124,8 @@ public class Expression extends SimpleNode {
       return true;
     else if (value instanceof String)
       return true;
-    else if (value instanceof MathExpression)
-      return ((MathExpression) value).isEarlyCalculated(context);
+    else if (value instanceof MathExpression expression)
+      return expression.isEarlyCalculated(context);
 
     return false;
   }
@@ -169,8 +169,8 @@ public class Expression extends SimpleNode {
       json.toString(params, builder);
     else if (booleanValue != null)
       builder.append(booleanValue);
-    else if (value instanceof SimpleNode)
-      ((SimpleNode) value).toString(params, builder);//only for translated input params, will disappear with new executor
+    else if (value instanceof SimpleNode node)
+      node.toString(params, builder);//only for translated input params, will disappear with new executor
     else if (value instanceof String) {
       if (singleQuotes) {
         builder.append("'" + value + "'");
@@ -330,20 +330,20 @@ public class Expression extends SimpleNode {
       final Expression result = new Expression(-1);
       if (mathExpression != null) {
         final SimpleNode splitResult = mathExpression.splitForAggregation(aggregateSplit, context);
-        if (splitResult instanceof MathExpression) {
-          result.mathExpression = (MathExpression) splitResult;
-        } else if (splitResult instanceof Expression) {
-          return (Expression) splitResult;
+        if (splitResult instanceof MathExpression expression) {
+          result.mathExpression = expression;
+        } else if (splitResult instanceof Expression expression) {
+          return expression;
         } else {
           throw new IllegalStateException("something went wrong while splitting expression for aggregate " + this);
         }
       }
       if (arrayConcatExpression != null) {
         final SimpleNode splitResult = arrayConcatExpression.splitForAggregation(context);
-        if (splitResult instanceof ArrayConcatExpression) {
-          result.arrayConcatExpression = (ArrayConcatExpression) splitResult;
-        } else if (splitResult instanceof Expression) {
-          return (Expression) splitResult;
+        if (splitResult instanceof ArrayConcatExpression expression) {
+          result.arrayConcatExpression = expression;
+        } else if (splitResult instanceof Expression expression) {
+          return expression;
         } else {
           throw new IllegalStateException("something went wrong while splitting expression for aggregate " + this);
         }

@@ -199,7 +199,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(4, result.size());
-      assertEquals(v1, result.get(0));
+      assertEquals(v1, result.getFirst());
       assertEquals(v2, result.get(1));
       assertEquals(v3, result.get(2));
       assertEquals(v4, result.get(3));
@@ -223,7 +223,7 @@ public class SQLFunctionAstarTest {
         assertEquals((Object) 16L, rs.next().getProperty("count"));
       }
       assertEquals(3, result.size());
-      assertEquals(v1, result.get(0));
+      assertEquals(v1, result.getFirst());
       assertEquals(v5, result.get(1));
       assertEquals(v6, result.get(2));
     });
@@ -248,7 +248,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(3, result.size());
-      assertEquals(v1, result.get(0));
+      assertEquals(v1, result.getFirst());
       assertEquals(v5, result.get(1));
       assertEquals(v6, result.get(2));
     });
@@ -273,7 +273,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(3, result.size());
-      assertEquals(v1, result.get(0));
+      assertEquals(v1, result.getFirst());
       assertEquals(v5, result.get(1));
       assertEquals(v6, result.get(2));
     });
@@ -298,7 +298,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(3, result.size());
-      assertEquals(v3, result.get(0));
+      assertEquals(v3, result.getFirst());
       assertEquals(v6, result.get(1));
       assertEquals(v5, result.get(2));
     });
@@ -323,7 +323,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(6, result.size());
-      assertEquals(v6, result.get(0));
+      assertEquals(v6, result.getFirst());
       assertEquals(v5, result.get(1));
       assertEquals(v2, result.get(2));
       assertEquals(v3, result.get(3));
@@ -352,7 +352,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(6, result.size());
-      assertEquals(v6, result.get(0));
+      assertEquals(v6, result.getFirst());
       assertEquals(v5, result.get(1));
       assertEquals(v2, result.get(2));
       assertEquals(v3, result.get(3));
@@ -382,7 +382,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(5, result.size());
-      assertEquals(v6, result.get(0));
+      assertEquals(v6, result.getFirst());
       assertEquals(v5, result.get(1));
       assertEquals(v2, result.get(2));
       assertEquals(v4, result.get(3));
@@ -411,7 +411,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(3, result.size());
-      assertEquals(v6, result.get(0));
+      assertEquals(v6, result.getFirst());
       assertEquals(v5, result.get(1));
       assertEquals(v1, result.get(2));
     });
@@ -433,7 +433,7 @@ public class SQLFunctionAstarTest {
       }
 
       assertEquals(4, result.size());
-      assertEquals(v1.getIdentity(), result.get(0));
+      assertEquals(v1.getIdentity(), result.getFirst());
       assertEquals(v2.getIdentity(), result.get(1));
       assertEquals(v3.getIdentity(), result.get(2));
       assertEquals(v4.getIdentity(), result.get(3));

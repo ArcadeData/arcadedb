@@ -215,8 +215,8 @@ public class RemoteHttpComponent extends RWLockContext {
       }
     }
 
-    if (lastException instanceof RuntimeException)
-      throw (RuntimeException) lastException;
+    if (lastException instanceof RuntimeException exception)
+      throw exception;
 
     throw new RemoteException(
         "Error on executing remote operation '" + operation + "' (server=" + server + " retry=" + maxRetry + ")", lastException);
@@ -239,7 +239,7 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
     connection.setRequestProperty("charset", "utf-8");
     connection.setRequestMethod(httpMethod);
 

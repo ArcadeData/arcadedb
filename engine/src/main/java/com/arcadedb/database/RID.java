@@ -73,7 +73,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     value = value.substring(1);
 
     final List<String> parts = CodeUtils.split(value, ':', 2);
-    this.bucketId = Integer.parseInt(parts.get(0));
+    this.bucketId = Integer.parseInt(parts.getFirst());
     this.offset = Long.parseLong(parts.get(1));
   }
 
@@ -88,7 +88,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   public static boolean is(final String valueAsString) {
     if (valueAsString.length() > 3 && valueAsString.charAt(0) == '#') {
       final List<String> parts = CodeUtils.split(valueAsString.substring(1), ':', 3);
-      return parts.size() == 2 && NumberUtils.isIntegerNumber(parts.get(0)) && NumberUtils.isIntegerNumber(parts.get(1));
+        return parts.size() == 2 && NumberUtils.isIntegerNumber(parts.get(0)) && NumberUtils.isIntegerNumber(parts.get(1));
     }
     return false;
   }
@@ -179,10 +179,10 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   @Override
   public int compareTo(final Object o) {
     RID otherRID;
-    if (o instanceof RID)
-      otherRID = (RID) o;
-    else if (o instanceof String)
-      otherRID = new RID(database, (String) o);
+    if (o instanceof RID iD)
+      otherRID = iD;
+    else if (o instanceof String string)
+      otherRID = new RID(database, string);
     else
       return -1;
 

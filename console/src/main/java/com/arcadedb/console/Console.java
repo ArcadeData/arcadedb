@@ -332,8 +332,8 @@ public class Console {
   private void executeTransactionStatus() {
     checkDatabaseIsOpen();
 
-    if (databaseProxy instanceof DatabaseInternal) {
-      final TransactionContext tx = ((DatabaseInternal) databaseProxy).getTransaction();
+    if (databaseProxy instanceof DatabaseInternal internal) {
+      final TransactionContext tx = internal.getTransaction();
       if (tx.isActive()) {
         final ResultInternal row = new ResultInternal((Database) databaseProxy);
         row.setPropertiesFromMap(tx.getStats());
@@ -553,12 +553,12 @@ public class Console {
     Object value;
     for (final String fieldName : currentRecord.getPropertyNames()) {
       value = currentRecord.getProperty(fieldName);
-      if (value instanceof byte[])
-        value = "byte[" + ((byte[]) value).length + "]";
-      else if (value instanceof Iterator<?>) {
+      if (value instanceof byte[] bytes)
+        value = "byte[" + bytes.length + "]";
+      else if (value instanceof Iterator<?> iterator) {
         final List<Object> coll = new ArrayList<>();
-        while (((Iterator<?>) value).hasNext())
-          coll.add(((Iterator<?>) value).next());
+        while (iterator.hasNext())
+          coll.add(iterator.next());
         value = coll;
       } else if (MultiValue.isMultiValue(value)) {
         value = TableFormatter.getPrettyFieldMultiValue(MultiValue.getMultiValueIterator(value), maxMultiValueEntries);
@@ -755,7 +755,7 @@ public class Console {
 
     if (args.length > 0) {
       if (output != null)
-        output.onOutput(String.format(text, args));
+        output.onOutput(text.formatted(args));
       else
         terminal.writer().printf(text, args);
     } else {
@@ -975,7 +975,7 @@ public class Console {
 
   private String getPrompt() {
     final String databaseName = databaseProxy != null ? databaseProxy.getName() : null;
-    return String.format(PROMPT, databaseName != null ? "{" + databaseName + "}" : "");
+    return PROMPT.formatted(databaseName != null ? "{" + databaseName + "}" : "");
   }
 
   private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {

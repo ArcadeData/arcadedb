@@ -197,13 +197,18 @@ public class MatchExecutionPlanner {
       final List<MatchExpression> notMatchExpressions, final CommandContext context) {
     for (final MatchExpression exp : notMatchExpressions) {
       if (pattern.aliasToNode.get(exp.getOrigin().getAlias()) == null) {
-        throw new CommandExecutionException("This kind of NOT expression is not supported (yet). "
-            + "The first alias in a NOT expression has to be present in the positive pattern");
+        throw new CommandExecutionException("""
+            This kind of NOT expression is not supported (yet). \
+            The first alias in a NOT expression has to be present in the positive pattern\
+            """);
       }
 
       if (exp.getOrigin().getFilter() != null) {
         throw new CommandExecutionException(
-            "This kind of NOT expression is not supported (yet): " + "WHERE condition on the initial alias");
+            """
+            This kind of NOT expression is not supported (yet): \
+            WHERE condition on the initial alias\
+            """);
         // TODO implement his
       }
 
@@ -335,8 +340,10 @@ public class MatchExecutionPlanner {
         // We didn't manage to find a valid root, and yet we haven't constructed a complete schedule.
         // This means there must be a cycle in our dependency graph, or all dependency-free nodes are optional.
         // Therefore, the query is invalid.
-        throw new CommandExecutionException("This query contains MATCH conditions that cannot be evaluated, "
-            + "like an undefined alias or a circular dependency on a $matched condition.");
+        throw new CommandExecutionException("""
+            This query contains MATCH conditions that cannot be evaluated, \
+            like an undefined alias or a circular dependency on a $matched condition.\
+            """);
       }
 
       // 2. Having found a starting vertex, traverse its neighbors depth-first,

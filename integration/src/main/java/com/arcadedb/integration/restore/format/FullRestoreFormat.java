@@ -55,15 +55,13 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     final File databaseDirectory = new File(settings.databaseDirectory);
     if (databaseDirectory.exists()) {
       if (!settings.overwriteDestination)
-        throw new RestoreException(
-            String.format("The database directory '%s' already exist and '-o' setting is false", settings.databaseDirectory));
+        throw new RestoreException("The database directory '%s' already exist and '-o' setting is false".formatted(settings.databaseDirectory));
 
       FileUtils.deleteRecursively(databaseDirectory);
     }
 
     if (!databaseDirectory.mkdirs())
-      throw new RestoreException(
-          String.format("Error on restoring database: the database directory '%s' cannot be created", settings.databaseDirectory));
+      throw new RestoreException("Error on restoring database: the database directory '%s' cannot be created".formatted(settings.databaseDirectory));
 
     logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.inputFileURL,
         settings.databaseDirectory);
@@ -121,7 +119,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
   private RestoreInputSource openInputFile() throws IOException {
     if (settings.inputFileURL.startsWith("http://") || settings.inputFileURL.startsWith("https://")) {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(settings.inputFileURL).openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create(settings.inputFileURL).toURL().openConnection();
       connection.setRequestMethod("GET");
       connection.setDoOutput(true);
       connection.connect();
@@ -137,8 +135,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     final File file = new File(path);
     if (!file.exists())
-      throw new RestoreException(String.format("The backup file '%s' does not exist (local path=%s)",//
-          settings.inputFileURL, new File(".").getAbsolutePath()));
+      throw new RestoreException("The backup file '%s' not exist".formatted(settings.inputFileURL));
 
     return new RestoreInputSource(new FileInputStream(file), file.length());
   }

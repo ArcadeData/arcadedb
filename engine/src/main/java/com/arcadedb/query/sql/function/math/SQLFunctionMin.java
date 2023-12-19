@@ -47,15 +47,15 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
     // consider both collection of parameters and collection in each parameter
     Object min = null;
     for (Object item : iParams) {
-      if (item instanceof Collection<?>) {
-        for (final Object subitem : ((Collection<?>) item)) {
+      if (item instanceof Collection<?> collection) {
+        for (final Object subitem :collection) {
           if (min == null || subitem != null && ((Comparable) subitem).compareTo(min) < 0)
             min = subitem;
         }
       } else {
-        if (item instanceof Number && min instanceof Number &&//
+        if (item instanceof Number numberA && min instanceof Number numberB &&//
             !item.getClass().equals(min.getClass())) {
-          final Number[] converted = Type.castComparableNumber((Number) item, (Number) min);
+          final Number[] converted = Type.castComparableNumber(numberA, numberB);
           item = converted[0];
           min = converted[1];
         }
@@ -71,8 +71,8 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
         // FIRST TIME
         context = min;
       else {
-        if (context instanceof Number && min instanceof Number) {
-          final Number[] casted = Type.castComparableNumber((Number) context, (Number) min);
+        if (context instanceof Number numberA && min instanceof Number numberB) {
+          final Number[] casted = Type.castComparableNumber(numberA, numberB);
           context = casted[0];
           min = casted[1];
         }

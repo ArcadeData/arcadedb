@@ -36,7 +36,7 @@ public class DatabaseComparator {
 
   static public class DatabaseAreNotIdentical extends ArcadeDBException {
     public DatabaseAreNotIdentical(final String text, final Object... args) {
-      super(String.format(text, args));
+      super(text.formatted(args));
     }
   }
 

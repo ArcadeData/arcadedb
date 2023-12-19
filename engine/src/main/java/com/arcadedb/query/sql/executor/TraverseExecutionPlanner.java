@@ -166,7 +166,7 @@ public class TraverseExecutionPlanner {
     } else if (paramValue instanceof Iterable) {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
-      for (final Object x : (Iterable) paramValue) {
+      for (final Object x : iterable) {
         if (!(x instanceof Identifiable)) {
           throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
         }
@@ -245,7 +245,7 @@ public class TraverseExecutionPlanner {
   private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext context) {
     final Database db = context.getDatabase();
     if (clusters.size() == 1) {
-      final Bucket bucket = clusters.get(0);
+      final Bucket bucket = clusters.getFirst();
       Integer bucketId = bucket.getBucketNumber();
       if (bucketId == null)
         bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();

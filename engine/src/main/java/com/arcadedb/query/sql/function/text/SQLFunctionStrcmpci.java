@@ -37,12 +37,12 @@ public class SQLFunctionStrcmpci extends SQLFunctionAbstract {
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     String s1 = null;
-    if (iParams[0] != null && iParams[0] instanceof String)
-      s1 = (String) iParams[0];
+    if (iParams[0] != null && iParams[0] instanceof String string)
+      s1 = string;
 
     String s2 = null;
-    if (iParams[1] != null && iParams[1] instanceof String)
-      s2 = (String) iParams[1];
+    if (iParams[1] != null && iParams[1] instanceof String string)
+      s2 = string;
 
     if (s1 == null && s2 == null)
       return 0;

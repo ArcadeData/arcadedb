@@ -100,12 +100,11 @@ public class RedisNetworkExecutor extends Thread {
   private void executeCommand(final Object command) {
     value.setLength(0);
 
-    if (command instanceof List) {
-      final List<Object> list = (List<Object>) command;
+    if (command instanceof List list) {
       if (list.isEmpty())
         return;
 
-      final Object cmd = list.get(0);
+      final Object cmd = list.getFirst();
       if (!(cmd instanceof String))
         LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command, cmd.getClass());
 
@@ -316,8 +315,8 @@ public class RedisNetworkExecutor extends Thread {
 
         if (type instanceof LocalVertexType)
           document = database.newVertex(typeName);
-        else if (type instanceof LocalEdgeType)
-          document = new MutableEdge(database, (EdgeType) type, null);
+        else if (type instanceof LocalEdgeType edgeType)
+          document = new MutableEdge(database, edgeType, null);
         else
           document = database.newDocument(typeName);
 

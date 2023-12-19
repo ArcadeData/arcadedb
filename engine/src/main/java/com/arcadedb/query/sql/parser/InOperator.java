@@ -34,15 +34,14 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
     if (left == null) {
       return false;
     }
-    if (right instanceof Collection) {
-      if (left instanceof Collection) {
-        return ((Collection) right).containsAll((Collection) left);
+    if (right instanceof Collection collectionRight) {
+      if (left instanceof Collection collectionLeft) {
+        return (collectionRight.containsAll(collectionLeft));
       }
-      if (left instanceof Iterable) {
-        left = ((Iterable) left).iterator();
+      if (left instanceof Iterable iterable) {
+        left = iterable.iterator();
       }
-      if (left instanceof Iterator) {
-        final Iterator iterator = (Iterator) left;
+      if (left instanceof Iterator iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
           if (!((Collection) right).contains(next)) {
@@ -50,17 +49,16 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
           }
         }
       }
-      return ((Collection) right).contains(left);
+      return collectionRight.contains(left);
     }
-    if (right instanceof Iterable) {
-      right = ((Iterable) right).iterator();
+    if (right instanceof Iterable iterable) {
+      right = iterable.iterator();
     }
-    if (right instanceof Iterator) {
-      if (left instanceof Iterable) {
-        left = ((Iterable) left).iterator();
+    if (right instanceof Iterator rightIterator) {
+      if (left instanceof Iterable iterable) {
+        left = iterable.iterator();
       }
       final Iterator leftIterator = (Iterator) left;
-      final Iterator rightIterator = (Iterator) right;
       while (leftIterator.hasNext()) {
         final Object leftItem = leftIterator.next();
         boolean found = false;

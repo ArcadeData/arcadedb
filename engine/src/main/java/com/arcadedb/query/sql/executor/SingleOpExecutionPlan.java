@@ -45,8 +45,8 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     if (!executed) {
       executed = true;
       result = statement.executeSimple(this.context);
-      if (result instanceof InternalResultSet) {
-        ((InternalResultSet) result).plan = this;
+      if (result instanceof InternalResultSet set) {
+        set.plan = this;
       }
     }
     return new ResultSet() {
@@ -89,8 +89,8 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     }
     executed = true;
     result = statement.executeSimple(this.context);
-    if (result instanceof InternalResultSet) {
-      ((InternalResultSet) result).plan = this;
+    if (result instanceof InternalResultSet set) {
+      set.plan = this;
     }
     return result;
   }

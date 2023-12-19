@@ -82,12 +82,12 @@ public class BinaryTypes {
       type = TYPE_FLOAT;
     else if (value instanceof Double)
       type = TYPE_DOUBLE;
-    else if (value instanceof LocalDateTime)
-      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(((LocalDateTime) value).getNano()));
-    else if (value instanceof ZonedDateTime)
-      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(((ZonedDateTime) value).getNano()));
-    else if (value instanceof Instant)
-      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(((Instant) value).getNano()));
+    else if (value instanceof LocalDateTime time)
+      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
+    else if (value instanceof ZonedDateTime time)
+      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
+    else if (value instanceof Instant instant)
+      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(instant.getNano()));
     else if (value instanceof LocalDate)
       type = TYPE_DATE;
     else if (value instanceof Calendar) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
@@ -104,12 +104,12 @@ public class BinaryTypes {
       type = TYPE_UUID;
     else if (value instanceof Map)
       type = TYPE_MAP;
-    else if (value instanceof Document)
-      type = ((Document) value).getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED;
-    else if (value instanceof Result) {
+    else if (value instanceof Document document)
+      type = document.getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED;
+    else if (value instanceof Result result) {
       // COMING FROM A QUERY
-      if (((Result) value).isElement()) {
-        final Document document = ((Result) value).getElement().get();
+      if (result.isElement()) {
+        final Document document = result.getElement().get();
         type = document.getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED;
       } else
         // SERIALIZE THE RESULT AS A MAP

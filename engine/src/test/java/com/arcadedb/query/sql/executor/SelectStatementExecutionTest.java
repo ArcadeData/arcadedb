@@ -2969,9 +2969,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         Assertions.fail();
       }
-      if (names instanceof Collection) {
-        Assertions.assertEquals(3, ((Collection) names).size());
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        Assertions.assertEquals(3, collection.size());
+        final Iterator iter = collection.iterator();
         Assertions.assertEquals("a", iter.next());
         Assertions.assertEquals("b", iter.next());
         Assertions.assertEquals("c", iter.next());
@@ -3006,9 +3006,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         Assertions.fail();
       }
-      if (names instanceof Collection) {
-        Assertions.assertEquals(3, ((Collection) names).size());
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        Assertions.assertEquals(3, collection.size());
+        final Iterator iter = collection.iterator();
         Assertions.assertEquals("a", iter.next());
         Assertions.assertEquals("b", iter.next());
         Assertions.assertEquals("c", iter.next());
@@ -3046,9 +3046,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         Assertions.fail();
       }
-      if (names instanceof Collection) {
-        Assertions.assertEquals(3, ((Collection) names).size());
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        Assertions.assertEquals(3, collection.size());
+        final Iterator iter = collection.iterator();
         Assertions.assertEquals("a", iter.next());
         Assertions.assertEquals("b", iter.next());
         Assertions.assertEquals("c", iter.next());
@@ -3083,9 +3083,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         Assertions.fail();
       }
-      if (names instanceof Collection) {
-        Assertions.assertEquals(3, ((Collection) names).size());
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        Assertions.assertEquals(3, collection.size());
+        final Iterator iter = collection.iterator();
         Assertions.assertEquals("a", iter.next());
         Assertions.assertEquals("b", iter.next());
         Assertions.assertEquals("c", iter.next());
@@ -3181,7 +3181,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     Result item = result.next();
     List res = item.getProperty("filtered");
     Assertions.assertEquals(1, res.size());
-    Assertions.assertEquals("foo", res.get(0));
+    Assertions.assertEquals("foo", res.getFirst());
     result.close();
 
     result = database.query("sql", "select coll[<'ccc'] as filtered from " + className);
@@ -3203,7 +3203,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     item = result.next();
     res = item.getProperty("filtered");
     Assertions.assertEquals(1, res.size());
-    Assertions.assertEquals("bar", res.get(0));
+    Assertions.assertEquals("bar", res.getFirst());
     result.close();
   }
 

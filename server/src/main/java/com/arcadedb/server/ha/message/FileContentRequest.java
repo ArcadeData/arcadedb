@@ -55,8 +55,8 @@ public class FileContentRequest extends HAAbstractCommand {
     final DatabaseInternal db = server.getServer().getDatabase(databaseName);
     final ComponentFile file = db.getFileManager().getFile(fileId);
 
-    if (file instanceof PaginatedComponentFile) {
-      final int pageSize = ((PaginatedComponentFile) file).getPageSize();
+    if (file instanceof PaginatedComponentFile componentFile) {
+      final int pageSize = componentFile.getPageSize();
 
       try {
         final int totalPages = (int) (file.getSize() / pageSize);

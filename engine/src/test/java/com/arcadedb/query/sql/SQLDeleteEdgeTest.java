@@ -23,13 +23,13 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       final List<Document> result = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select from testFromToV"));
 
-      database.command("sql", "CREATE EDGE testFromToOneE from " + result.get(1).getIdentity() + " to " + result.get(0).getIdentity());
-      database.command("sql", "CREATE EDGE testFromToTwoE from " + result.get(1).getIdentity() + " to " + result.get(0).getIdentity());
+      database.command("sql", "CREATE EDGE testFromToOneE from " + result.get(1).getIdentity() + " to " + result.getFirst().getIdentity());
+      database.command("sql", "CREATE EDGE testFromToTwoE from " + result.get(1).getIdentity() + " to " + result.getFirst().getIdentity());
 
       List<Document> resultTwo = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select expand(outE()) from " + result.get(1).getIdentity()));
       Assertions.assertEquals(resultTwo.size(), 2);
 
-      database.command("sql", "DELETE EDGE testFromToTwoE from " + result.get(1).getIdentity() + " to" + result.get(0).getIdentity());
+      database.command("sql", "DELETE EDGE testFromToTwoE from " + result.get(1).getIdentity() + " to" + result.getFirst().getIdentity());
 
       resultTwo = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select expand(outE()) from " + result.get(1).getIdentity()));
       Assertions.assertEquals(resultTwo.size(), 1);
@@ -52,8 +52,8 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       final List<Document> result = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select from testFromV"));
 
-      database.command("sql", "CREATE EDGE testFromOneE from " + result.get(1).getIdentity() + " to " + result.get(0).getIdentity());
-      database.command("sql", "CREATE EDGE testFromTwoE from " + result.get(1).getIdentity() + " to " + result.get(0).getIdentity());
+      database.command("sql", "CREATE EDGE testFromOneE from " + result.get(1).getIdentity() + " to " + result.getFirst().getIdentity());
+      database.command("sql", "CREATE EDGE testFromTwoE from " + result.get(1).getIdentity() + " to " + result.getFirst().getIdentity());
 
       List<Document> resultTwo = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select expand(outE()) from " + result.get(1).getIdentity()));
       Assertions.assertEquals(2, resultTwo.size());
@@ -81,13 +81,13 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       final List<Document> result = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select from testToV"));
 
-      database.command("sql", "CREATE EDGE testToOneE from " + result.get(1).getIdentity() + " to " + result.get(0).getIdentity());
-      database.command("sql", "CREATE EDGE testToTwoE from " + result.get(1).getIdentity() + " to " + result.get(0).getIdentity());
+      database.command("sql", "CREATE EDGE testToOneE from " + result.get(1).getIdentity() + " to " + result.getFirst().getIdentity());
+      database.command("sql", "CREATE EDGE testToTwoE from " + result.get(1).getIdentity() + " to " + result.getFirst().getIdentity());
 
       List<Document> resultTwo = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select expand(outE()) from " + result.get(1).getIdentity()));
       Assertions.assertEquals(resultTwo.size(), 2);
 
-      database.command("sql", "DELETE EDGE testToTwoE to " + result.get(0).getIdentity());
+      database.command("sql", "DELETE EDGE testToTwoE to " + result.getFirst().getIdentity());
 
       resultTwo = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select expand(outE()) from " + result.get(1).getIdentity()));
       Assertions.assertEquals(resultTwo.size(), 1);

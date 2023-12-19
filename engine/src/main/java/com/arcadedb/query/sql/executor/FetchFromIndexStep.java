@@ -146,7 +146,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
           return;
         }
-        cursor = nextCursors.remove(0);
+        cursor = nextCursors.removeFirst();
       }
       if (cursor.hasNext()) {
         final Object value = cursor.next();
@@ -174,12 +174,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     } else if (condition instanceof BetweenCondition) {
       size = 1;
       range = true;
-    } else if (condition instanceof AndBlock) {
-      final AndBlock andBlock = ((AndBlock) condition);
+    } else if (condition instanceof AndBlock block) {
+      final AndBlock andBlock =block;
       size = andBlock.getSubBlocks().size();
       final BooleanExpression lastOp = andBlock.getSubBlocks().get(andBlock.getSubBlocks().size() - 1);
-      if (lastOp instanceof BinaryCondition) {
-        final BinaryCompareOperator op = ((BinaryCondition) lastOp).getOperator();
+      if (lastOp instanceof BinaryCondition binaryCondition) {
+        final BinaryCompareOperator op = binaryCondition.getOperator();
         range = op.isRangeOperator();
       }
     } else if (condition instanceof InCondition) {
@@ -351,7 +351,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     }
     if (nextCursors.size() > 0) {
-      cursor = nextCursors.remove(0);
+      cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
   }
@@ -359,10 +359,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private Object[] convertToObjectArray(final Object value) {
     final Object[] result;
 
-    if (value instanceof Object[])
-      result = (Object[]) value;
-    else if (value instanceof Collection)
-      result = ((Collection) value).toArray();
+    if (value instanceof Object[] objects)
+      result = objects;
+    else if (value instanceof Collection collection)
+      result = collection.toArray();
     else
       result = new Object[] { value };
 
@@ -381,7 +381,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
     if (value instanceof Iterable && !(value instanceof Identifiable)) {
       final List<PCollection> result = new ArrayList<>();
-      for (final Object elemInKey : (Iterable<?>) value) {
+      for (final Object elemInKey : iterable) {
         final PCollection newHead = new PCollection(-1);
         for (final Expression exp : head.getExpressions())
           newHead.add(exp.copy());
@@ -432,8 +432,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return false;
     }
     for (final BooleanExpression exp : condition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition) {
-        if (((BinaryCondition) exp).getOperator() instanceof EqualsCompareOperator) {
+      if (exp instanceof BinaryCondition binaryCondition) {
+        if (binaryCondition.getOperator() instanceof EqualsCompareOperator) {
           return true;
         }
       } else {
@@ -561,8 +561,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private boolean indexKeyFromIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
     final BooleanExpression exp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
     final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();
-    if (exp instanceof BinaryCondition) {
-      final BinaryCompareOperator operator = ((BinaryCondition) exp).getOperator();
+    if (exp instanceof BinaryCondition binaryCondition) {
+      final BinaryCompareOperator operator = binaryCondition.getOperator();
       if (isGreaterOperator(operator)) {
         return isIncludeOperator(operator);
       } else
@@ -598,8 +598,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private boolean indexKeyToIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
     final BooleanExpression exp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
     final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();
-    if (exp instanceof BinaryCondition) {
-      final BinaryCompareOperator operator = ((BinaryCondition) exp).getOperator();
+    if (exp instanceof BinaryCondition binaryCondition) {
+      final BinaryCompareOperator operator = binaryCondition.getOperator();
       if (isLessOperator(operator)) {
         return isIncludeOperator(operator);
       } else

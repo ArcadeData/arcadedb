@@ -409,12 +409,10 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       sendCommandToLeader(buffer, new ReplicaConnectRequest(lastLogNumber), -1);
       final HACommand response = receiveCommandFromLeaderDuringJoin(buffer);
 
-      if (response instanceof ReplicaConnectFullResyncResponse) {
+      if (response instanceof ReplicaConnectFullResyncResponse fullSync) {
         LogManager.instance().log(this, Level.INFO, "Asking for a full resync...");
 
         server.getServer().lifecycleEvent(ReplicationCallback.TYPE.REPLICA_FULL_RESYNC, null);
-
-        final ReplicaConnectFullResyncResponse fullSync = (ReplicaConnectFullResyncResponse) response;
 
         final Set<String> databases = fullSync.getDatabases();
 

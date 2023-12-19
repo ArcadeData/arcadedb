@@ -54,8 +54,8 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
       }
     }
 
-    if (iParams[0] instanceof Number) {
-      addValue((Number) iParams[0]);
+    if (iParams[0] instanceof Number number) {
+      addValue(number);
     } else if (MultiValue.isMultiValue(iParams[0])) {
       for (final Object n : MultiValue.getMultiValueIterable(iParams[0])) {
         addValue((Number) n);
@@ -110,7 +110,7 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
     final double pos = iQuantile * (n + 1);
 
     if (pos < 1)
-      return iValues.get(0);
+      return iValues.getFirst();
 
     if (pos >= n)
       return iValues.get((int) n - 1);

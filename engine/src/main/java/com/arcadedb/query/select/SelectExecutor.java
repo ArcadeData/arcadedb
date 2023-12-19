@@ -72,8 +72,8 @@ public class SelectExecutor {
       iterator = multiIterator;
     }
 
-    if (select.timeoutInMs > 0 && iterator instanceof MultiIterator)
-      ((MultiIterator<? extends Identifiable>) iterator).setTimeout(select.timeoutInMs, select.exceptionOnTimeout);
+    if (select.timeoutInMs > 0 && iterator instanceof MultiIterator multiIterator)
+      multiIterator.setTimeout(select.timeoutInMs, select.exceptionOnTimeout);
 
     if (select.parallel)
       return new SelectParallelIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
@@ -117,8 +117,8 @@ public class SelectExecutor {
     }
 
     final Object rightValue;
-    if (node.right instanceof SelectParameterValue)
-      rightValue = ((SelectParameterValue) node.right).eval(null);
+    if (node.right instanceof SelectParameterValue value)
+      rightValue = value.eval(null);
     else
       rightValue = node.right;
 
@@ -211,10 +211,10 @@ public class SelectExecutor {
   public static Object evaluateValue(final Document record, final Object value) {
     if (value == null)
       return null;
-    else if (value instanceof SelectTreeNode)
-      return ((SelectTreeNode) value).eval(record);
-    else if (value instanceof SelectRuntimeValue)
-      return ((SelectRuntimeValue) value).eval(record);
+    else if (value instanceof SelectTreeNode node)
+      return node.eval(record);
+    else if (value instanceof SelectRuntimeValue runtimeValue)
+      return runtimeValue.eval(record);
     return value;
   }
 
@@ -225,8 +225,8 @@ public class SelectExecutor {
   boolean evaluateWhere(final Document record) {
     ++evaluatedRecords;
     final Object result = select.rootTreeElement.eval(record);
-    if (result instanceof Boolean)
-      return (Boolean) result;
+    if (result instanceof Boolean boolean1)
+      return boolean1;
     throw new IllegalArgumentException("A boolean result was expected but '" + result + "' was returned");
   }
 }

@@ -135,9 +135,9 @@ public enum GlobalConfiguration {
                       FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()), FileUtils.getSizeAsString(newValue));
             else
               System.out.println(
-                  String.format("Setting '%s=%s' is > than 80%% of maximum heap (%s). Decreasing it to %s", MAX_PAGE_RAM.key,
-                      FileUtils.getSizeAsString(maxRAM), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
-                      FileUtils.getSizeAsString(newValue)));
+                "Setting '%s=%s' is > than 80%% of maximum heap (%s). Decreasing it to %s".formatted(MAX_PAGE_RAM.key,
+                  FileUtils.getSizeAsString(maxRAM), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
+                  FileUtils.getSizeAsString(newValue)));
 
             return newValue;
           }
@@ -151,9 +151,9 @@ public enum GlobalConfiguration {
   DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
       "Default date implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDate",
       Class.class, java.util.Date.class, value -> {
-    if (value instanceof String) {
+    if (value instanceof String string) {
       try {
-        return Class.forName((String) value);
+        return Class.forName(string);
       } catch (ClassNotFoundException e) {
         throw new ConfigurationException("Date implementation '" + value + "' not found", e);
       }
@@ -167,9 +167,9 @@ public enum GlobalConfiguration {
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
       "Default datetime implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
       Class.class, java.util.Date.class, value -> {
-    if (value instanceof String) {
+    if (value instanceof String string) {
       try {
-        return Class.forName((String) value);
+        return Class.forName(string);
       } catch (ClassNotFoundException e) {
         throw new ConfigurationException("Date implementation '" + value + "' not found", e);
       }
@@ -250,9 +250,11 @@ public enum GlobalConfiguration {
       Long.class, 10_000),
 
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE,
-      "Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). "
-          + "If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit."
-          + "This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory)",
+      """
+      Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). \
+      If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit.\
+      This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory)\
+      """,
       Long.class, 500_000),
 
   // CYPHER
@@ -312,13 +314,17 @@ public enum GlobalConfiguration {
       "Open all the available databases at server startup", Boolean.class, true),
 
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER,
-      "The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`"
-          + " to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[elon:musk:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`",
+      """
+      The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\
+       to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[elon:musk:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`\
+      """,
       String.class, ""),
 
   SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER,
-      "The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}"
-          + "Databases which are newly created will always be opened READ_WRITE.", String.class, "READ_WRITE",
+      """
+      The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}\
+      Databases which are newly created will always be opened READ_WRITE.\
+      """, String.class, "READ_WRITE",
       Set.of((Object[]) new String[] { "read_only", "read_write" })),
 
   SERVER_PLUGINS("arcadedb.server.plugins", SCOPE.SERVER,
@@ -555,8 +561,8 @@ public enum GlobalConfiguration {
 
     for (final GlobalConfiguration k : values()) {
       Object v = (Object) k.getValue();
-      if (v instanceof Class)
-        v = ((Class<?>) v).getName();
+      if (v instanceof Class class1)
+        v = class1.getName();
       cfg.put(k.key.substring(PREFIX.length()), v);
     }
 
@@ -675,8 +681,7 @@ public enum GlobalConfiguration {
         if (type.isInstance(iValue)) {
           value = iValue;
           accepted = true;
-        } else if (iValue instanceof String) {
-          final String string = (String) iValue;
+        } else if (iValue instanceof String string) {
 
           for (final Object constant : type.getEnumConstants()) {
             final Enum<?> enumConstant = (Enum<?>) constant;
@@ -719,7 +724,7 @@ public enum GlobalConfiguration {
 
   public boolean getValueAsBoolean() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Boolean ? (Boolean) v : Boolean.parseBoolean(v.toString());
+    return v instanceof Boolean b ? b : Boolean.parseBoolean(v.toString());
   }
 
   public String getValueAsString() {
@@ -730,17 +735,17 @@ public enum GlobalConfiguration {
 
   public int getValueAsInteger() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return (int) (v instanceof Number ? ((Number) v).intValue() : FileUtils.getSizeAsNumber(v.toString()));
+    return (int) (v instanceof Number n ? n.intValue() : FileUtils.getSizeAsNumber(v.toString()));
   }
 
   public long getValueAsLong() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Number ? ((Number) v).longValue() : FileUtils.getSizeAsNumber(v.toString());
+    return v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString());
   }
 
   public float getValueAsFloat() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Float ? (Float) v : Float.parseFloat(v.toString());
+    return v instanceof Float f ? f : Float.parseFloat(v.toString());
   }
 
   public String getKey() {

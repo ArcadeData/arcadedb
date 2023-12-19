@@ -116,8 +116,8 @@ public class MatchFirstStep extends AbstractExecutionStep {
 
   private void initFromPrefetch(final Object matchedNodes) {
     final Iterable possibleResults;
-    if (matchedNodes instanceof Iterable) {
-      possibleResults = (Iterable) matchedNodes;
+    if (matchedNodes instanceof Iterable iterable) {
+      possibleResults = iterable;
     } else {
       possibleResults = Collections.singleton(matchedNodes);
     }

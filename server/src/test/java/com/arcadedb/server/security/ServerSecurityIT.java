@@ -54,8 +54,8 @@ public class ServerSecurityIT {
     final List<JSONObject> jsonl = repository.load();
 
     Assertions.assertEquals(1, jsonl.size());
-    Assertions.assertEquals("root", jsonl.get(0).getString("name"));
-    passwordShouldMatch(security, PASSWORD, jsonl.get(0).getString("password"));
+    Assertions.assertEquals("root", jsonl.getFirst().getString("name"));
+    passwordShouldMatch(security, PASSWORD, jsonl.getFirst().getString("password"));
   }
 
   @Test
@@ -85,8 +85,8 @@ public class ServerSecurityIT {
     final List<JSONObject> jsonl = repository.load();
 
     Assertions.assertEquals(1, jsonl.size());
-    Assertions.assertEquals("root", jsonl.get(0).getString("name"));
-    passwordShouldMatch(security, PASSWORD, jsonl.get(0).getString("password"));
+    Assertions.assertEquals("root", jsonl.getFirst().getString("name"));
+    passwordShouldMatch(security, PASSWORD, jsonl.getFirst().getString("password"));
   }
 
   @Test

@@ -80,8 +80,8 @@ public class ArcadeCypher extends ArcadeGremlin {
         // unpack single result projections
         final Map<String, Object> map = next.toMap();
         final Object nextValue = map.values().iterator().next();
-        if (map.size() == 1 && nextValue instanceof Map) {
-          result.addAll(CypherQueryEngine.transformMap((Map<?, ?>) nextValue));
+        if (map.size() == 1 && nextValue instanceof Map map1) {
+          result.addAll(CypherQueryEngine.transformMap(map1));
         } else {
           result.addAll(CypherQueryEngine.transformMap(map));
         }

@@ -40,8 +40,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void testServerInfo() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -76,8 +75,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkQuery() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",

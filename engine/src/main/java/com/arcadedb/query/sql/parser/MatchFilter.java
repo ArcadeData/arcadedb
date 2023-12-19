@@ -95,11 +95,11 @@ public class MatchFilter extends SimpleNode {
   public String getTypeName(final CommandContext context) {
     for (final MatchFilterItem item : items) {
       if (item.typeName != null) {
-        if (item.typeName.value instanceof String)
-          return (String) item.typeName.value;
-        else if (item.typeName.value instanceof SimpleNode) {
+        if (item.typeName.value instanceof String string)
+          return string;
+        else if (item.typeName.value instanceof SimpleNode node) {
           final StringBuilder builder = new StringBuilder();
-          ((SimpleNode) item.typeName.value).toString(context == null ? null : context.getInputParameters(), builder);
+          node.toString(context == null ? null : context.getInputParameters(), builder);
           return builder.toString();
         } else if (item.typeName.isBaseIdentifier()) {
           return item.typeName.getDefaultAlias().getStringValue();

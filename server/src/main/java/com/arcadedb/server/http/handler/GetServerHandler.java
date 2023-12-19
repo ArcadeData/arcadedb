@@ -77,8 +77,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
         // ASK TO THE LEADER THE NETWORK COMPOSITION
         HttpURLConnection connection;
         try {
-          connection = (HttpURLConnection) new URL(
-              "http://" + ha.getLeader().getRemoteHTTPAddress() + "/api/v1/server?mode=cluster").openConnection();
+          connection = (HttpURLConnection) URI.create("http://" + ha.getLeader().getRemoteHTTPAddress() + "/api/v1/server?mode=cluster").toURL().openConnection();
         } catch (RuntimeException e) {
           throw e;
         } catch (Exception e) {
@@ -261,8 +260,8 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       }
     }
 
-    if (value instanceof Class)
-      value = ((Class<?>) value).getName();
+    if (value instanceof Class class1)
+      value = class1.getName();
 
     return value;
   }

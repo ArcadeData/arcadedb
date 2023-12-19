@@ -283,7 +283,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     }
 
     final String hash = getEncodedHash(password, salt, iterations);
-    final String encoded = String.format("%s$%d$%s$%s", algorithm, iterations, salt, hash);
+    final String encoded = "%s$%d$%s$%s".formatted(algorithm, iterations, salt, hash);
 
     // CACHE IT
     saltCache.put(password + "$" + salt + "$" + iterations, encoded);

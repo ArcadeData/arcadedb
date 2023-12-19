@@ -74,8 +74,11 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     public Boolean edge;
   }
 
-  public List<RID> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public List<RID> execute(final Object iThis,
+                           final Identifiable iCurrentRecord,
+                           final Object iCurrentResult,
+                           final Object[] iParams,
+                           final CommandContext iContext) {
 
     final OShortestPathContext context = new OShortestPathContext();
 
@@ -84,15 +87,15 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       if (MultiValue.getSize(source) > 1)
         throw new IllegalArgumentException("Only one sourceVertex is allowed");
       source = MultiValue.getFirstValue(source);
-      if (source instanceof Result && ((Result) source).isElement()) {
-        source = ((Result) source).getElement().get();
+      if (source instanceof Result result && result.isElement()) {
+        source = result.getElement().get();
       }
     }
 
     //    source = record.get((String) source);
 
-    if (source instanceof Identifiable) {
-      final Document elem = (Document) ((Identifiable) source).getRecord();
+    if (source instanceof Identifiable identifiable) {
+      final Document elem = (Document) identifiable.getRecord();
       if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The sourceVertex must be a vertex record");
 
@@ -106,15 +109,15 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       if (MultiValue.getSize(dest) > 1)
         throw new IllegalArgumentException("Only one destinationVertex is allowed");
       dest = MultiValue.getFirstValue(dest);
-      if (dest instanceof Result && ((Result) dest).isElement()) {
-        dest = ((Result) dest).getElement().get();
+      if (dest instanceof Result result && result.isElement()) {
+        dest = result.getElement().get();
       }
     }
 
     //    dest = record.get((String) dest);
 
-    if (dest instanceof Identifiable) {
-      final Document elem = (Document) ((Identifiable) dest).getRecord();
+    if (dest instanceof Identifiable destIdentifiable) {
+      final Document elem = (Document) destIdentifiable.getRecord();
       if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The destinationVertex must be a vertex record");
 
@@ -124,7 +127,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     }
 
     if (context.sourceVertex.equals(context.destinationVertex)) {
-      final List<RID> result = new ArrayList<RID>(1);
+      final List<RID> result = new ArrayList<>(1);
       result.add(context.destinationVertex.getIdentity());
       return result;
     }
@@ -221,10 +224,10 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       return;
 
     Map<String, Object> mapParams = null;
-    if (additionalParams instanceof Map)
-      mapParams = (Map) additionalParams;
-    else if (additionalParams instanceof Identifiable)
-      mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).toMap();
+    if (additionalParams instanceof Map map)
+      mapParams = map;
+    else if (additionalParams instanceof Identifiable identifiable)
+      mapParams = ((Document) identifiable.getRecord()).toMap();
 
     if (mapParams != null) {
       context.maxDepth = integer(mapParams.get("maxDepth"));
@@ -237,8 +240,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     if (fromObject == null)
       return null;
 
-    if (fromObject instanceof Number)
-      return ((Number) fromObject).intValue();
+    if (fromObject instanceof Number number)
+      return number.intValue();
 
     if (fromObject instanceof String) {
       try {
@@ -258,8 +261,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     if (fromObject == null)
       return null;
 
-    if (fromObject instanceof Boolean)
-      return (Boolean) fromObject;
+    if (fromObject instanceof Boolean boolean1)
+      return boolean1;
 
     if (fromObject instanceof String) {
       try {
@@ -454,7 +457,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
     RID current = neighbor;
     while (current != null) {
-      result.add(0, current);
+      result.addFirst(current);
       current = leftDistances.get(current);
     }
 

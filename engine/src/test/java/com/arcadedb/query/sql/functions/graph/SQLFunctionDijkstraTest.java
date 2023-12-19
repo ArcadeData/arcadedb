@@ -81,7 +81,7 @@ public class SQLFunctionDijkstraTest {
       final List<Vertex> result = functionDijkstra.execute(null, null, null, new Object[] { v1, v4, "'weight'" }, new BasicCommandContext());
 
       assertEquals(4, result.size());
-      assertEquals(v1, result.get(0));
+      assertEquals(v1, result.getFirst());
       assertEquals(v2, result.get(1));
       assertEquals(v3, result.get(2));
       assertEquals(v4, result.get(3));

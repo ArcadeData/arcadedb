@@ -107,8 +107,8 @@ public class InCondition extends BooleanExpression {
 
   protected static boolean evaluateExpression(final Object iLeft, final Object iRight) {
     if (MultiValue.isMultiValue(iRight)) {
-      if (iRight instanceof Set<?>)
-        return ((Set) iRight).contains(iLeft);
+      if (iRight instanceof Set<?> set)
+        return set.contains(iLeft);
 
       for (final Object o : MultiValue.getMultiValueIterable(iRight, false)) {
         if (QueryOperatorEquals.equals(iLeft, o))
@@ -116,8 +116,8 @@ public class InCondition extends BooleanExpression {
         if (MultiValue.isMultiValue(iLeft) && MultiValue.getSize(iLeft) == 1) {
 
           final Object item = MultiValue.getFirstValue(iLeft);
-          if (item instanceof Result && ((Result) item).getPropertyNames().size() == 1) {
-            final Object propValue = ((Result) item).getProperty(((Result) item).getPropertyNames().iterator().next());
+          if (item instanceof Result result && result.getPropertyNames().size() == 1) {
+            final Object propValue = result.getProperty(result.getPropertyNames().iterator().next());
             if (QueryOperatorEquals.equals(propValue, o))
               return true;
           }
@@ -129,10 +129,9 @@ public class InCondition extends BooleanExpression {
         if (QueryOperatorEquals.equals(iLeft, o))
           return true;
       }
-    } else if (iRight instanceof ResultSet) {
-      final ResultSet rsRight = (ResultSet) iRight;
+    } else if (iRight instanceof ResultSet rsRight) {
       rsRight.reset();
-      while (((ResultSet) iRight).hasNext()) {
+      while (rsRight.hasNext()) {
         if (QueryOperatorEquals.equals(iLeft, rsRight.next())) {
           return true;
         }
@@ -159,8 +158,8 @@ public class InCondition extends BooleanExpression {
   }
 
   private String convertToString(final Object o) {
-    if (o instanceof String)
-      return "\"" + ((String) o).replace("\"", "\\\"") + "\"";
+    if (o instanceof String string)
+      return "\"" + string.replace("\"", "\\\"") + "\"";
 
     return o.toString();
   }

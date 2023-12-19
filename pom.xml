@@ -146,13 +146,12 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
-                <configuration>
-                    <source>${maven-compiler-plugin.release}</source>
-                    <target>${maven-compiler-plugin.release}</target>
-                    <compilerArgs>
-                        <arg>--add-exports</arg>
-                        <arg>java.management/sun.management=ALL-UNNAMED</arg>
-                    </compilerArgs>
+        <configuration>
+          <compilerArgs>
+            <arg>--add-exports</arg>
+            <arg>java.management/sun.management=ALL-UNNAMED</arg>
+          </compilerArgs>
+          <release>21</release>
                 </configuration>
             </plugin>
             <plugin>

@@ -87,8 +87,8 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
 
   @Override
   public <V> Property<V> property(final String key, final V value) {
-    if (this.value instanceof MutableEmbeddedDocument) {
-      ((MutableEmbeddedDocument) this.value).set(key, value);
+    if (this.value instanceof MutableEmbeddedDocument document) {
+      document.set(key, value);
       return new ArcadeVertexProperty<V>(vertex, key, value);
     } else
       throw new UnsupportedOperationException();

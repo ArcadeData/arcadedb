@@ -92,7 +92,7 @@ public class Backup {
     final DatabaseFactory factory = new DatabaseFactory(settings.databaseURL);
 
     if (!factory.exists())
-      throw new BackupException(String.format("Database '%s' not found", settings.databaseURL));
+      throw new BackupException("Database '%s' not found".formatted(settings.databaseURL));
 
     logger.logLine(0, "Opening database '%s'...", settings.databaseURL);
     database = (DatabaseInternal) factory.open();

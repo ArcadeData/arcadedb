@@ -16,8 +16,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkAuthenticationError() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:wrong".getBytes()));
@@ -36,8 +35,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkNoAuthentication() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       try {
@@ -55,8 +53,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkQueryInGet() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -79,8 +76,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkQueryInPost() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -103,8 +99,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkCommand() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -127,8 +122,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkCommandLoadByRIDWithParameters() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -151,8 +145,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkCommandLoadByRIDInWhereWithParameters() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -179,8 +172,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkCommandLoadByRIDIn() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -206,8 +198,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkCommandLet() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").toURL().openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -255,8 +246,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkDatabaseExists() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/exists/graph/").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/graph/").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -278,8 +268,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkDatabaseList() throws Exception {
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/databases").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/databases").toURL().openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -303,8 +292,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   public void createAndDropDatabase() throws Exception {
     testEachServer((serverIndex) -> {
       // CREATE THE DATABASE 'JUSTFORFUN'
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+      HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -323,7 +311,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
 
       // CHECK EXISTENCE
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/justforfun").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/justforfun").toURL().openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -341,7 +329,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
 
       // DROP DATABASE
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -360,7 +348,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
 
       // CHECK NOT EXISTENCE
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/justforfun").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/justforfun").toURL().openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -383,8 +371,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   public void closeAndReopenDatabase() throws Exception {
     testEachServer((serverIndex) -> {
       // CREATE THE DATABASE 'JUSTFORFUN'
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+      HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -403,7 +390,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
 
       // CLOSE DATABASE
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -422,7 +409,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
 
       // RE-OPEN DATABASE
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -441,8 +428,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
 
       // CHECK EXISTENCE
-      connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/exists/closeAndReopen").openConnection();
+      connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/closeAndReopen").toURL().openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -465,8 +451,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   public void testEmptyDatabaseName() throws Exception {
     testEachServer((serverIndex) -> {
       // CREATE THE DATABASE ''
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

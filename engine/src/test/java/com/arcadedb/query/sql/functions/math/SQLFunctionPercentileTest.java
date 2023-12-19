@@ -125,7 +125,7 @@ public class SQLFunctionPercentileTest {
     }
 
     final List<Number> result = (List<Number>) percentile.getResult();
-    assertEquals(1.5, result.get(0).doubleValue(), 0);
+    assertEquals(1.5, result.getFirst().doubleValue(), 0);
     assertEquals(4.5, result.get(1).doubleValue(), 0);
   }
 }

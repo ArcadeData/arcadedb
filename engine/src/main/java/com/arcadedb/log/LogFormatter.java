@@ -79,7 +79,7 @@ public class LogFormatter extends Formatter {
       buffer.append(dateFormat.format(new Date()));
     }
 
-    buffer.append(String.format(" %-5.5s ", level.getName()));
+    buffer.append(" %-5.5s ".formatted(level.getName()));
 
     if (requester != null) {
       buffer.append("[");
@@ -90,7 +90,7 @@ public class LogFormatter extends Formatter {
     // FORMAT THE MESSAGE
     try {
       if (additionalArgs != null)
-        buffer.append(String.format(message, additionalArgs));
+        buffer.append(message.formatted(additionalArgs));
       else
         buffer.append(message);
     } catch (final IllegalFormatException ignore) {

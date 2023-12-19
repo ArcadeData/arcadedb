@@ -70,16 +70,16 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       if (MultiValue.getSize(source) > 1)
         throw new IllegalArgumentException("Only one sourceVertex is allowed");
       source = MultiValue.getFirstValue(source);
-      if (source instanceof Result && ((Result) source).isElement()) {
-        source = ((Result) source).getElement().get();
+      if (source instanceof Result result && result.isElement()) {
+        source = result.getElement().get();
       }
     }
 
     if (record != null)
       source = record.get((String) source);
 
-    if (source instanceof Identifiable) {
-      final Document elem = (Document) ((Identifiable) source).getRecord();
+    if (source instanceof Identifiable identifiable) {
+      final Document elem = (Document) identifiable.getRecord();
       if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The sourceVertex must be a vertex record");
 
@@ -93,16 +93,16 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       if (MultiValue.getSize(dest) > 1)
         throw new IllegalArgumentException("Only one destinationVertex is allowed");
       dest = MultiValue.getFirstValue(dest);
-      if (dest instanceof Result && ((Result) dest).isElement()) {
-        dest = ((Result) dest).getElement().get();
+      if (dest instanceof Result result && result.isElement()) {
+        dest = result.getElement().get();
       }
     }
 
     if (record != null)
       dest = record.get((String) dest);
 
-    if (dest instanceof Identifiable) {
-      final Document elem = (Document) ((Identifiable) dest).getRecord();
+    if (dest instanceof Identifiable destIdentifiable) {
+      final Document elem = (Document) destIdentifiable.getRecord();
       if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The destinationVertex must be a vertex record");
 
@@ -148,7 +148,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       if (current.getIdentity().equals(goal.getIdentity()) || currentDepth >= paramMaxDepth) {
 
         while (current != null) {
-          route.add(0, current);
+          route.addFirst(current);
           current = cameFrom.get(current);
         }
         return getPath();
@@ -222,10 +222,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       return;
     }
     Map<String, Object> mapParams = null;
-    if (additionalParams instanceof Map) {
-      mapParams = (Map) additionalParams;
-    } else if (additionalParams instanceof Identifiable) {
-      mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).toMap();
+    if (additionalParams instanceof Map map) {
+      mapParams = map;
+    } else if (additionalParams instanceof Identifiable identifiable) {
+      mapParams = ((Document) identifiable.getRecord()).toMap();
     }
     if (mapParams != null) {
       context.paramEdgeTypeNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES));
@@ -279,10 +279,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (e != null) {
       final Object fieldValue = e.get(paramWeightFieldName);
       if (fieldValue != null)
-        if (fieldValue instanceof Float)
-          return (Float) fieldValue;
-        else if (fieldValue instanceof Number)
-          return ((Number) fieldValue).doubleValue();
+        if (fieldValue instanceof Float float1)
+          return float1;
+        else if (fieldValue instanceof Number number)
+          return number.doubleValue();
     }
 
     return MIN;
@@ -292,10 +292,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (edge != null) {
       final Object fieldValue = edge.get(paramWeightFieldName);
       if (fieldValue != null)
-        if (fieldValue instanceof Float)
-          return (Float) fieldValue;
-        else if (fieldValue instanceof Number)
-          return ((Number) fieldValue).doubleValue();
+        if (fieldValue instanceof Float float1)
+          return float1;
+        else if (fieldValue instanceof Number number)
+          return number.doubleValue();
     }
 
     return MIN;

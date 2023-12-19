@@ -116,8 +116,7 @@ public class JSONSerializer {
   }
 
   private Object convertFromJSONType(Object value) {
-    if (value instanceof JSONObject) {
-      final JSONObject json = (JSONObject) value;
+    if (value instanceof JSONObject json) {
       final String embeddedTypeName = json.getString("@type");
 
       final DocumentType type = database.getSchema().getType(embeddedTypeName);
@@ -131,8 +130,7 @@ public class JSONSerializer {
         embeddedDocument.fromJSON((JSONObject) value);
         value = embeddedDocument;
       }
-    } else if (value instanceof JSONArray) {
-      final JSONArray array = (JSONArray) value;
+    } else if (value instanceof JSONArray array) {
       final List<Object> list = new ArrayList<>();
       for (int i = 0; i < array.length(); ++i)
         list.add(convertFromJSONType(array.get(i)));

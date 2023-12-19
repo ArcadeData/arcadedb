@@ -49,8 +49,8 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
       throw new IllegalArgumentException("duration() function expected 2 parameters: amount and time-unit");
 
     long amount;
-    if (iParams[0] instanceof Number)
-      amount = ((Number) iParams[0]).longValue();
+    if (iParams[0] instanceof Number number)
+      amount = number.longValue();
     else if (iParams[0] instanceof String)
       amount = Long.parseLong(iParams[0].toString());
     else

@@ -112,7 +112,7 @@ public class SocketFactory {
     InputStream input;
 
     try {
-      final URL url = new URL(path);
+      final URL url = URI.create(path).toURL();
       input = url.openStream();
     } catch (final MalformedURLException ignore) {
       input = null;

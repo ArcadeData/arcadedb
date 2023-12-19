@@ -216,11 +216,11 @@ public class DatabaseChecker {
   private void updateStats(final Map<String, Object> stats) {
     for (final Map.Entry<String, Object> entry : stats.entrySet()) {
       final Object value = entry.getValue();
-      if (value instanceof Long) {
+      if (value instanceof Long long1) {
         Long current = (Long) result.get(entry.getKey());
         if (current == null)
           current = 0L;
-        result.put(entry.getKey(), current + (Long) value);
+        result.put(entry.getKey(), current + long1);
       }
     }
   }

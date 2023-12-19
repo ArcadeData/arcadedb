@@ -153,7 +153,7 @@ public interface Result {
       }
       builder.append("]");
       jsonVal = builder.toString();
-    } else if (val instanceof Iterator) {
+    } else if (val instanceof Iterator iterator) {
       final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
@@ -168,14 +168,14 @@ public interface Result {
       builder.append("]");
       jsonVal = builder.toString();
     } else if (val instanceof Map) {
+      Map<String,Object> map = (Map) val;
       final StringBuilder builder = new StringBuilder();
       builder.append("{");
       boolean first = true;
-      final Map<String, Object> map = (Map<String, Object>) val;
-      for (final Map.Entry<String, Object> entry : map.entrySet()) {
-        if (!first)
+      for (final Map.Entry entry : map.entrySet()) {
+        if (!first) {
           builder.append(", ");
-
+        }
         builder.append(toJson(entry.getKey()));
         builder.append(": ");
         builder.append(toJson(entry.getValue()));
@@ -183,19 +183,19 @@ public interface Result {
       }
       builder.append("}");
       jsonVal = builder.toString();
-    } else if (val instanceof byte[]) {
-      jsonVal = "\"" + Base64.getEncoder().encodeToString((byte[]) val) + "\"";
+    } else if (val instanceof byte[] bytes) {
+      jsonVal = "\"" + Base64.getEncoder().encodeToString(bytes) + "\"";
     } else if (val.getClass().isArray()) {
-      if (val instanceof int[])
-        jsonVal = Arrays.toString((int[]) val);
-      else if (val instanceof long[])
-        jsonVal = Arrays.toString((long[]) val);
-      else if (val instanceof short[])
-        jsonVal = Arrays.toString((short[]) val);
-      else if (val instanceof float[])
-        jsonVal = Arrays.toString((float[]) val);
-      else if (val instanceof double[])
-        jsonVal = Arrays.toString((double[]) val);
+      if (val instanceof int[] ints)
+        jsonVal = Arrays.toString(ints);
+      else if (val instanceof long[] longs)
+        jsonVal = Arrays.toString(longs);
+      else if (val instanceof short[] shorts)
+        jsonVal = Arrays.toString(shorts);
+      else if (val instanceof float[] floats)
+        jsonVal = Arrays.toString(floats);
+      else if (val instanceof double[] doubles)
+        jsonVal = Arrays.toString(doubles);
       else
         jsonVal = Arrays.toString((Object[]) val);
     } else if (val instanceof Date) {

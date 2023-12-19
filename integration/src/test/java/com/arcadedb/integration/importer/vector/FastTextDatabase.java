@@ -162,7 +162,7 @@ public class FastTextDatabase {
 
   private void downloadFile(String url, Path path) throws IOException {
     LogManager.instance().log(this, Level.SEVERE, "Downloading %s to %s. This may take a while", url, path);
-    try (InputStream in = new URL(url).openStream()) {
+    try (InputStream in = URI.create(url).toURL().openStream()) {
       Files.copy(in, path);
     }
     LogManager.instance().log(this, Level.SEVERE, "Downloaded %s", FileUtils.getSizeAsString(path.toFile().length()));

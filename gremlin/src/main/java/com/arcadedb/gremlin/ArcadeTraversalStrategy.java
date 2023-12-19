@@ -55,8 +55,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
       final Step step = steps.get(i);
       if (step instanceof HasStep) {
         final Step prevStep = steps.get(i - 1);
-        if (prevStep instanceof GraphStep) {
-          final GraphStep prevStepGraph = (GraphStep) prevStep;
+        if (prevStep instanceof GraphStep prevStepGraph) {
 
           if (prevStepGraph.getIds().length != 0)
             continue;

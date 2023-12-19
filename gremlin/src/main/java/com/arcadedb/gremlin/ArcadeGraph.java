@@ -141,7 +141,7 @@ public class ArcadeGraph implements Graph, Closeable {
     if (null == configuration)
       throw Graph.Exceptions.argumentCanNotBeNull("configuration");
     if (!configuration.containsKey(CONFIG_DIRECTORY))
-      throw new IllegalArgumentException(String.format("Arcade configuration requires that the %s be set", CONFIG_DIRECTORY));
+      throw new IllegalArgumentException("Arcade configuration requires that the %s be set".formatted(CONFIG_DIRECTORY));
     return new ArcadeGraph(configuration);
   }
 
@@ -299,23 +299,23 @@ public class ArcadeGraph implements Graph, Closeable {
 
     for (final Object o : vertexIds) {
       final RID rid;
-      if (o instanceof RID)
-        rid = (RID) o;
-      else if (o instanceof Vertex) {
-        final Object objectId = ((Vertex) o).id();
+      if (o instanceof RID iD)
+        rid = iD;
+      else if (o instanceof Vertex vertex) {
+        final Object objectId = vertex.id();
         if (objectId != null)
-          rid = objectId instanceof RID ? (RID) objectId : new RID(database, objectId.toString());
+          rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
         else
           continue;
-      } else if (o instanceof String)
-        rid = new RID(database, (String) o);
+      } else if (o instanceof String string)
+        rid = new RID(database, string);
       else
         continue;
 
       try {
         final Record r = database.lookupByRID(rid, true);
-        if (r instanceof com.arcadedb.graph.Vertex) {
-          resultSet.add(new ArcadeVertex(this, ((com.arcadedb.graph.Vertex) r)));
+        if (r instanceof com.arcadedb.graph.Vertex vertex) {
+          resultSet.add(new ArcadeVertex(this,vertex));
         }
       } catch (final RecordNotFoundException e) {
         // NP, IGNORE IT
@@ -363,23 +363,23 @@ public class ArcadeGraph implements Graph, Closeable {
 
     for (final Object o : edgeIds) {
       final RID rid;
-      if (o instanceof RID)
-        rid = (RID) o;
-      else if (o instanceof Edge) {
-        final Object objectId = ((Edge) o).id();
+      if (o instanceof RID iD)
+        rid = iD;
+      else if (o instanceof Edge edge) {
+        final Object objectId = edge.id();
         if (objectId != null)
-          rid = objectId instanceof RID ? (RID) objectId : new RID(database, objectId.toString());
+          rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
         else
           continue;
-      } else if (o instanceof String)
-        rid = new RID(database, (String) o);
+      } else if (o instanceof String string)
+        rid = new RID(database, string);
       else
         continue;
 
       try {
         final Record r = database.lookupByRID(rid, true);
-        if (r instanceof com.arcadedb.graph.Edge)
-          resultSet.add(new ArcadeEdge(this, (com.arcadedb.graph.Edge) r));
+        if (r instanceof com.arcadedb.graph.Edge edge)
+          resultSet.add(new ArcadeEdge(this, edge));
       } catch (final RecordNotFoundException e) {
         // NP, IGNORE IT
       }
@@ -481,7 +481,7 @@ public class ArcadeGraph implements Graph, Closeable {
     case BOTH:
       return com.arcadedb.graph.Vertex.DIRECTION.BOTH;
     }
-    throw new IllegalArgumentException(String.format("Cannot get direction for argument %s", direction));
+    throw new IllegalArgumentException("Cannot get direction for argument %s".formatted(direction));
   }
 
   public GremlinLangScriptEngine getGremlinJavaEngine() {

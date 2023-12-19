@@ -77,7 +77,7 @@ public class CypherQueryEngineTest {
           final List<Result> results = IteratorUtils.toList(query, 1);
           assertThat(results, hasSize(1));
 
-          final Result result = results.get(0);
+          final Result result = results.getFirst();
           assertThat(result, notNullValue());
           assertThat(result.isProjection(), equalTo(true));
           assertThat(result.getPropertyNames(), hasItems("parent", "children"));
@@ -193,7 +193,7 @@ public class CypherQueryEngineTest {
           final Result r1 = query.next();
 
           final List<String> columns = new ArrayList<>(r1.toMap().keySet());
-          Assertions.assertEquals("foo.name", columns.get(0));
+          Assertions.assertEquals("foo.name", columns.getFirst());
           Assertions.assertEquals("foo.field2", columns.get(1));
           Assertions.assertEquals("foo.field1", columns.get(2));
         }

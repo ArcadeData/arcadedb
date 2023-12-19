@@ -561,7 +561,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     // BY BUCKET ID
     ResultSet result = database.command("sql",
-        "update bucket:" + buckets.get(0).getName() + " set foo = 'bar' upsert where name = 'name1'");
+        "update bucket:" + buckets.getFirst().getName() + " set foo = 'bar' upsert where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertNotNull(item);
@@ -571,7 +571,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     // BY BUCKET ID
     result = database.command("sql",
-        "update bucket:" + buckets.get(0).getFileId() + " set foo = 'bar' upsert where name = 'name1'");
+        "update bucket:" + buckets.getFirst().getFileId() + " set foo = 'bar' upsert where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
     item = result.next();
     Assertions.assertNotNull(item);
@@ -579,7 +579,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertFalse(result.hasNext());
     result.close();
 
-    result = database.query("sql", "SElect from bucket:" + buckets.get(0).getName());
+    result = database.query("sql", "SElect from bucket:" + buckets.getFirst().getName());
     Assertions.assertTrue(result.hasNext());
 
     while (result.hasNext()) {
@@ -596,7 +596,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertFalse(result.hasNext());
     result.close();
 
-    result = database.command("sql", "update bucket:" + buckets.get(0).getName() + " remove foo upsert where name = 'name1'");
+    result = database.command("sql", "update bucket:" + buckets.getFirst().getName() + " remove foo upsert where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
     item = result.next();
     Assertions.assertNotNull(item);
@@ -604,7 +604,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertFalse(result.hasNext());
     result.close();
 
-    result = database.query("sql", "SElect from bucket:" + buckets.get(0).getName());
+    result = database.query("sql", "SElect from bucket:" + buckets.getFirst().getName());
     Assertions.assertTrue(result.hasNext());
 
     while (result.hasNext()) {

@@ -46,23 +46,23 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
 
     if (inputValue == null) {
       result = null;
-    } else if (inputValue instanceof BigDecimal) {
-      result = ((BigDecimal) inputValue).abs();
-    } else if (inputValue instanceof BigInteger) {
-      result = ((BigInteger) inputValue).abs();
-    } else if (inputValue instanceof Integer) {
-      result = Math.abs((Integer) inputValue);
-    } else if (inputValue instanceof Long) {
-      result = Math.abs((Long) inputValue);
-    } else if (inputValue instanceof Short) {
-      result = (short) Math.abs((Short) inputValue);
-    } else if (inputValue instanceof Double) {
-      result = Math.abs((Double) inputValue);
-    } else if (inputValue instanceof Float) {
-      result = Math.abs((Float) inputValue);
-    } else if (inputValue instanceof Duration) {
-      final int seconds = ((Duration) inputValue).toSecondsPart();
-      final long nanos = ((Duration) inputValue).toNanosPart();
+    } else if (inputValue instanceof BigDecimal decimal) {
+      result = decimal.abs();
+    } else if (inputValue instanceof BigInteger integer) {
+      result = integer.abs();
+    } else if (inputValue instanceof Integer integer) {
+      result = Math.abs(integer);
+    } else if (inputValue instanceof Long long1) {
+      result = Math.abs(long1);
+    } else if (inputValue instanceof Short short1) {
+      result = (short) Math.abs(short1);
+    } else if (inputValue instanceof Double double1) {
+      result = Math.abs(double1);
+    } else if (inputValue instanceof Float float1) {
+      result = Math.abs(float1);
+    } else if (inputValue instanceof Duration duration) {
+      final int seconds = duration.toSecondsPart();
+      final long nanos = duration.toNanosPart();
       if (seconds > -1 && nanos > -1)
         result = inputValue;
       else {

@@ -51,8 +51,7 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
       final boolean enforceUniqueReturn) {
     super(executor, iterator, enforceUniqueReturn);
 
-    if (iterator instanceof MultiIterator) {
-      final MultiIterator<? extends Identifiable> it = (MultiIterator<? extends Identifiable>) iterator;
+    if (iterator instanceof MultiIterator it) {
       queue = new MultithreadConcurrentQueue<>(4_096);
 
       final List<Object> sources = it.getSources();

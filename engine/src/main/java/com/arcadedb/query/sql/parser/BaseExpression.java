@@ -268,9 +268,9 @@ public class BaseExpression extends MathExpression {
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
       final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, context);
-      if (splitResult instanceof BaseIdentifier) {
+      if (splitResult instanceof BaseIdentifier baseIdentifier) {
         final BaseExpression result = new BaseExpression(-1);
-        result.identifier = (BaseIdentifier) splitResult;
+        result.identifier = baseIdentifier;
         return result;
       }
       return splitResult;

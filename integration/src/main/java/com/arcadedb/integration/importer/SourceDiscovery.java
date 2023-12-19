@@ -95,7 +95,7 @@ public class SourceDiscovery {
     final String urlPath = sep > -1 ? url.substring(0, sep) : url;
     final String resource = sep > -1 ? url.substring(sep + RESOURCE_SEPARATOR.length()) : null;
 
-    final HttpURLConnection connection = (HttpURLConnection) new URL(urlPath).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) URI.create(urlPath).toURL().openConnection();
     connection.setRequestMethod("GET");
     connection.setDoOutput(true);
 
@@ -105,16 +105,16 @@ public class SourceDiscovery {
       try {
         connection.disconnect();
 
-        final HttpURLConnection connection1 = (HttpURLConnection) new URL(urlPath).openConnection();
+        final HttpURLConnection connection1 = (HttpURLConnection) URI.create(urlPath).toURL().openConnection();
         connection1.setRequestMethod("GET");
         connection1.setDoOutput(true);
         connection1.connect();
 
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-        else if (source.inputStream instanceof ZipInputStream) {
+        else if (source.inputStream instanceof ZipInputStream stream) {
           source.inputStream = new ZipInputStream(connection1.getInputStream());
-          ((ZipInputStream) source.inputStream).getNextEntry();
+          stream.getNextEntry();
         } else
           source.inputStream = new BufferedInputStream(connection1.getInputStream());
       } catch (final Exception e) {
@@ -155,9 +155,9 @@ public class SourceDiscovery {
         source.inputStream.close();
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-        else if (source.inputStream instanceof ZipInputStream) {
+        else if (source.inputStream instanceof ZipInputStream stream) {
           source.inputStream = new ZipInputStream(new FileInputStream(file));
-          ((ZipInputStream) source.inputStream).getNextEntry();
+          stream.getNextEntry();
         } else
           source.inputStream = new BufferedInputStream(new FileInputStream(file));
       } catch (final IOException e) {
@@ -284,7 +284,7 @@ public class SourceDiscovery {
           return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
         });
 
-        final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
+        final Map.Entry<Character, AtomicInteger> bestSeparator = list.getFirst();
 
         if (bestSeparator.getKey() == ' ') {
           // CHECK IF IS A VECTOR EMBEDDING TEXT FILE
@@ -368,7 +368,7 @@ public class SourceDiscovery {
 
       if (!delimiters.isEmpty() && beginTag == endTag) {
         boolean allDelimitersAreTheSame = true;
-        final char delimiter = delimiters.get(0);
+        final char delimiter = delimiters.getFirst();
         for (int i = 1; i < delimiters.size() - 1; ++i) {
           if (delimiters.get(i) != delimiter) {
             allDelimitersAreTheSame = false;
@@ -379,7 +379,7 @@ public class SourceDiscovery {
         if (allDelimitersAreTheSame) {
           // RDF
           settings.typeIdProperty = "id";
-          settings.options.put("delimiter", "" + delimiters.get(0));
+          settings.options.put("delimiter", "" + delimiters.getFirst());
           return new RDFImporterFormat();
         }
       }

@@ -114,8 +114,8 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
       // MASK SENSITIVE DATA
       value = "*****";
 
-    if (value instanceof Class)
-      value = ((Class<?>) value).getName();
+    if (value instanceof Class class1)
+      value = class1.getName();
 
     return value;
   }

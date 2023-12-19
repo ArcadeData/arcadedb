@@ -63,8 +63,8 @@ public class ImmutableDocument extends BaseDocument {
   public  MutableDocument modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
     if (recordInCache != null) {
-      if (recordInCache instanceof MutableDocument)
-        return (MutableDocument) recordInCache;
+      if (recordInCache instanceof MutableDocument document)
+        return document;
       else if (!database.getTransaction().hasPageForRecord(rid.getPageId())) {
         // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
         // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD

@@ -50,12 +50,12 @@ public class JsonSerializer {
 
       if (value == null)
         value = JSONObject.NULL;
-      else if (value instanceof Document)
-        value = serializeDocument((Document) value);
-      else if (value instanceof Collection) {
-        serializeCollection(database, (Collection<?>) value);
-      } else if (value instanceof Map)
-        value = serializeMap(database, (Map<Object, Object>) value);
+      else if (value instanceof Document document1)
+        value = serializeDocument(document1);
+      else if (value instanceof Collection collection) {
+        serializeCollection(database, collection);
+      } else if (value instanceof Map map)
+        value = serializeMap(database, map);
 
       value = convertNonNumbers(value);
 
@@ -84,14 +84,14 @@ public class JsonSerializer {
 
       if (value == null)
         value = JSONObject.NULL;
-      else if (value instanceof Document)
-        value = serializeDocument((Document) value);
-      else if (value instanceof Result)
-        value = serializeResult(database, (Result) value);
-      else if (value instanceof Collection)
-        value = serializeCollection(database, (Collection<?>) value);
-      else if (value instanceof Map)
-        value = serializeMap(database, (Map<Object, Object>) value);
+      else if (value instanceof Document document)
+        value = serializeDocument(document);
+      else if (value instanceof Result result1)
+        value = serializeResult(database, result1);
+      else if (value instanceof Collection collection)
+        value = serializeCollection(database, collection);
+      else if (value instanceof Map map)
+        value = serializeMap(database, map);
 
       value = convertNonNumbers(value);
 
@@ -111,16 +111,16 @@ public class JsonSerializer {
       } else {
         final JSONArray list = new JSONArray();
         for (Object o : value) {
-          if (o instanceof Document)
-            o = serializeDocument((Document) o);
-          else if (o instanceof Result)
-            o = serializeResult(database, (Result) o);
-          else if (o instanceof ResultSet)
-            o = serializeResultSet(database, (ResultSet) o);
-          else if (o instanceof Collection)
-            o = serializeCollection(database, (Collection<?>) o);
-          else if (o instanceof Map)
-            o = serializeMap(database, (Map<Object, Object>) o);
+          if (o instanceof Document document)
+            o = serializeDocument(document);
+          else if (o instanceof Result result1)
+            o = serializeResult(database, result1);
+          else if (o instanceof ResultSet set)
+            o = serializeResultSet(database, set);
+          else if (o instanceof Collection collection)
+            o = serializeCollection(database, collection);
+          else if (o instanceof Map map)
+            o = serializeMap(database, map);
 
           list.put(o);
         }
@@ -147,16 +147,16 @@ public class JsonSerializer {
       final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
       for (final Map.Entry<Object, Object> entry : value.entrySet()) {
         Object o = entry.getValue();
-        if (o instanceof Document)
-          o = serializeDocument((Document) o);
-        else if (o instanceof ResultSet)
-          o = serializeResultSet(database, (ResultSet) o);
-        else if (o instanceof Result)
-          o = serializeResult(database, (Result) o);
-        else if (o instanceof Collection)
-          o = serializeCollection(database, (Collection<?>) o);
-        else if (o instanceof Map)
-          o = serializeMap(database, (Map<Object, Object>) o);
+        if (o instanceof Document document)
+          o = serializeDocument(document);
+        else if (o instanceof ResultSet set)
+          o = serializeResultSet(database, set);
+        else if (o instanceof Result result1)
+          o = serializeResult(database, result1);
+        else if (o instanceof Collection collection)
+          o = serializeCollection(database, collection);
+        else if (o instanceof Map map1)
+          o = serializeMap(database, map1);
         map.put(entry.getKey().toString(), o);
       }
       result = map;
@@ -201,10 +201,10 @@ public class JsonSerializer {
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    if (document instanceof Vertex) {
+    if (document instanceof Vertex vertex1) {
       object.put("@cat", "v");
       if (includeVertexEdges) {
-        final Vertex vertex = ((Vertex) document);
+        final Vertex vertex =vertex1;
         if (useVertexEdgeSize) {
           object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
           object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
@@ -221,8 +221,8 @@ public class JsonSerializer {
           object.put("@in", inEdges);
         }
       }
-    } else if (document instanceof Edge) {
-      final Edge edge = ((Edge) document);
+    } else if (document instanceof Edge edge1) {
+      final Edge edge =edge1;
       object.put("@cat", "e");
       object.put("@in", edge.getIn());
       object.put("@out", edge.getOut());

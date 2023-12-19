@@ -477,15 +477,14 @@ public class OrientDBImporter {
   }
 
   private RID convertRID(final Object value) {
-    final RID rid = value instanceof RID ? (RID) value : new RID(database, value.toString());
+    final RID rid = value instanceof RID rid1 ? rid1 : new RID(database, value.toString());
     return compressedRecordsRidMap.get(rid);
   }
 
   private RID convertRIDs(final Object pValue) {
     if (RID.is(pValue))
       return convertRID(pValue);
-    else if (pValue instanceof List) {
-      final List list = (List) pValue;
+    else if (pValue instanceof List list) {
       for (int i = 0; i < list.size(); i++) {
         final Object item = list.get(i);
         if (RID.is(item))
@@ -496,8 +495,7 @@ public class OrientDBImporter {
           convertRIDs(item);
 
       }
-    } else if (pValue instanceof Map) {
-      final Map map = (Map) pValue;
+    } else if (pValue instanceof Map map) {
       final List keys = new ArrayList(map.keySet());
       for (int i = 0; i < keys.size(); i++) {
         final Object key = keys.get(i);

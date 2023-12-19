@@ -154,8 +154,7 @@ public class WhereClause extends SimpleNode {
   private Map<String, Object> getEqualityOperations(final AndBlock condition, final CommandContext context) {
     final Map<String, Object> result = new HashMap<String, Object>();
     for (final BooleanExpression expression : condition.subBlocks) {
-      if (expression instanceof BinaryCondition) {
-        final BinaryCondition b = (BinaryCondition) expression;
+      if (expression instanceof BinaryCondition b) {
         if (b.operator instanceof EqualsCompareOperator) {
           if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated(context)) {
             result.put(b.left.toString(), b.right.execute((Result) null, context));
