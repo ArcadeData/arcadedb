@@ -39,6 +39,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.io.*;
+import java.nio.file.*;
 import java.nio.charset.*;
 import java.security.*;
 import java.security.spec.*;
@@ -331,6 +332,19 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     String rootPassword = server != null ?
         server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
         GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
+
+    if (rootPassword == null) {
+      final String rootPasswordPath = server != null ?
+          server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH) :
+          GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
+
+      if (rootPasswordPath != null) {
+        if (Files.isReadable(Paths.get(rootPasswordPath)))
+          rootPassword = Files.readString(Paths.get(rootPasswordPath));
+        else
+          throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'");
+      }
+    }
 
     if (rootPassword == null) {
       if (server != null ?
