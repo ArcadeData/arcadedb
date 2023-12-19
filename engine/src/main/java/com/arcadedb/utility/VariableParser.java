@@ -63,7 +63,7 @@ public class VariableParser {
         resolved = defaultValue;
     }
 
-    if (pre.length() > 0 || post.length() > 0) {
+    if (!pre.isEmpty() || !post.isEmpty()) {
       final String path = pre + (resolved != null ? resolved.toString() : "") + post;
       return resolveVariables(path, beginPattern, endPattern, listener);
     }

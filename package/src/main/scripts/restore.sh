@@ -34,9 +34,6 @@ PRGDIR=`dirname "$PRG"`
 # Only set ARCADEDB_HOME if not already set
 [ -f "$ARCADEDB_HOME"/bin/console.sh ] || ARCADEDB_HOME=`cd "$PRGDIR/.." ; pwd`
 
-cd "$ARCADEDB_HOME/bin"
-
-
 # Raspberry Pi check (Java VM does not run with -server argument on ARMv6)
 if [ `uname -m` != "armv6l" ]; then
   JAVA_OPTS="$JAVA_OPTS -server "
@@ -48,7 +45,6 @@ if [ -f "${JAVA_HOME}/bin/java" ]; then
 else
    JAVA=java
 fi
-
 
 if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
     JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8 -Dpolyglot.engine.WarnInterpreterOnly=false"

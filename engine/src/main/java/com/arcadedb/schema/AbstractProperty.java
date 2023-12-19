@@ -67,7 +67,7 @@ public abstract class AbstractProperty implements Property {
   }
 
   /**
-   * Returns an index on this property or creates it if not exists.
+   * Returns an index on this property or creates it if does not exist.
    *
    * @param type   Index type between LSM_TREE and FULL_TEXT
    * @param unique true if the index is unique

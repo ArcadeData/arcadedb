@@ -367,7 +367,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         for (int positionInPage = 0; positionInPage < recordCountInPage; ++positionInPage) {
           final RID rid = new RID(database, file.getFileId(), positionInPage);
 
-          final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+          final int recordPositionInPage = (int) page.readUnsignedInt(
+              PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
           if (recordPositionInPage == 0) {
             // DELETED RECORD (from 23.12.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
             pageDeletedRecords++;
@@ -1057,11 +1058,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return record;
   }
 
-  private int getRecordPositionInPage(final BasePage page, final int positionInPage) {
+  private int getRecordPositionInPage(final BasePage page, final int positionInPage) throws IOException {
     final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
-    if (recordPositionInPage < PAGE_RECORD_TABLE_OFFSET + maxRecordsInPage * INT_SERIALIZED_SIZE)
-      throw new DatabaseOperationException(
-          "Invalid record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage + positionInPage));
+    if (recordPositionInPage != 0 && recordPositionInPage < PAGE_RECORD_TABLE_OFFSET + maxRecordsInPage * INT_SERIALIZED_SIZE)
+      throw new IOException("Invalid record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage + positionInPage));
     return recordPositionInPage;
   }
 
