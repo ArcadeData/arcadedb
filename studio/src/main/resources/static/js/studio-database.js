@@ -57,9 +57,9 @@ function updateDatabases(callback) {
         let dbName = data.result[i];
         databases += "<option value='" + dbName + "'>" + dbName + "</option>";
       }
-      $("#inputDatabase").html(databases);
+      $(".inputDatabase").html(databases);
 
-      if (selected != null && selected != "") $("#inputDatabase").val(selected);
+      if (selected != null && selected != "") $("#schemaInputDatabase").val(selected);
 
       $("#currentDatabase").html(getCurrentDatabase());
 
@@ -114,7 +114,7 @@ function createDatabase() {
           },
         })
         .done(function (data) {
-          $("#inputDatabase").val(database);
+          $(".inputDatabase").val(database);
           updateDatabases();
         })
         .fail(function (jqXHR, textStatus, errorThrown) {
@@ -189,7 +189,7 @@ function resetDatabase() {
               },
             })
             .done(function (data) {
-              $("#inputDatabase").val(database);
+              $(".inputDatabase").val(database);
               updateDatabases();
             })
             .fail(function (jqXHR, textStatus, errorThrown) {
@@ -309,13 +309,12 @@ function dropIndex(indexName) {
 }
 
 function getCurrentDatabase() {
-  let db = $("#inputDatabase").val();
+  let db = $("#schemaInputDatabase").val();
   return db != null ? db.trim() : null;
 }
 
 function setCurrentDatabase(dbName) {
-  $("#currentDatabase").html(dbName);
-  $("#inputDatabase").val(dbName);
+  $(".inputDatabase").val(dbName);
   globalStorageSave("database.current", dbName);
 }
 
@@ -337,7 +336,7 @@ function getQueryHistory() {
 
 function loadQueryHistory() {
   $("#inputHistory").html("");
-  $("#inputHistory").append("<option value='-1'>Query History</option>");
+  $("#inputHistory").append("<option value='-1'>History</option>");
 
   let queryHistory = getQueryHistory();
   if (queryHistory != null && queryHistory.length > 0) {

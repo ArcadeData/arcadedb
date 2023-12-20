@@ -388,7 +388,7 @@ function removeGraphElement(ele) {
 }
 
 function loadNodeNeighbors(direction, rid) {
-  let database = escapeHtml($("#inputDatabase").val());
+  let database = escapeHtml($("#schemaInputDatabase").val());
 
   $("#executeSpinner").show();
 
@@ -502,7 +502,7 @@ function addNodeFromRecord(rid) {
     jQuery
       .ajax({
         type: "POST",
-        url: "/api/v1/command/" + escapeHtml($("#inputDatabase").val()),
+        url: "/api/v1/command/" + escapeHtml($("#schemaInputDatabase").val()),
         async: false,
         data: JSON.stringify({
           language: "sql",
