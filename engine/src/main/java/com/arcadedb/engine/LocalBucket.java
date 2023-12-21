@@ -1181,7 +1181,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       else {
         final long[] lastRecordSize = result.page.readNumberAndSize(lastRecordPositionInPage);
 
-        if (lastRecordSize[0] > 0)
+        if (lastRecordSize[0] == 0)
+          // DELETED (V<24.1.1)
+          result.newPosition = lastRecordPositionInPage + (int) lastRecordSize[1];
+        else if (lastRecordSize[0] > 0)
           // RECORD PRESENT, CONSIDER THE RECORD SIZE + VARINT SIZE
           result.newPosition = lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
         else if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER)
