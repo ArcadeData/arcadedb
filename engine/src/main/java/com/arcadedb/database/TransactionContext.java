@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.LocalBucket;
@@ -37,6 +38,8 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.Schema;
 
 import java.io.*;
 import java.util.*;
@@ -567,6 +570,20 @@ public class TransactionContext implements Transaction {
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
       final PageManager pageManager = database.getPageManager();
+
+      // COMPRESS PAGES BEFORE SAVING THEM
+      final LocalSchema localSchema = database.getSchema().getEmbedded();
+
+      for (MutablePage page : modifiedPages.values()) {
+        final LocalBucket bucket = localSchema.getBucketById(page.getPageId().getFileId(), false);
+        if (bucket != null)
+          bucket.compressPage(page);
+      }
+      for (MutablePage page : newPages.values()) {
+        final LocalBucket bucket = localSchema.getBucketById(page.getPageId().getFileId(), false);
+        if (bucket != null)
+          bucket.compressPage(page);
+      }
 
       for (final Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
         final MutablePage p = it.next();

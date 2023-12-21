@@ -285,12 +285,23 @@ public class LocalSchema implements Schema {
 
   @Override
   public LocalBucket getBucketById(final int id) {
+    return getBucketById(id, true);
+  }
+
+  public LocalBucket getBucketById(final int id, final boolean throwExceptionIfNotFound) {
     if (id < 0 || id >= files.size())
-      throw new SchemaException("Bucket with id '" + id + "' was not found");
+      if (throwExceptionIfNotFound)
+        throw new SchemaException("Bucket with id '" + id + "' was not found");
+      else
+        return null;
 
     final Component p = files.get(id);
-    if (!(p instanceof LocalBucket))
-      throw new SchemaException("Bucket with id '" + id + "' was not found");
+    if (!(p instanceof LocalBucket)) {
+      if (throwExceptionIfNotFound)
+        throw new SchemaException("Bucket with id '" + id + "' was not found");
+      else
+        return null;
+    }
     return (LocalBucket) p;
   }
 
