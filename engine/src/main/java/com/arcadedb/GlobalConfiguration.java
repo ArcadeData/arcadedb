@@ -285,6 +285,10 @@ public enum GlobalConfiguration {
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
       String.class, null),
 
+  SERVER_ROOT_PASSWORD_PATH("arcadedb.server.rootPasswordPath", SCOPE.SERVER,
+      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
+      String.class, null),
+
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
       "development", Set.of((Object[]) new String[] { "development", "test", "production" })),
 

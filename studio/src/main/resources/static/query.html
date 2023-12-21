@@ -1,44 +1,12 @@
 <div class="tab-pane fade show active" id="tab-query" role="tabpanel">
-  <div class="row" id="queryPanel">
-    <div class="col-1" style="padding: 0px">
-      <select
-        id="inputLanguage"
-        class="col-12 form-control"
-        style="color: #00aeee; font-family: Courier; font-size: 1em; height: 53px; text-align: center; padding-left: 0px; padding-right: 0px"
-      >
-        <option value="sql" selected>SQL</option>
-        <option value="sqlScript">SQL Script</option>
-        <option value="gremlin">Gremlin</option>
-        <option value="cypher">Cypher</option>
-        <option value="graphql">GraphQL</option>
-        <option value="mongo">MongoDB</option>
-      </select>
+  <div class="d-flex justify-content-between" id="queryPanel">
+    <div>
+      <label for="queryInputDatabase" class="form-label">Current database:</label>
+      <select id="queryInputDatabase" class="inputDatabase form-select"></select>
     </div>
-
-    <div class="col-11">
-      <textarea id="inputCommand" name="inputCommand"></textarea>
-      <button class="btn btn-primary" onclick="executeCommand()" style="z-index: 100; position: absolute; top: 10px; right: 20px">
-        <i class="fa fa-play"></i>
-        <img id="executeSpinner" class="ui-loading" src="/images/color-spin-small.svg" style="display: none" />
-      </button>
-    </div>
-
-    <div class="col-1"></div>
-    <div class="col-11">
-      <select id="inputHistory" class="btn btn-secondary" style="width: 100%">
-        <option selected>Query History</option>
-      </select>
-    </div>
-
-    <div class="col-1"></div>
-    <div class="col-6 text-left">
+    <div>
       <label
-        >Current database:&nbsp;<a href="#" onclick="globalActivateTab('tab-database');" class="link"><span id="currentDatabase"></span></a
-      ></label>
-    </div>
-    <div class="col-2 text-left">
-      <label
-        >Auto Limit &nbsp;
+        >Auto Limit
         <i
           class="fa fa-question-circle"
           data-toggle="tooltip"
@@ -53,8 +21,35 @@
         </select>
       </label>
     </div>
-    <div class="col-3 text-right">
+    <div>
       <label>Returned <span id="result-num"></span>&nbsp;records in <span id="result-elapsed"></span>ms</label>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col-10">
+      <textarea id="inputCommand" name="inputCommand"></textarea>
+    </div>
+    <div class="col-2">
+      <div class="d-flex">
+        <button class="btn btn-primary mx-2" onclick="executeCommand()">
+          <i class="fa fa-play"></i>
+          <img id="executeSpinner" class="ui-loading" src="/images/color-spin-small.svg" style="display: none" />
+        </button>
+        <select id="inputLanguage" class="px-1 form-control" style="color: #00aeee">
+          <option value="sql" selected>SQL</option>
+          <option value="sqlScript">SQL Script</option>
+          <option value="gremlin">Gremlin</option>
+          <option value="cypher">Cypher</option>
+          <option value="graphql">GraphQL</option>
+          <option value="mongo">MongoDB</option>
+        </select>
+      </div>
+      <div class="d-flex">
+        <select id="inputHistory" class="btn btn-secondary" style="width: 100%">
+          <option selected>History</option>
+        </select>
+      </div>
     </div>
 
     <div class="col-12">
@@ -334,6 +329,8 @@
 </div>
 
 <script>
+  $('[data-toggle="tooltip"]').tooltip();
+
   var editor = null;
   function initQuery() {
     $('[data-toggle="tooltip"]').tooltip();
@@ -381,11 +378,19 @@
     $("#inputHistory").change(function () {
       copyQueryFromHistory();
     });
+
+    $(".inputDatabase").change(function () {
+      setCurrentDatabase(this.value);
+      loadQueryHistory();
+      displaySchema();
+      displayDatabaseSettings();
+    });
   }
 
   function renderCodeEditor() {
     editor = CodeMirror.fromTextArea(document.getElementById("inputCommand"), {
       mode: getEditorMode(),
+      lineWrapping: true,
       indentWithTabs: false,
       smartIndent: true,
       lineNumbers: false,

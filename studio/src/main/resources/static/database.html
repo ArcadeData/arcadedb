@@ -5,16 +5,16 @@
     </div>
   </div>
 
-  <div class="row">
-    <div class="col-8">
+  <div class="d-flex justify-content-between">
+    <div>
       <div class="form-inline">
         <div class="form-group">
-          <label>Connected as&nbsp;</label><label for="inputDatabase" id="user"></label>@
-          <select id="inputDatabase" class="form-control"></select>
+          <label>Connected as&nbsp;</label><label for="schemaInputDatabase" id="user"></label>@
+          <select id="schemaInputDatabase" class="inputDatabase form-select"></select>
         </div>
       </div>
     </div>
-    <div class="col-4">
+    <div>
       <button class="btn btn-pill" onclick="createDatabase()"><i class="fa fa-plus"></i> Create</button>
       <button class="btn btn-pill" onclick="dropDatabase()"><i class="fa fa-minus"></i> Drop</button>
       <button class="btn btn-pill" onclick="resetDatabase()"><i class="fa fa-sync"></i> Reset</button>
@@ -58,7 +58,7 @@
                 </div>
                 <div class="row">
                   <div class="col-2">
-                    <ul id="vTypesTabs" class="nav nav-tabs flex-column"></ul>
+                    <ul id="vTypesTabs" class="nav nav-tabs"></ul>
                   </div>
                   <div class="col-10">
                     <div id="vTypesPanels" class="tab-content"></div>
@@ -74,7 +74,7 @@
                 </div>
                 <div class="row">
                   <div class="col-2">
-                    <ul id="eTypesTabs" class="nav nav-tabs flex-column"></ul>
+                    <ul id="eTypesTabs" class="nav nav-tabs"></ul>
                   </div>
                   <div class="col-10">
                     <div id="eTypesPanels" class="tab-content"></div>
@@ -90,7 +90,7 @@
                 </div>
                 <div class="row">
                   <div class="col-2">
-                    <ul id="dTypesTabs" class="nav nav-tabs flex-column"></ul>
+                    <ul id="dTypesTabs" class="nav nav-tabs"></ul>
                   </div>
                   <div class="col-10">
                     <div id="dTypesPanels" class="tab-content"></div>
@@ -110,12 +110,3 @@
     </div>
   </div>
 </div>
-
-<script>
-  $("#inputDatabase").change(function () {
-    setCurrentDatabase($("#inputDatabase").val());
-    loadQueryHistory();
-    displaySchema();
-    displayDatabaseSettings();
-  });
-</script>
