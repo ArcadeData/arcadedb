@@ -80,10 +80,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private final          AtomicLong cachedRecordCount                = new AtomicLong(-1);
 
   private static class AvailableSpace {
-    public BasePage page              = null;
-    public int      newPosition       = -1;
-    public int      recordCountInPage = -1;
-    public boolean  createNewPage     = false;
+    public BasePage page                    = null;
+    public int      newRecordPositionInPage = -1;
+    public int      availablePositionIndex  = -1;
+    public boolean  createNewPage           = false;
   }
 
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
@@ -591,8 +591,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final int bufferSize = buffer.size();
 
     try {
-      int newPosition = -1;
-      int recordCountInPage = -1;
+      int newRecordPositionInPage = -1;
+      int availablePositionIndex = -1;
       final boolean createNewPage;
       BasePage lastPage = null;
 
@@ -600,11 +600,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (txPageCounter > 0) {
         // CHECK IF THERE IS SPACE IN THE LAST PAGE
-        final AvailableSpace availableSpace = checkForSpaceInPage(txPageCounter - 1, isPlaceHolder, bufferSize);
+        final AvailableSpace availableSpace = getAvailableSpaceInPage(txPageCounter - 1, isPlaceHolder, bufferSize);
 
         lastPage = availableSpace.page;
-        newPosition = availableSpace.newPosition;
-        recordCountInPage = availableSpace.recordCountInPage;
+        newRecordPositionInPage = availableSpace.newRecordPositionInPage;
+        availablePositionIndex = availableSpace.availablePositionIndex;
         createNewPage = availableSpace.createNewPage;
 
       } else
@@ -613,33 +613,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final MutablePage selectedPage;
       if (createNewPage) {
         selectedPage = database.getTransaction().addPage(new PageId(file.getFileId(), txPageCounter), pageSize);
-        newPosition = contentHeaderSize;
-        recordCountInPage = 0;
+        newRecordPositionInPage = contentHeaderSize;
+        availablePositionIndex = 0;
       } else
         selectedPage = database.getTransaction().getPageToModify(lastPage);
 
-      LogManager.instance().log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, recordCountInPage,
-          Thread.currentThread().getId());
+      LogManager.instance()
+          .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, availablePositionIndex,
+              Thread.currentThread().getId());
       final RID rid = new RID(database, file.getFileId(),
-          ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + recordCountInPage);
+          ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
-      final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newPosition;
+      final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newRecordPositionInPage;
       final int spaceNeeded = Binary.getNumberSpace(isPlaceHolder ? (-1L * bufferSize) : bufferSize) + bufferSize;
 
       if (spaceNeeded > spaceAvailableInCurrentPage) {
         // MULTI-PAGE RECORD
-        writeMultiPageRecord(rid, buffer, selectedPage, newPosition, spaceAvailableInCurrentPage);
+        writeMultiPageRecord(buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage);
 
       } else {
-        final int byteWritten = selectedPage.writeNumber(newPosition, isPlaceHolder ? (-1L * bufferSize) : bufferSize);
-        selectedPage.writeByteArray(newPosition + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+        final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage, isPlaceHolder ? (-1L * bufferSize) : bufferSize);
+        selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(),
+            bufferSize);
       }
 
-      selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordCountInPage * INT_SERIALIZED_SIZE, newPosition);
-      selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) ++recordCountInPage);
+      selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
+          newRecordPositionInPage);
+      selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) ++availablePositionIndex);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
+          .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, availablePositionIndex,
               Thread.currentThread().getId());
 
       if (!discardRecordAfter)
@@ -726,42 +729,50 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int bufferSize = buffer.size();
       if (bufferSize > recordSize[0]) {
         // UPDATED RECORD IS LARGER THAN THE PREVIOUS VERSION: MAKE ROOM IN THE PAGE IF POSSIBLE
+        final int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
 
-        final int lastRecordPositionInPage = getRecordPositionInPage(page, recordCountInPage - 1);
-        final long[] lastRecordSize = page.readNumberAndSize(lastRecordPositionInPage);
+        final long[] lastRecordSize;
+        if (lastRecordPositionInPage != recordPositionInPage) {
+          // CURRENT RECORD IS NOT THE LATEST RIGHT IN THE PAGE
 
-        if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER) {
-          lastRecordSize[0] = LONG_SERIALIZED_SIZE;
-          lastRecordSize[1] = 1L;
-        } else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
-          // CONSIDER THE CHUNK SIZE
-          lastRecordSize[0] = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
-          lastRecordSize[1] = INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
-        } else if (lastRecordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
-          lastRecordSize[0] *= -1L;
-        }
+          if (lastRecordPositionInPage < contentHeaderSize)
+            // IT SHOULD NEVER OCCUR BECAUSE THE CURRENT RECORD IS PRESENT IN THIS PAGE
+            throw new DatabaseOperationException("Invalid position on expanding existing record " + rid);
 
-        final int pageOccupiedInBytes = (int) (lastRecordPositionInPage + lastRecordSize[0] + lastRecordSize[1]) + 1;
-        final int spaceAvailableInCurrentPage = page.getMaxContentSize() - pageOccupiedInBytes - 1;
+          lastRecordSize = page.readNumberAndSize(lastRecordPositionInPage);
+
+          if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+            lastRecordSize[0] = LONG_SERIALIZED_SIZE;
+            lastRecordSize[1] = 1L;
+          } else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
+            // CONSIDER THE CHUNK SIZE
+            lastRecordSize[0] = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
+            lastRecordSize[1] = INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+          } else if (lastRecordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
+            lastRecordSize[0] *= -1L;
+          }
+        } else
+          lastRecordSize = recordSize;
+
+        final int pageOccupiedInBytes = (int) (lastRecordPositionInPage + lastRecordSize[0] + lastRecordSize[1]);
+        final int spaceAvailableInCurrentPage = page.getMaxContentSize() - pageOccupiedInBytes;
         final int bufferSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1L * bufferSize : bufferSize);
         final int additionalSpaceNeeded = (int) (bufferSize + bufferSizeLength - recordSize[0] - recordSize[1]);
 
-        if (additionalSpaceNeeded <= spaceAvailableInCurrentPage) {
+        if (additionalSpaceNeeded < spaceAvailableInCurrentPage) {
           // THERE IS SPACE LEFT IN THE PAGE, SHIFT ON THE RIGHT THE EXISTENT RECORDS
-          if (positionInPage < recordCountInPage - 1) {
+          if (lastRecordPositionInPage != recordPositionInPage) {
             // NOT LAST RECORD IN PAGE, SHIFT NEXT RECORDS
-            final int nextRecordPositionInPage = getRecordPositionInPage(page, positionInPage + 1);
-            final int newPos = nextRecordPositionInPage + additionalSpaceNeeded;
+            final int from = (int) (recordPositionInPage + recordSize[0] + recordSize[1]);
 
-            page.move(nextRecordPositionInPage, newPos, pageOccupiedInBytes - nextRecordPositionInPage);
+            page.move(from, from + additionalSpaceNeeded, pageOccupiedInBytes - from);
 
             // TODO: CALCULATE THE REAL SIZE TO COMPACT DELETED RECORDS/PLACEHOLDERS
-            for (int pos = positionInPage + 1; pos < recordCountInPage; ++pos) {
+            for (int pos = 0; pos < recordCountInPage; ++pos) {
               final int nextRecordPosInPage = getRecordPositionInPage(page, pos);
-              if (nextRecordPosInPage == 0)
-                // TODO: WHY DO WE NEED TO WRITE BACK 0?
-                page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE, 0);
-              else
+              if (nextRecordPosInPage != 0 &&//
+                  nextRecordPosInPage >= from &&//
+                  nextRecordPosInPage <= pageOccupiedInBytes)
                 page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE,
                     nextRecordPosInPage + additionalSpaceNeeded);
 
@@ -796,7 +807,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                     page, Thread.currentThread().getId());
           } else {
             // SPLIT THE RECORD IN CHUNKS AS LINKED LIST AND STORE THE FIRST PART ON CURRENT PAGE ISSUE https://github.com/ArcadeData/arcadedb/issues/332
-            writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceForChunk);
+            writeMultiPageRecord(buffer, page, recordPositionInPage, availableSpaceForChunk);
 
             LogManager.instance().log(this, Level.FINE,
                 "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (%s threadId=%d)", null, rid,
@@ -878,6 +889,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             chunkPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), chunkPageId), pageSize, false);
             chunkRecordPositionInPage = getRecordPositionInPage(chunkPage, chunkPositionInPage);
+            if (chunkRecordPositionInPage == 0)
+              throw new DatabaseOperationException("Error on fetching multi page record " + rid + " chunk " + chunkId);
+
             recordSize = chunkPage.readNumberAndSize(chunkRecordPositionInPage);
 
             if (recordSize[0] != NEXT_CHUNK)
@@ -898,8 +912,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
 
         // POINTER = 0 MEANS DELETED
-        //page.writeNumber(recordPositionInPage, 0L);
-        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+        page.writeNumber(recordPositionInPage, 0L);
+//        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
 
 // TODO: UPDATE TOTAL RECORDS IN PAGE
 //
@@ -934,6 +948,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   public void compressPage(final MutablePage page) {
+//    if (true)
+//      return;
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
     final List<int[]> orderedRecordContentInPage = new ArrayList<>(DEF_MAX_RECORDS_IN_PAGE);
@@ -949,21 +965,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // DELETED <24.1.1
         continue;
 
+      final int size;
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
-        orderedRecordContentInPage.add(new int[] { recordPositionInPage, LONG_SERIALIZED_SIZE + (int) recordSize[1] });
+        size = LONG_SERIALIZED_SIZE + (int) recordSize[1];
       else if (recordSize[0] == FIRST_CHUNK || recordSize[0] == NEXT_CHUNK) {
         final int chunkSize = page.readInt((recordPositionInPage + (int) recordSize[1]));
-        orderedRecordContentInPage.add(
-            new int[] { recordPositionInPage, chunkSize + (int) recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE });
+        size = chunkSize + (int) recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
       } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
         // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
-        orderedRecordContentInPage.add(new int[] { recordPositionInPage, (int) (-1 * recordSize[0]) + (int) recordSize[1] });
+        size = (int) (-1 * recordSize[0]) + (int) recordSize[1];
       else
-        orderedRecordContentInPage.add(new int[] { recordPositionInPage, (int) recordSize[0] + (int) recordSize[1] });
+        size = (int) recordSize[0] + (int) recordSize[1];
+
+      if (size < 0 || size > getPageSize() - contentHeaderSize)
+        // INVALID SIZE
+        throw new DatabaseOperationException(
+            "Invalid record size " + size + " for record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage)
+                + positionInPage);
+
+      orderedRecordContentInPage.add(new int[] { recordPositionInPage, size });
     }
 
-    if (orderedRecordContentInPage.isEmpty())
+    if (orderedRecordContentInPage.isEmpty()) {
+      if (recordCountInPage > 0) {
+        // RESET RECORD COUNTER TO 0
+        page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 0);
+        LogManager.instance()
+            .log(this, Level.FINE, "Compressed the whole page %s with %d deleted records", page.pageId, recordCountInPage);
+      }
       return;
+    }
 
     orderedRecordContentInPage.sort(Comparator.comparingLong(a -> a[0]));
 
@@ -973,7 +1004,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     int[] lastPointer = new int[] { PAGE_RECORD_TABLE_OFFSET + maxRecordsInPage * INT_SERIALIZED_SIZE, 0 };
     for (int i = 0; i < orderedRecordContentInPage.size(); i++) {
       final int[] pointer = orderedRecordContentInPage.get(i);
-
       final int lastPointerEnd = lastPointer[0] + lastPointer[1];
       if (pointer[0] != lastPointerEnd) {
         final int[] lastHole = holes.isEmpty() ? null : holes.get(holes.size() - 1);
@@ -1015,6 +1045,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       gap += hole[1];
     }
+
+    if (!holes.isEmpty())
+      LogManager.instance().log(this, Level.FINE, "Compressed page %s removed %d holes", page.pageId, holes.size());
   }
 
   private Binary loadMultiPageRecord(final RID originalRID, BasePage page, int recordPositionInPage, long[] recordSize)
@@ -1063,7 +1096,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return recordPositionInPage;
   }
 
-  private void writeMultiPageRecord(final RID originalRID, final Binary buffer, MutablePage currentPage, int newPosition,
+  private void writeMultiPageRecord(final Binary buffer, MutablePage currentPage, int newPosition,
       final int availableSpaceForFirstChunk) throws IOException {
     int bufferSize = buffer.size();
 
@@ -1098,13 +1131,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       int recordIdInPage = 0;
       if (currentPage.getPageId().getPageNumber() < txPageCounter - 1) {
         // LOOK IN THE LAST PAGE FOR SPACE
-        final AvailableSpace availableSpace = checkForSpaceInPage(txPageCounter - 1, false, bufferSize);
+        final AvailableSpace availableSpace = getAvailableSpaceInPage(txPageCounter - 1, false, bufferSize);
         if (!availableSpace.createNewPage) {
           nextPage = database.getTransaction().getPageToModify(availableSpace.page.pageId, pageSize, false);
-          newPosition = availableSpace.newPosition;
-          recordIdInPage = availableSpace.recordCountInPage;
+          newPosition = availableSpace.newRecordPositionInPage;
+          recordIdInPage = availableSpace.availablePositionIndex;
 
-          nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availableSpace.recordCountInPage * INT_SERIALIZED_SIZE, newPosition);
+          nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availableSpace.availablePositionIndex * INT_SERIALIZED_SIZE,
+              newPosition);
           nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
         }
       }
@@ -1193,6 +1227,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         nextPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), chunkPageId), pageSize, false);
         final int recordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
+        if (recordPositionInPage == 0)
+          throw new DatabaseOperationException("Error on fetching multi page record " + originalRID);
+
         final long[] recordSize = nextPage.readNumberAndSize(recordPositionInPage);
 
         if (recordSize[0] != NEXT_CHUNK)
@@ -1207,13 +1244,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         int recordIdInPage = 0;
         if (currentPage.getPageId().getPageNumber() < txPageCounter - 1) {
           // LOOK IN THE LAST PAGE FOR SPACE
-          final AvailableSpace availableSpace = checkForSpaceInPage(txPageCounter - 1, false, bufferSize);
+          final AvailableSpace availableSpace = getAvailableSpaceInPage(txPageCounter - 1, false, bufferSize);
           if (!availableSpace.createNewPage) {
             nextPage = database.getTransaction().getPageToModify(availableSpace.page.pageId, pageSize, false);
-            newPosition = availableSpace.newPosition;
-            recordIdInPage = availableSpace.recordCountInPage;
+            newPosition = availableSpace.newRecordPositionInPage;
+            recordIdInPage = availableSpace.availablePositionIndex;
 
-            nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availableSpace.recordCountInPage * INT_SERIALIZED_SIZE,
+            nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availableSpace.availablePositionIndex * INT_SERIALIZED_SIZE,
                 newPosition);
             nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
           }
@@ -1263,57 +1300,78 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
-  private AvailableSpace checkForSpaceInPage(final int pageNumber, final boolean isPlaceHolder, final int bufferSize)
+  private int getLastRecordPositionInPage(final MutablePage page, final int totalRecords) throws IOException {
+    int lastRecordPositionInPage = -1;
+    for (int i = 0; i < totalRecords; i++) {
+      final int recordPositionInPage = getRecordPositionInPage(page, i);
+      if (recordPositionInPage != 0 && recordPositionInPage > lastRecordPositionInPage)
+        lastRecordPositionInPage = recordPositionInPage;
+    }
+    return lastRecordPositionInPage;
+  }
+
+  private AvailableSpace getAvailableSpaceInPage(final int pageNumber, final boolean isPlaceHolder, final int bufferSize)
       throws IOException {
     final AvailableSpace result = new AvailableSpace();
 
     result.page = database.getTransaction().getPage(new PageId(file.getFileId(), pageNumber), pageSize);
 
-    result.recordCountInPage = result.page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-    if (result.recordCountInPage >= maxRecordsInPage)
+    final short totalRecords = result.page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+    if (totalRecords >= maxRecordsInPage)
       // MAX NUMBER OF RECORDS IN A PAGE REACHED, USE A NEW PAGE
       result.createNewPage = true;
-    else if (result.recordCountInPage > 0) {
-      // GET FIRST EMPTY POSITION
+    else if (totalRecords > 0) {
+      // GET FIRST EMPTY POSITION IF ANY
+      result.availablePositionIndex = -1;
+      int lastRecordPositionInPage = -1;
+      for (int i = 0; i < totalRecords; i++) {
+        final int recordPositionInPage = getRecordPositionInPage(result.page, i);
+        if (recordPositionInPage == 0) {
+          // REUSE THE FIRST AVAILABLE POSITION FROM DELETED RECORD
+          if (result.availablePositionIndex == -1)
+            result.availablePositionIndex = i;
+        } else if (recordPositionInPage > lastRecordPositionInPage)
+          lastRecordPositionInPage = recordPositionInPage;
+      }
 
-      // TODO: LOOK FOR ACTUAL EMPTY SPACE, NOT JUST FROM THE LAST RECORD
+      if (result.availablePositionIndex == -1)
+        // USE NEW POSITION
+        result.availablePositionIndex = totalRecords;
 
-      final int lastRecordPositionInPage = getRecordPositionInPage(result.page, result.recordCountInPage - 1);
-      if (lastRecordPositionInPage == 0)
-        // TODO: NOW THIS MEANS DELETED!
-        // CLEANED CORRUPTED RECORD
-        result.createNewPage = true;
+      if (lastRecordPositionInPage == -1)
+        // TOTALLY EMPTY PAGE AFTER DELETION, GET THE FIRST POSITION
+        result.newRecordPositionInPage = contentHeaderSize;
       else {
         final long[] lastRecordSize = result.page.readNumberAndSize(lastRecordPositionInPage);
-
         if (lastRecordSize[0] == 0)
           // DELETED (V<24.1.1)
-          result.newPosition = lastRecordPositionInPage + (int) lastRecordSize[1];
+          result.newRecordPositionInPage = lastRecordPositionInPage + (int) lastRecordSize[1];
         else if (lastRecordSize[0] > 0)
           // RECORD PRESENT, CONSIDER THE RECORD SIZE + VARINT SIZE
-          result.newPosition = lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
+          result.newRecordPositionInPage = lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
         else if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER)
           // PLACEHOLDER, CONSIDER NEXT 9 BYTES
-          result.newPosition = lastRecordPositionInPage + LONG_SERIALIZED_SIZE + (int) lastRecordSize[1];
+          result.newRecordPositionInPage = lastRecordPositionInPage + LONG_SERIALIZED_SIZE + (int) lastRecordSize[1];
         else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
           // CHUNK
           final int chunkSize = result.page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
-          result.newPosition =
+          result.newRecordPositionInPage =
               lastRecordPositionInPage + (int) lastRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize;
         } else
           // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
-          result.newPosition = lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
+          result.newRecordPositionInPage = lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
 
-        final long spaceAvailableInCurrentPage = result.page.getMaxContentSize() - result.newPosition;
+        final long spaceAvailableInCurrentPage = result.page.getMaxContentSize() - result.newRecordPositionInPage;
         final int spaceNeeded = Binary.getNumberSpace(isPlaceHolder ? (-1L * bufferSize) : bufferSize) + bufferSize;
         if (spaceNeeded > spaceAvailableInCurrentPage && spaceAvailableInCurrentPage < MINIMUM_SPACE_LEFT_IN_PAGE)
           // RECORD TOO BIG FOR THIS PAGE, USE A NEW PAGE
           result.createNewPage = true;
       }
-    } else
+    } else {
       // FIRST RECORD, START RIGHT AFTER THE HEADER
-      result.newPosition = contentHeaderSize;
-
+      result.availablePositionIndex = 0;
+      result.newRecordPositionInPage = contentHeaderSize;
+    }
     return result;
   }
 }
