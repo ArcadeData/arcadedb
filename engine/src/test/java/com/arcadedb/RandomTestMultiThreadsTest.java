@@ -81,8 +81,9 @@ public class RandomTestMultiThreadsTest extends TestHelper {
               try {
                 final int op = getRandom(100);
                 if (i % 5000 == 0)
-                  LogManager.instance().log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i, CYCLES,
-                      totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
+                  LogManager.instance()
+                      .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i,
+                          CYCLES, totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
 
                 LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", op, i, CYCLES, threadId);
 
@@ -165,8 +166,8 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
                   if (getRandom(50) == 0)
                     LogManager.instance()
-                        .log(this, Level.FINE, "Found %d Transaction records, ram counter=%d (thread=%d)...", newCounter, totalTransactionRecords.get(),
-                            threadId);
+                        .log(this, Level.FINE, "Found %d Transaction records, ram counter=%d (thread=%d)...", newCounter,
+                            totalTransactionRecords.get(), threadId);
 
                   totalTransactionInCurrentTx -= deleteRecords(database, threadId);
 
@@ -290,6 +291,8 @@ public class RandomTestMultiThreadsTest extends TestHelper {
   }
 
   private int deleteRecords(final Database database, final int threadId) {
+//    if (true)
+//      return 0;
     if (totalTransactionRecords.get() == 0)
       return 0;
 

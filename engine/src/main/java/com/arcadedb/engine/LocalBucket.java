@@ -912,27 +912,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
 
         // POINTER = 0 MEANS DELETED
-        page.writeNumber(recordPositionInPage, 0L);
-//        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
-
-// TODO: UPDATE TOTAL RECORDS IN PAGE
-//
-//        if (positionInPage == recordCountInPage - 1) {
-//          // LAST POSITION IN THE PAGE, UPDATE THE TOTAL RECORDS IN THE PAGE GOING BACK FROM THE CURRENT RECORD
-//          int newRecordCount = -1;
-//          for (int i = positionInPage - 1; i > -1; i--) {
-//            final int pos = getRecordPositionInPage(page, i);
-//            if (pos == 0 || page.readNumberAndSize(pos)[0] == 0)
-//              // DELETE RECORD,
-//              newRecordCount = i;
-//            else
-//              break;
-//          }
-//
-//          if (newRecordCount > -1)
-//            // UPDATE TOTAL RECORDS IN THE PAGE
-//            page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) newRecordCount);
-//        }
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
 
       } else {
         // CORRUPTED RECORD: WRITE ZERO AS POINTER TO RECORD
@@ -947,9 +927,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
-  public void compressPage(final MutablePage page) {
-//    if (true)
-//      return;
+  public void compressPage(final MutablePage page) throws IOException {
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
     final List<int[]> orderedRecordContentInPage = new ArrayList<>(DEF_MAX_RECORDS_IN_PAGE);
@@ -990,8 +968,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (recordCountInPage > 0) {
         // RESET RECORD COUNTER TO 0
         page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 0);
-        LogManager.instance()
-            .log(this, Level.FINE, "Compressed the whole page %s with %d deleted records", page.pageId, recordCountInPage);
+        LogManager.instance().log(this, Level.FINE, "Update record count from %d to 0 in page %s", recordCountInPage, page.pageId);
       }
       return;
     }
@@ -1023,11 +1000,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int marginEnd = i < holes.size() - 1 ? holes.get(i + 1)[0] : page.getContentSize();
 
       final int from = hole[0] + hole[1];
+      final int to = hole[0] - gap;
       final int length = marginEnd - from;
       if (length < 1)
         LogManager.instance().log(this, Level.SEVERE, "Error on reusing hole, invalid length " + length);
 
-      page.move(from, hole[0], length);
+      LogManager.instance().log(this, Level.FINE, "Moving segment page %s %d-(%d)->%d...", page.pageId, from, length, to);
+      page.move(from, to, length);
 
       // SHIFT ALL THE POINTERS FROM THE HOLE TO THE LAST
       for (int positionInPage = 0; positionInPage < recordCountInPage; positionInPage++) {
@@ -1040,14 +1019,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (recordPositionInPage >= from && recordPositionInPage <= from + length) {
           page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE,
               recordPositionInPage - hole[1] - gap);
+          LogManager.instance().log(this, Level.FINE, "- record %d %d->%d", positionInPage, recordPositionInPage,
+              recordPositionInPage - hole[1] - gap);
         }
       }
 
       gap += hole[1];
     }
 
-    if (!holes.isEmpty())
+    if (!holes.isEmpty()) {
       LogManager.instance().log(this, Level.FINE, "Compressed page %s removed %d holes", page.pageId, holes.size());
+
+      // UPDATE THE RECORD COUNT
+      // LAST POSITION IN THE PAGE, UPDATE THE TOTAL RECORDS IN THE PAGE GOING BACK FROM THE CURRENT RECORD
+      int newRecordCount = -1;
+      for (int i = recordCountInPage - 1; i > -1; i--) {
+        final int pos = getRecordPositionInPage(page, i);
+        if (pos == 0 || page.readNumberAndSize(pos)[0] == 0)
+          // DELETE RECORD,
+          newRecordCount = i;
+        else
+          break;
+      }
+
+      if (newRecordCount > -1) {
+        // UPDATE TOTAL RECORDS IN THE PAGE
+        LogManager.instance()
+            .log(this, Level.FINE, "Update record count from %d to %d in page %s", recordCountInPage, newRecordCount, page.pageId);
+        page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) newRecordCount);
+      }
+    }
   }
 
   private Binary loadMultiPageRecord(final RID originalRID, BasePage page, int recordPositionInPage, long[] recordSize)
