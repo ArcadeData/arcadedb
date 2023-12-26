@@ -45,6 +45,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "import database");
+
     if (this.url != null)
       result.setProperty("fromUrl", this.url.getUrlString());
 
@@ -66,7 +67,10 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on importing database, importer libs not found in classpath", e);
     } catch (final InvocationTargetException e) {
-      throw new CommandExecutionException("Error on importing database", e.getTargetException());
+      if (e.getCause().getClass().getSimpleName().equals("IllegalArgumentException"))
+        result.setProperty("result", "FAIL");
+      else
+        throw new CommandExecutionException("Error on importing database", e.getTargetException());
     }
 
     result.setProperty("result", "OK");

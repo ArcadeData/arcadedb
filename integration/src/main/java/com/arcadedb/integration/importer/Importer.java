@@ -56,11 +56,17 @@ public class Importer extends AbstractImporter {
       loadFromSource(settings.vertices, AnalyzedEntity.ENTITY_TYPE.VERTEX, analyzedSchema);
       loadFromSource(settings.edges, AnalyzedEntity.ENTITY_TYPE.EDGE, analyzedSchema);
 
+      if (settings.probeOnly)
+        return null;
+
       if (database.isTransactionActive())
         database.commit();
 
     } catch (final Exception e) {
-      throw new ImportException("Error on parsing source '" + source + "'", e);
+        if (settings.probeOnly)
+          throw new IllegalArgumentException(e);
+        else
+          throw new ImportException("Error on parsing source '" + source + "'", e);
     } finally {
       stopImporting();
       if (database != null) {
@@ -78,6 +84,12 @@ public class Importer extends AbstractImporter {
       return;
 
     final SourceDiscovery sourceDiscovery = new SourceDiscovery(url);
+
+    if (settings.probeOnly) {
+      sourceDiscovery.getSource();
+      return;
+    }
+
     final SourceSchema sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema, logger);
     if (sourceSchema == null) {
       //LogManager.instance().log(this, Level.WARNING, "XML importing aborted because unable to determine the schema");
