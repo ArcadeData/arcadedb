@@ -19,9 +19,11 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.DatabaseChecker;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -78,9 +80,14 @@ public class CRUDTest extends TestHelper {
       db.begin();
 
       for (int i = 0; i < 3; ++i) {
-        updateAll("largeField" + i);
+        final String largeField = "largeField" + i;
+        updateAll(largeField);
 
         Assertions.assertEquals(TOT, db.countType("V", true));
+
+        Assertions.assertEquals(TOT,
+            ((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
+                .getProperty("count")).intValue(), "Count not expected for field '" + largeField + "'");
 
         db.commit();
         db.begin();
@@ -101,9 +108,13 @@ public class CRUDTest extends TestHelper {
       });
 
       for (int i = 0; i < 10; ++i) {
-        updateAll("largeField" + i);
+        final String largeField = "largeField" + i;
+        updateAll(largeField);
 
         Assertions.assertEquals(TOT, db.countType("V", true));
+        Assertions.assertEquals(TOT,
+            ((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
+                .getProperty("count")).intValue(), "Count not expected for field '" + largeField + "'");
 
         db.commit();
         db.begin();
