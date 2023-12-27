@@ -74,7 +74,7 @@ public class RemoteServer extends RemoteHttpComponent {
     return protocol + "://" + currentServer + ":" + currentPort;
   }
 
-  public void createUser(final String userName, final String password, final List<String> databases) {
+  public void createUser(final String userName, final String password, final HashMap<String,String> databases) {
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("server"));
 
@@ -83,8 +83,8 @@ public class RemoteServer extends RemoteHttpComponent {
       jsonUser.put("password", password);
       if (databases != null && !databases.isEmpty()) {
         final JSONObject databasesJson = new JSONObject();
-        for (final String dbName : databases)
-          databasesJson.put(dbName, new String[] { "admin" });
+        for (Map.Entry<String, String> entry : databases.entrySet())
+          databasesJson.put(entry.getKey(), new String[] { entry.getValue() });
         jsonUser.put("databases", databasesJson);
       }
 
@@ -99,6 +99,16 @@ public class RemoteServer extends RemoteHttpComponent {
     } catch (final Exception e) {
       throw new DatabaseOperationException("Error on creating user", e);
     }
+  }
+
+  public void createUser(final String userName, final String password, final List<String> databases) {
+
+    HashMap<String,String> databasesWithGroups = new HashMap<String, String>();
+
+    for (final String dbName : databases)
+      databasesWithGroups.put(dbName, "admin");
+
+    createUser(userName, password, databasesWithGroups);
   }
 
   public void dropUser(final String userName) {
