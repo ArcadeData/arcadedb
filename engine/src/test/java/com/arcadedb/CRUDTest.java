@@ -77,6 +77,29 @@ public class CRUDTest extends TestHelper {
     try {
       db.begin();
 
+      for (int i = 0; i < 3; ++i) {
+        updateAll("largeField" + i);
+
+        Assertions.assertEquals(TOT, db.countType("V", true));
+
+        db.commit();
+        db.begin();
+
+        Assertions.assertEquals(TOT, db.countType("V", true));
+
+        LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates", i);
+      }
+
+      database.scanType("V", true, record -> {
+        final MutableDocument document = record.modify();
+        document.set("update", true);
+        document.remove("largeField0");
+        document.remove("largeField1");
+        document.remove("largeField2");
+        document.save();
+        return true;
+      });
+
       for (int i = 0; i < 10; ++i) {
         updateAll("largeField" + i);
 
@@ -164,8 +187,8 @@ public class CRUDTest extends TestHelper {
         db.scanType("V", true, record -> {
           Assertions.assertEquals(true, record.get("update"));
 
-          Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + counter),
-              "Unexpected content in record " + record.getIdentity());
+          Assertions.assertEquals("This is a large field to force the page overlap at some point",
+              record.get("largeField" + counter), "Unexpected content in record " + record.getIdentity());
 
           return true;
         });
