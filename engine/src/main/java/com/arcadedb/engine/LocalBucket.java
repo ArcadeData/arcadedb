@@ -269,10 +269,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return new BucketIterator(this, database);
   }
 
-  public int getFileId() {
-    return fileId;
-  }
-
   @Override
   public String toString() {
     return componentName;

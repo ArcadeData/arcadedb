@@ -133,6 +133,10 @@ public class TransactionContext implements Transaction {
     return phase1 != null ? phase1.result : null;
   }
 
+  public Database.TRANSACTION_ISOLATION_LEVEL getIsolationLevel() {
+    return isolationLevel;
+  }
+
   public Record getRecordFromCache(final RID rid) {
     Record rec = modifiedRecordsCache.get(rid);
     if (rec == null)
