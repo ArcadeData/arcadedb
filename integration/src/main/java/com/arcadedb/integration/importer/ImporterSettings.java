@@ -27,6 +27,7 @@ public class ImporterSettings {
   public String  url          = null;
   public boolean wal          = false;
   public int     verboseLevel = 2;
+  public boolean probeOnly    = false;
 
   public String documents;
   public String documentsFileType;
@@ -120,6 +121,8 @@ public class ImporterSettings {
       parsingLimitEntries = Long.parseLong(value);
     else if ("mapping".equals(name))
       mapping = value;
+    else if ("probeOnly".equals(name))
+      probeOnly = Boolean.parseBoolean(value);
 
       // DOCUMENT SETTINGS
 

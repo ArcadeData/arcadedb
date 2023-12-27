@@ -32,6 +32,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
@@ -69,7 +70,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
         threads[i] = new Thread(new Runnable() {
           @Override
           public void run() {
-            database.begin();
+            database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
 
             long totalTransactionInCurrentTx = 0;
 
@@ -98,24 +99,28 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   LogManager.instance().log(this, Level.FINE, "Querying Account by index records (thread=%d)...", threadId);
 
                   final Map<String, Object> map = new HashMap<>();
-                  map.put(":id", getRandom(10000) + 1);
+                  final int randomId = getRandom(10000) + 1;
+                  map.put(":id", randomId);
 
                   final ResultSet result = database.command("SQL", "select from Account where id = :id", map);
                   while (result.hasNext()) {
                     final Result record = result.next();
-                    record.toString();
+                    record.toJSON();
+                    Assertions.assertEquals(randomId, (Long) record.getProperty("id"));
                   }
 
                 } else if (op >= 40 && op <= 59) {
                   LogManager.instance().log(this, Level.FINE, "Querying Transaction by index records (thread=%d)...", threadId);
 
                   final Map<String, Object> map = new HashMap<>();
-                  map.put(":uuid", getRandom((int) (totalTransactionRecords.get() + 1)) + 1);
+                  final int randomUUID = getRandom((int) (totalTransactionRecords.get() + 1)) + 1;
+                  map.put(":uuid", randomUUID);
 
                   final ResultSet result = database.command("SQL", "select from Transaction where uuid = :uuid", map);
                   while (result.hasNext()) {
                     final Result record = result.next();
-                    record.toString();
+                    record.toJSON();
+                    Assertions.assertEquals(randomUUID, (Long) record.getProperty("uuid"));
                   }
                 } else if (op >= 60 && op <= 64) {
                   LogManager.instance().log(this, Level.FINE, "Scanning Account records (thread=%d)...", threadId);
@@ -126,7 +131,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   final ResultSet result = database.command("SQL", "select from Account limit :limit", map);
                   while (result.hasNext()) {
                     final Result record = result.next();
-                    record.toString();
+                    record.toJSON();
                   }
 
                 } else if (op >= 65 && op <= 69) {
@@ -138,7 +143,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   final ResultSet result = database.command("SQL", "select from Transaction limit :limit", map);
                   while (result.hasNext()) {
                     final Result record = result.next();
-                    record.toString();
+                    record.toJSON();
                   }
 
                 } else if (op >= 70 && op <= 74) {
@@ -153,7 +158,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   totalTransactionRecords.addAndGet(totalTransactionInCurrentTx);
                   totalTransactionInCurrentTx = 0;
 
-                  database.begin();
+                  database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
                 } else if (op >= 85 && op <= 94) {
 
                   LogManager.instance().log(this, Level.FINE, "Updating records (thread=%d)...", threadId);
@@ -198,7 +203,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                 }
 
                 if (!database.isTransactionActive())
-                  database.begin();
+                  database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
               }
             }
 
@@ -334,8 +339,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
     final long begin = System.currentTimeMillis();
 
-    database.begin();
-
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     try {
       for (long row = 0; row < STARTING_ACCOUNT; ++row) {
         final MutableDocument record = database.newVertex("Account");
@@ -355,7 +359,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
   private void createSchema() {
     if (!database.getSchema().existsType("Account")) {
-      database.begin();
+      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
 
       final VertexType accountType = database.getSchema().buildVertexType().withName("Account").withTotalBuckets(BUCKETS).create();
       accountType.createProperty("id", Long.class);
