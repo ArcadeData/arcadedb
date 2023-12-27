@@ -872,6 +872,7 @@ public class Console {
     outputLine(1, "info transaction                                  -> prints current transaction");
     outputLine(1, "list databases |remote:<url> <user> <pw>          -> prints list of databases");
     outputLine(1, "load <path>                                       -> runs local script");
+    outputLine(1, "pwd                                               -> returns current directory");
     outputLine(1, "rollback                                          -> rolls back current transaction");
     outputLine(1, "set language = sql|sqlscript|cypher|gremlin|mongo -> sets console query language");
     outputLine(1, "-- <comment>                                      -> comment (no operation)");
