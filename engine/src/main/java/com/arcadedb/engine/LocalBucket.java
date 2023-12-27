@@ -1220,6 +1220,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     // WRITE ALL THE REMAINING CHUNKS IN NEW PAGES
     int txPageCounter = getTotalPages();
+    long chunkToDeletePointer = 0L;
 
     while (bufferSize > 0) {
       MutablePage nextPage = null;
@@ -1280,9 +1281,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // WRITE CHUNK SIZE
       final boolean lastChunk = bufferSize <= chunkSize;
-      if (bufferSize < chunkSize)
+      if (bufferSize < chunkSize) {
         // LAST CHUNK
         chunkSize = bufferSize;
+        chunkToDeletePointer = nextChunkPointer;
+      }
 
       nextPage.writeInt(newPosition, chunkSize);
 
@@ -1300,6 +1303,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       bufferSize -= chunkSize;
       contentOffset += chunkSize;
       currentPage = nextPage;
+    }
+
+    // CHECK TO DELETE REMAINING CHUNKS IF THE RECORD SHRUNK
+    while (chunkToDeletePointer > 0) {
+      final int chunkPageId = (int) (chunkToDeletePointer / maxRecordsInPage);
+      final int chunkPositionInPage = (int) (chunkToDeletePointer % maxRecordsInPage);
+
+      final MutablePage nextPage = database.getTransaction()
+          .getPageToModify(new PageId(file.getFileId(), chunkPageId), pageSize, false);
+      final int recordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
+
+      // DELETE THE CHUNK AS RECORD IN THE PAGE
+      nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + chunkPositionInPage * INT_SERIALIZED_SIZE, 0L);
+
+      if (recordPositionInPage == 0) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting extra part of multi-page record %s after it shrunk", originalRID);
+        break;
+      }
+
+      final long[] recordSize = nextPage.readNumberAndSize(recordPositionInPage);
+
+      if (recordSize[0] != NEXT_CHUNK) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting extra part of multi-page record %s after it shrunk", originalRID);
+        break;
+      }
+
+      newPosition = (int) (recordPositionInPage + recordSize[1]);
+      chunkToDeletePointer = nextPage.readLong(newPosition + INT_SERIALIZED_SIZE);
     }
   }
 
