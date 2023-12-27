@@ -262,10 +262,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return new BucketIterator(this, database);
   }
 
-  public int getFileId() {
-    return fileId;
-  }
-
   @Override
   public String toString() {
     return componentName;
@@ -731,7 +727,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         } else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
           // CONSIDER THE CHUNK SIZE
           lastRecordSize[0] = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
-          lastRecordSize[1] = 1L +  INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+          lastRecordSize[1] = 1L + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
         } else if (lastRecordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
           lastRecordSize[0] *= -1L;
         }

@@ -65,8 +65,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -658,7 +658,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Record id is null");
 
     return (Record) executeInReadLock((Callable<Object>) () -> {
-
       checkDatabaseIsOpen();
 
       // CHECK IN TX CACHE FIRST
@@ -669,10 +668,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
 
-      if (loadContent || type == null) {
+      final boolean loadRecordContent;
+      if (!loadContent && tx.getIsolationLevel() == TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+        // FORCE LOAD OF CONTENT TO GUARANTEE THE LOADING OF MULTI-PAGE RECORD INTO THE TX CONTEXT
+        loadRecordContent = true;
+      else
+        loadRecordContent = loadContent;
+
+      if (loadRecordContent || type == null) {
         final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
-
         return invokeAfterReadEvents(record);
       }
 
