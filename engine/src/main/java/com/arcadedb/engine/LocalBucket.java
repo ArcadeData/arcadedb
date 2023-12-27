@@ -1165,8 +1165,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // WRITE CHUNK SIZE
       chunkSize = spaceAvailableInCurrentPage - INT_SERIALIZED_SIZE - LONG_SERIALIZED_SIZE;
-      final boolean lastChunk = bufferSize < chunkSize;
-      if (lastChunk)
+      final boolean lastChunk = bufferSize <= chunkSize;
+      if (bufferSize < chunkSize)
         // LAST CHUNK
         chunkSize = bufferSize;
 
@@ -1279,8 +1279,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       // WRITE CHUNK SIZE
-      final boolean lastChunk = bufferSize < chunkSize;
-      if (lastChunk)
+      final boolean lastChunk = bufferSize <= chunkSize;
+      if (bufferSize < chunkSize)
         // LAST CHUNK
         chunkSize = bufferSize;
 
