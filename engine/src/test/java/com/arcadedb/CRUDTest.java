@@ -19,9 +19,11 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.DatabaseChecker;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -77,10 +79,42 @@ public class CRUDTest extends TestHelper {
     try {
       db.begin();
 
-      for (int i = 0; i < 10; ++i) {
-        updateAll("largeField" + i);
+      for (int i = 0; i < 3; ++i) {
+        final String largeField = "largeField" + i;
+        updateAll(largeField);
 
         Assertions.assertEquals(TOT, db.countType("V", true));
+
+        Assertions.assertEquals(TOT,
+            ((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
+                .getProperty("count")).intValue(), "Count not expected for field '" + largeField + "'");
+
+        db.commit();
+        db.begin();
+
+        Assertions.assertEquals(TOT, db.countType("V", true));
+
+        LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates", i);
+      }
+
+      database.scanType("V", true, record -> {
+        final MutableDocument document = record.modify();
+        document.set("update", true);
+        document.remove("largeField0");
+        document.remove("largeField1");
+        document.remove("largeField2");
+        document.save();
+        return true;
+      });
+
+      for (int i = 0; i < 10; ++i) {
+        final String largeField = "largeField" + i;
+        updateAll(largeField);
+
+        Assertions.assertEquals(TOT, db.countType("V", true));
+        Assertions.assertEquals(TOT,
+            ((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
+                .getProperty("count")).intValue(), "Count not expected for field '" + largeField + "'");
 
         db.commit();
         db.begin();
@@ -164,8 +198,8 @@ public class CRUDTest extends TestHelper {
         db.scanType("V", true, record -> {
           Assertions.assertEquals(true, record.get("update"));
 
-          Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + counter),
-              "Unexpected content in record " + record.getIdentity());
+          Assertions.assertEquals("This is a large field to force the page overlap at some point",
+              record.get("largeField" + counter), "Unexpected content in record " + record.getIdentity());
 
           return true;
         });
