@@ -375,13 +375,13 @@ public class ConsoleAsyncInsertTest {
     }
     String DELETE_ORDERS = "DELETE FROM Order WHERE id >= ? AND id <= ?";
     try (ResultSet resultSet = database.command("sql", DELETE_ORDERS, firstOrderId, lastOrderId)) {
-      Assertions.assertEquals((Long) resultSet.next().getProperty("count"), TOTAL);
+      Assertions.assertEquals(TOTAL, (Long) resultSet.next().getProperty("count"));
     }
     try (ResultSet resultSet = database.query("sql", "select from Order order by id")) {
       Assertions.assertFalse(resultSet.hasNext());
     }
     insertResult = insertOrdersAsync(database, orders);
-    Assertions.assertEquals(insertResult.getInt("totalRows"), TOTAL);
+    Assertions.assertEquals(TOTAL, insertResult.getInt("totalRows"));
     try (ResultSet resultSet = database.query("sql", "select from Order")) {
       Assertions.assertTrue(resultSet.hasNext());
     }
