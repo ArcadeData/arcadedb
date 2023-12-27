@@ -467,16 +467,25 @@ public class Console {
     checkHasSpaces("User name", userName);
 
     final String password;
-    final List<String> databases;
+    HashMap<String,String> databases = new HashMap<String,String>();
 
     if (databasesByPos > -1) {
       password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1, databasesByPos).trim();
       final String databasesList = params.substring(databasesByPos + " GRANT CONNECT TO ".length()).trim();
       final String[] databasesArray = databasesList.split(",");
-      databases = List.of(databasesArray);
+      final List<String> databasesName = List.of(databasesArray);
+      for (final String db : databasesName) {
+        final int colonPos = db.indexOf(":");
+        if (colonPos > -1) {
+          final String dbname = db.substring(0,colonPos -1).trim();
+          final String dbgroup = db.substring(colonPos + 1).trim();
+          databases.put(dbname,dbgroup);
+        } else {
+          databases.put(db,"admin");
+        }
+      }
     } else {
       password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1).trim();
-      databases = new ArrayList<>();
     }
 
     checkIsEmpty("User password", password);
