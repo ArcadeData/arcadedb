@@ -95,9 +95,9 @@ public class CheckDatabaseTest extends TestHelper {
       Assertions.assertEquals("check database", row.getProperty("operation"));
       Assertions.assertEquals(0L, (Long) row.getProperty("autoFix"));
       Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
+      Assertions.assertEquals(0, (Long) row.getProperty("totalAllocatedEdges"));
       Assertions.assertEquals(0L, (Long) row.getProperty("totalActiveEdges"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalDeletedRecords"));
+      Assertions.assertEquals(0, (Long) row.getProperty("totalDeletedRecords"));
       Assertions.assertEquals(0, ((Collection) row.getProperty("corruptedRecords")).size());
       Assertions.assertEquals(0L, (Long) row.getProperty("missingReferenceBack"));
       Assertions.assertEquals(0L, (Long) row.getProperty("invalidLinks"));
@@ -130,7 +130,7 @@ public class CheckDatabaseTest extends TestHelper {
       Assertions.assertEquals("check database", row.getProperty("operation"));
       Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
       Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
+      Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalAllocatedEdges"));
       Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalActiveEdges"));
       Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
       Assertions.assertEquals(1, ((Collection) row.getProperty("corruptedRecords")).size());
@@ -150,7 +150,7 @@ public class CheckDatabaseTest extends TestHelper {
       Assertions.assertEquals("check database", row.getProperty("operation"));
       Assertions.assertEquals(1, (Long) row.getProperty("autoFix"));
       Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
+      Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalAllocatedEdges"));
       Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalActiveEdges"));
       Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
       Assertions.assertEquals(1, ((Collection) row.getProperty("corruptedRecords")).size());
@@ -170,7 +170,7 @@ public class CheckDatabaseTest extends TestHelper {
       Assertions.assertEquals("check database", row.getProperty("operation"));
       Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
       Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
+      Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalAllocatedEdges"));
       Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalActiveEdges"));
       Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
       Assertions.assertEquals(0, ((Collection) row.getProperty("corruptedRecords")).size());
@@ -212,15 +212,15 @@ public class CheckDatabaseTest extends TestHelper {
     Result row = result.next();
 
     Assertions.assertEquals("check database", row.getProperty("operation"));
-    Assertions.assertEquals((TOTAL - 1) * 2, (Long) row.getProperty("autoFix"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveVertices"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-    Assertions.assertEquals(0, (Long) row.getProperty("totalActiveEdges"));
-    Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalDeletedRecords"));
-    Assertions.assertEquals(TOTAL - 1, ((Collection) row.getProperty("corruptedRecords")).size());
-    Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
-    Assertions.assertEquals((TOTAL - 1) * 2, (Long) row.getProperty("invalidLinks"));
-    Assertions.assertEquals((TOTAL - 1) * 2, ((Collection) row.getProperty("warnings")).size());
+    Assertions.assertEquals((TOTAL - 1L) * 2L, (Long) row.getProperty("autoFix"));
+    Assertions.assertEquals(TOTAL - 1L, (Long) row.getProperty("totalActiveVertices"));
+    Assertions.assertEquals(0L, (Long) row.getProperty("totalAllocatedEdges"));
+    Assertions.assertEquals(0L, (Long) row.getProperty("totalActiveEdges"));
+    Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
+    Assertions.assertEquals(TOTAL - 1L, ((Collection) row.getProperty("corruptedRecords")).size());
+    Assertions.assertEquals(0L, (Long) row.getProperty("missingReferenceBack"));
+    Assertions.assertEquals((TOTAL - 1L) * 2L, (Long) row.getProperty("invalidLinks"));
+    Assertions.assertEquals((TOTAL - 1L) * 2L, ((Collection) row.getProperty("warnings")).size());
 
     result = database.command("sql", "check database");
     Assertions.assertTrue(result.hasNext());
@@ -229,10 +229,10 @@ public class CheckDatabaseTest extends TestHelper {
 
     Assertions.assertEquals("check database", row.getProperty("operation"));
     Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveVertices"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
+    Assertions.assertEquals(TOTAL - 1L, (Long) row.getProperty("totalActiveVertices"));
+    Assertions.assertEquals(0, (Long) row.getProperty("totalAllocatedEdges"));
     Assertions.assertEquals(0, (Long) row.getProperty("totalActiveEdges"));
-    Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalDeletedRecords"));
+    Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
     Assertions.assertEquals(0, ((Collection) row.getProperty("corruptedRecords")).size());
     Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
     Assertions.assertEquals(0, (Long) row.getProperty("invalidLinks"));

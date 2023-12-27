@@ -68,7 +68,8 @@ public class AsyncTest extends TestHelper {
 
       database.scanType(TYPE_NAME, true, record -> {
         callbackInvoked.incrementAndGet();
-        database.async().updateRecord(record.modify().set("updated", true), newRecord -> updatedRecords.incrementAndGet());
+        record.modify().set("updated", true).save();
+        updatedRecords.incrementAndGet();
         return true;
       });
 
@@ -81,7 +82,10 @@ public class AsyncTest extends TestHelper {
     Assertions.assertEquals(TOT, callbackInvoked.get());
     Assertions.assertEquals(TOT, updatedRecords.get());
 
-    final ResultSet resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
+    ResultSet resultSet = database.query("sql", "select from " + TYPE_NAME + " where updated <> true");
+    Assertions.assertFalse(resultSet.hasNext());
+
+    resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
 
     Assertions.assertTrue(resultSet.hasNext());
     Assertions.assertEquals(TOT, ((Number) resultSet.next().getProperty("count")).intValue());
