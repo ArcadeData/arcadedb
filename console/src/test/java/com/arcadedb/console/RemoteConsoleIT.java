@@ -198,6 +198,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     }
 
     Assertions.assertTrue(console.parse("create user elon identified by musk grant connect to db1"));
+    Assertions.assertTrue(console.parse("create user jeff identified by amazon grant connect to db1:readonly"));
     Assertions.assertTrue(console.parse("drop user elon"));
   }
 
