@@ -467,7 +467,7 @@ public class Console {
     checkHasSpaces("User name", userName);
 
     final String password;
-    HashMap<String,String> databases = new HashMap<String,String>();
+    Map<String,String> databases = new HashMap<String,String>();
 
     if (databasesByPos > -1) {
       password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1, databasesByPos).trim();

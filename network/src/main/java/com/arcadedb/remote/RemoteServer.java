@@ -74,7 +74,7 @@ public class RemoteServer extends RemoteHttpComponent {
     return protocol + "://" + currentServer + ":" + currentPort;
   }
 
-  public void createUser(final String userName, final String password, final HashMap<String,String> databases) {
+  public void createUser(final String userName, final String password, final Map<String,String> databases) {
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("server"));
 
@@ -103,7 +103,7 @@ public class RemoteServer extends RemoteHttpComponent {
 
   public void createUser(final String userName, final String password, final List<String> databases) {
 
-    HashMap<String,String> databasesWithGroups = new HashMap<String, String>();
+    Map<String,String> databasesWithGroups = new HashMap<String, String>();
 
     for (final String dbName : databases)
       databasesWithGroups.put(dbName, "admin");
