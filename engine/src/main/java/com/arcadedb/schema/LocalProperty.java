@@ -64,11 +64,13 @@ public class LocalProperty extends AbstractProperty {
           ofType = ofType.toUpperCase(Locale.ENGLISH);
         } else {
           if (!schema.existsType(ofType))
-            throw new SchemaException("Type '" + ofType + "' not defined");
+            throw new SchemaException("Error on set property " + owner.getName() + "." + name + " " + type + " type to '" + ofType
+                + "' because the type is not defined");
         }
       } else if (type == Type.LINK || type == Type.EMBEDDED) {
         if (schema.isSchemaLoaded() && !schema.existsType(ofType))
-          throw new SchemaException("Type '" + ofType + "' not defined");
+          throw new SchemaException("Error on set property " + owner.getName() + "." + name + " " + type + " type to '" + ofType
+              + "' because the type is not defined");
       }
 
       this.ofType = ofType;

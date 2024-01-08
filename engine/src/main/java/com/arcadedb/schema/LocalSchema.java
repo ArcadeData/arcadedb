@@ -991,6 +991,15 @@ public class LocalSchema implements Schema {
           }
         }
 
+        type.custom.clear();
+        if (schemaType.has("custom"))
+          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
+      }
+
+      // CREATE THE PROPERTIES AFTER ALL THE TYPES HAVE BEEN CREATED TO FIND ALL THE REFERENCES LINKED WITH `TO`
+      for (final String typeName : types.keySet()) {
+        final JSONObject schemaType = types.getJSONObject(typeName);
+        final LocalDocumentType type = getType(typeName);
         if (schemaType.has("properties")) {
           final JSONObject schemaProperties = schemaType.getJSONObject("properties");
           if (schemaProperties != null) {
@@ -1000,10 +1009,6 @@ public class LocalSchema implements Schema {
             }
           }
         }
-
-        type.custom.clear();
-        if (schemaType.has("custom"))
-          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
       }
 
       // RESTORE THE INHERITANCE
