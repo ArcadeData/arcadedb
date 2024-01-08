@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.*;
+
 public class RemoteMutableEdge extends MutableEdge {
   protected final RemoteDatabase remoteDatabase;
   protected final String         typeName;
@@ -84,6 +86,18 @@ public class RemoteMutableEdge extends MutableEdge {
       dirty = false;
     } else
       throw new RecordNotFoundException("Record " + rid + " not found", rid);
+  }
+
+  @Override
+  public Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> result = new HashMap<>(map);
+    if (includeMetadata) {
+      result.put("@cat", "e");
+      result.put("@type", typeName);
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
+    return result;
   }
 
   @Override

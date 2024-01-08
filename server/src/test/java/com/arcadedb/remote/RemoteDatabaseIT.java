@@ -86,6 +86,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         final Result rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Elon"));
+        Assertions.assertEquals("Elon", rec.toElement().toMap().get("name"));
         final RID rid = rec.toElement().getIdentity();
 
         // RETRIEVE DOCUMENT WITH QUERY
@@ -166,6 +167,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         Result rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Elon"));
+        Assertions.assertEquals("Elon", rec.toElement().toMap().get("name"));
         final RID rid1 = rec.getIdentity().get();
 
         // CREATE VERTEX 2
@@ -174,6 +176,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Kimbal"));
+        Assertions.assertEquals("Kimbal", rec.toElement().toMap().get("name"));
         final RID rid2 = rec.getIdentity().get();
 
         // RETRIEVE VERTEX WITH QUERY
@@ -198,7 +201,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertEquals(rid1, edge.getOut());
         Assertions.assertEquals(rid2, edge.getIn());
 
-        Document record = (Document) database.lookupByRID(rid1);
+        Vertex record = (Vertex) database.lookupByRID(rid1);
         Assertions.assertNotNull(record);
         Assertions.assertEquals("Elon", record.getString("name"));
         Assertions.assertEquals("Musk", record.getString("lastName"));
@@ -206,7 +209,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         record.toMap();
         record.toJSON();
 
-        record = (Document) database.lookupByRID(rid2);
+        record = (Vertex) database.lookupByRID(rid2);
         Assertions.assertNotNull(record);
         Assertions.assertEquals("Kimbal", record.getString("name"));
         Assertions.assertEquals("Musk", record.getString("lastName"));

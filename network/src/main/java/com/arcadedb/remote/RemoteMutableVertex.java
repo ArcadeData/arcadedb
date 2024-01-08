@@ -33,6 +33,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.*;
+
 public class RemoteMutableVertex extends MutableVertex {
   private final   RemoteVertex   internal;
   protected final RemoteDatabase remoteDatabase;
@@ -83,6 +85,18 @@ public class RemoteMutableVertex extends MutableVertex {
       dirty = false;
     } else
       throw new RecordNotFoundException("Record " + rid + " not found", rid);
+  }
+
+  @Override
+  public Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> result = new HashMap<>(map);
+    if (includeMetadata) {
+      result.put("@cat", "v");
+      result.put("@type", typeName);
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
+    return result;
   }
 
   @Override
