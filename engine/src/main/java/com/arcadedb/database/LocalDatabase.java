@@ -323,6 +323,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return user != null ? user.getName() : null;
   }
 
+  @Override
+  public int getNestedTransactions() {
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    if (dbContext != null)
+      return dbContext.transactions.size();
+    return 0;
+  }
+
   public TransactionContext getTransactionIfExists() {
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (dbContext != null) {
