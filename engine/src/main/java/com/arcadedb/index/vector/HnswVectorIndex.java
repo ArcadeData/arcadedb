@@ -892,7 +892,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public boolean isAutomatic() {
-    return underlyingIndex.isAutomatic();
+    return underlyingIndex != null ? underlyingIndex.isAutomatic() : false;
   }
 
   @Override
