@@ -417,12 +417,12 @@ public class RemoteHttpComponent extends RWLockContext {
       } else if (exception.equals(RecordNotFoundException.class.getName())) {
         final int begin = detail.indexOf("#");
         final int end = detail.indexOf(" ", begin);
-        return new RecordNotFoundException(detail, new RID(null, detail.substring(begin, end)));
+        return new RecordNotFoundException(detail, new RID( detail.substring(begin, end)));
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
         final String[] exceptionArgsParts = exceptionArgs.split("\\|");
-        return new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(null, exceptionArgsParts[2]));
+        return new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID( exceptionArgsParts[2]));
       } else if (exception.equals(ConcurrentModificationException.class.getName())) {
         return new ConcurrentModificationException(detail);
       } else if (exception.equals(TransactionException.class.getName())) {
