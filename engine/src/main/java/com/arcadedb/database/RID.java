@@ -52,6 +52,10 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     this.offset = offset;
   }
 
+  public RID(final String value) {
+    this(null, value);
+  }
+
   public RID(final BasicDatabase database, String value) {
     if (database == null)
       // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
