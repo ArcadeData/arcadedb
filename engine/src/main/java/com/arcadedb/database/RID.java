@@ -41,6 +41,10 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   protected final         long          offset;
   private                 int           cachedHashCode = 0; // BOOST PERFORMANCE BECAUSE RID.HASHCODE() IS ONE OF THE HOTSPOTS FOR ANY USE CASES
 
+  public RID(final int bucketId, final long offset) {
+    this(null, bucketId, offset);
+  }
+
   public RID(final BasicDatabase database, final int bucketId, final long offset) {
     if (database == null)
       // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
