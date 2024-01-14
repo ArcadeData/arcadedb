@@ -86,7 +86,7 @@ public class LocalDocumentType implements DocumentType {
 
     final HashSet<String> set = new HashSet<>(propertiesWithDefaultDefined);
     for (final LocalDocumentType superType : superTypes)
-      set.addAll(superType.propertiesWithDefaultDefined);
+      set.addAll(superType.getPolymorphicPropertiesWithDefaultDefined());
     return set;
   }
 

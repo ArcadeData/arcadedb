@@ -73,8 +73,13 @@ public class AlterPropertyExecutionTest extends TestHelper {
 
   @Test
   public void sqlAlterPropertyDefault() {
-    database.command("sql", "CREATE VERTEX TYPE Car");
-    Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().isEmpty());
+    database.command("sql", "CREATE VERTEX TYPE Vehicle");
+    database.command("sql", "CREATE PROPERTY Vehicle.id STRING");
+    database.command("sql", "ALTER PROPERTY Vehicle.id DEFAULT \"12345\"");
+    Assertions.assertTrue(database.getSchema().getType("Vehicle").getSuperTypes().isEmpty());
+
+    database.command("sql", "CREATE VERTEX TYPE Car EXTENDS Vehicle");
+    Assertions.assertTrue(!database.getSchema().getType("Car").getSuperTypes().isEmpty());
 
     database.command("sql", "CREATE PROPERTY Car.name STRING");
     Assertions.assertTrue(database.getSchema().getType("Car").existsProperty("name"));
@@ -114,6 +119,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
 
       final Vertex v = result.next().getVertex().get();
+      Assertions.assertEquals("12345", v.get("id"));
       Assertions.assertEquals("test", v.get("name"));
       Assertions.assertEquals(1.0F, v.get("weight"));
     });
