@@ -201,7 +201,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   private boolean matchesClass(final Edge edge) {
     if (targetType == null)
       return true;
-    return edge.getTypeName().equals(targetType.getStringValue());
+    return edge.getType().isSubTypeOf(targetType.getStringValue());
   }
 
   @Override
