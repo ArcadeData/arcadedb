@@ -132,6 +132,7 @@
         <module>coverage</module>
         <module>studio</module>
         <module>package</module>
+        <module>native</module>
         <module>e2e</module>
     </modules>
 

@@ -1,12 +1,14 @@
-name: Java CI - test
+name: Native Image
 
 on:
   workflow_dispatch:
 
-
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: xembly/workflow-manager@v1
@@ -17,27 +19,32 @@ jobs:
       - uses: actions/checkout@v3.3.0
       - uses: actions/setup-python@v4
 
-
       - name: Set up GraalVM 21
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '21'
-          distribution: 'graalvm-community'
+          java-version: "21"
+          distribution: "graalvm-community"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          components: 'js'
-          native-image-job-reports: 'true'
+          components: "js"
+          native-image-job-reports: "true"
 
-#      - name: Set up GraalVM 11
-#        uses: graalvm/setup-graalvm@v1
-#        with:
-#          java-version: '20'
-#          distribution: 'graalvm'
-#          components: 'js'
-#          github-token: ${{ secrets.GITHUB_TOKEN }}
-#          native-image-job-reports: 'true'
+      #      - name: Set up GraalVM 11
+      #        uses: graalvm/setup-graalvm@v1
+      #        with:
+      #          java-version: '20'
+      #          distribution: 'graalvm'
+      #          components: 'js'
+      #          github-token: ${{ secrets.GITHUB_TOKEN }}
+      #          native-image-job-reports: 'true'
 
       - name: Native image
         continue-on-error: ${{ matrix.continue-on-error }}
-        run: mvn clean install -DskipTests -Pnative
+        run: mvn clean package -DskipTests -Pnative
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcadedb-${{ matrix.os }}-${{ runner.arch }}
+          path: ./native/target/arcadedb
