@@ -76,10 +76,10 @@
         <license-maven-plugin.version>4.3</license-maven-plugin.version>
         <mockito-core.version>5.10.0</mockito-core.version>
         <maven-install-plugin.version>3.1.1</maven-install-plugin.version>
-        <license-maven-plugin.version>4.1</license-maven-plugin.version>
+        <license-maven-plugin.version>4.3</license-maven-plugin.version>
         <mockito-core.version>4.2.0</mockito-core.version>
 
-        <native.maven.plugin.version>0.9.23</native.maven.plugin.version>
+        <native.maven.plugin.version>0.9.28</native.maven.plugin.version>
 
     </properties>
 
