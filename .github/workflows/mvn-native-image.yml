@@ -28,15 +28,6 @@ jobs:
           components: "js"
           native-image-job-reports: "true"
 
-      #      - name: Set up GraalVM 11
-      #        uses: graalvm/setup-graalvm@v1
-      #        with:
-      #          java-version: '20'
-      #          distribution: 'graalvm'
-      #          components: 'js'
-      #          github-token: ${{ secrets.GITHUB_TOKEN }}
-      #          native-image-job-reports: 'true'
-
       - name: Native image
         continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn clean package -DskipTests -Pnative
