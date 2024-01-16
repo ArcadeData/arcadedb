@@ -1,4 +1,9 @@
 ### Info on Raft's modifications to ArcadeDb for the the SOCOM DF usecase.
+- Keycloak authentication
+- Basic classification/ACCM handling
+- Non classification marked data in databases with classification controls enabled are quarantined and only viewable by Data Stewards.
+- Daily backup job
+
 
 #### Access ArcadeDb on DF helm deployments at:
 - Studio: https://arcadedb.[localhost|custom df domain]
@@ -31,7 +36,7 @@ To demo this functionality....
 
 ### Demo
 
-1. Log into arcade http://arcadedb.localhost/ with admin credentials. Replace `localhost` with your deployed domain as needed.
+1. Log into arcade http://arcadedb.localhost/ with the keycloak admin credentials. Replace `localhost` with your deployed domain as needed.
 
 2. Create new database in the Arcade GUI. (Click on the database icon, 2nd from the top on the left menu). The create database button is in the upper right.
 
