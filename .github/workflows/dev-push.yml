@@ -4,7 +4,10 @@ name: DEV - Build and Push 'dev' Docker Image
 on:
   push:
     branches:
-      - dev 
+      - dev
+  schedule:
+    # Schedule for a nightly build at 5 AM UTC
+    - cron: '0 5 * * *'
 
 env:
   GHCR_REGISTRY: ghcr.io
@@ -48,6 +51,10 @@ jobs:
           username: ${{ secrets.IB_USER }}
           password: ${{ secrets.IB_PASS }}
 
+      - name: Generate date-time tag
+        id: date-tag
+        run: echo "DATE_TAG=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+
       - name: Build and push - GHCR
         uses: docker/build-push-action@v4.1.1
         with:
@@ -55,4 +62,6 @@ jobs:
           file: ${{ env.DOCKERFILE_PATH }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.DATE_TAG }}
