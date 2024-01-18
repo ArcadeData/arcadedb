@@ -238,7 +238,7 @@ public class TraverseExecutionPlanner {
     final Identifier identifier = queryTarget.getItem().getIdentifier();
 
     final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
-    final FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), null, context,
+    final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), null, context,
         orderByRidAsc, profilingEnabled);
     plan.chain(fetcher);
   }

@@ -2230,7 +2230,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromClassExecutionStep); // no index used
+    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep); // no index used
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2280,7 +2280,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertTrue(
-        plan.getSteps().get(0) instanceof FetchFromClassExecutionStep); // no index, because the superclass is not empty
+        plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep); // no index, because the superclass is not empty
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2401,7 +2401,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromClassExecutionStep);
+    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep);
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -3479,7 +3479,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where @rid >= #" + clusterIds[1] + ":0");
     final ExecutionPlan execPlan = result.getExecutionPlan().get();
     for (final ExecutionStep ExecutionStep : execPlan.getSteps()) {
-      if (ExecutionStep instanceof FetchFromClassExecutionStep) {
+      if (ExecutionStep instanceof FetchFromTypeExecutionStep) {
         Assertions.assertEquals(clusterIds.length - 1, ExecutionStep.getSubSteps().size());
         // clusters - 1 + fetch from tx...
       }
@@ -3517,7 +3517,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where @rid >= :rid", params);
     final ExecutionPlan execPlan = result.getExecutionPlan().get();
     for (final ExecutionStep ExecutionStep : execPlan.getSteps()) {
-      if (ExecutionStep instanceof FetchFromClassExecutionStep) {
+      if (ExecutionStep instanceof FetchFromTypeExecutionStep) {
         Assertions.assertEquals(clusterIds.length - 1, ExecutionStep.getSubSteps().size());
         // clusters - 1 + fetch from tx...
       }

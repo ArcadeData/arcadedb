@@ -24,7 +24,7 @@ import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-public class CheckClassTypeStepTest {
+public class CheckTypeTypeStepTest {
 
   @Test
   public void shouldCheckSubclasses() throws Exception {
@@ -33,7 +33,7 @@ public class CheckClassTypeStepTest {
       context.setDatabase(db);
       final DocumentType parentClass = TestHelper.createRandomType(db);
       final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
-      final CheckClassTypeStep step = new CheckClassTypeStep(childClass.getName(), parentClass.getName(), context, false);
+      final CheckTypeTypeStep step = new CheckTypeTypeStep(childClass.getName(), parentClass.getName(), context, false);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(0, result.stream().count());
@@ -46,7 +46,7 @@ public class CheckClassTypeStepTest {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final String className = TestHelper.createRandomType(db).getName();
-      final CheckClassTypeStep step = new CheckClassTypeStep(className, className, context, false);
+      final CheckTypeTypeStep step = new CheckTypeTypeStep(className, className, context, false);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(0, result.stream().count());
@@ -59,7 +59,7 @@ public class CheckClassTypeStepTest {
       TestHelper.executeInNewDatabase((db) -> {
         final BasicCommandContext context = new BasicCommandContext();
         context.setDatabase(db);
-        final CheckClassTypeStep step = new CheckClassTypeStep(TestHelper.createRandomType(db).getName(),
+        final CheckTypeTypeStep step = new CheckTypeTypeStep(TestHelper.createRandomType(db).getName(),
             TestHelper.createRandomType(db).getName(), context, false);
 
         step.syncPull(context, 20);

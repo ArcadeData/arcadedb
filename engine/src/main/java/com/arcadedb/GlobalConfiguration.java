@@ -231,6 +231,10 @@ public enum GlobalConfiguration {
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
 
+  COMMAND_WARNINGS_EVERY("arcadedb.command.warningsEvery", SCOPE.JVM,
+      "Reduce warnings in commands to print in console only every X occurrences. Use 0 to disable warnings with commands",
+      Integer.class, 100),
+
   GREMLIN_ENGINE("arcadedb.gremlin.engine", SCOPE.DATABASE,
       "Gremlin engine to use. By default the `auto` setting uses the legacy `groovy` engine in case parameters are set, otherwise, the new native `java` is preferred. If you have compatibility issues with gremlin statements that use lambdas or in general, switch to the `groovy` one",
       String.class, "auto", Set.of("auto", "groovy", "java")),

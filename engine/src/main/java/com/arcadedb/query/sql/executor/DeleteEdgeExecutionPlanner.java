@@ -130,7 +130,7 @@ public class DeleteEdgeExecutionPlanner {
 
   private void handleTargetClass(final DeleteExecutionPlan result, final CommandContext context, final Identifier className, final boolean profilingEnabled) {
     if (className != null)
-      result.chain(new FetchFromClassExecutionStep(className.getStringValue(), null, context, null, profilingEnabled));
+      result.chain(new FetchFromTypeExecutionStep(className.getStringValue(), null, context, null, profilingEnabled));
   }
 
 //  private boolean handleIndexAsTarget(DeleteExecutionPlan result, IndexIdentifier indexIdentifier, WhereClause whereClause,

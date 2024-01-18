@@ -27,14 +27,14 @@ import java.util.*;
 /**
  * Created by luigidellaquila on 01/03/17.
  */
-public class FilterByClassStep extends AbstractExecutionStep {
+public class FilterByTypeStep extends AbstractExecutionStep {
   private final Identifier identifier;
 
   //runtime
 
   ResultSet prevResult = null;
 
-  public FilterByClassStep(final Identifier identifier, final CommandContext context, final boolean profilingEnabled) {
+  public FilterByTypeStep(final Identifier identifier, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.identifier = identifier;
   }
@@ -118,7 +118,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        FilterByClassStep.this.close();
+        FilterByTypeStep.this.close();
       }
     };
   }
@@ -145,6 +145,6 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FilterByClassStep(this.identifier.copy(), context, this.profilingEnabled);
+    return new FilterByTypeStep(this.identifier.copy(), context, this.profilingEnabled);
   }
 }

@@ -23,7 +23,7 @@ import com.arcadedb.database.MutableDocument;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-public class CountFromClassStepTest {
+public class CountFromTypeStepTest {
 
   private static final String ALIAS = "size";
 
@@ -38,7 +38,7 @@ public class CountFromClassStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final CountFromClassStep step = new CountFromClassStep(className, ALIAS, context, false);
+      final CountFromTypeStep step = new CountFromTypeStep(className, ALIAS, context, false);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(20, (long) result.next().getProperty(ALIAS));

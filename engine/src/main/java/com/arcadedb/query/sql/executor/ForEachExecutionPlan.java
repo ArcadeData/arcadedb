@@ -34,12 +34,11 @@ public class ForEachExecutionPlan extends UpdateExecutionPlan {
 
   public boolean containsReturn() {
     for (final ExecutionStep step : getSteps()) {
-      if (step instanceof ForEachStep) {
+      if (step instanceof ForEachStep)
         return ((ForEachStep) step).containsReturn();
-      }
-      if (step instanceof WhileStep) {
+
+      if (step instanceof WhileStep)
         return ((WhileStep) step).containsReturn();
-      }
     }
     return false;
   }

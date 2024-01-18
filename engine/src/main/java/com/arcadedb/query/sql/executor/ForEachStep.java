@@ -38,10 +38,10 @@ public class ForEachStep extends AbstractExecutionStep {
 
   Iterator iterator;
   private ExecutionStepInternal finalResult = null;
-  private boolean               inited      = false;
+  private boolean               initiated   = false;
 
-  public ForEachStep(final Identifier loopVariable, final Expression oExpression, final List<Statement> statements, final CommandContext context,
-      final boolean enableProfiling) {
+  public ForEachStep(final Identifier loopVariable, final Expression oExpression, final List<Statement> statements,
+      final CommandContext context, final boolean enableProfiling) {
     super(context, enableProfiling);
     this.loopVariable = loopVariable;
     this.source = oExpression;
@@ -72,10 +72,10 @@ public class ForEachStep extends AbstractExecutionStep {
   }
 
   protected void init(final CommandContext context) {
-    if (!this.inited) {
+    if (!this.initiated) {
       final Object val = source.execute(new ResultInternal(), context);
       this.iterator = MultiValue.getMultiValueIterator(val);
-      this.inited = true;
+      this.initiated = true;
     }
   }
 
@@ -83,23 +83,22 @@ public class ForEachStep extends AbstractExecutionStep {
     final BasicCommandContext subCtx1 = new BasicCommandContext();
     subCtx1.setParent(context);
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
-    for (final Statement stm : body) {
+    for (final Statement stm : body)
       plan.chain(stm.createExecutionPlan(subCtx1, profilingEnabled), profilingEnabled);
-    }
+
     return plan;
   }
 
   public boolean containsReturn() {
     for (final Statement stm : this.body) {
-      if (stm instanceof ReturnStatement) {
+      if (stm instanceof ReturnStatement)
         return true;
-      }
-      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn()) {
+
+      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn())
         return true;
-      }
-      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn()) {
+
+      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn())
         return true;
-      }
     }
     return false;
   }

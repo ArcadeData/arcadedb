@@ -35,7 +35,7 @@ import com.arcadedb.schema.Schema;
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class CheckClassTypeStep extends AbstractExecutionStep {
+public class CheckTypeTypeStep extends AbstractExecutionStep {
 
   private final String targetClass;
   private final String parentClass;
@@ -48,7 +48,7 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
    * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckClassTypeStep(final String targetClass, final String parentClass, final CommandContext context,
+  public CheckTypeTypeStep(final String targetClass, final String parentClass, final CommandContext context,
       final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.targetClass = targetClass;
