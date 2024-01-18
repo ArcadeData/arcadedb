@@ -111,7 +111,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
     if (WARNINGS_EVERY > 0) {
       if (typeFileSize > 100_000_000) {
-        final Integer counter = WARNINGS.compute(typeName, (k, v) -> v == null ? 1 : v + 1);
+        final Integer counter = WARNINGS.compute(typeName + ".scan", (k, v) -> v == null ? 1 : v + 1);
         if (counter % WARNINGS_EVERY == 1)
           LogManager.instance().log(this, Level.WARNING,
               "Attempt to scan type '%s' of total size %s %d times. This operation is very expensive, consider using an index",
