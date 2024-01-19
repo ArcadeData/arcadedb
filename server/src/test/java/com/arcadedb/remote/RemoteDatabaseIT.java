@@ -386,6 +386,33 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void testRIDAsParametersInSQL() throws Exception {
+    testEachServer((serverIndex) -> {
+      Assertions.assertTrue(
+          new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+              DATABASE_NAME));
+
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      database.getSchema().createVertexType("VT");
+      database.getSchema().createEdgeType("ET");
+      final Vertex v1 = database.newVertex("VT").save();
+      final Vertex v2 = database.newVertex("VT").save();
+
+      String statement = "CREATE EDGE ET FROM :fromRid TO :toRid";
+
+      Map<String, Object> params = new HashMap<>();
+      params.put("fromRid", v1.getIdentity());
+      params.put("toRid", v2.getIdentity());
+
+      database.command("sql", statement, params);
+
+      System.out.println("Done ... ");
+    });
+  }
+
+  @Test
   public void testTransactionWrongSessionId() throws Exception {
     testEachServer((serverIndex) -> {
       Assertions.assertTrue(

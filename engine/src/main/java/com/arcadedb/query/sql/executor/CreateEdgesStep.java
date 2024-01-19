@@ -251,11 +251,13 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       currentFrom = ((Result) currentFrom).getVertex()
           .orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from));
     }
+
     if (currentFrom instanceof Vertex)
       return (Vertex) currentFrom;
-
-    if (currentFrom instanceof Document)
+    else if (currentFrom instanceof Document)
       return ((Document) currentFrom).asVertex();
+    else if (RID.is(currentFrom))
+      return new RID(getContext().getDatabase(), currentFrom.toString()).asVertex();
 
     throw new CommandExecutionException(
         "Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
