@@ -137,6 +137,12 @@ public class PolymorphicTest extends TestHelper {
       Assertions.assertEquals(3, database.countType("Drives", true));
       Assertions.assertEquals(2, database.countType("Owns", true));
 
+      Assertions.assertEquals(3L,
+          (long) database.query("sql", "select count(*) as count from Vehicle").nextIfAvailable().getProperty("count"));
+
+      Assertions.assertEquals(3L,
+          (long) database.query("sql", "select count(*) as count from Vehicle WHERE $this INSTANCEOF Vehicle").nextIfAvailable().getProperty("count"));
+
     } finally {
       database.commit();
     }
