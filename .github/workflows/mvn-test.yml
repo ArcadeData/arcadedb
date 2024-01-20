@@ -32,11 +32,21 @@ jobs:
       - name: Set up GraalVM 21
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '21'
-          distribution: 'graalvm-community'
+          java-version: "21"
+          distribution: "graalvm-community"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+#        uses: graalvm/setup-graalvm@v1
+#        with:
+#          version: '22.3.2'
+#          gds-token: ${{ secrets.GDS_TOKEN }}
+#          java-version: '21'
+#          cache: 'maven'
+#          components: 'native-image,js'
+#          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install jars
+        continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn --show-version clean install -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
