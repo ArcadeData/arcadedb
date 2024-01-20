@@ -48,10 +48,10 @@ public class UpdateSetStep extends AbstractExecutionStep {
       public Result next() {
         if (upstream instanceof CreateRecordResultSet) {
           final Object[] parameters = new Object[items.size() * 2];
-          for (int i = 0; i < items.size(); i += 2) {
+          for (int i = 0; i < items.size(); ++i) {
             final UpdateItem item = items.get(i);
-            parameters[i] = item.getLeft().getStringValue();
-            parameters[i + 1] = item.getRight().execute((Identifiable) null, context);
+            parameters[i * 2] = item.getLeft().getStringValue();
+            parameters[i * 2 + 1] = item.getRight().execute((Identifiable) null, context);
           }
 
           return ((CreateRecordResultSet) upstream).next(parameters);

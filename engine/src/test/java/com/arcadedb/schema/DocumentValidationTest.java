@@ -274,7 +274,9 @@ public class DocumentValidationTest extends TestHelper {
     database.getSchema().createVertexType("V");
     database.getSchema().createEdgeType("E");
 
-    database.command("sql", "create property E.id STRING (mandatory true)");
+    database.command("sql", "create property E.a STRING (mandatory true)");
+    database.command("sql", "create property E.b STRING (mandatory true)");
+    database.command("sql", "create property E.c STRING (mandatory true)");
 
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex("V").save();
@@ -286,8 +288,24 @@ public class DocumentValidationTest extends TestHelper {
         // EXPECTED
       }
 
-      final Edge e = database.command("sql", "create edge E from ? to ? set id = '12345'", v1, v2).nextIfAvailable().getEdge().get();
-      Assertions.assertEquals("12345", e.getString("id"));
+      try {
+        database.command("sql", "create edge E from ? to ? set a = '12345'", v1, v2);
+        Assertions.fail();
+      } catch (ValidationException e) {
+        // EXPECTED
+      }
+
+      try {
+        database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444'", v1, v2);
+        Assertions.fail();
+      } catch (ValidationException e) {
+        // EXPECTED
+      }
+
+      final Edge e = database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444', c = '2222'", v1, v2).nextIfAvailable().getEdge().get();
+      Assertions.assertEquals("12345", e.getString("a"));
+      Assertions.assertEquals("4444", e.getString("b"));
+      Assertions.assertEquals("2222", e.getString("c"));
     });
   }
 
