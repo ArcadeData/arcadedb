@@ -118,10 +118,10 @@ public class GraphEngine {
 
     final RID fromVertexRID = fromVertex.getIdentity();
     if (fromVertexRID == null)
-      throw new IllegalArgumentException("Current vertex is not persistent");
+      throw new IllegalArgumentException("Current vertex is not persistent. Call save() on vertex first");
 
     if (toVertex instanceof MutableDocument && toVertex.getIdentity() == null)
-      throw new IllegalArgumentException("Target vertex is not persistent");
+      throw new IllegalArgumentException("Target vertex is not persistent. Call save() on vertex first");
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
 

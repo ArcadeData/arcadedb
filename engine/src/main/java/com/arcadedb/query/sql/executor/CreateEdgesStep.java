@@ -56,7 +56,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private final List        toList   = new ArrayList<>();
   private       Index       uniqueIndex;
 
-  private boolean inited = false;
+  private boolean initiated = false;
 
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetBucketName, final String uniqueIndex,
       final Identifier fromAlias, final Identifier toAlias, final boolean unidirectional, final boolean ifNotExists,
@@ -76,7 +76,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     pullPrevious(context, nRecords);
 
     init();
-    return new ResultSet() {
+    return new CreateRecordResultSet() {
       private int currentBatch = 0;
 
       @Override
@@ -86,29 +86,33 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        if (currentTo == null) {
+        return next(null);
+      }
+
+      @Override
+      public Result next(final Object[] properties) {
+        if (currentTo == null)
           loadNextFromTo();
-        }
+
         final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 
-          if (finished || currentBatch >= nRecords) {
+          if (finished || currentBatch >= nRecords)
             throw new NoSuchElementException();
-          }
-          if (currentTo == null) {
-            throw new CommandExecutionException("Invalid TO vertex for edge");
-          }
 
-          if (ifNotExists) {
+          if (currentTo == null)
+            throw new CommandExecutionException("Invalid TO vertex for edge");
+
+          if (ifNotExists)
             if (context.getDatabase().getGraphEngine()
                 .isVertexConnectedTo((VertexInternal) currentFrom, currentTo, Vertex.DIRECTION.OUT, targetClass.getStringValue()))
               // SKIP CREATING EDGE
               return null;
-          }
 
           final String target = targetBucket != null ? "bucket:" + targetBucket.getStringValue() : targetClass.getStringValue();
 
-          final MutableEdge edge = edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(target, currentTo, !unidirectional);
+          final MutableEdge edge =
+              edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(target, currentTo, !unidirectional, properties);
 
           final UpdatableResult result = new UpdatableResult(edge);
           currentTo = null;
@@ -125,30 +129,28 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   private void init() {
     synchronized (this) {
-      if (this.inited) {
+      if (this.initiated)
         return;
-      }
-      inited = true;
+
+      initiated = true;
     }
     Object fromValues = context.getVariable(fromAlias.getStringValue());
-    if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable)) {
+    if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable))
       fromValues = ((Iterable) fromValues).iterator();
-    } else if (!(fromValues instanceof Iterator)) {
+    else if (!(fromValues instanceof Iterator))
       fromValues = Collections.singleton(fromValues).iterator();
-    }
-    if (fromValues instanceof InternalResultSet) {
+
+    if (fromValues instanceof InternalResultSet)
       fromValues = ((InternalResultSet) fromValues).copy();
-    }
 
     Object toValues = context.getVariable(toAlias.getStringValue());
-    if (toValues instanceof Iterable && !(toValues instanceof Identifiable)) {
+    if (toValues instanceof Iterable && !(toValues instanceof Identifiable))
       toValues = ((Iterable) toValues).iterator();
-    } else if (!(toValues instanceof Iterator)) {
+    else if (!(toValues instanceof Iterator))
       toValues = Collections.singleton(toValues).iterator();
-    }
-    if (toValues instanceof InternalResultSet) {
+
+    if (toValues instanceof InternalResultSet)
       toValues = ((InternalResultSet) toValues).copy();
-    }
 
     fromIter = (Iterator) fromValues;
     if (fromIter instanceof ResultSet) {
@@ -166,9 +168,9 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       } catch (final Exception ignore) {
       }
     }
-    while (toIter != null && toIter.hasNext()) {
+
+    while (toIter != null && toIter.hasNext())
       toList.add(toIter.next());
-    }
 
     toIterator = toList.iterator();
 
@@ -177,9 +179,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     if (uniqueIndexName != null) {
       final DatabaseInternal database = context.getDatabase();
       uniqueIndex = database.getSchema().getIndexByName(uniqueIndexName);
-      if (uniqueIndex == null) {
+      if (uniqueIndex == null)
         throw new CommandExecutionException("Index not found for upsert: " + uniqueIndexName);
-      }
     }
   }
 
