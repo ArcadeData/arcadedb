@@ -431,7 +431,9 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
-      multipleUpdate = true;
+      boolean setMultipleUpdate = !multipleUpdate;
+      if (!multipleUpdate)
+        multipleUpdate = true;
 
       final IndexInternal index = indexMap.get(indexName);
       if (index == null)
@@ -470,7 +472,8 @@ public class LocalSchema implements Schema {
       } catch (final Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
       } finally {
-        multipleUpdate = false;
+        if (setMultipleUpdate)
+          multipleUpdate = false;
       }
       return null;
     });
@@ -689,17 +692,13 @@ public class LocalSchema implements Schema {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
 
         // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
-        for (final LocalDocumentType parent : type.superTypes) {
-          parent.subTypes.remove(type);
-          parent.cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(parent.cachedPolymorphicBuckets,
-              type.buckets);
-          parent.cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(parent.cachedPolymorphicBucketIds,
-              type.bucketIds);
-        }
+        final List<LocalDocumentType> superTypes = new ArrayList<>(type.superTypes);
+        for (final LocalDocumentType parent : superTypes)
+          type.removeSuperType(parent);
 
         for (final LocalDocumentType sub : type.subTypes) {
           sub.superTypes.remove(type);
-          for (final LocalDocumentType parent : type.superTypes)
+          for (final LocalDocumentType parent : superTypes)
             sub.addSuperType(parent, false);
         }
 

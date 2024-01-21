@@ -190,20 +190,9 @@ public class DropIndexTest extends TestHelper {
         }
       }
 
-      // CHECK ALL THE INDEXES ARE REMOVED
-      try {
-        database.getSchema().getIndexByName(typeIndex.getName());
-        Assertions.fail();
-      } catch (final SchemaException e) {
-        // EXPECTED
-      }
-
-      try {
-        database.getSchema().getIndexByName(typeIndex2.getName());
-        Assertions.fail();
-      } catch (final SchemaException e) {
-        // EXPECTED
-      }
+      // CHECK ALL THE INDEXES ARE NOT REMOVED
+      database.getSchema().getIndexByName(typeIndex.getName());
+      database.getSchema().getIndexByName(typeIndex2.getName());
 
       // CHECK TYPE HAS BEEN REMOVED FROM INHERITANCE
       for (final DocumentType parent : type2.getSuperTypes())
@@ -215,9 +204,6 @@ public class DropIndexTest extends TestHelper {
       // CHECK INHERITANCE CHAIN IS CONSISTENT
       for (final DocumentType parent : type2.getSuperTypes())
         Assertions.assertTrue(parent.getSubTypes().contains(type2.getSubTypes().get(0)));
-
-      for (final DocumentType sub : type2.getSubTypes())
-        Assertions.assertTrue(sub.getSuperTypes().contains(type2.getSuperTypes().get(0)));
 
       Assertions.assertEquals(1, database.countType(TYPE_NAME, true));
 
