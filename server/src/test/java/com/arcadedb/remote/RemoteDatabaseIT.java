@@ -413,6 +413,23 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void testDropRemoteInheritanceBroken() throws Exception {
+    testEachServer((serverIndex) -> {
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      database.command("sqlscript",//
+          "CREATE VERTEX TYPE AVtx;" + //
+              "CREATE VERTEX TYPE BVtx EXTENDS AVtx;" + //
+              "CREATE VERTEX TYPE CVtx EXTENDS BVtx;");
+
+      database.command("sql", "SELECT FROM AVtx;");
+      database.command("sql", "DROP TYPE CVtx;");
+      database.command("sql", "SELECT FROM AVtx;");
+    });
+  }
+
+  @Test
   public void testTransactionWrongSessionId() throws Exception {
     testEachServer((serverIndex) -> {
       Assertions.assertTrue(
