@@ -27,8 +27,7 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class UpdatableResult extends ResultInternal {
-  protected     ResultInternal  previousValue = null;
-  private final MutableDocument element;
+  protected ResultInternal previousValue = null;
 
   public UpdatableResult(final MutableDocument element) {
     this.element = element;
@@ -65,11 +64,11 @@ public class UpdatableResult extends ResultInternal {
 
   @Override
   public ResultInternal setProperty(final String name, final Object value) {
-    element.set(name, value);
+    ((MutableDocument) element).set(name, value);
     return this;
   }
 
   public void removeProperty(final String name) {
-    element.set(name, null);
+    ((MutableDocument) element).set(name, null);
   }
 }

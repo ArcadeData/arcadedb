@@ -80,15 +80,16 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   public static boolean is(final Object value) {
     if (value instanceof RID)
       return true;
+    else if (value instanceof String)
+      return is((String) value);
+    return false;
+  }
 
-    if (value instanceof String) {
-      final String valueAsString = value.toString();
-      if (valueAsString.length() > 3 && valueAsString.charAt(0) == '#') {
-        final List<String> parts = CodeUtils.split(valueAsString.substring(1), ':', 3);
-        return parts.size() == 2 && NumberUtils.isIntegerNumber(parts.get(0)) && NumberUtils.isIntegerNumber(parts.get(1));
-      }
+  public static boolean is(final String valueAsString) {
+    if (valueAsString.length() > 3 && valueAsString.charAt(0) == '#') {
+      final List<String> parts = CodeUtils.split(valueAsString.substring(1), ':', 3);
+      return parts.size() == 2 && NumberUtils.isIntegerNumber(parts.get(0)) && NumberUtils.isIntegerNumber(parts.get(1));
     }
-
     return false;
   }
 
