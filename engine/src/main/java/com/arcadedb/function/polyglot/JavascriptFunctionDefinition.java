@@ -93,30 +93,36 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
         final Value result = polyglotEngine.eval(declaration);
 
-        if (result.isHostObject())
-          return result.asHostObject();
-        else if (result.isString())
-          return result.asString();
-        else if (result.isBoolean())
-          return result.asBoolean();
-        else if (result.isNumber()) {
-          if (result.fitsInInt())
-            return result.asInt();
-          else if (result.fitsInLong())
-            return result.asLong();
-          else if (result.fitsInFloat())
-            return result.asFloat();
-          else
-            return result.asFloat();
-        } else if (result.isNull())
-          return null;
-
-        // UNKNOWN OR NOT SUPPORTED
-        return null;
+        return getValue(result);
 
       } catch (final IOException e) {
         throw new FunctionExecutionException("Error on definition of function '" + functionName + "'");
       }
     });
+  }
+
+  public static Object getValue(final Value result) {
+    if (result == null)
+      return null;
+    else if (result.isHostObject())
+      return result.asHostObject();
+    else if (result.isString())
+      return result.asString();
+    else if (result.isBoolean())
+      return result.asBoolean();
+    else if (result.isNumber()) {
+      if (result.fitsInInt())
+        return result.asInt();
+      else if (result.fitsInLong())
+        return result.asLong();
+      else if (result.fitsInFloat())
+        return result.asFloat();
+      else
+        return result.asFloat();
+    } else if (result.isNull())
+      return null;
+
+    // UNKNOWN OR NOT SUPPORTED
+    return null;
   }
 }
