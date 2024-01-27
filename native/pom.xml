@@ -145,7 +145,7 @@
                         </executions>
                         <configuration>
                             <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
-                            <imageName>arcadedb</imageName>
+                            <imageName>arcadedb-${project.version}-${os.arch}</imageName>
                             <buildArgs>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                                 <!-- <buildArg>-H:+StaticExecutableWithDynamicLibC</buildArg> -->
