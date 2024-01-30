@@ -102,7 +102,27 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
       }
     });
 
+    reopenDatabase();
+
+    Assertions.assertEquals(Schema.INDEX_TYPE.FULL_TEXT, database.getSchema().getIndexes()[0].getType());
+
     database.getSchema().dropIndex(typeIndex.getName());
+  }
+
+  @Test
+  public void testIndexingComposite() {
+    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
+    type.createProperty("text", String.class);
+    type.createProperty("type", String.class);
+    try {
+      database.getSchema()
+          .createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text", "type" }, PAGE_SIZE);
+      Assertions.fail();
+    } catch (IndexException e) {
+      // EXPECTED
+    }
   }
 
   @Test

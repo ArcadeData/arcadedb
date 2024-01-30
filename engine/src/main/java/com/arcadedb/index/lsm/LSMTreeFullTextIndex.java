@@ -74,6 +74,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       if (builder.isUnique())
         throw new IllegalArgumentException("Full text index cannot be unique");
 
+      if (builder.getKeyTypes().length != 1)
+        throw new IllegalArgumentException("Full text index can only be defined on one only string property");
+
+      if (builder.getKeyTypes()[0] != Type.STRING)
+        throw new IllegalArgumentException("Full text index can only be defined on a '" + builder.getKeyTypes()[0] + "' property, only string");
+
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy());
     }
