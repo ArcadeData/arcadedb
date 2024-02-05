@@ -60,7 +60,7 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
 
   @Override
   public Iterable<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
-    return internal.getEdges(DIRECTION.BOTH, edgeTypes);
+    return internal.getEdges(direction, edgeTypes);
   }
 
   @Override

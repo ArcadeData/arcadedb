@@ -25,6 +25,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.Result;
@@ -51,6 +53,43 @@ public class RemoteQueriesIT {
 
   private final static String         DATABASE_NAME = "remotequeries";
   private              ArcadeDBServer arcadeDBServer;
+
+  @Test
+  public void testEdgeDirection() {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
+    DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/" + DATABASE_NAME);
+    databaseFactory.create().close();
+
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    arcadeDBServer = new ArcadeDBServer(serverConfiguration);
+    arcadeDBServer.start();
+
+    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+
+    //Create FromVtx Type
+    database.command("sql", "CREATE VERTEX TYPE FromVtx IF NOT EXISTS");
+
+    //Create ToVtx Type
+    database.command("sql", "CREATE VERTEX TYPE ToVtx IF NOT EXISTS");
+
+    //Create ConEdge Type
+    database.command("sql", "CREATE EDGE TYPE ConEdge IF NOT EXISTS");
+
+    /*
+     * Create the vertices and edges
+     * (Fromvtx) ---[ConEdge]---> (ToVtx)
+     */
+    Vertex fromVtx = database.command("sql", "CREATE VERTEX FromVtx").next().getVertex().get();
+    Vertex toVtx = database.command("sql", "CREATE VERTEX ToVtx").next().getVertex().get();
+    Edge conEdg = fromVtx.newEdge("ConEdge", toVtx, true);
+
+    Assertions.assertEquals(1, fromVtx.countEdges(Vertex.DIRECTION.OUT, "ConEdge"));
+    Assertions.assertEquals(0, fromVtx.countEdges(Vertex.DIRECTION.IN, "ConEdge"));
+    Assertions.assertTrue(fromVtx.getEdges(Vertex.DIRECTION.OUT, "ConEdge").iterator().hasNext());
+    Assertions.assertFalse(fromVtx.getEdges(Vertex.DIRECTION.IN, "ConEdge").iterator().hasNext());
+  }
 
   @Test
   public void testWhereEqualsAfterUpdate() {
