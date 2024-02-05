@@ -1035,13 +1035,30 @@ public class LocalSchema implements Schema {
             for (int i = 0; i < properties.length; ++i)
               properties[i] = schemaIndexProperties.getString(i);
 
-            final IndexInternal index = indexMap.get(indexName);
+            IndexInternal index = indexMap.get(indexName);
             if (index != null) {
               final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = indexJSON.has("nullStrategy") ?
                   LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(indexJSON.getString("nullStrategy")) :
                   LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
 
               index.setNullStrategy(nullStrategy);
+
+              if (indexJSON.has("type")) {
+                final String configuredIndexType = indexJSON.getString("type");
+
+                if (!index.getType().toString().equals(configuredIndexType)) {
+                  if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
+                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index);
+                  } else {
+                    orphanIndexes.put(indexName, indexJSON);
+                    indexJSON.put("type", typeName);
+                    LogManager.instance()
+                        .log(this, Level.WARNING, "Index '%s' of type %s is different from definition %s. Ignoring it",//
+                            index.getName(), index.getType(), configuredIndexType);
+                    continue;
+                  }
+                }
+              }
 
               final String bucketName = indexJSON.getString("bucket");
               final Bucket bucket = bucketMap.get(bucketName);

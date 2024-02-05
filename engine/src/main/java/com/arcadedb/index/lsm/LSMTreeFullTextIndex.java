@@ -78,20 +78,20 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         throw new IllegalArgumentException("Full text index can only be defined on one only string property");
 
       if (builder.getKeyTypes()[0] != Type.STRING)
-        throw new IllegalArgumentException("Full text index can only be defined on a '" + builder.getKeyTypes()[0] + "' property, only string");
+        throw new IllegalArgumentException(
+            "Full text index can only be defined on a '" + builder.getKeyTypes()[0] + "' property, only string");
 
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy());
     }
   }
 
-  public static class PaginatedComponentFactoryHandlerNotUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
-    @Override
-    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final ComponentFile.MODE mode, final int pageSize, final int version) {
-      final LSMTreeFullTextIndex mainIndex = new LSMTreeFullTextIndex(database, name, filePath, id, mode, pageSize, version);
-      return mainIndex.underlyingIndex.mutable;
-    }
+  /**
+   * Called at load time. The Full Text index is just a wrapper of an LSMTree Inddex.
+   */
+  public LSMTreeFullTextIndex(final LSMTreeIndex index) {
+    analyzer = new StandardAnalyzer();
+    underlyingIndex = index;
   }
 
   /**
@@ -181,6 +181,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
+    json.put("type", getType());
+
     json.put("bucket", underlyingIndex.mutable.getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
