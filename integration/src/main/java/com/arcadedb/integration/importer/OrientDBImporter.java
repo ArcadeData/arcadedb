@@ -65,7 +65,8 @@ public class OrientDBImporter {
   private final        Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
   private final        Map<String, Long>          totalRecordByType               = new HashMap<>();
   private final        Set<String>                excludeClasses                  = new HashSet<>(
-      Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
+      Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity",
+          "OFunction", "_studio"));
   private final        Set<String>                edgeClasses                     = new HashSet<>();
   private final        List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
   private              CompressedRID2RIDIndex     compressedRecordsRidMap;
@@ -210,7 +211,8 @@ public class OrientDBImporter {
       }
     }
 
-    this.compressedRecordsRidMap = new CompressedRID2RIDIndex(database, (int) settings.expectedVertices, (int) settings.expectedEdges);
+    this.compressedRecordsRidMap = new CompressedRID2RIDIndex(database, (int) settings.expectedVertices,
+        (int) settings.expectedEdges);
 
     phase = PHASE.CREATE_SCHEMA;
     totalAttributesParsed = 0L;
@@ -245,7 +247,8 @@ public class OrientDBImporter {
       totalRecords += t;
 
     logger.logLine(1, "***************************************************************************************************");
-    logger.logLine(1, "Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors, warnings);
+    logger.logLine(1, "Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors,
+        warnings);
     logger.logLine(1, "\nSUMMARY\n");
     logger.logLine(1, "- Records..................................: %,d", totalRecords);
     for (final Map.Entry<String, OrientDBClass> entry : classes.entrySet()) {
@@ -404,16 +407,19 @@ public class OrientDBImporter {
       break;
 
     case CREATE_RECORDS:
-      logger.logLine(1, "Creation of records completed: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec elapsed=%,d secs)",
+      logger.logLine(1,
+          "Creation of records completed: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec elapsed=%,d secs)",
           context.createdVertices.get(), context.createdDocuments.get(), context.skippedEdges.get(),
-          elapsedInSecs > 0 ? ((context.createdDocuments.get() + context.createdVertices.get()) / elapsedInSecs) : 0, elapsedInSecs);
+          elapsedInSecs > 0 ? ((context.createdDocuments.get() + context.createdVertices.get()) / elapsedInSecs) : 0,
+          elapsedInSecs);
 
       updateDocumentLinks();
 
       break;
     case CREATE_EDGES:
-      logger.logLine(1, "Creation of edges completed: created %,d edges %s (%,d edges/sec elapsed=%,d secs)", context.createdEdges.get(),
-          totalEdgesByVertexType, elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0, elapsedInSecs);
+      logger.logLine(1, "Creation of edges completed: created %,d edges %s (%,d edges/sec elapsed=%,d secs)",
+          context.createdEdges.get(), totalEdgesByVertexType, elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0,
+          elapsedInSecs);
       break;
     default:
       ++errors;
@@ -512,13 +518,14 @@ public class OrientDBImporter {
       createEdges(attributes);
       if (processedItems.get() > 0 && processedItems.get() % 1_000_000 == 0) {
         final long elapsed = System.currentTimeMillis() - beginTimeEdgeCreation;
-        logger.logLine(2, "- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(), totalEdgesByVertexType,
-            (context.createdEdges.get() / elapsed * 1000));
+        logger.logLine(2, "- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(),
+            totalEdgesByVertexType, (context.createdEdges.get() / elapsed * 1000));
       }
     }
   }
 
-  private void createRecords(final AtomicLong processedItems, final Map<String, Object> attributes, final String className) throws IOException {
+  private void createRecords(final AtomicLong processedItems, final Map<String, Object> attributes, final String className)
+      throws IOException {
     if (!edgeClasses.contains(className)) {
       createRecord(attributes);
     } else
@@ -526,8 +533,9 @@ public class OrientDBImporter {
 
     if (processedItems.get() > 0 && processedItems.get() % 1_000_000 == 0) {
       final long elapsed = System.currentTimeMillis() - beginTimeRecordsCreation;
-      logger.logLine(2, "- Status update: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec)", context.createdVertices.get(),
-          context.createdDocuments.get(), context.skippedEdges.get(), ((context.createdDocuments.get() + context.createdVertices.get()) / elapsed * 1000));
+      logger.logLine(2, "- Status update: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec)",
+          context.createdVertices.get(), context.createdDocuments.get(), context.skippedEdges.get(),
+          ((context.createdDocuments.get() + context.createdVertices.get()) / elapsed * 1000));
     }
   }
 
@@ -679,8 +687,8 @@ public class OrientDBImporter {
     return false;
   }
 
-  private MutableEmbeddedDocument createEmbeddedDocument(final MutableDocument record, final String propertyName, final Map<String, Object> attributes)
-      throws IOException {
+  private MutableEmbeddedDocument createEmbeddedDocument(final MutableDocument record, final String propertyName,
+      final Map<String, Object> attributes) throws IOException {
     MutableEmbeddedDocument embedded = null;
 
     // DOCUMENT, VERTEX, EDGE
@@ -744,7 +752,8 @@ public class OrientDBImporter {
       ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
-        logger.logLine(2, "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the output");
+        logger.logLine(2,
+            "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the output");
       else if (settings.verboseLevel > 2 || skippedEdgeBecauseMissingVertex < 100)
         logger.logLine(2, "- Skip edge %s because source vertex (out) was not imported", attributes);
 
@@ -758,7 +767,8 @@ public class OrientDBImporter {
       ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
-        logger.logLine(2, "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the output");
+        logger.logLine(2,
+            "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the output");
       else if (settings.verboseLevel > 2 || skippedEdgeBecauseMissingVertex < 100)
         logger.logLine(2, "- Skip edge %s because destination vertex (in) was not imported", attributes);
 
@@ -1024,7 +1034,8 @@ public class OrientDBImporter {
           LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
 
       database.getSchema()
-          .getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy, null);
+          .getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
+              nullStrategy, null);
 
       logger.logLine(2, "- Created index %s on %s%s", unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));
     }
@@ -1077,8 +1088,10 @@ public class OrientDBImporter {
       break;
     }
 
-    for (final String c : classInfo.superClasses)
-      t.addSuperType(c);
+    for (final String c : classInfo.superClasses) {
+      if (!excludeClasses.contains(c))
+        t.addSuperType(c);
+    }
 
     // CREATE PROPERTIES
     for (final Map.Entry<String, OrientDBProperty> entry : classInfo.properties.entrySet()) {
@@ -1127,12 +1140,14 @@ public class OrientDBImporter {
           property.setDefaultValue(orientdbProperty.defaultValue);
 
       } catch (final Exception e) {
-        logger.logLine(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'", orientdbType, t.getName(), entry.getKey());
+        logger.logLine(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'", orientdbType, t.getName(),
+            entry.getKey());
         ++warnings;
       }
     }
 
-    logger.logLine(2, "- Created type '%s' which extends from %s with the following properties %s", className, classInfo.superClasses, classInfo.properties);
+    logger.logLine(2, "- Created type '%s' which extends from %s with the following properties %s", className,
+        classInfo.superClasses, classInfo.properties);
   }
 
   private int getClassType(final List<String> list) {
@@ -1262,7 +1277,8 @@ public class OrientDBImporter {
             logger.logLine(2,
                 "- Skipped 100 records where indexed field is null and the index is not accepting NULLs. Not reporting further case to reduce the output");
           else if (settings.verboseLevel > 2 || skippedRecordBecauseNullKey < 100)
-            logger.logLine(2, "- Skipped record %s because indexed field '%s' is null and the index is not accepting NULLs", properties, indexedPropName);
+            logger.logLine(2, "- Skipped record %s because indexed field '%s' is null and the index is not accepting NULLs",
+                properties, indexedPropName);
 
           valid = false;
         }
