@@ -1049,6 +1049,7 @@ public class LocalSchema implements Schema {
                 if (!index.getType().toString().equals(configuredIndexType)) {
                   if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
                     index = new LSMTreeFullTextIndex((LSMTreeIndex) index);
+                    indexMap.put(indexName, index);
                   } else {
                     orphanIndexes.put(indexName, indexJSON);
                     indexJSON.put("type", typeName);
