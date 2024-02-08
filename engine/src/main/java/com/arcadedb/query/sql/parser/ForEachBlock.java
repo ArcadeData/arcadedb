@@ -48,9 +48,9 @@ public class ForEachBlock extends Statement {
   @Override
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
+    if (parentcontext != null)
       context.setParentWithoutOverridingChild(parentcontext);
-    }
+
     context.setDatabase(db);
     context.setInputParameters(args);
     final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
@@ -61,9 +61,9 @@ public class ForEachBlock extends Statement {
   @Override
   public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
+    if (parentcontext != null)
       context.setParentWithoutOverridingChild(parentcontext);
-    }
+
     context.setDatabase(db);
     context.setInputParameters(params);
     final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);

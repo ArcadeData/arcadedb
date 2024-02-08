@@ -19,7 +19,7 @@
 <assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 https://maven.apache.org/xsd/assembly-2.2.0.xsd">
 
-    <id>minimal</id>
+    <id>headless</id>
 
     <formats>
         <format>dir</format>
@@ -46,9 +46,7 @@
             <directory>${basedir}/src/main/config</directory>
             <outputDirectory>config</outputDirectory>
             <includes>
-                <include>*.yaml</include>
                 <include>*.json</include>
-                <include>*.groovy</include>
                 <include>*.properties</include>
             </includes>
             <fileMode>755</fileMode>

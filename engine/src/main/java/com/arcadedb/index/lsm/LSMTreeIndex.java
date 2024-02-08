@@ -240,6 +240,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
+    json.put("type", getType());
+
     json.put("bucket", getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());

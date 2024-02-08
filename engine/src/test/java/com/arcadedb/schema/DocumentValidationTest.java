@@ -5,6 +5,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
@@ -242,6 +245,68 @@ public class DocumentValidationTest extends TestHelper {
     d.validate();
 
     checkRequireField(d, "int");
+  }
+
+  @Test
+  public void testRequiredValidationEdge() {
+    database.getSchema().createVertexType("V");
+    database.getSchema().createEdgeType("E");
+
+    database.command("sql", "create property E.id STRING (mandatory true)");
+
+    database.transaction(() -> {
+      final MutableVertex v1 = database.newVertex("V").save();
+      final MutableVertex v2 = database.newVertex("V").save();
+      try {
+        v1.newEdge("E", v2, true);
+        Assertions.fail();
+      } catch (ValidationException e) {
+        // EXPECTED
+      }
+
+      final MutableEdge e = v1.newEdge("E", v2, true, "id", "12345");
+      Assertions.assertEquals("12345", e.getString("id"));
+    });
+  }
+
+  @Test
+  public void testRequiredValidationEdgeSQL() {
+    database.getSchema().createVertexType("V");
+    database.getSchema().createEdgeType("E");
+
+    database.command("sql", "create property E.a STRING (mandatory true)");
+    database.command("sql", "create property E.b STRING (mandatory true)");
+    database.command("sql", "create property E.c STRING (mandatory true)");
+
+    database.transaction(() -> {
+      final MutableVertex v1 = database.newVertex("V").save();
+      final MutableVertex v2 = database.newVertex("V").save();
+      try {
+        database.command("sql", "create edge E from ? to ?", v1, v2);
+        Assertions.fail();
+      } catch (ValidationException e) {
+        // EXPECTED
+      }
+
+      try {
+        database.command("sql", "create edge E from ? to ? set a = '12345'", v1, v2);
+        Assertions.fail();
+      } catch (ValidationException e) {
+        // EXPECTED
+      }
+
+      try {
+        database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444'", v1, v2);
+        Assertions.fail();
+      } catch (ValidationException e) {
+        // EXPECTED
+      }
+
+      final Edge e = database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444', c = '2222'", v1, v2).nextIfAvailable().getEdge().get();
+      Assertions.assertEquals("12345", e.getString("a"));
+      Assertions.assertEquals("4444", e.getString("b"));
+      Assertions.assertEquals("2222", e.getString("c"));
+    });
   }
 
   @Test

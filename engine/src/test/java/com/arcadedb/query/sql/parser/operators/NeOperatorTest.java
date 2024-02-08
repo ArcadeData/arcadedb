@@ -60,8 +60,8 @@ public class NeOperatorTest {
     Assertions.assertTrue(op.execute(null, BigDecimal.ONE, 2));
     Assertions.assertTrue(op.execute(null, BigDecimal.ONE, 1.0001));
 
-    Assertions.assertFalse(op.execute(null, new RID(null, 1, 10), new RID(null, (short) 1, 10)));
-    Assertions.assertTrue(op.execute(null, new RID(null, 1, 10), new RID(null, (short) 1, 20)));
+    Assertions.assertFalse(op.execute(null, new RID( 1, 10), new RID( (short) 1, 10)));
+    Assertions.assertTrue(op.execute(null, new RID( 1, 10), new RID( (short) 1, 20)));
 
     Assertions.assertTrue(op.execute(null, new Object(), new Object()));
   }

@@ -30,7 +30,7 @@ import java.util.*;
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila - at - gmail.com)
  */
-public class CountFromClassStep extends AbstractExecutionStep {
+public class CountFromTypeStep extends AbstractExecutionStep {
   private final String target;
   private final String alias;
 
@@ -42,7 +42,7 @@ public class CountFromClassStep extends AbstractExecutionStep {
    * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromClassStep(final String targetClass, final String alias, final CommandContext context, final boolean profilingEnabled) {
+  public CountFromTypeStep(final String targetClass, final String alias, final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.target = targetClass;
     this.alias = alias;
@@ -91,7 +91,7 @@ public class CountFromClassStep extends AbstractExecutionStep {
 
       @Override
       public void reset() {
-        CountFromClassStep.this.reset();
+        CountFromTypeStep.this.reset();
       }
     };
   }

@@ -329,6 +329,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public int getNestedTransactions() {
+    return wrapped.getNestedTransactions();
+  }
+
+  @Override
   public void transaction(final TransactionScope txBlock) {
     wrapped.transaction(txBlock);
   }

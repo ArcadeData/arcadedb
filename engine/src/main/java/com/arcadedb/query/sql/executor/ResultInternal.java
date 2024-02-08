@@ -255,7 +255,7 @@ public class ResultInternal implements Result {
 
     if (hasProperty("@rid")) {
       final Object rid = getProperty("@rid");
-      return Optional.of((RID) (rid instanceof RID ? rid : new RID(null, rid.toString())));
+      return Optional.of((RID) (rid instanceof RID ? rid : new RID( rid.toString())));
     }
     return Optional.empty();
   }

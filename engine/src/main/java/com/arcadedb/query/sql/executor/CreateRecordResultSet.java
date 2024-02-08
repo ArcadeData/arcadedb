@@ -19,27 +19,10 @@
 package com.arcadedb.query.sql.executor;
 
 /**
- * Created by luigidellaquila on 08/08/16.
+ * Extends the default ResultSet to support passage of parameters with the next
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-
-import com.arcadedb.query.sql.parser.WhileStep;
-
-/**
- * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
- */
-public class ForEachExecutionPlan extends UpdateExecutionPlan {
-  public ForEachExecutionPlan(final CommandContext context) {
-    super(context);
-  }
-
-  public boolean containsReturn() {
-    for (final ExecutionStep step : getSteps()) {
-      if (step instanceof ForEachStep)
-        return ((ForEachStep) step).containsReturn();
-
-      if (step instanceof WhileStep)
-        return ((WhileStep) step).containsReturn();
-    }
-    return false;
-  }
+public interface CreateRecordResultSet extends ResultSet {
+  Result next(Object[] params);
 }

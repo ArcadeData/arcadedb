@@ -551,6 +551,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public int getNestedTransactions() {
+        return 0;
+      }
+
+      @Override
       public void transaction(TransactionScope txBlock) {
 
       }

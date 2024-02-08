@@ -231,6 +231,10 @@ public enum GlobalConfiguration {
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
 
+  COMMAND_WARNINGS_EVERY("arcadedb.command.warningsEvery", SCOPE.JVM,
+      "Reduce warnings in commands to print in console only every X occurrences. Use 0 to disable warnings with commands",
+      Integer.class, 100),
+
   GREMLIN_ENGINE("arcadedb.gremlin.engine", SCOPE.DATABASE,
       "Gremlin engine to use. By default the `auto` setting uses the legacy `groovy` engine in case parameters are set, otherwise, the new native `java` is preferred. If you have compatibility issues with gremlin statements that use lambdas or in general, switch to the `groovy` one",
       String.class, "auto", Set.of("auto", "groovy", "java")),
@@ -336,9 +340,9 @@ public enum GlobalConfiguration {
       "Number of threads to use in the HTTP servers. The default number for most of the use cases is 2 threads per cpus (or 1 per virtual core)",
       Integer.class, 0, null, (value) -> Runtime.getRuntime().availableProcessors()),
 
-  SERVER_HTTP_TX_EXPIRE_TIMEOUT("arcadedb.server.httpTxExpireTimeout", SCOPE.SERVER,
-      "Timeout in seconds for a HTTP transaction to expire. This timeout is computed from the latest command against the transaction",
-      Long.class, 30),
+  SERVER_HTTP_SESSION_EXPIRE_TIMEOUT("arcadedb.server.httpSessionExpireTimeout", SCOPE.SERVER,
+      "Timeout in seconds for a HTTP session to expire. This timeout is computed from the latest command against the session",
+      Long.class, 30 * 60), // 30 MINUTES DEFAULT
 
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,

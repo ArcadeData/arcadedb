@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
@@ -27,52 +28,59 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.*;
 import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 08/07/16.
  */
-public class FetchFromClassExecutionStep extends AbstractExecutionStep {
-  private String              className;
-  private boolean             orderByRidAsc  = false;
-  private boolean             orderByRidDesc = false;
-  private List<ExecutionStep> subSteps       = new ArrayList<>();
+public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
+  private              String                             typeName;
+  private              boolean                            orderByRidAsc  = false;
+  private              boolean                            orderByRidDesc = false;
+  private              List<ExecutionStep>                subSteps       = new ArrayList<>();
+  private static       ConcurrentHashMap<String, Integer> WARNINGS       = new ConcurrentHashMap<>();
+  private static final int                                WARNINGS_EVERY;
 
   ResultSet currentResultSet;
   int       currentStep = 0;
 
-  protected FetchFromClassExecutionStep(final CommandContext context, final boolean profilingEnabled) {
+  static {
+    WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
+  }
+
+  protected FetchFromTypeExecutionStep(final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
   }
 
-  public FetchFromClassExecutionStep(final String className, final Set<String> clusters, final CommandContext context,
+  public FetchFromTypeExecutionStep(final String typeName, final Set<String> clusters, final CommandContext context,
       final Boolean ridOrder, final boolean profilingEnabled) {
-    this(className, clusters, null, context, ridOrder, profilingEnabled);
+    this(typeName, clusters, null, context, ridOrder, profilingEnabled);
   }
 
   /**
    * iterates over a class and its subTypes
    *
-   * @param className the class name
-   * @param clusters  if present (it can be null), filter by only these clusters
-   * @param context   the query context
-   * @param ridOrder  true to sort by RID asc, false to sort by RID desc, null for no sort.
+   * @param typeName the class name
+   * @param clusters if present (it can be null), filter by only these clusters
+   * @param context  the query context
+   * @param ridOrder true to sort by RID asc, false to sort by RID desc, null for no sort.
    */
-  public FetchFromClassExecutionStep(final String className, final Set<String> clusters, final QueryPlanningInfo planningInfo,
+  public FetchFromTypeExecutionStep(final String typeName, final Set<String> clusters, final QueryPlanningInfo planningInfo,
       final CommandContext context, final Boolean ridOrder, final boolean profilingEnabled) {
     super(context, profilingEnabled);
 
-    this.className = className;
+    this.typeName = typeName;
 
     if (Boolean.TRUE.equals(ridOrder))
       orderByRidAsc = true;
     else if (Boolean.FALSE.equals(ridOrder))
       orderByRidDesc = true;
 
-    final DocumentType type = context.getDatabase().getSchema().getType(className);
+    final DocumentType type = context.getDatabase().getSchema().getType(typeName);
     if (type == null)
-      throw new CommandExecutionException("Type " + className + " not found");
+      throw new CommandExecutionException("Type " + typeName + " not found");
 
     final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getFileId()).distinct().sorted().toArray();
     final List<Integer> filteredTypeBuckets = new ArrayList<>();
@@ -101,10 +109,14 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
       }
     }
 
-    if (typeFileSize > 100_000_000) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Attempt to scan type '%s' of total size %s. This operation is very expensive, consider using an index", className,
-          FileUtils.getSizeAsString(typeFileSize));
+    if (WARNINGS_EVERY > 0) {
+      if (typeFileSize > 100_000_000) {
+        final Integer counter = WARNINGS.compute(typeName + ".scan", (k, v) -> v == null ? 1 : v + 1);
+        if (counter % WARNINGS_EVERY == 1)
+          LogManager.instance().log(this, Level.WARNING,
+              "Attempt to scan type '%s' of total size %s %d times. This operation is very expensive, consider using an index",
+              typeName, FileUtils.getSizeAsString(typeFileSize), counter);
+      }
     }
 
     sortBuckets(bucketIds);
@@ -217,7 +229,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     final StringBuilder builder = new StringBuilder();
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
-    builder.append("+ FETCH FROM TYPE ").append(className);
+    builder.append("+ FETCH FROM TYPE ").append(typeName);
     if (profilingEnabled) {
       builder.append(" (").append(getCostFormatted()).append(")");
     }
@@ -250,8 +262,8 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    final FetchFromClassExecutionStep result = new FetchFromClassExecutionStep(context, profilingEnabled);
-    result.className = this.className;
+    final FetchFromTypeExecutionStep result = new FetchFromTypeExecutionStep(context, profilingEnabled);
+    result.typeName = this.typeName;
     result.orderByRidAsc = this.orderByRidAsc;
     result.orderByRidDesc = this.orderByRidDesc;
     result.subSteps = this.subSteps.stream().map(x -> ((ExecutionStepInternal) x).copy(context)).collect(Collectors.toList());

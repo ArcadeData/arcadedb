@@ -86,7 +86,7 @@ public class LocalDocumentType implements DocumentType {
 
     final HashSet<String> set = new HashSet<>(propertiesWithDefaultDefined);
     for (final LocalDocumentType superType : superTypes)
-      set.addAll(superType.propertiesWithDefaultDefined);
+      set.addAll(superType.getPolymorphicPropertiesWithDefaultDefined());
     return set;
   }
 
@@ -1034,13 +1034,16 @@ public class LocalDocumentType implements DocumentType {
     if (add) {
       cachedPolymorphicBuckets = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBuckets, buckets);
       cachedPolymorphicBucketIds = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
+      // ADD ALL CACHED
+      for (LocalDocumentType s : superTypes)
+        s.updatePolymorphicBucketsCache(add, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
     } else {
       cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBuckets, buckets);
       cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
+      // REMOVE ONLY THE BUCKETS OF THE REMOVED TYPE
+      for (LocalDocumentType s : superTypes)
+        s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
     }
-
-    for (LocalDocumentType s : superTypes)
-      s.updatePolymorphicBucketsCache(add, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
   }
 
   DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {

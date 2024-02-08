@@ -137,6 +137,13 @@ public class PolymorphicTest extends TestHelper {
       Assertions.assertEquals(3, database.countType("Drives", true));
       Assertions.assertEquals(2, database.countType("Owns", true));
 
+      Assertions.assertEquals(3L,
+          (long) database.query("sql", "select count(*) as count from Vehicle").nextIfAvailable().getProperty("count"));
+
+      Assertions.assertEquals(3L,
+          (long) database.query("sql", "select count(*) as count from Vehicle WHERE $this INSTANCEOF Vehicle").nextIfAvailable()
+              .getProperty("count"));
+
     } finally {
       database.commit();
     }
@@ -197,6 +204,49 @@ public class PolymorphicTest extends TestHelper {
     } catch (ValidationException e) {
       // EXPECTED
     }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1438
+   */
+  @Test
+  public void testBrokenInheritanceAfterTypeDropLast() {
+    Assertions.assertEquals(3, database.countType("Vehicle", true));
+    database.transaction(() -> {
+      database.command("sql", "DELETE FROM Supercar");
+      database.getSchema().dropType("Supercar");
+    });
+    Assertions.assertEquals(2, database.countType("Vehicle", true));
+    Assertions.assertEquals(1, database.countType("Car", true));
+    Assertions.assertEquals(1, database.countType("Motorcycle", true));
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1438
+   */
+  @Test
+  public void testBrokenInheritanceAfterTypeDropMiddle() {
+    Assertions.assertEquals(3, database.countType("Vehicle", true));
+    database.transaction(() -> {
+      database.command("sql", "DELETE FROM Car");
+      database.getSchema().dropType("Car");
+    });
+    Assertions.assertEquals(1, database.countType("Vehicle", true));
+    Assertions.assertEquals(1, database.countType("Motorcycle", true));
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1438
+   */
+  @Test
+  public void testBrokenInheritanceAfterTypeDropFirst() {
+    Assertions.assertEquals(3, database.countType("Vehicle", true));
+    database.transaction(() -> {
+      database.getSchema().dropType("Vehicle");
+    });
+    Assertions.assertEquals(2, database.countType("Car", true));
+    Assertions.assertEquals(1, database.countType("Supercar", true));
+    Assertions.assertEquals(1, database.countType("Motorcycle", true));
   }
 
   private int scanAndCountType(final Database db, final String type, final boolean polymorphic) {

@@ -110,7 +110,7 @@ public class JVMUtils {
     }
 
     try {
-      final File file = File.createTempFile("deepwolf.heapdump.bin", null);
+      final File file = File.createTempFile("arcadedb.heapdump.bin", null);
       hotspotMBean.dumpHeap(file.getAbsolutePath(), live);
 
       final String content = FileUtils.readFileAsString(file);

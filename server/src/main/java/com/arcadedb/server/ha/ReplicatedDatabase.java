@@ -82,7 +82,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer  server;
   private final LocalDatabase   proxied;
   private final HAServer.QUORUM quorum;
-  private final long             timeout;
+  private final long            timeout;
 
   public ReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied) {
     if (!server.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL))
@@ -90,7 +90,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     this.server = server;
     this.proxied = proxied;
-    this.quorum = HAServer.QUORUM.valueOf(proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM).toUpperCase(Locale.ENGLISH));
+    this.quorum = HAServer.QUORUM.valueOf(
+        proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM).toUpperCase(Locale.ENGLISH));
     this.timeout = proxied.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     this.proxied.setWrappedDatabaseInstance(this);
   }
@@ -382,6 +383,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public boolean isTransactionActive() {
     return proxied.isTransactionActive();
+  }
+
+  @Override
+  public int getNestedTransactions() {
+    return proxied.getNestedTransactions();
   }
 
   @Override

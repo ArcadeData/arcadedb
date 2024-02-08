@@ -92,15 +92,16 @@ public class DropTypeTest extends TestHelper {
       for (final DocumentType parent : type2.getSuperTypes())
         Assertions.assertFalse(parent.getSubTypes().contains(type2));
 
-      for (final DocumentType sub : type2.getSubTypes())
+      for (final DocumentType sub : type2.getSubTypes()) {
         Assertions.assertFalse(sub.getSuperTypes().contains(type2));
+        Assertions.assertTrue(sub.getSuperTypes().contains(type));
+      }
 
       // CHECK INHERITANCE CHAIN IS CONSISTENT
-      for (final DocumentType parent : type2.getSuperTypes())
-        Assertions.assertTrue(parent.getSubTypes().contains(type2.getSubTypes().get(0)));
+      Assertions.assertTrue(type.getSuperTypes().isEmpty());
 
-      for (final DocumentType sub : type2.getSubTypes())
-        Assertions.assertTrue(sub.getSuperTypes().contains(type2.getSuperTypes().get(0)));
+      for (final DocumentType sub : type.getSubTypes())
+        Assertions.assertTrue(sub.getSuperTypes().contains(type));
 
       Assertions.assertEquals(1, database.countType(TYPE_NAME, true));
 

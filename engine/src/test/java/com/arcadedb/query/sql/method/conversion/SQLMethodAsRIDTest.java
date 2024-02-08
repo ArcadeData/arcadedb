@@ -43,13 +43,13 @@ class SQLMethodAsRIDTest {
   @Test
   void testFromString() {
     final Object result = method.execute(null, null, null, "#10:10", null);
-    assertThat(result).isEqualTo(new RID(null, "#10:10"));
+    assertThat(result).isEqualTo(new RID( "#10:10"));
   }
 
   @Test
   void testFromRID() {
-    final Object result = method.execute(null, null, null, new RID(null, "#10:10"), null);
-    assertThat(result).isEqualTo(new RID(null, "#10:10"));
+    final Object result = method.execute(null, null, null, new RID( "#10:10"), null);
+    assertThat(result).isEqualTo(new RID( "#10:10"));
   }
 
   @Test

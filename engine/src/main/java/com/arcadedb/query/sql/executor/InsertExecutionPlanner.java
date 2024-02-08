@@ -119,7 +119,7 @@ public class InsertExecutionPlanner {
   private void handleTargetClass(final InsertExecutionPlan result, final Identifier targetClass, final CommandContext context,
       final boolean profilingEnabled) {
     if (targetClass != null)
-      result.chain(new SetDocumentClassStep(targetClass, context, profilingEnabled));
+      result.chain(new SetDocumentStepStep(targetClass, context, profilingEnabled));
   }
 
   private void handleCreateRecord(final InsertExecutionPlan result, final InsertBody body, final CommandContext context,

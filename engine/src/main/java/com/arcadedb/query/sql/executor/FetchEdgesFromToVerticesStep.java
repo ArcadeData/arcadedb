@@ -93,19 +93,6 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
     };
   }
 
-//  private Vertex asVertex(Object currentFrom) {
-//    if (currentFrom instanceof RID) {
-//      currentFrom = ((RID) currentFrom).getRecord();
-//    }
-//    if (currentFrom instanceof Result) {
-//      return ((Result) currentFrom).getVertex().orElse(null);
-//    }
-//    if (currentFrom instanceof Vertex) {
-//      return (Vertex) currentFrom;
-//    }
-//    return null;
-//  }
-
   private void init() {
     synchronized (this) {
       if (this.inited)
@@ -201,7 +188,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   private boolean matchesClass(final Edge edge) {
     if (targetType == null)
       return true;
-    return edge.getTypeName().equals(targetType.getStringValue());
+    return edge.getType().isSubTypeOf(targetType.getStringValue());
   }
 
   @Override

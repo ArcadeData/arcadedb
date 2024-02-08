@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 
@@ -65,36 +66,35 @@ public class InstanceofCondition extends BooleanExpression {
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-    if (currentRecord == null) {
+    if (currentRecord == null)
       return false;
-    }
-    if (!currentRecord.isElement()) {
+
+    if (!currentRecord.isElement())
       return false;
-    }
+
     final Record record = currentRecord.getElement().get().getRecord();
-    if (record == null) {
+    if (record == null)
       return false;
-    }
-    if (!(record instanceof Document)) {
+
+    if (!(record instanceof Document))
       return false;
-    }
+
     final Document doc = (Document) record;
-    final String typez = doc.getTypeName();
-    if (typez == null) {
+    final DocumentType typez = doc.getType();
+    if (typez == null)
       return false;
-    }
-    if (right != null) {
-      return typez.equals(right.getStringValue());
-    } else if (rightString != null) {
-      return typez.equals(decode(rightString));
-    }
+
+    if (right != null)
+      return typez.isSubTypeOf(right.getStringValue());
+    else if (rightString != null)
+      return typez.isSubTypeOf(decode(rightString));
+
     return false;
   }
 
   private String decode(final String rightString) {
-    if (rightString == null) {
+    if (rightString == null)
       return null;
-    }
     return BaseExpression.decode(rightString.substring(1, rightString.length() - 1));
   }
 

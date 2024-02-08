@@ -132,7 +132,11 @@ public class TraverseExecutionPlanner {
 
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final InputParameter inputParam,
       final CommandContext context, final boolean profilingEnabled) {
-    final Object paramValue = inputParam.getValue(context.getInputParameters());
+    Object paramValue = inputParam.getValue(context.getInputParameters());
+
+    if (paramValue instanceof String && RID.is(paramValue))
+      paramValue = new RID(context.getDatabase(), (String) paramValue);
+
     if (paramValue == null) {
       result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
     } else if (paramValue instanceof LocalDocumentType) {
@@ -150,7 +154,6 @@ public class TraverseExecutionPlanner {
       handleClassAsTarget(result, from, context, profilingEnabled);
     } else if (paramValue instanceof Identifiable) {
       final RID orid = ((Identifiable) paramValue).getIdentity();
-
       final Rid rid = new Rid(-1);
       final PInteger bucket = new PInteger(-1);
       bucket.setValue(orid.getBucketId());
@@ -181,9 +184,8 @@ public class TraverseExecutionPlanner {
         rids.add(rid);
       }
       handleRidsAsTarget(result, rids, context, profilingEnabled);
-    } else {
+    } else
       throw new CommandExecutionException("Invalid target: " + paramValue);
-    }
   }
 
   private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
@@ -238,7 +240,7 @@ public class TraverseExecutionPlanner {
     final Identifier identifier = queryTarget.getItem().getIdentifier();
 
     final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
-    final FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), null, context,
+    final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), null, context,
         orderByRidAsc, profilingEnabled);
     plan.chain(fetcher);
   }

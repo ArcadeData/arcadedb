@@ -19,8 +19,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -38,14 +41,14 @@ public class TraverseStatementExecutionTest extends TestHelper {
       database.command("sql", "create vertex " + classPrefix + "V set name = 'd'").close();
 
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix + "V where name = 'b')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix
+              + "V where name = 'b')").close();
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix + "V where name = 'c')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix
+              + "V where name = 'c')").close();
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix + "V where name = 'd')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix
+              + "V where name = 'd')").close();
 
       final ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a')");
 
@@ -71,16 +74,17 @@ public class TraverseStatementExecutionTest extends TestHelper {
       database.command("sql", "create vertex " + classPrefix + "V set name = 'd'").close();
 
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix + "V where name = 'b')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix
+              + "V where name = 'b')").close();
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix + "V where name = 'c')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix
+              + "V where name = 'c')").close();
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix + "V where name = 'd')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix
+              + "V where name = 'd')").close();
 
-      final ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a') WHILE $depth < 2");
+      final ResultSet result = database.query("sql",
+          "traverse out() from (select from " + classPrefix + "V where name = 'a') WHILE $depth < 2");
 
       for (int i = 0; i < 2; i++) {
         Assertions.assertTrue(result.hasNext());
@@ -104,16 +108,17 @@ public class TraverseStatementExecutionTest extends TestHelper {
       database.command("sql", "create vertex " + classPrefix + "V set name = 'd'").close();
 
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix + "V where name = 'b')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix
+              + "V where name = 'b')").close();
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix + "V where name = 'c')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix
+              + "V where name = 'c')").close();
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix + "V where name = 'd')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix
+              + "V where name = 'd')").close();
 
-      ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a') MAXDEPTH 1");
+      ResultSet result = database.query("sql",
+          "traverse out() from (select from " + classPrefix + "V where name = 'a') MAXDEPTH 1");
 
       for (int i = 0; i < 2; i++) {
         Assertions.assertTrue(result.hasNext());
@@ -147,16 +152,17 @@ public class TraverseStatementExecutionTest extends TestHelper {
       database.command("sql", "create vertex " + classPrefix + "V set name = 'd'").close();
 
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix + "V where name = 'b')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix
+              + "V where name = 'b')").close();
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix + "V where name = 'c')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix
+              + "V where name = 'c')").close();
       database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix + "V where name = 'd')")
-          .close();
+          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix
+              + "V where name = 'd')").close();
 
-      final ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a') STRATEGY BREADTH_FIRST");
+      final ResultSet result = database.query("sql",
+          "traverse out() from (select from " + classPrefix + "V where name = 'a') STRATEGY BREADTH_FIRST");
 
       for (int i = 0; i < 4; i++) {
         Assertions.assertTrue(result.hasNext());
@@ -193,6 +199,29 @@ public class TraverseStatementExecutionTest extends TestHelper {
       result.next();
       Assertions.assertFalse(result.hasNext());
       result.close();
+    });
+  }
+
+  @Test
+  public void testTraverseFromRID() {
+    database.command("sql", "CREATE VERTEX TYPE TVtx IF NOT EXISTS");
+    database.command("sql", "CREATE EDGE TYPE TEdg IF NOT EXISTS");
+
+    database.transaction(() -> {
+      RID newVtx0Id = database.command("sql", "CREATE VERTEX TVtx").next().getIdentity().get();
+      RID newVtx1Id = database.command("sql", "CREATE VERTEX TVtx").next().getIdentity().get();
+
+      Map<String, Object> params = new HashMap<>();
+      params.put("fromRid", newVtx0Id);
+      params.put("toRid", newVtx1Id);
+      RID newEdgRid = database.command("sql", "CREATE EDGE TEdg FROM :fromRid TO :toRid", params).next().getIdentity().get();
+
+      params.clear();
+      params.put("rid", newVtx0Id);
+      String traverseQuery = "SELECT FROM (TRAVERSE out('TEdg') FROM :rid MAXDEPTH 1)";
+      //This also does not recognize RID parameter
+      //String traverseQuery="SELECT FROM (TRAVERSE inV() FROM :rid MAXDEPTH 1)";
+      database.command("sql", traverseQuery, params);
     });
   }
 }

@@ -667,8 +667,9 @@ public class TransactionContext implements Transaction {
 
       // UPDATE RECORD COUNT
       for (Map.Entry<Integer, AtomicInteger> entry : bucketRecordDelta.entrySet()) {
-        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
-        if (bucket.getCachedRecordCount() > -1)
+        // THE BUCKET/FILE COULD HAVE BEEN REMOVED IN THE CURRENT TRANSACTION
+        final LocalBucket bucket = (LocalBucket) database.getSchema().getFileByIdIfExists(entry.getKey());
+        if (bucket != null && bucket.getCachedRecordCount() > -1)
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
           bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue().get());
       }

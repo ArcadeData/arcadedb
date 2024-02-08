@@ -28,7 +28,7 @@ import java.util.*;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLFunctionCoalesce extends TestHelper {
+public class SQLFunctionCoalesceTest extends TestHelper {
 
   @Test
   public void testBoolAnd_SingleNull() {

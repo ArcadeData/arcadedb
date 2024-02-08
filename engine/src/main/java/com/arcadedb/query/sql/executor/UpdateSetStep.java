@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.UpdateItem;
 
@@ -45,13 +46,24 @@ public class UpdateSetStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final Result result = upstream.next();
-        if (result instanceof ResultInternal) {
-          for (final UpdateItem item : items) {
-            item.applyUpdate((ResultInternal) result, context);
+        if (upstream instanceof CreateRecordResultSet) {
+          final Object[] parameters = new Object[items.size() * 2];
+          for (int i = 0; i < items.size(); ++i) {
+            final UpdateItem item = items.get(i);
+            parameters[i * 2] = item.getLeft().getStringValue();
+            parameters[i * 2 + 1] = item.getRight().execute((Identifiable) null, context);
           }
+
+          return ((CreateRecordResultSet) upstream).next(parameters);
+        } else {
+
+          final Result result = upstream.next();
+          if (result instanceof ResultInternal) {
+            for (final UpdateItem item : items)
+              item.applyUpdate((ResultInternal) result, context);
+          }
+          return result;
         }
-        return result;
       }
 
       @Override

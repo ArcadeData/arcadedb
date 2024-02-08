@@ -442,7 +442,9 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
-      multipleUpdate = true;
+      boolean setMultipleUpdate = !multipleUpdate;
+      if (!multipleUpdate)
+        multipleUpdate = true;
 
       final IndexInternal index = indexMap.get(indexName);
       if (index == null)
@@ -481,7 +483,8 @@ public class LocalSchema implements Schema {
       } catch (final Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
       } finally {
-        multipleUpdate = false;
+        if (setMultipleUpdate)
+          multipleUpdate = false;
       }
       return null;
     });
@@ -700,17 +703,13 @@ public class LocalSchema implements Schema {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
 
         // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
-        for (final LocalDocumentType parent : type.superTypes) {
-          parent.subTypes.remove(type);
-          parent.cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(parent.cachedPolymorphicBuckets,
-              type.buckets);
-          parent.cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(parent.cachedPolymorphicBucketIds,
-              type.bucketIds);
-        }
+        final List<LocalDocumentType> superTypes = new ArrayList<>(type.superTypes);
+        for (final LocalDocumentType parent : superTypes)
+          type.removeSuperType(parent);
 
         for (final LocalDocumentType sub : type.subTypes) {
           sub.superTypes.remove(type);
-          for (final LocalDocumentType parent : type.superTypes)
+          for (final LocalDocumentType parent : superTypes)
             sub.addSuperType(parent, false);
         }
 
@@ -1002,6 +1001,15 @@ public class LocalSchema implements Schema {
           }
         }
 
+        type.custom.clear();
+        if (schemaType.has("custom"))
+          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
+      }
+
+      // CREATE THE PROPERTIES AFTER ALL THE TYPES HAVE BEEN CREATED TO FIND ALL THE REFERENCES LINKED WITH `TO`
+      for (final String typeName : types.keySet()) {
+        final JSONObject schemaType = types.getJSONObject(typeName);
+        final LocalDocumentType type = getType(typeName);
         if (schemaType.has("properties")) {
           final JSONObject schemaProperties = schemaType.getJSONObject("properties");
           if (schemaProperties != null) {
@@ -1011,10 +1019,6 @@ public class LocalSchema implements Schema {
             }
           }
         }
-
-        type.custom.clear();
-        if (schemaType.has("custom"))
-          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
       }
 
       // RESTORE THE INHERITANCE
@@ -1042,13 +1046,31 @@ public class LocalSchema implements Schema {
             for (int i = 0; i < properties.length; ++i)
               properties[i] = schemaIndexProperties.getString(i);
 
-            final IndexInternal index = indexMap.get(indexName);
+            IndexInternal index = indexMap.get(indexName);
             if (index != null) {
               final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = indexJSON.has("nullStrategy") ?
                   LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(indexJSON.getString("nullStrategy")) :
                   LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
 
               index.setNullStrategy(nullStrategy);
+
+              if (indexJSON.has("type")) {
+                final String configuredIndexType = indexJSON.getString("type");
+
+                if (!index.getType().toString().equals(configuredIndexType)) {
+                  if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
+                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index);
+                    indexMap.put(indexName, index);
+                  } else {
+                    orphanIndexes.put(indexName, indexJSON);
+                    indexJSON.put("type", typeName);
+                    LogManager.instance()
+                        .log(this, Level.WARNING, "Index '%s' of type %s is different from definition %s. Ignoring it",//
+                            index.getName(), index.getType(), configuredIndexType);
+                    continue;
+                  }
+                }
+              }
 
               final String bucketName = indexJSON.getString("bucket");
               final Bucket bucket = bucketMap.get(bucketName);

@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 
@@ -113,8 +114,8 @@ public class MatchEdgeTraverser {
     }
   }
 
-  protected Iterable<ResultInternal> executeTraversal(final CommandContext iCommandContext, final MatchPathItem item, final Identifiable startingPoint,
-      final int depth, final List<Identifiable> pathToHere) {
+  protected Iterable<ResultInternal> executeTraversal(final CommandContext iCommandContext, final MatchPathItem item,
+      final Identifiable startingPoint, final int depth, final List<Identifiable> pathToHere) {
 
     WhereClause filter = null;
     WhereClause whileCondition = null;
@@ -182,8 +183,8 @@ public class MatchEdgeTraverser {
               final ResultInternal next = iter.next();
               final Document elem = next.toElement();
               iCommandContext.setVariable("currentMatch", elem);
-              if (matchesFilters(iCommandContext, theFilter, elem) && matchesClass(theClassName, elem) && matchesCluster(theClusterId, elem) && matchesRid(
-                  iCommandContext, theTargetRid, elem)) {
+              if (matchesFilters(iCommandContext, theFilter, elem) && matchesClass(theClassName, elem) && matchesCluster(
+                  theClusterId, elem) && matchesRid(iCommandContext, theTargetRid, elem)) {
                 nextElement = next;
                 break;
               }
@@ -200,8 +201,8 @@ public class MatchEdgeTraverser {
       final Object previousMatch = iCommandContext.getVariable("currentMatch");
       iCommandContext.setVariable("currentMatch", startingPoint);
 
-      if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(clusterId, startingPoint)
-          && matchesRid(iCommandContext, targetRid, startingPoint)) {
+      if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(
+          clusterId, startingPoint) && matchesRid(iCommandContext, targetRid, startingPoint)) {
         final ResultInternal rs = new ResultInternal((Document) startingPoint.getRecord());
         // set traversal depth in the metadata
         rs.setMetadata("$depth", depth);
@@ -211,7 +212,8 @@ public class MatchEdgeTraverser {
         ((List) result).add(rs);
       }
 
-      if ((maxDepth == null || depth < maxDepth) && (whileCondition == null || whileCondition.matchesFilters(startingPoint, iCommandContext))) {
+      if ((maxDepth == null || depth < maxDepth) && (whileCondition == null || whileCondition.matchesFilters(startingPoint,
+          iCommandContext))) {
 
         final Iterable<ResultInternal> queryResult = traversePatternEdge(startingPoint, iCommandContext);
 
@@ -274,40 +276,38 @@ public class MatchEdgeTraverser {
       }
     }
     if (element != null) {
-      final Object typez = element.getTypeName();
-      if (typez == null) {
+      final DocumentType typez = element.getType();
+      if (typez == null)
         return false;
-      }
-      return typez.equals(className);
+
+      return typez.isSubTypeOf(className);
     }
     return false;
   }
 
   private boolean matchesCluster(final Integer bucketId, final Identifiable origin) {
-    if (bucketId == null) {
+    if (bucketId == null)
       return true;
-    }
-    if (origin == null) {
-      return false;
-    }
 
-    if (origin.getIdentity() == null) {
+    if (origin == null)
       return false;
-    }
+
+    if (origin.getIdentity() == null)
+      return false;
+
     return bucketId.equals(origin.getIdentity().getBucketId());
   }
 
   private boolean matchesRid(final CommandContext iCommandContext, final Rid rid, final Identifiable origin) {
-    if (rid == null) {
+    if (rid == null)
       return true;
-    }
-    if (origin == null) {
-      return false;
-    }
 
-    if (origin.getIdentity() == null) {
+    if (origin == null)
       return false;
-    }
+
+    if (origin.getIdentity() == null)
+      return false;
+
     return origin.getIdentity().equals(rid.toRecordId(origin, iCommandContext));
   }
 

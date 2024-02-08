@@ -41,8 +41,8 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
   private Edge           nextEdge;
   private Iterator<Edge> currentToEdgesIter;
 
-  public FetchEdgesToVerticesStep(final String toAlias, final Identifier targetType, final Identifier targetBucket, final CommandContext context,
-      final boolean profilingEnabled) {
+  public FetchEdgesToVerticesStep(final String toAlias, final Identifier targetType, final Identifier targetBucket,
+      final CommandContext context, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.toAlias = toAlias;
     this.targetType = targetType;
@@ -151,7 +151,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
     if (targetType == null)
       return true;
 
-    return edge.getTypeName().equals(targetType.getStringValue());
+    return edge.getType().isSubTypeOf(targetType.getStringValue());
   }
 
   @Override

@@ -206,6 +206,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
+  public int getNestedTransactions() {
+    return isTransactionActive() ? 1 : 0;
+  }
+
+  @Override
   public void begin() {
     begin(transactionIsolationLevel);
   }

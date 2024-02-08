@@ -520,6 +520,12 @@ public class TransactionManager {
             file.setActive(false);
             inactiveWALFilePool.add(file);
           }
+        } catch (final java.nio.channels.ClosedChannelException e) {
+          try {
+            file.close();
+          } catch (IOException ex) {
+            // IGNORE IT
+          }
         } catch (final IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, file);
         }

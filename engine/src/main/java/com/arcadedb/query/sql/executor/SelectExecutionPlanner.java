@@ -300,7 +300,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromClassStep(info.target.toString(), info.projection.getAllAliases().iterator().next(), context,
+    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().iterator().next(), context,
         profilingEnabled));
     return true;
   }
@@ -1254,18 +1254,18 @@ public class SelectExecutionPlanner {
       final QueryPlanningInfo info, final CommandContext context, final boolean profilingEnabled) {
     final Identifier identifier = from.getItem().getIdentifier();
     if (handleClassAsTargetWithIndexedFunction(plan, filterClusters, identifier, info, context, profilingEnabled)) {
-      plan.chain(new FilterByClassStep(identifier, context, profilingEnabled));
+      plan.chain(new FilterByTypeStep(identifier, context, profilingEnabled));
       return;
     }
 
     if (handleClassAsTargetWithIndex(plan, identifier, filterClusters, info, context, profilingEnabled)) {
-      plan.chain(new FilterByClassStep(identifier, context, profilingEnabled));
+      plan.chain(new FilterByTypeStep(identifier, context, profilingEnabled));
       return;
     }
 
     if (info.orderBy != null && handleClassWithIndexForSortOnly(plan, identifier, filterClusters, info, context,
         profilingEnabled)) {
-      plan.chain(new FilterByClassStep(identifier, context, profilingEnabled));
+      plan.chain(new FilterByTypeStep(identifier, context, profilingEnabled));
       return;
     }
 
@@ -1276,7 +1276,7 @@ public class SelectExecutionPlanner {
 //    else if (isOrderByRidDesc(info)) {
 //      orderByRidAsc = false;
 //    }
-    final FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), filterClusters, info,
+    final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), filterClusters, info,
         context, orderByRidAsc, profilingEnabled);
     if (orderByRidAsc != null)
       info.orderApplied = true;
@@ -1332,7 +1332,7 @@ public class SelectExecutionPlanner {
           }
 
         } else {
-          final FetchFromClassExecutionStep step = new FetchFromClassExecutionStep(typez.getName(), filterClusters, context, true,
+          final FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(typez.getName(), filterClusters, context, true,
               profilingEnabled);
           final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
           subPlan.chain(step);

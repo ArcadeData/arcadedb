@@ -86,6 +86,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         final Result rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Elon"));
+        Assertions.assertEquals("Elon", rec.toElement().toMap().get("name"));
         final RID rid = rec.toElement().getIdentity();
 
         // RETRIEVE DOCUMENT WITH QUERY
@@ -166,6 +167,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         Result rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Elon"));
+        Assertions.assertEquals("Elon", rec.toElement().toMap().get("name"));
         final RID rid1 = rec.getIdentity().get();
 
         // CREATE VERTEX 2
@@ -174,6 +176,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Kimbal"));
+        Assertions.assertEquals("Kimbal", rec.toElement().toMap().get("name"));
         final RID rid2 = rec.getIdentity().get();
 
         // RETRIEVE VERTEX WITH QUERY
@@ -198,7 +201,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertEquals(rid1, edge.getOut());
         Assertions.assertEquals(rid2, edge.getIn());
 
-        Document record = (Document) database.lookupByRID(rid1);
+        Vertex record = (Vertex) database.lookupByRID(rid1);
         Assertions.assertNotNull(record);
         Assertions.assertEquals("Elon", record.getString("name"));
         Assertions.assertEquals("Musk", record.getString("lastName"));
@@ -206,7 +209,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         record.toMap();
         record.toJSON();
 
-        record = (Document) database.lookupByRID(rid2);
+        record = (Vertex) database.lookupByRID(rid2);
         Assertions.assertNotNull(record);
         Assertions.assertEquals("Kimbal", record.getString("name"));
         Assertions.assertEquals("Musk", record.getString("lastName"));
@@ -379,6 +382,50 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final ResultSet result = database.query("SQL", "select count(*) as total from Person");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertEquals(TOTAL_TRANSACTIONS * BATCH_SIZE, (int) result.next().getProperty("total"));
+    });
+  }
+
+  @Test
+  public void testRIDAsParametersInSQL() throws Exception {
+    testEachServer((serverIndex) -> {
+      Assertions.assertTrue(
+          new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+              DATABASE_NAME));
+
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      database.getSchema().createVertexType("VT");
+      database.getSchema().createEdgeType("ET");
+      final Vertex v1 = database.newVertex("VT").save();
+      final Vertex v2 = database.newVertex("VT").save();
+
+      String statement = "CREATE EDGE ET FROM :fromRid TO :toRid";
+
+      Map<String, Object> params = new HashMap<>();
+      params.put("fromRid", v1.getIdentity());
+      params.put("toRid", v2.getIdentity());
+
+      database.command("sql", statement, params);
+
+      System.out.println("Done ... ");
+    });
+  }
+
+  @Test
+  public void testDropRemoteInheritanceBroken() throws Exception {
+    testEachServer((serverIndex) -> {
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      database.command("sqlscript",//
+          "CREATE VERTEX TYPE AVtx;" + //
+              "CREATE VERTEX TYPE BVtx EXTENDS AVtx;" + //
+              "CREATE VERTEX TYPE CVtx EXTENDS BVtx;");
+
+      database.command("sql", "SELECT FROM AVtx;");
+      database.command("sql", "DROP TYPE CVtx;");
+      database.command("sql", "SELECT FROM AVtx;");
     });
   }
 

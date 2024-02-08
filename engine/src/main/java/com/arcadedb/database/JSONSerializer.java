@@ -24,7 +24,10 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.DateUtils;
 
+import java.time.*;
+import java.time.temporal.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -41,7 +44,9 @@ public class JSONSerializer {
       final Object value = convertToJSONType(entry.getValue());
 
       if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {
-        LogManager.instance().log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion", entry.getKey());
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion",
+                entry.getKey());
         continue;
       }
 
@@ -72,6 +77,8 @@ public class JSONSerializer {
       value = array;
     } else if (value instanceof Date)
       value = ((Date) value).getTime();
+    else if (value instanceof Temporal)
+      value = DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
     else if (value instanceof Map) {
       final Map<String, Object> m = (Map<String, Object>) value;
       final JSONObject map = new JSONObject();
