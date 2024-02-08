@@ -311,6 +311,7 @@ public class GraphEngine {
   }
 
   public void deleteEdge(final Edge edge) {
+
     final Database database = edge.getDatabase();
 
     try {
@@ -356,19 +357,8 @@ public class GraphEngine {
         RID inV = null;
         try {
           final Edge nextEdge = outIterator.next();
-
           inV = nextEdge.getIn();
-
-          final VertexInternal nextVertex = (VertexInternal) nextEdge.getInVertex();
-
-          final EdgeLinkedList inEdges2 = getEdgeHeadChunk(nextVertex, Vertex.DIRECTION.IN);
-          if (inEdges2 != null) {
-            inEdges2.removeEdge(nextEdge);
-
-            if (nextEdge.getIdentity().getPosition() > -1)
-              // NON LIGHTWEIGHT
-              nextEdge.delete();
-          }
+          nextEdge.delete();
         } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance()
@@ -389,19 +379,8 @@ public class GraphEngine {
         RID outV = null;
         try {
           final Edge nextEdge = inIterator.next();
-
           outV = nextEdge.getOut();
-
-          final VertexInternal nextVertex = (VertexInternal) nextEdge.getOutVertex();
-
-          final EdgeLinkedList outEdges2 = getEdgeHeadChunk(nextVertex, Vertex.DIRECTION.OUT);
-          if (outEdges2 != null) {
-            outEdges2.removeEdge(nextEdge);
-
-            if (nextEdge.getIdentity().getPosition() > -1)
-              // NON LIGHTWEIGHT
-              nextEdge.delete();
-          }
+          nextEdge.delete();
         } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance()
