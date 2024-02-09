@@ -9,6 +9,18 @@
 - Studio: https://arcadedb.[localhost|custom df domain]
 - API: ~/api/v1/arcadedb
 
+#### Configuration
+| EnvVariable | Default                          | Description                                                                                                                                                                                          | 
+|---|----------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------| 
+| BOOTSTRAP_SERVERS_CONFIG | "kafka-bootstrap.localhost:9092" | Kafka cluster connection string                                                                                                                                                                      | 
+| CLIENT_ID_CONFIG | "admin-arcadedb-kafka-client"    | Kafka client id.                                                                                                                                                                                     | 
+| SECURITY_PROTOCOL_CONFIG | "PLAINTEXT"                      | Security protocol used. Can be SSL or PLAINTEXT.                                                                                                                                                     |
+| SASL_MECHANISM | None                             | SASL auth mechanism. Can be SCRAM-SHA-256 or SCRAM-SHA-512.                                                                                                                                          | 
+| SASL_JAAS_CONFIG | None                             | Jaas configuration which will contain credentials.                                                                                                                                                   | 
+| DATABASE_SUBSCRIPTION_PATTERN | ".*"                             | Regex which will used to pattern match databases to register kafka events.                                                                                                                           | 
+| STREAM_DATABASE_SUBSCRIPTION_SERVICE_TIMEOUT_MILLIS | "500"                            | Frequency in milliseconds at which Kafka event subscription service will check for new databases and if the database should be subscibed to emit events on record create, update or delete to Kafka. | 
+ | STREAM_DEFAULT_DATABASE_USERNAME | admin                            | Default username for database under which events  will be sent to Kafka if the database does not have a username set when created.                                                                   |
+
 ## 1. Demos
 
 ### 1.1 Included by default
@@ -20,9 +32,11 @@ To view a good graph result set in the food dataset, run the following query
 
 ### 1.2 Classification handling
 
+
 Arcade has been extended to optionally require general or source based classification markings on all graph nodes/edges for specific databases.
 
 Classification/ACCM data access enforcements are currently limited to clearance checks and no foreign nationaity checks. More advanced ACCM controls to come.
+
 
 To demo this functionality....
 

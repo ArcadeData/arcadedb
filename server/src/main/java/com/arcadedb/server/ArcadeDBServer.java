@@ -41,6 +41,7 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostServerCommandHandler;
+import com.arcadedb.server.kafka.StreamDBSubscriptionService;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
 import com.arcadedb.server.monitor.ServerMonitor;
@@ -78,6 +79,8 @@ public class ArcadeDBServer {
   private volatile    STATUS                                  status                               = STATUS.OFFLINE;
   private             ServerMetrics                           serverMetrics                        = new DefaultServerMetrics();
   private             ServerMonitor                           serverMonitor;
+
+  private             StreamDBSubscriptionService             streamDBSubscriptionService;
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
@@ -156,6 +159,8 @@ public class ArcadeDBServer {
 
     loadDefaultFoodDatabase();
 
+    startStreamDBSubscriptionService();
+
     httpServer.startService();
 
     status = STATUS.ONLINE;
@@ -181,6 +186,21 @@ public class ArcadeDBServer {
     }
 
     serverMonitor.start();
+  }
+
+  private void startStreamDBSubscriptionService() {
+    String dbNamePattern = System.getenv("DATABASE_SUBSCRIPTION_PATTERN") == null ?  ".*" : System.getenv("DATABASE_SUBSCRIPTION_PATTERN");
+    String stringTimeout = System.getenv("STREAM_DATABASE_SUBSCRIPTION_SERVICE_TIMEOUT_MILLIS") == null ? "500" : System.getenv("STREAM_DATABASE_SUBSCRIPTION_SERVICE_TIMEOUT_MILLIS");
+    long subscriptionServiceTimeout;
+    try {
+      subscriptionServiceTimeout = Long.parseLong(stringTimeout);
+    } catch (NumberFormatException e) {
+      // Will use default value for timeout
+      subscriptionServiceTimeout = 500L;
+    }
+
+    streamDBSubscriptionService = new StreamDBSubscriptionService(dbNamePattern, this.databases, subscriptionServiceTimeout);
+    streamDBSubscriptionService.start();
   }
 
   private void loadDefaultFoodDatabase() {
@@ -493,8 +513,9 @@ public class ArcadeDBServer {
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
         final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
-        for (final File f : databaseDirectories)
+        for (final File f : databaseDirectories) {
           getDatabase(f.getName());
+        }
       }
     }
   }
