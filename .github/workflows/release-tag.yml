@@ -17,7 +17,7 @@ jobs:
       contents: write    
     steps:   
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Get TAG var
         run: |
           MAJOR=$(grep 'MAJOR' VERSION | cut -d '=' -f 2)
