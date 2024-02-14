@@ -45,7 +45,7 @@ jobs:
           password: ${{ secrets.GHCR_PAT }}
 
       - name: Login to registry1
-        uses: docker/login-action@v2.2.0
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.IB_REGISTRY }}
           username: ${{ secrets.IB_USER }}
