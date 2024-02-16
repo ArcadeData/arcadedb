@@ -32,7 +32,16 @@ jobs:
           MINOR=$(grep 'MINOR' VERSION | cut -d '=' -f 2)
           PATCH=$(grep 'PATCH' VERSION | cut -d '=' -f 2)
           ADDOPTS=$(grep 'ADDOPTS' VERSION | cut -d '=' -f 2)
-          echo "TAG=$MAJOR.$MINOR.$PATCH-$ADDOPTS" >> $GITHUB_ENV
+
+          # Conditionally append ADDOPTS if it's not empty
+          if [ -z "$ADDOPTS" ]; then
+            TAG="${MAJOR}.${MINOR}.${PATCH}"
+          else
+            TAG="${MAJOR}.${MINOR}.${PATCH}-${ADDOPTS}"
+          fi
+
+          echo "TAG=$TAG" >> $GITHUB_ENV
+
 
       - name: Check Tag
         run: echo ${{env.TAG}}
