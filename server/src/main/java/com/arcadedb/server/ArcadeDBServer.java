@@ -204,9 +204,10 @@ public class ArcadeDBServer {
   }
 
   private void loadDefaultFoodDatabase() {
-    if (getDatabaseNames() == null || !getDatabaseNames().contains("Food_Demo")) {
+    final String FOOD_DEMO = "Food_Demo";
+    if (getDatabaseNames() == null || !getDatabaseNames().contains(FOOD_DEMO)) {
       LogManager.instance().log(this, Level.INFO, "Food demo database not found, creating...");
-      Database database = createDatabase("Food_Demo", READ_WRITE, "U", "admin", true, false);
+      Database database = createDatabase(FOOD_DEMO, READ_WRITE, "U", "admin", true, false);
 
       try {
         InputStream inputStream = PostServerCommandHandler.class.getResourceAsStream("/importFoodDemoDatasetCommand.txt");
@@ -217,6 +218,11 @@ public class ArcadeDBServer {
       }
     } else {
       LogManager.instance().log(this, Level.INFO, "Food demo database found, skipping...");
+    }
+
+    var foodDemoDatabase = getDatabase(FOOD_DEMO);
+    if (foodDemoDatabase != null) {
+      setDatabaseDatetimeHandling(foodDemoDatabase);
     }
   }
 
@@ -404,11 +410,19 @@ public class ArcadeDBServer {
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
-
+    
     // FORCE LOADING INTO THE SERVER
     databases.put(databaseName, db);
 
+    setDatabaseDatetimeHandling(db);
+
     return db;
+  }
+
+  private void setDatabaseDatetimeHandling(Database database) {
+    // Set datetime implementation to localDateTime to support micros precision.
+    database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
+    database.command("sql", "ALTER DATABASE DATETIMEFORMAT \"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'\"");
   }
 
   public Set<String> getDatabaseNames() {

@@ -8,6 +8,7 @@
      {"name": "username", "type": "string"},
      {"name": "eventType", "type": "string"},
      {"name": "entityName", "type": "string"},
+     {"name": "entityId", "type": "string"},
      {"name": "eventPayload", "type": "string"}
  ]
 }

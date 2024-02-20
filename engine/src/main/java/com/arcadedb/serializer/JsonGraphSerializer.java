@@ -20,6 +20,7 @@ package com.arcadedb.serializer;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Utils;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.serializer.json.JSONArray;
@@ -79,6 +80,9 @@ public class JsonGraphSerializer extends JsonSerializer {
         else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
           // JSON DOES NOT SUPPORT INFINITY
           value = "NegInfinity";
+        else if (prop.getKey().equals(Utils.CREATED_DATE) || prop.getKey().equals(Utils.LAST_MODIFIED_DATE)) {
+          value = value.toString() + "Z";
+        }
       }
       properties.put(prop.getKey(), value);
     }

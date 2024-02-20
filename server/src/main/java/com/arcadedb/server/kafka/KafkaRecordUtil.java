@@ -17,6 +17,7 @@ public class KafkaRecordUtil {
                 .setEventPayload(record.toJSON().toString())
                 .setUsername(record.getDatabase().getCurrentUserName())
                 .setEntityName(getEntityName(record))
+                .setEntityId(record.getIdentity().toString())
                 .build();
     }
 

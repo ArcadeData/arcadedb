@@ -8,9 +8,9 @@ import com.raft.arcadedb.cdc.Message;
 
 public class KafkaEventListener implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
     enum RecordEvents {
-        AFTER_RECORD_UPDATE("AFTER_RECORD_UPDATE"),
-        AFTER_RECORD_DELETE("AFTER_RECORD_DELETE"),
-        AFTER_RECORD_CREATE("AFTER_RECORD_CREATE");
+        AFTER_RECORD_UPDATE("UPDATE"),
+        AFTER_RECORD_DELETE("DELETE"),
+        AFTER_RECORD_CREATE("CREATE");
 
         private final String value;
 

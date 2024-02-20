@@ -78,6 +78,9 @@ import com.arcadedb.utility.RWLockContext;
 import java.io.*;
 import java.nio.channels.*;
 import java.nio.file.*;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -293,9 +296,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public String getCurrentUserName() {
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
     if (dbContext == null)
-      return null;
+      return "admin";
     final SecurityDatabaseUser user = dbContext.getCurrentUser();
-    return user != null ? user.getName() : null;
+    return user != null ? user.getName() : "admin";
   }
 
   public TransactionContext getTransaction() {
@@ -784,8 +787,20 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     setDefaultValues(record);
 
-    if (record instanceof MutableDocument)
+    if (record instanceof MutableDocument) {
       ((MutableDocument) record).validateAndAccmCheck(getContext().getCurrentUser());
+
+      ((MutableDocument) record).set(Utils.CREATED_BY, getCurrentUserName());
+      ((MutableDocument) record).set(Utils.CREATED_DATE, LocalDateTime.now());
+
+      // Prevent a smartass from setting this on record creation.
+      if (((MutableDocument) record).has(Utils.LAST_MODIFIED_BY)) {
+        ((MutableDocument) record).remove(Utils.LAST_MODIFIED_BY);
+      }
+      if (((MutableDocument) record).has(Utils.LAST_MODIFIED_DATE)) {
+        ((MutableDocument) record).remove(Utils.LAST_MODIFIED_DATE);
+      }
+    }
 
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeCreate(record))
@@ -851,32 +866,56 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         return;
 
     executeInReadLock(() -> {
+      var localRecord = record;
+
       if (isTransactionActive()) {
         // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
         // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE IS CREATED IN THE SAME CHUNK.
         // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED RECORD
         try {
-          getTransaction().addUpdatedRecord(record);
+          Document originalRecord = null;
+          if (localRecord instanceof Document) {
+            originalRecord = getOriginalDocument(localRecord);
+            // confirm created date, by hasn't changed. If so set it back if someone is being a smartass
+            var createdBy = originalRecord.getString(Utils.CREATED_BY);
 
-          if (record instanceof Document) {
+            LocalDateTime createdDate = null;
+            if (originalRecord.get(Utils.CREATED_DATE) instanceof Long) {
+              createdDate = LocalDateTime.ofInstant(Instant.ofEpochMilli(originalRecord.getLong(Utils.CREATED_DATE)), ZoneId.systemDefault());
+            } else {
+              createdDate = originalRecord.getLocalDateTime(Utils.CREATED_DATE);
+            }
+
+            Document recordDoc = localRecord.asDocument(true);
+
+            // Overwrite created by and date with the original record value to keep a user from changing it...
+            ((MutableDocument) recordDoc).set(Utils.CREATED_BY, createdBy);
+            ((MutableDocument) recordDoc).set(Utils.CREATED_DATE, createdDate);
+            ((MutableDocument) recordDoc).set(Utils.LAST_MODIFIED_BY, getCurrentUserName());
+            ((MutableDocument) recordDoc).set(Utils.LAST_MODIFIED_DATE, LocalDateTime.now());
+            localRecord = recordDoc.getRecord(true);
+          }
+
+          getTransaction().addUpdatedRecord(localRecord);
+
+          if (localRecord instanceof Document) {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
-            final List<Index> indexes = indexer.getInvolvedIndexes((Document) record);
+            final List<Index> indexes = indexer.getInvolvedIndexes((Document) localRecord);
             if (!indexes.isEmpty()) {
               // UPDATE THE INDEXES TOO
-              final Document originalRecord = getOriginalDocument(record);
-              indexer.updateDocument(originalRecord, (Document) record, indexes);
+              indexer.updateDocument(originalRecord, (Document) localRecord, indexes);
             }
           }
         } catch (final IOException e) {
-          throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in transaction", e);
+          throw new DatabaseOperationException("Error on update the record " + localRecord.getIdentity() + " in transaction", e);
         }
       } else
-        updateRecordNoLock(record, false);
+        updateRecordNoLock(localRecord, false);
 
       // INVOKE EVENT CALLBACKS
-      events.onAfterUpdate(record);
-      if (record instanceof Document)
-        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterUpdate(record);
+      events.onAfterUpdate(localRecord);
+      if (localRecord instanceof Document)
+        ((RecordEventsRegistry) ((Document) localRecord).getType().getEvents()).onAfterUpdate(localRecord);
 
       return null;
     });

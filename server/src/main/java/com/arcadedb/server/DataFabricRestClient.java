@@ -7,6 +7,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
@@ -87,7 +88,7 @@ public class DataFabricRestClient {
         return sendAndGetResponse(request);
     }
 
-    protected static String postAuthenticatedAndGetResponse(String url, String jsonPayload) {
+    public static String postAuthenticatedAndGetResponse(String url, String jsonPayload) {
         String accessTokenString = loginAndGetEncodedAccessString();
 
         HttpRequest request = HttpRequest.newBuilder()
@@ -95,12 +96,13 @@ public class DataFabricRestClient {
                 .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + accessTokenString)
+                .timeout(Duration.ofSeconds(20))
                 .build();
 
         return sendAndGetResponse(request);
     }
 
-        protected static String putAuthenticatedAndGetResponse(String url, String jsonPayload) {
+    protected static String putAuthenticatedAndGetResponse(String url, String jsonPayload) {
         String accessTokenString = loginAndGetEncodedAccessString();
 
         HttpRequest request = HttpRequest.newBuilder()
