@@ -33,7 +33,8 @@ import java.util.concurrent.atomic.*;
 
 public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, RecordInternal {
   public static final byte RECORD_TYPE            = 3;
-  public static final int  CONTENT_START_POSITION = Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + BinaryTypes.getTypeSize(BinaryTypes.TYPE_RID);
+  public static final int  CONTENT_START_POSITION =
+      Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + BinaryTypes.getTypeSize(BinaryTypes.TYPE_RID);
   private final       RID  NULL_RID;
 
   private int bufferSize;
@@ -92,7 +93,8 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     if (used + ridSerializedSize <= bufferSize) {
       // APPEND AT THE BEGINNING OF THE CURRENT CHUNK
       buffer.move(CONTENT_START_POSITION, CONTENT_START_POSITION + ridSerializedSize, used - CONTENT_START_POSITION);
-      buffer.putByteArray(CONTENT_START_POSITION, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(), ridSerializedSize);
+      buffer.putByteArray(CONTENT_START_POSITION, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(),
+          ridSerializedSize);
 
       // UPDATE USED BYTES
       buffer.putInt(Binary.BYTE_SERIALIZED_SIZE, used + ridSerializedSize);
@@ -231,6 +233,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
         buffer.position(lastPos);
         ++found;
+        break;
       }
     }
 
@@ -267,6 +270,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
         buffer.position(lastPos);
         ++found;
+        break;
       }
     }
 
@@ -339,7 +343,8 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   @Override
   public RID getRID(final AtomicInteger currentPosition) {
     buffer.position(currentPosition.get());
-    final RID next = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null); // NEXT
+    final RID next = (RID) database.getSerializer()
+        .deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null); // NEXT
     currentPosition.set(buffer.position());
     return next;
   }
