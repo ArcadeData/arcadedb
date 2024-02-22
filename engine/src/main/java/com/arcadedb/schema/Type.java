@@ -437,7 +437,9 @@ public enum Type {
         cal.setTime(convertToDate(database, value));
         return cal;
       } else if (targetClass.equals(LocalDate.class)) {
-        if (value instanceof Number)
+        if (value instanceof LocalDateTime)
+          return ((LocalDateTime) value).toLocalDate();
+        else if (value instanceof Number)
           return DateUtils.date(database, ((Number) value).longValue(), LocalDate.class);
         else if (value instanceof Date)
           return DateUtils.date(database, ((Date) value).getTime() / DateUtils.MS_IN_A_DAY, LocalDate.class);
