@@ -56,6 +56,7 @@ jobs:
         run: echo "DATE_TAG=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
 
       - name: Build and push - GHCR
+        if: env.OPTIONAL_TAG == ''
         uses: docker/build-push-action@v5
         with:
           context: ${{ env.CONTEXT_PATH }}
@@ -65,3 +66,16 @@ jobs:
           tags: |
             ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.DATE_TAG }}
             ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
+
+      - name: Build and push - GHCR (Optional Tag)
+        if: env.OPTIONAL_TAG != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ env.CONTEXT_PATH }}
+          file: ${{ env.DOCKERFILE_PATH }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.DATE_TAG }}
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.OPTIONAL_TAG }}
