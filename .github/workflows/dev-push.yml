@@ -16,6 +16,7 @@ env:
   IMAGE_NAME: ${{ vars.IMAGE_NAME }}
   CONTEXT_PATH: ${{ vars.CONTEXT_PATH || '.' }}
   DOCKERFILE_PATH: ${{ vars.DOCKERFILE_PATH || 'Dockerfile' }}
+  OPTIONAL_TAG: ${{ vars.OPTIONAL_TAG }}
   TAG: dev
 
 jobs:
