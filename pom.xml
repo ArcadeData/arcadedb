@@ -76,6 +76,11 @@
         <license-maven-plugin.version>4.3</license-maven-plugin.version>
         <mockito-core.version>5.10.0</mockito-core.version>
         <maven-install-plugin.version>3.1.1</maven-install-plugin.version>
+        <license-maven-plugin.version>4.3</license-maven-plugin.version>
+        <mockito-core.version>4.2.0</mockito-core.version>
+
+        <native.maven.plugin.version>0.9.28</native.maven.plugin.version>
+
     </properties>
 
     <developers>
@@ -123,6 +128,7 @@
         <module>coverage</module>
         <module>studio</module>
         <module>package</module>
+        <module>native</module>
         <module>e2e</module>
     </modules>
 
@@ -169,7 +175,6 @@
                 </executions>
             </plugin>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
@@ -290,6 +295,33 @@
                         </execution>
                     </executions>
                 </plugin>
+
+                <plugin>
+                    <groupId>org.graalvm.buildtools</groupId>
+                    <artifactId>native-maven-plugin</artifactId>
+                    <version>${native.maven.plugin.version}</version>
+                    <extensions>true</extensions>
+                    <configuration>
+                        <agent>
+                            <enabled>true</enabled>
+                            <options>
+                                <trackReflectionMetadata>true</trackReflectionMetadata>
+                                <enableExperimentalUnsafeAllocationTracing>true
+                                </enableExperimentalUnsafeAllocationTracing>
+                            </options>
+                            <metadataCopy>
+                                <merge>true</merge>
+                                <outputDirectory>src/main/resources/META-INF/native-image</outputDirectory>
+                            </metadataCopy>
+                        </agent>
+                        <metadataRepository>
+                            <enabled>true</enabled>
+                        </metadataRepository>
+
+                    </configuration>
+                </plugin>
+
+
             </plugins>
         </pluginManagement>
     </build>
