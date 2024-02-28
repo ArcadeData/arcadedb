@@ -125,6 +125,8 @@ TOKEN:
   |
   <DELETE: ("d"|"D")("e"|"E")("l"|"L")("e"|"E")("t"|"T")("e"|"E")>
   |
+  <DESCRIBE: ("d"|"D")("e"|"E")("s"|"S")("c"|"C")("r"|"R")("i"|"I")("b"|"B")("e"|"E")>
+  |
   <DOCUMENT: ("d"|"D")("o"|"O")("c"|"C")("u"|"U")("m"|"M")("e"|"E")("n"|"N")("t"|"T")>
   |
   <VERTEX: ("v"|"V")("e"|"E")("r"|"R")("t"|"T")("e"|"E")("x"|"X")>
@@ -1100,6 +1102,8 @@ Statement StatementInternal():
         result = CheckDatabaseStatement()
         |
         result = AlignDatabaseStatement()
+        |
+        result = DescribeDatabaseStatement()
       )
     )
     |
@@ -4290,6 +4294,13 @@ AlignDatabaseStatement AlignDatabaseStatement():
 }
 {
   <ALIGN> <DATABASE>
+  {return jjtThis; }
+}
+
+DescribeDatabaseStatement DescribeDatabaseStatement():
+{ }
+{
+  <DESCRIBE> <DATABASE>
   {return jjtThis; }
 }
 

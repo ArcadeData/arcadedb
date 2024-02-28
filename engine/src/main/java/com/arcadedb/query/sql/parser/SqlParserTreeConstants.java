@@ -181,8 +181,9 @@ public interface SqlParserTreeConstants
   public int JJTBACKUPDATABASESTATEMENT = 175;
   public int JJTCHECKDATABASESTATEMENT = 176;
   public int JJTALIGNDATABASESTATEMENT = 177;
-  public int JJTDEFINEFUNCTIONSTATEMENT = 178;
-  public int JJTDELETEFUNCTIONSTATEMENT = 179;
+  public int JJTDESCRIBEDATABASESTATEMENT = 178;
+  public int JJTDEFINEFUNCTIONSTATEMENT = 179;
+  public int JJTDELETEFUNCTIONSTATEMENT = 180;
 
 
   public String[] jjtNodeName = {
@@ -364,8 +365,9 @@ public interface SqlParserTreeConstants
     "BackupDatabaseStatement",
     "CheckDatabaseStatement",
     "AlignDatabaseStatement",
+    "DescribeDatabaseStatement",
     "DefineFunctionStatement",
     "DeleteFunctionStatement",
   };
 }
-/* JavaCC - OriginalChecksum=abd7ce785dcd832333a532e5b36b0dfb (do not edit this line) */
+/* JavaCC - OriginalChecksum=cbbb362d9e3c90dfe5774ef32af1aaec (do not edit this line) */

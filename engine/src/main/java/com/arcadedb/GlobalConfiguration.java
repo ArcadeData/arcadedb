@@ -177,6 +177,9 @@ public enum GlobalConfiguration {
     return value;
   }),
 
+  DATABASE_DESCRIPTION("arcadedb.databaseDescription", SCOPE.DATABASE, "Message returned by the DESCRIBE DATABASE command", String.class,
+      "Welcome"),
+
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax",
       String.class, "yyyy-MM-dd HH:mm:ss"),
 
