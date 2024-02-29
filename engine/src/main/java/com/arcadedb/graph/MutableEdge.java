@@ -117,14 +117,12 @@ public class MutableEdge extends MutableDocument implements Edge {
   @Override
   public MutableEdge set(final Object... properties) {
     super.set(properties);
-    checkForUpgradeLightWeight();
     return this;
   }
 
   @Override
   public MutableEdge set(final String name, final Object value) {
     super.set(name, value);
-    checkForUpgradeLightWeight();
     return this;
   }
 
@@ -208,18 +206,6 @@ public class MutableEdge extends MutableDocument implements Edge {
       out = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
       in = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
       this.propertiesStartingPosition = buffer.position();
-    }
-  }
-
-  protected void checkForUpgradeLightWeight() {
-    if (rid != null && rid.getPosition() < 0) {
-      // REMOVE THE TEMPORARY RID SO IT WILL BE CREATED AT SAVE TIME
-      rid = null;
-
-      save();
-
-      // UPDATE BOTH REFERENCES WITH THE NEW RID
-      database.getGraphEngine().connectEdge((VertexInternal) out.asVertex(true), in, this, true);
     }
   }
 }

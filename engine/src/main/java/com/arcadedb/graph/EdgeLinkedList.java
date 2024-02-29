@@ -210,8 +210,10 @@ public class EdgeLinkedList {
         // DELETE BY VERTEX RID
         deleted = current.removeVertex(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
 
-      if (deleted > 0)
+      if (deleted > 0) {
         ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+        break;
+      }
 
       current = current.getPrevious();
     }
@@ -221,8 +223,10 @@ public class EdgeLinkedList {
     EdgeSegment current = lastSegment;
     while (current != null) {
       final int deleted = current.removeEdge(edge);
-      if (deleted > 0)
+      if (deleted > 0) {
         ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+        break;
+      }
       current = current.getPrevious();
     }
   }
@@ -230,8 +234,10 @@ public class EdgeLinkedList {
   public void removeVertex(final RID vertexRID) {
     EdgeSegment current = lastSegment;
     while (current != null) {
-      if (current.removeVertex(vertexRID) > 0)
+      if (current.removeVertex(vertexRID) > 0) {
         ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+        break;
+      }
 
       current = current.getPrevious();
     }

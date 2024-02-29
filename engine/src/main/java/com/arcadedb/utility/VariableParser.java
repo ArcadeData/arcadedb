@@ -51,8 +51,10 @@ public class VariableParser {
     final String post = text.substring(endPos + endPattern.length());
 
     // DECODE INTERNAL
-    var = var.replace("$\\{", "${");
-    var = var.replace("\\}", "}");
+    if (beginPattern.equals("${"))
+      var = var.replace("$\\{", "${");
+    if (endPattern.equals("}"))
+      var = var.replace("\\}", "}");
 
     Object resolved = listener.resolve(var);
 

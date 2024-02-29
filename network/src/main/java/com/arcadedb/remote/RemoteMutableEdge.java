@@ -143,11 +143,6 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  protected void checkForUpgradeLightWeight() {
-    // NO ACTIONS
-  }
-
-  @Override
   public Edge asEdge() {
     return this;
   }
