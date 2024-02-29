@@ -4044,7 +4044,7 @@ LetStatement LetStatement():
 { }
 {
   <LET>
-  jjtThis.name = Identifier()
+  jjtThis.variableName = Identifier()
   <EQ>
   (
     LOOKAHEAD(Statement())

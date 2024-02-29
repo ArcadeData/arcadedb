@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -44,10 +45,12 @@ import java.util.*;
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
 public class SQLQueryEngine implements QueryEngine {
-  public static final String                    ENGINE_NAME = "sql";
+  public static final String                    ENGINE_NAME             = "sql";
   protected final     DatabaseInternal          database;
   protected final     DefaultSQLFunctionFactory functions;
   protected final     DefaultSQLMethodFactory   methods;
+  public static final Set<String>               RESERVED_VARIABLE_NAMES = Set.of("parent", "current", "depth",
+      "path", "stack", "history");
 
   public static class SQLQueryEngineFactory implements QueryEngineFactory {
     @Override
@@ -126,7 +129,8 @@ public class SQLQueryEngine implements QueryEngine {
     };
   }
 
-  public static Object foreachRecord(final Callable<Object, Identifiable> iCallable, Object iCurrent, final CommandContext iContext) {
+  public static Object foreachRecord(final Callable<Object, Identifiable> iCallable, Object iCurrent,
+      final CommandContext iContext) {
     if (iCurrent == null)
       return null;
 
@@ -180,7 +184,8 @@ public class SQLQueryEngine implements QueryEngine {
           // WRAP LIBRARY FUNCTION TO SQL FUNCTION TO BE EXECUTED BY SQL ENGINE
           sqlFunction = new SQLFunctionAbstract(name) {
             @Override
-            public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+            public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+                final Object[] iParams,
                 final CommandContext iContext) {
               return function.execute(iParams);
             }
@@ -206,5 +211,13 @@ public class SQLQueryEngine implements QueryEngine {
 
   public static Statement parse(final String query, final DatabaseInternal database) {
     return database.getStatementCache().get(query);
+  }
+
+  public static void validateVariableName(String varName) {
+    if (varName.startsWith("$"))
+      varName = varName.substring(1);
+
+    if (SQLQueryEngine.RESERVED_VARIABLE_NAMES.contains(varName))
+      throw new CommandSQLParsingException(varName + " is a reserved variable");
   }
 }

@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
@@ -149,4 +150,20 @@ public class BatchTest extends TestHelper {
     Assertions.assertFalse(result.hasNext());
   }
 
+  @Test
+  public void testUsingReservedVariableNames() {
+    try {
+      database.command("sqlscript", "FOREACH ($parent IN [1, 2, 3]){\nRETURN;\n}");
+      Assertions.fail();
+    } catch (CommandSQLParsingException e) {
+      // EXPECTED
+    }
+
+    try {
+      database.command("sqlscript", "LET parent = 33;");
+      Assertions.fail();
+    } catch (CommandSQLParsingException e) {
+      // EXPECTED
+    }
+  }
 }

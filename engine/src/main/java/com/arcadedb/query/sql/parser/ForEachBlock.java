@@ -21,6 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ForEachExecutionPlan;
@@ -77,7 +79,9 @@ public class ForEachBlock extends Statement {
     if (nextProg < 0)
       FOREACH_VARIABLE_PROGR.set(0);
 
-    Identifier varName = new Identifier("$__ARCADEDB_FOREACH_VAR_" + nextProg);
+    SQLQueryEngine.validateVariableName(loopVariable.getStringValue());
+
+    final Identifier varName = new Identifier("$__ARCADEDB_FOREACH_VAR_" + nextProg);
     plan.chain(new GlobalLetExpressionStep(varName, loopValues, context, enableProfiling));
     plan.chain(new ForEachStep(loopVariable, new Expression(varName), statements, context, enableProfiling));
     return plan;

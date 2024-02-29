@@ -16077,7 +16077,7 @@ if (jjtc000) {
   jjtn000.jjtSetFirstToken(getToken(1));
     try {
       jj_consume_token(LET);
-      jjtn000.name = Identifier();
+      jjtn000.variableName = Identifier();
       jj_consume_token(EQ);
       if (jj_2_145(2147483647)) {
         jjtn000.statement = StatementInternal();

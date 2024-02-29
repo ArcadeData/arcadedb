@@ -211,7 +211,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
       }
 
       if (stm instanceof LetStatement)
-        scriptContext.declareScriptVariable(((LetStatement) stm).getName().getStringValue());
+        scriptContext.declareScriptVariable(((LetStatement) stm).getVariableName().getStringValue());
     }
 
     return new LocalResultSet(plan);

@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -28,7 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class LetStatement extends SimpleExecStatement {
-  protected Identifier name;
+  protected Identifier variableName;
   protected Statement  statement;
   protected Expression expression;
 
@@ -38,6 +39,8 @@ public class LetStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
+    SQLQueryEngine.validateVariableName(variableName.getStringValue());
+
     Object result;
     if (expression != null) {
       result = expression.execute((Result) null, context);
@@ -55,9 +58,9 @@ public class LetStatement extends SimpleExecStatement {
 
     if (context != null) {
       if (context.getParent() != null) {
-        context.getParent().setVariable(name.getStringValue(), result);
+        context.getParent().setVariable(variableName.getStringValue(), result);
       } else {
-        context.setVariable(name.getStringValue(), result);
+        context.setVariable(variableName.getStringValue(), result);
       }
     }
     return new InternalResultSet();
@@ -66,7 +69,7 @@ public class LetStatement extends SimpleExecStatement {
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("LET ");
-    name.toString(params, builder);
+    variableName.toString(params, builder);
     builder.append(" = ");
     if (statement != null) {
       statement.toString(params, builder);
@@ -78,7 +81,7 @@ public class LetStatement extends SimpleExecStatement {
   @Override
   public LetStatement copy() {
     final LetStatement result = new LetStatement(-1);
-    result.name = name == null ? null : name.copy();
+    result.variableName = variableName == null ? null : variableName.copy();
     result.statement = statement == null ? null : statement.copy();
     result.expression = expression == null ? null : expression.copy();
     return result;
@@ -93,7 +96,7 @@ public class LetStatement extends SimpleExecStatement {
 
     final LetStatement that = (LetStatement) o;
 
-    if (!Objects.equals(name, that.name))
+    if (!Objects.equals(variableName, that.variableName))
       return false;
     if (!Objects.equals(statement, that.statement))
       return false;
@@ -102,14 +105,14 @@ public class LetStatement extends SimpleExecStatement {
 
   @Override
   public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
+    int result = variableName != null ? variableName.hashCode() : 0;
     result = 31 * result + (statement != null ? statement.hashCode() : 0);
     result = 31 * result + (expression != null ? expression.hashCode() : 0);
     return result;
   }
 
-  public Identifier getName() {
-    return name;
+  public Identifier getVariableName() {
+    return variableName;
   }
 }
 /* JavaCC - OriginalChecksum=cc646e5449351ad9ced844f61b687928 (do not edit this line) */
