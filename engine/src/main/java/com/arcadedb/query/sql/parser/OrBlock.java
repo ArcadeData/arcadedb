@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -51,7 +52,7 @@ public class OrBlock extends BooleanExpression {
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-     if (getSubBlocks() == null)
+    if (getSubBlocks() == null)
       return true;
 
     for (final BooleanExpression block : subBlocks) {
@@ -70,10 +71,8 @@ public class OrBlock extends BooleanExpression {
     } else if (currentRecord instanceof Identifiable) {
       return evaluate((Identifiable) currentRecord, context);
     } else if (currentRecord instanceof Map) {
-//      ODocument doc = new ODocument();
-//      doc.fromMap((Map<String, Object>) currentRecord);
-//      return evaluate(doc, context);
-      throw new UnsupportedOperationException();
+      final ResultInternal result = new ResultInternal((Map<String, Object>) currentRecord);
+      return evaluate(result, context);
     }
     return false;
   }
