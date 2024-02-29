@@ -224,6 +224,9 @@ public enum GlobalConfiguration {
       "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
       Integer.class, 100),
 
+  DATABASE_COMMENT("arcadedb.databaseComment", SCOPE.DATABASE, "Comment on database contents or usage.", String.class,
+      "Welcome"),
+
   // SQL
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
