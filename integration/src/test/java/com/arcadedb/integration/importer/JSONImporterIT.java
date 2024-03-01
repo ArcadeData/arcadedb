@@ -38,7 +38,8 @@ public class JSONImporterIT {
     final String databasePath = "target/databases/test-import-graph";
 
     Importer importer = new Importer(
-        ("-url file://src/test/resources/importer-one-object.json -database " + databasePath + " -documentType Food -forceDatabaseCreate true").split(" "));
+        ("-url file://src/test/resources/importer-one-object.json -database " + databasePath
+            + " -documentType Food -forceDatabaseCreate true").split(" "));
     importer.load();
 
     try (final Database db = new DatabaseFactory(databasePath).open()) {
@@ -102,7 +103,8 @@ public class JSONImporterIT {
         "}";
 
     Importer importer = new Importer(
-        new String[] { "-url", "file://src/test/resources/importer-employees.json", "-database", databasePath, "-forceDatabaseCreate", "true", "-mapping",
+        new String[] { "-url", "file://src/test/resources/importer-employees.json", "-database", databasePath,
+            "-forceDatabaseCreate", "true", "-mapping",
             mapping });
     importer.load();
 
@@ -114,26 +116,25 @@ public class JSONImporterIT {
 
         if ("Marcus".equalsIgnoreCase(name)) {
           Assertions.assertEquals("1234", vertex.getString("id"));
-          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.OUT))
-            v.getString("1230");
-          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.IN))
-            Assertions.fail();
+          Assertions.assertEquals(0, vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER"));
+          Assertions.assertEquals(2, vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER"));
         } else if ("Win".equals(name)) {
           Assertions.assertEquals("1230", vertex.getString("id"));
-          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.IN))
-            v.getString("1234");
-          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.OUT))
-            v.getString("1231");
-        } else {
-          Assertions.assertEquals("1231", vertex.getString("id"));
-          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.IN))
-            v.getString("1230");
-          for (Vertex v : vertex.getVertices(Vertex.DIRECTION.OUT))
-            Assertions.fail();
-        }
+          Assertions.assertEquals(1, vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER"));
+          Assertions.assertEquals(0, vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER"));
+        } else if ("Dave".equals(name)) {
+          Assertions.assertEquals("1232", vertex.getString("id"));
+          Assertions.assertEquals(1, vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER"));
+          Assertions.assertEquals(1, vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER"));
+        } else if ("Albert".equals(name)) {
+          Assertions.assertEquals("1239", vertex.getString("id"));
+          Assertions.assertEquals(1, vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER"));
+          Assertions.assertEquals(0, vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER"));
+        } else
+          Assertions.fail();
       }
 
-      Assertions.assertEquals(3, db.countType("User", true));
+      Assertions.assertEquals(4, db.countType("User", true));
     }
 
     TestHelper.checkActiveDatabases();
