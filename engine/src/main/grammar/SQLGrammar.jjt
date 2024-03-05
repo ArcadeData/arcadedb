@@ -111,6 +111,8 @@ TOKEN:
 {
   <ALIGN: ("a"|"A")("l"|"L")("i"|"I")("g"|"G")("n"|"N")>
   |
+	<BATCH: ("b"|"B")("a"|"A")("t"|"T")("c"|"C")("h"|"H")>
+	|
   <SELECT: ("s"|"S")("e"|"E")("l"|"L")("e"|"E")("c"|"C")("t"|"T")>
   |
   <TRAVERSE: ("t"|"T")("r"|"R")("a"|"A")("v"|"V")("e"|"E")("r"|"R")("s"|"S")("e"|"E")>
@@ -1036,6 +1038,8 @@ Statement StatementInternal():
         LOOKAHEAD(UpdateStatement())
         result = UpdateStatement()
         |
+        result = MoveVertexStatement()
+        |
         LOOKAHEAD(DefineFunctionStatement())
         result = DefineFunctionStatement()
         |
@@ -1701,6 +1705,27 @@ CreateVertexStatementNoTarget CreateVertexStatementNoTarget():
   <CREATE> <VERTEX>
   jjtThis.insertBody = InsertBody()
   {return jjtThis;}
+}
+
+MoveVertexStatement MoveVertexStatement():
+{ Expression lastSetExpr; }
+{
+  (
+     <MOVE> <VERTEX>
+     jjtThis.source = FromItem()
+     <TO>
+     (
+        jjtThis.targetBucket = Bucket()
+        |
+        (
+          <TYPE>
+          <COLON>
+          jjtThis.targetType = Identifier()
+        )
+     )
+     [ jjtThis.updateOperations = UpdateOperations() ]
+     [ jjtThis.batch = Batch() ]
+  ){ return jjtThis; }
 }
 
 CreateEdgeStatement CreateEdgeStatement():
@@ -3022,6 +3047,20 @@ Skip Skip():
       )
     )
   ) {return jjtThis;}
+}
+
+Batch Batch():
+{}
+{
+    (
+    	<BATCH>
+    	(
+            jjtThis.num  = PInteger()
+            |
+            jjtThis.inputParam = InputParameter()
+        )
+    )
+    { return jjtThis; }
 }
 
 Timeout Timeout():

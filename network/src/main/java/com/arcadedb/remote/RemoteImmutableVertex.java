@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.MutableEdge;
@@ -89,6 +90,11 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
+  public RID moveTo(final String targetType, final String targetBucket) {
+    return internal.moveTo(targetType, targetBucket);
+  }
+
+  @Override
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       final Object... properties) {
     return internal.newEdge(edgeType, toVertex, bidirectional, properties);
@@ -106,7 +112,8 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
 
   @Override
   public Vertex asVertex(final boolean loadContent) {
+    if (loadContent)
+      checkForLazyLoading();
     return this;
   }
-
 }

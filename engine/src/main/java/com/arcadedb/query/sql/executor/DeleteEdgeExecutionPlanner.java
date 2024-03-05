@@ -97,12 +97,14 @@ public class DeleteEdgeExecutionPlanner {
     return result;
   }
 
-  private void handleWhere(final DeleteExecutionPlan result, final CommandContext context, final WhereClause whereClause, final boolean profilingEnabled) {
+  private void handleWhere(final DeleteExecutionPlan result, final CommandContext context, final WhereClause whereClause,
+      final boolean profilingEnabled) {
     if (whereClause != null)
       result.chain(new FilterStep(whereClause, context, profilingEnabled));
   }
 
-  private void handleFetchFromTo(final DeleteExecutionPlan result, final CommandContext context, final String fromAlias, final String toAlias,
+  private void handleFetchFromTo(final DeleteExecutionPlan result, final CommandContext context, final String fromAlias,
+      final String toAlias,
       final Identifier targetClass, final Identifier targetCluster, final boolean profilingEnabled) {
     if (fromAlias != null)
       result.chain(new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetClass, targetCluster, context, profilingEnabled));
@@ -110,13 +112,17 @@ public class DeleteEdgeExecutionPlanner {
       result.chain(new FetchEdgesToVerticesStep(toAlias, targetClass, targetCluster, context, profilingEnabled));
   }
 
-  private void handleTargetRids(final DeleteExecutionPlan result, final CommandContext context, final List<Rid> rids, final boolean profilingEnabled) {
+  private void handleTargetRids(final DeleteExecutionPlan result, final CommandContext context, final List<Rid> rids,
+      final boolean profilingEnabled) {
     if (rids != null) {
-      result.chain(new FetchFromRidsStep(rids.stream().map(x -> x.toRecordId((Result) null, context)).collect(Collectors.toList()), context, profilingEnabled));
+      result.chain(
+          new FetchFromRidsStep(rids.stream().map(x -> x.toRecordId((Result) null, context)).collect(Collectors.toList()), context,
+              profilingEnabled));
     }
   }
 
-  private void handleTargetCluster(final DeleteExecutionPlan result, final CommandContext context, final Identifier targetClusterName,
+  private void handleTargetCluster(final DeleteExecutionPlan result, final CommandContext context,
+      final Identifier targetClusterName,
       final boolean profilingEnabled) {
     if (targetClusterName != null) {
       final String name = targetClusterName.getStringValue();
@@ -128,7 +134,8 @@ public class DeleteEdgeExecutionPlanner {
     }
   }
 
-  private void handleTargetClass(final DeleteExecutionPlan result, final CommandContext context, final Identifier className, final boolean profilingEnabled) {
+  private void handleTargetClass(final DeleteExecutionPlan result, final CommandContext context, final Identifier className,
+      final boolean profilingEnabled) {
     if (className != null)
       result.chain(new FetchFromTypeExecutionStep(className.getStringValue(), null, context, null, profilingEnabled));
   }
@@ -149,7 +156,8 @@ public class DeleteEdgeExecutionPlanner {
     result.chain(new CountStep(context, profilingEnabled));
   }
 
-  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit, final boolean profilingEnabled) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit,
+      final boolean profilingEnabled) {
     if (limit != null)
       plan.chain(new LimitExecutionStep(limit, context, profilingEnabled));
   }
@@ -158,16 +166,19 @@ public class DeleteEdgeExecutionPlanner {
     plan.chain(new CastToEdgeStep(context, profilingEnabled));
   }
 
-  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target, final WhereClause whereClause,
+  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
+      final WhereClause whereClause,
       final boolean profilingEnabled) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    result.chain(new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled), context, context, profilingEnabled));
+    result.chain(
+        new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled, false), context, context, profilingEnabled));
   }
 
-  private void handleGlobalLet(final DeleteExecutionPlan result, final Identifier name, final Expression expression, final CommandContext context,
+  private void handleGlobalLet(final DeleteExecutionPlan result, final Identifier name, final Expression expression,
+      final CommandContext context,
       final boolean profilingEnabled) {
     if (expression != null)
       result.chain(new GlobalLetExpressionStep(name, expression, context, profilingEnabled));

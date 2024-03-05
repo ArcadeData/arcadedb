@@ -176,6 +176,11 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
+  public RID moveTo(final String targetType, final String targetBucket) {
+    return database.getGraphEngine().moveTo(this, targetType, targetBucket);
+  }
+
+  @Override
   public Vertex asVertex() {
     return this;
   }

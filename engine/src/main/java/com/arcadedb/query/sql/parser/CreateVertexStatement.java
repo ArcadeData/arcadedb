@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -43,29 +44,46 @@ public class CreateVertexStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database database, final Map params, final CommandContext parentcontext,
+      final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
     if (parentcontext != null) {
       context.setParentWithoutOverridingChild(parentcontext);
     }
-    context.setDatabase(db);
+    context.setDatabase(database);
     context.setInputParameters(params);
-    final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(context, false);
-    executionPlan.executeInternal();
-    return new LocalResultSet(executionPlan);
+
+    final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
+    try {
+      final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(context, false);
+      executionPlan.executeInternal();
+      return new LocalResultSet(executionPlan);
+    } finally {
+      if (implicitTransaction)
+        database.commit();
+    }
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database database, final Object[] args, final CommandContext parentcontext,
+      final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
     if (parentcontext != null) {
       context.setParentWithoutOverridingChild(parentcontext);
     }
-    context.setDatabase(db);
+    context.setDatabase(database);
     context.setInputParameters(args);
-    final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(context, false);
-    executionPlan.executeInternal();
-    return new LocalResultSet(executionPlan);
+
+    final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
+    try {
+
+      final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(context, false);
+      executionPlan.executeInternal();
+      return new LocalResultSet(executionPlan);
+    } finally {
+      if (implicitTransaction)
+        database.commit();
+    }
   }
 
   @Override

@@ -114,9 +114,9 @@ public class SelectExecutionPlanner {
     }
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling, boolean useCache) {
     final DatabaseInternal db = context.getDatabase();
-    if (!enableProfiling && statement.executionPlanCanBeCached()) {
+    if (useCache && !enableProfiling && statement.executionPlanCanBeCached()) {
       final ExecutionPlan plan = db.getExecutionPlanCache().get(statement.getOriginalStatement(), context);
       if (plan != null)
         return (InternalExecutionPlan) plan;
@@ -159,8 +159,11 @@ public class SelectExecutionPlanner {
     if (info.timeout != null)
       result.chain(new AccumulatingTimeoutStep(info.timeout, context, enableProfiling));
 
-    if (!enableProfiling && statement.executionPlanCanBeCached() && result.canBeCached()
-        && db.getExecutionPlanCache().getLastInvalidation() < planningStart)
+    if (useCache &&
+        !enableProfiling &&
+        statement.executionPlanCanBeCached() &&
+        result.canBeCached() &&
+        db.getExecutionPlanCache().getLastInvalidation() < planningStart)
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), result);
 
     return result;

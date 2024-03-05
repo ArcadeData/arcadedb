@@ -74,7 +74,8 @@ public class DeleteExecutionPlanner {
     return result;
   }
 
-  private boolean handleIndexAsTarget(final DeleteExecutionPlan result, final IndexIdentifier indexIdentifier, WhereClause whereClause,
+  private boolean handleIndexAsTarget(final DeleteExecutionPlan result, final IndexIdentifier indexIdentifier,
+      WhereClause whereClause,
       final CommandContext context, final boolean profilingEnabled) {
     if (indexIdentifier == null) {
       return false;
@@ -152,28 +153,33 @@ public class DeleteExecutionPlanner {
     result.chain(new DeleteStep(context, profilingEnabled));
   }
 
-  private void handleUnsafe(final DeleteExecutionPlan result, final CommandContext context, final boolean unsafe, final boolean profilingEnabled) {
+  private void handleUnsafe(final DeleteExecutionPlan result, final CommandContext context, final boolean unsafe,
+      final boolean profilingEnabled) {
     if (!unsafe)
       result.chain(new CheckSafeDeleteStep(context, profilingEnabled));
   }
 
-  private void handleReturn(final DeleteExecutionPlan result, final CommandContext context, final boolean returnBefore, final boolean profilingEnabled) {
+  private void handleReturn(final DeleteExecutionPlan result, final CommandContext context, final boolean returnBefore,
+      final boolean profilingEnabled) {
     if (!returnBefore)
       result.chain(new CountStep(context, profilingEnabled));
   }
 
-  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit, final boolean profilingEnabled) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit,
+      final boolean profilingEnabled) {
     if (limit != null)
       plan.chain(new LimitExecutionStep(limit, context, profilingEnabled));
   }
 
-  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target, final WhereClause whereClause,
+  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
+      final WhereClause whereClause,
       final boolean profilingEnabled) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    result.chain(new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled), context, context, profilingEnabled));
+    result.chain(
+        new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled, false), context, context, profilingEnabled));
   }
 
   private BooleanExpression getKeyCondition(final AndBlock andBlock) {

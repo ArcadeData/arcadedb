@@ -206,13 +206,21 @@ public class SelectStatement extends Statement {
     }
 
     context.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(context, profileExecution);
+
+    final InternalExecutionPlan executionPlan = usePlanCache ? createExecutionPlan(context, profileExecution) :
+        createExecutionPlanNoCache(context, profileExecution);
     return new LocalResultSet(executionPlan);
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context, enableProfiling, true);
+  }
+
+  @Override
+  public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context, final boolean enableProfiling) {
+    final SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
+    return planner.createExecutionPlan(context, enableProfiling, false);
   }
 
   @Override

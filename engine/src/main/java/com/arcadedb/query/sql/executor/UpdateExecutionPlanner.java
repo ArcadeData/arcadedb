@@ -57,7 +57,9 @@ public class UpdateExecutionPlanner {
     this.target = oUpdateStatement.getTarget().copy();
     this.whereClause = oUpdateStatement.getWhereClause() == null ? null : oUpdateStatement.getWhereClause().copy();
     this.operations =
-        oUpdateStatement.getOperations() == null ? null : oUpdateStatement.getOperations().stream().map(x -> x.copy()).collect(Collectors.toList());
+        oUpdateStatement.getOperations() == null ?
+            null :
+            oUpdateStatement.getOperations().stream().map(x -> x.copy()).collect(Collectors.toList());
     this.upsert = oUpdateStatement.isUpsert();
 
     this.returnBefore = oUpdateStatement.isReturnBefore();
@@ -94,7 +96,8 @@ public class UpdateExecutionPlanner {
    * @param plan    the execution plan
    * @param context the execution context
    */
-  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context, final boolean profilingEnabled) {
+  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context,
+      final boolean profilingEnabled) {
     plan.chain(new ConvertToUpdatableResultStep(context, profilingEnabled));
   }
 
@@ -116,7 +119,8 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleResultForReturnBefore(final UpdateExecutionPlan result, final CommandContext context, final boolean returnBefore,
+  private void handleResultForReturnBefore(final UpdateExecutionPlan result, final CommandContext context,
+      final boolean returnBefore,
       final Projection returnProjection, final boolean profilingEnabled) {
     if (returnBefore) {
       result.chain(new UnwrapPreviousValueStep(context, profilingEnabled));
@@ -126,34 +130,41 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext context, final boolean profilingEnabled) {
+  private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext context,
+      final boolean profilingEnabled) {
     if (bucket != null) {
       final String bucketName =
-          bucket.getBucketName() != null ? bucket.getBucketName() : context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
+          bucket.getBucketName() != null ?
+              bucket.getBucketName() :
+              context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
       result.chain(new SaveElementStep(context, new Identifier(bucketName), profilingEnabled));
     } else
       result.chain(new SaveElementStep(context, profilingEnabled));
   }
 
-  private void handleTimeout(final UpdateExecutionPlan result, final CommandContext context, final Timeout timeout, final boolean profilingEnabled) {
+  private void handleTimeout(final UpdateExecutionPlan result, final CommandContext context, final Timeout timeout,
+      final boolean profilingEnabled) {
     if (timeout != null && timeout.getVal().longValue() > 0) {
       result.chain(new TimeoutStep(timeout, context, profilingEnabled));
     }
   }
 
-  private void handleReturnBefore(final UpdateExecutionPlan result, final CommandContext context, final boolean returnBefore, final boolean profilingEnabled) {
+  private void handleReturnBefore(final UpdateExecutionPlan result, final CommandContext context, final boolean returnBefore,
+      final boolean profilingEnabled) {
     if (returnBefore) {
       result.chain(new CopyRecordContentBeforeUpdateStep(context, profilingEnabled));
     }
   }
 
-  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit, final boolean profilingEnabled) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit,
+      final boolean profilingEnabled) {
     if (limit != null) {
       plan.chain(new LimitExecutionStep(limit, context, profilingEnabled));
     }
   }
 
-  private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext context, final FromClause target, final WhereClause where,
+  private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext context, final FromClause target,
+      final WhereClause where,
       final boolean upsert, final boolean profilingEnabled) {
     if (upsert) {
       plan.chain(new UpsertStep(target, where, context, profilingEnabled));
@@ -190,7 +201,8 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target, final WhereClause whereClause,
+  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
+      final WhereClause whereClause,
       final Timeout timeout, final boolean profilingEnabled) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
@@ -199,6 +211,7 @@ public class UpdateExecutionPlanner {
       sourceStatement.setTimeout(this.timeout.copy());
     }
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    result.chain(new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled), context, context, profilingEnabled));
+    result.chain(
+        new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled, false), context, context, profilingEnabled));
   }
 }

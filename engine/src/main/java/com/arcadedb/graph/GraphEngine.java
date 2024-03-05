@@ -965,4 +965,66 @@ public class GraphEngine {
     return stats;
   }
 
+  protected RID moveTo(final Vertex toMove, final String typeName, final String bucketName) {
+    final Database db = toMove.getDatabase();
+    boolean moveTx = !db.isTransactionActive();
+    try {
+      if (moveTx)
+        db.begin();
+
+      // SAVE OLD VERTEX PROPERTIES AND EDGES
+      final Map<String, Object> properties = toMove.propertiesAsMap();
+      final List<Edge> outEdges = new ArrayList<>();
+      for (Edge edge : toMove.getEdges(Vertex.DIRECTION.OUT))
+        outEdges.add(edge.asEdge(true));
+      final List<Edge> inEdges = new ArrayList<>();
+      for (Edge edge : toMove.getEdges(Vertex.DIRECTION.IN))
+        inEdges.add(edge.asEdge(true));
+
+      // DELETE THE OLD RECORD FIRST TO AVOID ISSUES WITH UNIQUE CONSTRAINTS
+      toMove.delete();
+
+      final MutableVertex newVertex = (MutableVertex) db.newVertex(typeName).set(properties);
+      if (bucketName != null)
+        newVertex.save(bucketName);
+      else
+        newVertex.save();
+      final RID newIdentity = newVertex.getIdentity();
+
+      for (Edge oe : outEdges) {
+        final RID inV = oe.getIn();
+        if (oe instanceof LightEdge)
+          newVertex.newLightEdge(oe.getTypeName(), inV, true);
+        else {
+          final MutableEdge e = newVertex.newEdge(oe.getTypeName(), inV, true);
+          final Map<String, Object> edgeProperties = oe.propertiesAsMap();
+          if (!edgeProperties.isEmpty())
+            e.set(edgeProperties).save();
+        }
+      }
+
+      for (Edge ie : inEdges) {
+        final RID outV = ie.getOut();
+        if (ie instanceof LightEdge)
+          newVertex.newLightEdge(ie.getTypeName(), outV, true);
+        else {
+          final MutableEdge e = newVertex.newEdge(ie.getTypeName(), outV, true);
+          final Map<String, Object> edgeProperties = ie.propertiesAsMap();
+          if (!edgeProperties.isEmpty())
+            e.set(edgeProperties).save();
+        }
+      }
+
+      if (moveTx)
+        db.commit();
+
+      return newIdentity;
+
+    } catch (RuntimeException ex) {
+      if (moveTx)
+        db.rollback();
+
+      throw ex;
+    }
+  }
 }
