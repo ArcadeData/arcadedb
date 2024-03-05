@@ -90,8 +90,13 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
-  public RID moveTo(final String targetType, final String targetBucket) {
-    return internal.moveTo(targetType, targetBucket);
+  public RID moveToType(final String targetType) {
+    return internal.vertex.moveToType(targetType);
+  }
+
+  @Override
+  public RID moveToBucket(final String targetBucket) {
+    return internal.vertex.moveToBucket(targetBucket);
   }
 
   @Override

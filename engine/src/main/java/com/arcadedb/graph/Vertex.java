@@ -69,7 +69,9 @@ public interface Vertex extends Document {
 
   boolean isConnectedTo(Identifiable toVertex, DIRECTION direction, String edgeType);
 
-  RID moveTo(String targetType, String targetBucket);
+  RID moveToType(String targetType);
+
+  RID moveToBucket(String targetBucket);
 
   @Override
   default Vertex asVertex() {

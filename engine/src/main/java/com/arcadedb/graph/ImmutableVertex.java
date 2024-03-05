@@ -167,8 +167,13 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public RID moveTo(final String targetType, final String targetBucket) {
-    return database.getGraphEngine().moveTo(getMostUpdatedVertex(this), targetType, targetBucket);
+  public RID moveToType(final String targetType) {
+    return database.getGraphEngine().moveToType(this, targetType);
+  }
+
+  @Override
+  public RID moveToBucket(String targetBucket) {
+    return database.getGraphEngine().moveToBucket(this, targetBucket);
   }
 
   @Override

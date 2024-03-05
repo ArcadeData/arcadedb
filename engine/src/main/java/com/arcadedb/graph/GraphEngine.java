@@ -965,24 +965,32 @@ public class GraphEngine {
     return stats;
   }
 
-  protected RID moveTo(final Vertex toMove, final String typeName, final String bucketName) {
-    final Database db = toMove.getDatabase();
+  protected RID moveToType(final Vertex vertex, final String typeName) {
+    return moveTo(vertex, typeName, null);
+  }
+
+  protected RID moveToBucket(final Vertex vertex, final String bucketName) {
+    return moveTo(vertex, vertex.getTypeName(), bucketName);
+  }
+
+  protected RID moveTo(final Vertex vertex, final String typeName, final String bucketName) {
+    final Database db = vertex.getDatabase();
     boolean moveTx = !db.isTransactionActive();
     try {
       if (moveTx)
         db.begin();
 
       // SAVE OLD VERTEX PROPERTIES AND EDGES
-      final Map<String, Object> properties = toMove.propertiesAsMap();
+      final Map<String, Object> properties = vertex.propertiesAsMap();
       final List<Edge> outEdges = new ArrayList<>();
-      for (Edge edge : toMove.getEdges(Vertex.DIRECTION.OUT))
+      for (Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
         outEdges.add(edge.asEdge(true));
       final List<Edge> inEdges = new ArrayList<>();
-      for (Edge edge : toMove.getEdges(Vertex.DIRECTION.IN))
+      for (Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
         inEdges.add(edge.asEdge(true));
 
       // DELETE THE OLD RECORD FIRST TO AVOID ISSUES WITH UNIQUE CONSTRAINTS
-      toMove.delete();
+      vertex.delete();
 
       final MutableVertex newVertex = (MutableVertex) db.newVertex(typeName).set(properties);
       if (bucketName != null)

@@ -1,6 +1,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Identifier;
 
@@ -28,7 +29,13 @@ public class MoveVertexStep extends AbstractExecutionStep {
     final ResultSet prevResult = getPrev().syncPull(ctx, records);
     while (prevResult.hasNext()) {
       final Result result = prevResult.next();
-      result.getVertex().ifPresent(x -> x.moveTo(targetType, targetBucket));
+      final Vertex v = result.getVertex().get();
+      if (v != null) {
+        if (targetBucket != null)
+          v.moveToBucket(targetBucket);
+        else
+          v.moveToType(targetType);
+      }
     }
     return prevResult;
   }
