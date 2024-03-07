@@ -123,6 +123,7 @@ public class AlterTypeStatement extends DDLStatement {
         context.getDatabase().getSchema().copyType(name.getStringValue(), newTypeName, type.getClass(), bucketSize, pageSize, 0);
         context.getDatabase().getSchema().dropType(name.getStringValue());
         result.setProperty("name", newTypeName);
+        break;
       case "bucket":
         for (int i = 0; i < identifierListValue.size(); i++) {
           final Identifier identifierValue = identifierListValue.get(i);
