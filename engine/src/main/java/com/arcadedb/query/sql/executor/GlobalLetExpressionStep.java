@@ -70,8 +70,8 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
     if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
 
-    result.append("\n|").append(spaces).append("  ").append(varname).append(" = ")
-        .append(expression.prettyPrint(depth + 1, indent));
+    result.append("\n").append(spaces).append("  + ").append(varname).append(" = ")
+        .append(expression.prettyPrint(depth, indent + 2));
 
     return result.toString();
   }

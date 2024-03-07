@@ -34,28 +34,27 @@ public class Limit extends SimpleNode {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (num == null && inputParam == null) {
+    if (num == null && inputParam == null)
       return;
-    }
-    builder.append(" LIMIT ");
-    if (num != null) {
+
+    builder.append("LIMIT ");
+    if (num != null)
       num.toString(params, builder);
-    } else {
+    else
       inputParam.toString(params, builder);
-    }
+
   }
 
   public int getValue(final CommandContext context) {
-    if (num != null) {
+    if (num != null)
       return num.getValue().intValue();
-    }
+
     if (inputParam != null) {
       final Object paramValue = inputParam.getValue(context.getInputParameters());
-      if (paramValue instanceof Number) {
+      if (paramValue instanceof Number)
         return ((Number) paramValue).intValue();
-      } else {
+      else
         throw new CommandExecutionException("Invalid value for LIMIT: " + paramValue);
-      }
     }
     throw new CommandExecutionException("No value for LIMIT");
   }
