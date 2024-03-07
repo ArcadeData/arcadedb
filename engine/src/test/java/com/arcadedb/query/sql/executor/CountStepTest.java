@@ -32,10 +32,10 @@ public class CountStepTest {
   @Test
   public void shouldCountRecords() {
     final CommandContext context = new BasicCommandContext();
-    final CountStep step = new CountStep(context, false);
+    final CountStep step = new CountStep(context);
 
     final AbstractExecutionStep previous =
-        new AbstractExecutionStep(context, false) {
+        new AbstractExecutionStep(context) {
           boolean done = false;
 
           @Override

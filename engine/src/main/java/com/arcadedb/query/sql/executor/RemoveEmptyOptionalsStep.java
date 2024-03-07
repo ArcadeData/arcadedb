@@ -25,8 +25,8 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
 
-  public RemoveEmptyOptionalsStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public RemoveEmptyOptionalsStep(final CommandContext context) {
+    super(context);
   }
 
   @Override

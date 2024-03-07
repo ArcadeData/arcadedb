@@ -32,8 +32,8 @@ public class LetQueryStep extends AbstractExecutionStep {
   private final Identifier varName;
   private final Statement  query;
 
-  public LetQueryStep(final Identifier varName, final Statement query, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public LetQueryStep(final Identifier varName, final Statement query, final CommandContext context) {
+    super(context);
     this.varName = varName;
     this.query = query;
   }
@@ -65,7 +65,7 @@ public class LetQueryStep extends AbstractExecutionStep {
         final BasicCommandContext subCtx = new BasicCommandContext();
         subCtx.setDatabase(context.getDatabase());
         subCtx.setParentWithoutOverridingChild(context);
-        final InternalExecutionPlan subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
+        final InternalExecutionPlan subExecutionPlan = query.createExecutionPlan(subCtx);
         final List<Result> value = toList(new LocalResultSet(subExecutionPlan));
         result.setMetadata(varName.getStringValue(), value);
         context.setVariable(varName.getStringValue(), value);
@@ -95,7 +95,7 @@ public class LetQueryStep extends AbstractExecutionStep {
 
     final StringBuilder result = new StringBuilder();
     result.append(spaces).append("+ LET (for each record)\n").append(spaces).append("  ").append(varName).append(" = (").append(query).append(")");
-    if (profilingEnabled)
+    if ( context.isProfiling() )
       result.append(" (").append(getCostFormatted()).append(")");
     return result.toString();
   }

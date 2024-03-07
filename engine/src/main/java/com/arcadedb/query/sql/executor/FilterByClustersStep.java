@@ -33,8 +33,8 @@ public class FilterByClustersStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public FilterByClustersStep(final Set<String> filterClusters, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FilterByClustersStep(final Set<String> filterClusters, final CommandContext context) {
+    super(context);
     this.clusters = filterClusters;
     final Database db = context.getDatabase();
     init(db);

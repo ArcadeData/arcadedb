@@ -71,7 +71,6 @@ public class Neo4jImporter {
   private final        Map<String, Long>              totalEdgesByType         = new HashMap<>();
   private              long                           totalEdgesParsed         = 0L;
   private              long                           totalAttributesParsed    = 0L;
-  private              DatabaseFactory                factory;
   private              int                            batchSize                = 10_000;
   private              long                           beginTimeVerticesCreation;
   private              long                           beginTimeEdgesCreation;
@@ -117,7 +116,7 @@ public class Neo4jImporter {
     else {
       log("Importing Neo4j database from file '%s' to '%s'", inputFile, databasePath);
 
-      factory = new DatabaseFactory(databasePath);
+      DatabaseFactory factory = new DatabaseFactory(databasePath);
       if (factory.exists()) {
         if (!overwriteDatabase) {
           error("Database already exists on path '%s'", databasePath);

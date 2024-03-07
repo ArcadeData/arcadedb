@@ -34,8 +34,8 @@ public class CountStep extends AbstractExecutionStep {
    * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CountStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -50,14 +50,14 @@ public class CountStep extends AbstractExecutionStep {
       final ResultSet prevResult = getPrev().syncPull(context, nRecords);
 
       if (!prevResult.hasNext()) {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final InternalResultSet result = new InternalResultSet();
           resultRecord.setProperty("count", count);
           result.add(resultRecord);
           return result;
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -75,7 +75,7 @@ public class CountStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COUNT");
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();
@@ -83,6 +83,6 @@ public class CountStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new CountStep(context, profilingEnabled);
+    return new CountStep(context);
   }
 }

@@ -30,9 +30,9 @@ public class DistinctExecutionStepTest {
   @Test
   public void test() {
     final CommandContext ctx = new BasicCommandContext();
-    final DistinctExecutionStep step = new DistinctExecutionStep(ctx, false);
+    final DistinctExecutionStep step = new DistinctExecutionStep(ctx);
 
-    final AbstractExecutionStep prev = new AbstractExecutionStep(ctx, false) {
+    final AbstractExecutionStep prev = new AbstractExecutionStep(ctx) {
       boolean done = false;
 
       @Override

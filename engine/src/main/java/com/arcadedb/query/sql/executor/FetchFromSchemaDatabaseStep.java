@@ -33,8 +33,8 @@ import java.util.*;
 public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
   boolean served = false;
 
-  public FetchFromSchemaDatabaseStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromSchemaDatabaseStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -48,7 +48,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
 
           if (!served) {
@@ -86,7 +86,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
           }
           throw new NoSuchElementException();
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -103,7 +103,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA";
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

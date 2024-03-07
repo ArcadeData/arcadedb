@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -70,23 +71,23 @@ public class UpdateExecutionPlanner {
     this.timeout = oUpdateStatement.getTimeout() == null ? null : oUpdateStatement.getTimeout().copy();
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
     final UpdateExecutionPlan result = new UpdateExecutionPlan(context);
 
-    handleTarget(result, context, this.target, this.whereClause, this.timeout, enableProfiling);
-    if (updateEdge) {
-      result.chain(new CheckRecordTypeStep(context, "E", enableProfiling));
-    }
-    handleUpsert(result, context, this.target, this.whereClause, this.upsert, enableProfiling);
-    handleTimeout(result, context, this.timeout, enableProfiling);
-    convertToModifiableResult(result, context, enableProfiling);
-    handleLimit(result, context, this.limit, enableProfiling);
-    handleReturnBefore(result, context, this.returnBefore, enableProfiling);
-    handleOperations(result, context, this.operations, enableProfiling);
-    handleSave(result, target.getItem().getBucket(), context, enableProfiling);
-    handleResultForReturnBefore(result, context, this.returnBefore, returnProjection, enableProfiling);
-    handleResultForReturnAfter(result, context, this.returnAfter, returnProjection, enableProfiling);
-    handleResultForReturnCount(result, context, this.returnCount, enableProfiling);
+    handleTarget(result, context, this.target, this.whereClause, this.timeout);
+    if (updateEdge)
+      result.chain(new CheckRecordImplementationStep(context, Edge.class));
+
+    handleUpsert(result, context, this.target, this.whereClause, this.upsert);
+    handleTimeout(result, context, this.timeout);
+    convertToModifiableResult(result, context);
+    handleLimit(result, context, this.limit);
+    handleReturnBefore(result, context, this.returnBefore);
+    handleOperations(result, context, this.operations);
+    handleSave(result, target.getItem().getBucket(), context);
+    handleResultForReturnBefore(result, context, this.returnBefore, returnProjection);
+    handleResultForReturnAfter(result, context, this.returnAfter, returnProjection);
+    handleResultForReturnCount(result, context, this.returnCount);
     return result;
   }
 
@@ -96,101 +97,94 @@ public class UpdateExecutionPlanner {
    * @param plan    the execution plan
    * @param context the execution context
    */
-  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context,
-      final boolean profilingEnabled) {
-    plan.chain(new ConvertToUpdatableResultStep(context, profilingEnabled));
+  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context) {
+    plan.chain(new ConvertToUpdatableResultStep(context));
   }
 
-  private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext context, final boolean returnCount,
-      final boolean profilingEnabled) {
+  private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext context,
+      final boolean returnCount) {
     if (returnCount) {
-      result.chain(new CountStep(context, profilingEnabled));
+      result.chain(new CountStep(context));
     }
   }
 
   private void handleResultForReturnAfter(final UpdateExecutionPlan result, final CommandContext context, final boolean returnAfter,
-      final Projection returnProjection, final boolean profilingEnabled) {
+      final Projection returnProjection) {
     if (returnAfter) {
       //re-convert to normal step
-      result.chain(new ConvertToResultInternalStep(context, profilingEnabled));
+      result.chain(new ConvertToResultInternalStep(context));
       if (returnProjection != null) {
-        result.chain(new ProjectionCalculationStep(returnProjection, context, profilingEnabled));
+        result.chain(new ProjectionCalculationStep(returnProjection, context));
       }
     }
   }
 
   private void handleResultForReturnBefore(final UpdateExecutionPlan result, final CommandContext context,
       final boolean returnBefore,
-      final Projection returnProjection, final boolean profilingEnabled) {
+      final Projection returnProjection) {
     if (returnBefore) {
-      result.chain(new UnwrapPreviousValueStep(context, profilingEnabled));
+      result.chain(new UnwrapPreviousValueStep(context));
       if (returnProjection != null) {
-        result.chain(new ProjectionCalculationStep(returnProjection, context, profilingEnabled));
+        result.chain(new ProjectionCalculationStep(returnProjection, context));
       }
     }
   }
 
-  private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext context) {
     if (bucket != null) {
       final String bucketName =
           bucket.getBucketName() != null ?
               bucket.getBucketName() :
               context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
-      result.chain(new SaveElementStep(context, new Identifier(bucketName), profilingEnabled));
+      result.chain(new SaveElementStep(context, new Identifier(bucketName)));
     } else
-      result.chain(new SaveElementStep(context, profilingEnabled));
+      result.chain(new SaveElementStep(context));
   }
 
-  private void handleTimeout(final UpdateExecutionPlan result, final CommandContext context, final Timeout timeout,
-      final boolean profilingEnabled) {
-    if (timeout != null && timeout.getVal().longValue() > 0) {
-      result.chain(new TimeoutStep(timeout, context, profilingEnabled));
-    }
+  private void handleTimeout(final UpdateExecutionPlan result, final CommandContext context, final Timeout timeout) {
+    if (timeout != null && timeout.getVal().longValue() > 0)
+      result.chain(new TimeoutStep(timeout, context));
+
   }
 
-  private void handleReturnBefore(final UpdateExecutionPlan result, final CommandContext context, final boolean returnBefore,
-      final boolean profilingEnabled) {
-    if (returnBefore) {
-      result.chain(new CopyRecordContentBeforeUpdateStep(context, profilingEnabled));
-    }
+  private void handleReturnBefore(final UpdateExecutionPlan result, final CommandContext context, final boolean returnBefore) {
+    if (returnBefore)
+      result.chain(new CopyRecordContentBeforeUpdateStep(context));
   }
 
-  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit,
-      final boolean profilingEnabled) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit) {
     if (limit != null) {
-      plan.chain(new LimitExecutionStep(limit, context, profilingEnabled));
+      plan.chain(new LimitExecutionStep(limit, context));
     }
   }
 
   private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext context, final FromClause target,
       final WhereClause where,
-      final boolean upsert, final boolean profilingEnabled) {
+      final boolean upsert) {
     if (upsert) {
-      plan.chain(new UpsertStep(target, where, context, profilingEnabled));
+      plan.chain(new UpsertStep(target, where, context));
     }
   }
 
-  private void handleOperations(final UpdateExecutionPlan plan, final CommandContext context, final List<UpdateOperations> ops,
-      final boolean profilingEnabled) {
+  private void handleOperations(final UpdateExecutionPlan plan, final CommandContext context, final List<UpdateOperations> ops) {
     if (ops != null) {
       for (final UpdateOperations op : ops) {
         switch (op.getType()) {
         case UpdateOperations.TYPE_SET:
-          plan.chain(new UpdateSetStep(op.getUpdateItems(), context, profilingEnabled));
+          plan.chain(new UpdateSetStep(op.getUpdateItems(), context));
           //TODO: ARCADEDB MANAGES EDGES IN DIFFERENT WAY. DO WE NEED THIS?
           //if(updateEdge){
-          //plan.chain(new UpdateEdgePointersStep( context, profilingEnabled));
+          //plan.chain(new UpdateEdgePointersStep( context));
           //}
           break;
         case UpdateOperations.TYPE_REMOVE:
-          plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), context, profilingEnabled));
+          plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), context));
           break;
         case UpdateOperations.TYPE_MERGE:
-          plan.chain(new UpdateMergeStep(op.getJson(), context, profilingEnabled));
+          plan.chain(new UpdateMergeStep(op.getJson(), context));
           break;
         case UpdateOperations.TYPE_CONTENT:
-          plan.chain(new UpdateContentStep(op.getJson(), context, profilingEnabled));
+          plan.chain(new UpdateContentStep(op.getJson(), context));
           break;
         case UpdateOperations.TYPE_PUT:
         case UpdateOperations.TYPE_INCREMENT:
@@ -202,8 +196,7 @@ public class UpdateExecutionPlanner {
   }
 
   private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
-      final WhereClause whereClause,
-      final Timeout timeout, final boolean profilingEnabled) {
+      final WhereClause whereClause, final Timeout timeout) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
@@ -212,6 +205,6 @@ public class UpdateExecutionPlanner {
     }
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
     result.chain(
-        new SubQueryStep(planner.createExecutionPlan(context, profilingEnabled, false), context, context, profilingEnabled));
+        new SubQueryStep(planner.createExecutionPlan(context, false), context, context));
   }
 }

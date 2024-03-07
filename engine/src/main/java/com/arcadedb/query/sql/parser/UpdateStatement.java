@@ -109,7 +109,7 @@ public class UpdateStatement extends Statement {
 
     context.setDatabase(db);
     context.setInputParameters(args);
-    final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
@@ -122,14 +122,14 @@ public class UpdateStatement extends Statement {
 
     context.setDatabase(db);
     context.setInputParameters(params);
-    final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
     final UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context);
   }
 
   @Override

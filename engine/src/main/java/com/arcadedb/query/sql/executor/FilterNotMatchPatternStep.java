@@ -28,8 +28,8 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   private ResultSet prevResult = null;
 
-  public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext context, final boolean enableProfiling) {
-    super(context, enableProfiling);
+  public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext context) {
+    super(context);
     this.subSteps = steps;
   }
 
@@ -64,7 +64,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
-          final long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (!matchesPattern(nextItem, context)) {
               break;
@@ -72,7 +72,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
             nextItem = null;
           } finally {
-            if (profilingEnabled) {
+            if( context.isProfiling() ) {
               cost += (System.nanoTime() - begin);
             }
           }
@@ -125,7 +125,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   private SelectExecutionPlan createExecutionPlan(final Result nextItem, final CommandContext context) {
     final SelectExecutionPlan plan = new SelectExecutionPlan(context);
-    plan.chain(new AbstractExecutionStep(context, profilingEnabled) {
+    plan.chain(new AbstractExecutionStep(context) {
       private boolean executed = false;
 
       @Override

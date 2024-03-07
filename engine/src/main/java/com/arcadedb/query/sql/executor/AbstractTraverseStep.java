@@ -39,9 +39,10 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   final Set<RID> traversed = new RidSet();
 
-  public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
-      final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause,
+      final PInteger maxDepth,
+      final CommandContext context) {
+    super(context);
     this.whileClause = whileClause;
     this.maxDepth = maxDepth;
     this.projections = projections.stream().map(TraverseProjectionItem::copy).collect(Collectors.toList());
@@ -88,22 +89,20 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   }
 
   private void fetchNextBlock(final CommandContext context, final int nRecords) {
-    if (this.entryPoints == null) {
+    if (this.entryPoints == null)
       this.entryPoints = new ArrayList<>();
-    }
 
     while (this.results.isEmpty()) {
-      if (this.entryPoints.isEmpty()) {
+      if (this.entryPoints.isEmpty())
         fetchNextEntryPoints(context, nRecords);
-      }
-      if (this.entryPoints.isEmpty()) {
+
+      if (this.entryPoints.isEmpty())
         return;
-      }
-      final long begin = profilingEnabled ? System.nanoTime() : 0;
+
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
       fetchNextResults(context, nRecords);
-      if (profilingEnabled) {
+      if (context.isProfiling())
         cost += (System.nanoTime() - begin);
-      }
     }
   }
 

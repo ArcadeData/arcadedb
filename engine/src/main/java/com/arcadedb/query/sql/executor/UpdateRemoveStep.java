@@ -29,8 +29,8 @@ import java.util.*;
 public class UpdateRemoveStep extends AbstractExecutionStep {
   private final List<UpdateRemoveItem> items;
 
-  public UpdateRemoveStep(final List<UpdateRemoveItem> items, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UpdateRemoveStep(final List<UpdateRemoveItem> items, final CommandContext context) {
+    super(context);
     this.items = items;
   }
 

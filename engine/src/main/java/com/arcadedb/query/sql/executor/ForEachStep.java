@@ -41,8 +41,8 @@ public class ForEachStep extends AbstractExecutionStep {
   private boolean               initiated   = false;
 
   public ForEachStep(final Identifier loopVariable, final Expression oExpression, final List<Statement> statements,
-      final CommandContext context, final boolean enableProfiling) {
-    super(context, enableProfiling);
+      final CommandContext context) {
+    super(context);
     this.loopVariable = loopVariable;
     this.source = oExpression;
     this.body = statements;
@@ -66,7 +66,7 @@ public class ForEachStep extends AbstractExecutionStep {
         return result.syncPull(context, nRecords);
       }
     }
-    finalResult = new EmptyStep(context, false);
+    finalResult = new EmptyStep(context);
     return finalResult.syncPull(context, nRecords);
 
   }
@@ -84,7 +84,7 @@ public class ForEachStep extends AbstractExecutionStep {
     subCtx1.setParent(context);
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
     for (final Statement stm : body)
-      plan.chain(stm.createExecutionPlan(subCtx1, profilingEnabled), profilingEnabled);
+      plan.chain(stm.createExecutionPlan(subCtx1));
 
     return plan;
   }

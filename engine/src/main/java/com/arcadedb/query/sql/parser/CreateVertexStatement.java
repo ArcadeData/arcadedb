@@ -47,15 +47,15 @@ public class CreateVertexStatement extends Statement {
   public ResultSet execute(final Database database, final Map params, final CommandContext parentcontext,
       final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
+    if (parentcontext != null)
       context.setParentWithoutOverridingChild(parentcontext);
-    }
+
     context.setDatabase(database);
     context.setInputParameters(params);
 
     final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
     try {
-      final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(context, false);
+      final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(context);
       executionPlan.executeInternal();
       return new LocalResultSet(executionPlan);
     } finally {
@@ -77,7 +77,7 @@ public class CreateVertexStatement extends Statement {
     final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
     try {
 
-      final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(context, false);
+      final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(context);
       executionPlan.executeInternal();
       return new LocalResultSet(executionPlan);
     } finally {
@@ -87,9 +87,9 @@ public class CreateVertexStatement extends Statement {
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
     final CreateVertexExecutionPlanner planner = new CreateVertexExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

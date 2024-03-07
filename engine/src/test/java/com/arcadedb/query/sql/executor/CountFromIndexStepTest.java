@@ -72,7 +72,7 @@ public class CountFromIndexStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final CountFromIndexStep step = new CountFromIndexStep(identifier, ALIAS, context, false);
+      final CountFromIndexStep step = new CountFromIndexStep(identifier, ALIAS, context);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(20, (long) result.next().getProperty(ALIAS));

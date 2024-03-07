@@ -34,8 +34,8 @@ public class FilterByTypeStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public FilterByTypeStep(final Identifier identifier, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FilterByTypeStep(final Identifier identifier, final CommandContext context) {
+    super(context);
     this.identifier = identifier;
   }
 
@@ -71,7 +71,7 @@ public class FilterByTypeStep extends AbstractExecutionStep {
           }
 
           nextItem = prevResult.next();
-          final long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (nextItem.isElement()) {
               final DocumentType typez = nextItem.getElement().get().getType();
@@ -81,7 +81,7 @@ public class FilterByTypeStep extends AbstractExecutionStep {
             }
             nextItem = null;
           } finally {
-            if (profilingEnabled) {
+            if (context.isProfiling()) {
               cost += (System.nanoTime() - begin);
             }
           }
@@ -128,7 +128,7 @@ public class FilterByTypeStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(ExecutionStepInternal.getIndent(depth, indent));
     result.append("+ FILTER ITEMS BY TYPE");
-    if (profilingEnabled)
+    if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
 
     result.append(" \n");
@@ -145,6 +145,6 @@ public class FilterByTypeStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FilterByTypeStep(this.identifier.copy(), context, this.profilingEnabled);
+    return new FilterByTypeStep(this.identifier.copy(), context);
   }
 }

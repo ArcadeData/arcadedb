@@ -35,9 +35,8 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
   final String targetType;
   boolean found = false;
 
-  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext context,
-      final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext context) {
+    super(context);
     this.bucketName = targetBucketName;
     this.targetType = typez;
   }
@@ -45,7 +44,7 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (found)
         return new InternalResultSet();
@@ -76,7 +75,7 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
 
       return new InternalResultSet();
     } finally {
-      if (profilingEnabled)
+      if ( context.isProfiling() )
         cost += (System.nanoTime() - begin);
     }
   }
@@ -87,7 +86,7 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK TARGET BUCKET FOR USERTYPE");
-    if (profilingEnabled)
+    if ( context.isProfiling() )
       result.append(" (").append(getCostFormatted()).append(")");
 
     result.append("\n");

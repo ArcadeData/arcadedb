@@ -32,9 +32,9 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class ParenthesisExpression extends MathExpression {
-
-  protected Expression expression;
-  protected Statement  statement;
+  protected Expression            expression;
+  protected Statement             statement;
+  private   InternalExecutionPlan executionPlan;
 
   public ParenthesisExpression(final int id) {
     super(id);
@@ -47,40 +47,48 @@ public class ParenthesisExpression extends MathExpression {
 
   @Override
   public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
-    if (expression != null) {
+    if (expression != null)
       return expression.execute(iCurrentRecord, context);
-    }
-    if (statement != null) {
+
+    if (statement != null)
       throw new UnsupportedOperationException("Execution of select in parentheses is not supported");
-    }
+
     return super.execute(iCurrentRecord, context);
   }
 
   @Override
   public Object execute(final Result iCurrentRecord, final CommandContext context) {
-    if (expression != null) {
+    if (expression != null)
       return expression.execute(iCurrentRecord, context);
-    }
+
     if (statement != null) {
       final BasicCommandContext subCtx = new BasicCommandContext();
       subCtx.setDatabase(context.getDatabase());
       subCtx.setParent(context);
 
-      final InternalExecutionPlan execPlan = statement.createExecutionPlan(subCtx, false);
+      executionPlan = statement.createExecutionPlan(subCtx);
 
-      if (execPlan instanceof InsertExecutionPlan) {
-        ((InsertExecutionPlan) execPlan).executeInternal();
-      }
-      final LocalResultSet rs = new LocalResultSet(execPlan);
+      if (executionPlan instanceof InsertExecutionPlan)
+        ((InsertExecutionPlan) executionPlan).executeInternal();
+
+      final LocalResultSet rs = new LocalResultSet(executionPlan);
       final List<Result> result = new ArrayList<>();
-      while (rs.hasNext()) {
+      while (rs.hasNext())
         result.add(rs.next());
-      }
+
 //      List<OResult> result = rs.stream().collect(Collectors.toList());//TODO streamed...
       rs.close();
+
+      if (!context.isProfiling())
+        executionPlan = null;
+
       return result;
     }
     return super.execute(iCurrentRecord, context);
+  }
+
+  public InternalExecutionPlan getExecutionPlan() {
+    return executionPlan;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

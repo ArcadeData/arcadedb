@@ -36,8 +36,8 @@ public class WhileStep extends AbstractExecutionStep {
   private final List<Statement>       statements;
   private       ExecutionStepInternal finalResult = null;
 
-  public WhileStep(final BooleanExpression condition, final List<Statement> statements, final CommandContext context, final boolean enableProfiling) {
-    super(context, enableProfiling);
+  public WhileStep(final BooleanExpression condition, final List<Statement> statements, final CommandContext context) {
+    super(context);
     this.condition = condition;
     this.statements = statements;
   }
@@ -58,7 +58,7 @@ public class WhileStep extends AbstractExecutionStep {
         return result.syncPull(context, nRecords);
       }
     }
-    finalResult = new EmptyStep(context, false);
+    finalResult = new EmptyStep(context);
     return finalResult.syncPull(context, nRecords);
   }
 
@@ -73,11 +73,11 @@ public class WhileStep extends AbstractExecutionStep {
       InternalExecutionPlan subPlan;
       if (stm.getOriginalStatement().contains("?"))
         // cannot cache execution plans with positional parameters inside scripts
-        subPlan = stm.createExecutionPlanNoCache(subCtx1, profilingEnabled);
+        subPlan = stm.createExecutionPlanNoCache(subCtx1);
       else
-        subPlan = stm.createExecutionPlan(subCtx1, profilingEnabled);
+        subPlan = stm.createExecutionPlan(subCtx1);
 
-      plan.chain(subPlan, profilingEnabled);
+      plan.chain(subPlan);
     }
     return plan;
   }

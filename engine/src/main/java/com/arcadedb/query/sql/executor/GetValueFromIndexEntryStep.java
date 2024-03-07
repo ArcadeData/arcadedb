@@ -41,12 +41,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   private ResultSet prevResult = null;
 
   /**
-   * @param context          the execution context
-   * @param filterBucketIds  only extract values from these clusters. Pass null if no filtering is needed
-   * @param profilingEnabled enable profiling
+   * @param context         the execution context
+   * @param filterBucketIds only extract values from these clusters. Pass null if no filtering is needed
    */
-  public GetValueFromIndexEntryStep(final CommandContext context, final int[] filterBucketIds, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public GetValueFromIndexEntryStep(final CommandContext context, final int[] filterBucketIds) {
+    super(context);
     this.filterBucketIds = filterBucketIds;
   }
 
@@ -111,7 +110,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
             }
           }
           final Result val = prevResult.next();
-          final long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
 
           try {
             final Object finalVal = val.getProperty("rid");
@@ -146,9 +145,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
             }
             break;
           } finally {
-            if (profilingEnabled) {
+            if (context.isProfiling())
               cost += (System.nanoTime() - begin);
-            }
           }
         }
       }
@@ -160,7 +158,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ EXTRACT VALUE FROM INDEX ENTRY";
 
-    if (profilingEnabled)
+    if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
 
     if (filterBucketIds != null) {
@@ -181,6 +179,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new GetValueFromIndexEntryStep(context, this.filterBucketIds, this.profilingEnabled);
+    return new GetValueFromIndexEntryStep(context, this.filterBucketIds);
   }
 }

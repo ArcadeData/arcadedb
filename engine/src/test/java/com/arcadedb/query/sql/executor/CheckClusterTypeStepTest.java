@@ -36,7 +36,7 @@ public class CheckClusterTypeStepTest {
           .addBucket(db.getSchema().createBucket(CLASS_CLUSTER_NAME)));
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final CheckClusterTypeStep step = new CheckClusterTypeStep(CLASS_CLUSTER_NAME, clazz.getName(), context, false);
+      final CheckClusterTypeStep step = new CheckClusterTypeStep(CLASS_CLUSTER_NAME, clazz.getName(), context);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(0, result.stream().count());
@@ -49,8 +49,7 @@ public class CheckClusterTypeStepTest {
         db.getSchema().createBucket(CLUSTER_NAME);
         final BasicCommandContext context = new BasicCommandContext();
         context.setDatabase(db);
-        final CheckClusterTypeStep step = new CheckClusterTypeStep(CLUSTER_NAME, TestHelper.createRandomType(db).getName(), context,
-            false);
+        final CheckClusterTypeStep step = new CheckClusterTypeStep(CLUSTER_NAME, TestHelper.createRandomType(db).getName(), context);
 
         step.syncPull(context, 20);
       });

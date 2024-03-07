@@ -48,11 +48,12 @@ public abstract class SimpleExecStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(args);
-    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context, false);
+    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context);
     return executionPlan.executeInternal();
   }
 
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext,
+      final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null) {
       context.setParentWithoutOverridingChild(parentContext);
@@ -60,11 +61,12 @@ public abstract class SimpleExecStatement extends Statement {
     context.setDatabase(db);
     context.setInputParameters(params);
     context.setConfiguration(parentContext.getConfiguration());
-    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context, false);
+
+    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context);
     return executionPlan.executeInternal();
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
     return new SingleOpExecutionPlan(context, this);
   }
 }

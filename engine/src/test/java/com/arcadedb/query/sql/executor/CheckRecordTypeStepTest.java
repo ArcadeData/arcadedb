@@ -33,8 +33,8 @@ public class CheckRecordTypeStepTest {
       final String className = TestHelper.createRandomType(db).getName();
 
       final CommandContext context = new BasicCommandContext();
-      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, className, false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, className);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override
@@ -65,8 +65,8 @@ public class CheckRecordTypeStepTest {
       final CommandContext context = new BasicCommandContext();
       final DocumentType parentClass = TestHelper.createRandomType(db);
       final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
-      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, parentClass.getName(), false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, parentClass.getName());
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override
@@ -98,8 +98,8 @@ public class CheckRecordTypeStepTest {
         final CommandContext context = new BasicCommandContext();
         final String firstClassName = TestHelper.createRandomType(db).getName();
         final String secondClassName = TestHelper.createRandomType(db).getName();
-        final CheckRecordTypeStep step = new CheckRecordTypeStep(context, firstClassName, false);
-        final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+        final CheckRecordTypeStep step = new CheckRecordTypeStep(context, firstClassName);
+        final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
           boolean done = false;
 
           @Override

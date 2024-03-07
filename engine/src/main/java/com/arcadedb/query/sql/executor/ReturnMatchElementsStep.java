@@ -27,8 +27,8 @@ import java.util.*;
  */
 public class ReturnMatchElementsStep extends AbstractUnrollStep {
 
-  public ReturnMatchElementsStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ReturnMatchElementsStep(final CommandContext context) {
+    super(context);
   }
 
   @Override

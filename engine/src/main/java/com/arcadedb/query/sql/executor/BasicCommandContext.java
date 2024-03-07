@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
 
 /**
  * Basic implementation of OCommandContext interface that stores variables in a map. Supports parent/child context to build a tree
@@ -41,7 +40,7 @@ public class BasicCommandContext implements CommandContext {
   protected       Map<String, Object>  inputParameters;
   protected       ContextConfiguration configuration           = new ContextConfiguration();
   protected final Set<String>          declaredScriptVariables = new HashSet<>();
-  protected final AtomicLong           resultsProcessed        = new AtomicLong(0);
+  protected       boolean              profiling               = false;
 
   @Override
   public Object getVariablePath(final String name) {
@@ -248,10 +247,29 @@ public class BasicCommandContext implements CommandContext {
     return this;
   }
 
+  /**
+   * Recursively checks if profiling is enabled up to the context root.
+   */
+  @Override
+  public boolean isProfiling() {
+    if (profiling)
+      return true;
+
+    if (parent != null)
+      return parent.isProfiling();
+
+    return false;
+  }
+
+  @Override
+  public BasicCommandContext setProfiling(final boolean profiling) {
+    this.profiling = profiling;
+    return this;
+  }
+
   public CommandContext setParentWithoutOverridingChild(final CommandContext iParentContext) {
-    if (parent != iParentContext) {
+    if (parent != iParentContext)
       parent = iParentContext;
-    }
     return this;
   }
 
@@ -271,6 +289,7 @@ public class BasicCommandContext implements CommandContext {
     copy.recordMetrics = recordMetrics;
     copy.parent = parent;
     copy.child = child;
+    copy.profiling = profiling;
     return copy;
   }
 
@@ -288,6 +307,9 @@ public class BasicCommandContext implements CommandContext {
 
   public void setInputParameters(final Map<String, Object> inputParameters) {
     this.inputParameters = inputParameters;
+    this.profiling = inputParameters != null && inputParameters.containsKey("$profileExecution") ?
+        (Boolean) inputParameters.remove("$profileExecution") :
+        false;
   }
 
   public void setInputParameters(final Object[] args) {
@@ -332,7 +354,8 @@ public class BasicCommandContext implements CommandContext {
     if (variables != null && (variables.containsKey(varName) || variables.containsKey(dollarVar)))
       return true;
 
-    return declaredScriptVariables.contains(varName) || declaredScriptVariables.contains(dollarVar) || (parent != null && parent.isScriptVariableDeclared(
+    return declaredScriptVariables.contains(varName) || declaredScriptVariables.contains(dollarVar) || (parent != null
+        && parent.isScriptVariableDeclared(
         varName));
   }
 

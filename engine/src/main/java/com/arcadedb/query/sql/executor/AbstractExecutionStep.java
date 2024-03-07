@@ -29,11 +29,9 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   protected           ExecutionStepInternal prev                           = null;
   protected           boolean               timedOut                       = false;
   protected           long                  cost                           = -1;
-  protected final     boolean               profilingEnabled;
 
-  public AbstractExecutionStep(final CommandContext context, final boolean profilingEnabled) {
+  public AbstractExecutionStep(final CommandContext context) {
     this.context = context;
-    this.profilingEnabled = profilingEnabled;
   }
 
   @Override

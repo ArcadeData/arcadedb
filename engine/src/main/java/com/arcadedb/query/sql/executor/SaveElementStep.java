@@ -30,13 +30,13 @@ public class SaveElementStep extends AbstractExecutionStep {
 
   private final Identifier bucket;
 
-  public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public SaveElementStep(final CommandContext context, final Identifier bucket) {
+    super(context);
     this.bucket = bucket;
   }
 
-  public SaveElementStep(final CommandContext context, final boolean profilingEnabled) {
-    this(context, null, profilingEnabled);
+  public SaveElementStep(final CommandContext context) {
+    this(context, null);
   }
 
   @Override
@@ -86,6 +86,6 @@ public class SaveElementStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new SaveElementStep(context, bucket == null ? null : bucket.copy(), profilingEnabled);
+    return new SaveElementStep(context, bucket == null ? null : bucket.copy());
   }
 }

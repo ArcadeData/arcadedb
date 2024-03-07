@@ -39,8 +39,8 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
    * @param context   the query context
    * @param ridOrder  true to sort by RID asc, false to sort by RID desc, null for no sort.
    */
-  public FetchFromClustersExecutionStep(final int[] bucketIds, final CommandContext context, final Boolean ridOrder, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromClustersExecutionStep(final int[] bucketIds, final CommandContext context, final Boolean ridOrder) {
+    super(context);
 
     if (Boolean.TRUE.equals(ridOrder))
       orderByRidAsc = true;
@@ -50,7 +50,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     subSteps = new ArrayList<>();
     sort(bucketIds);
     for (final int bucketId : bucketIds) {
-      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context, profilingEnabled);
+      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context);
       if (orderByRidAsc)
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
       else if (orderByRidDesc)
@@ -159,7 +159,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM BUCKETS");
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       builder.append(" (").append(getCostFormatted()).append(")");
     }
     builder.append("\n");

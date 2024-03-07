@@ -29,8 +29,8 @@ public class FetchFromResultsetStep extends AbstractExecutionStep {
   private final ResultSet resultSet;
   private       Result    nextResult = null;
 
-  public FetchFromResultsetStep(final ResultSet resultSet, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromResultsetStep(final ResultSet resultSet, final CommandContext context) {
+    super(context);
     this.resultSet = resultSet;
     reset();
   }

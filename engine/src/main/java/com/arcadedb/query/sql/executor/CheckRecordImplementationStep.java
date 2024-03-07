@@ -18,18 +18,20 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 /**
- * for UPDATE, unwraps the current result set to return the previous value
- *
- * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
+ * Checks that all the records from the upstream are of a particular implementation. Throws PCommandExecutionException in case
+ * it's not true
  */
-public class UnwrapPreviousValueStep extends AbstractExecutionStep {
+public class CheckRecordImplementationStep extends AbstractExecutionStep {
+  private final Class implementation;
 
-  public UnwrapPreviousValueStep(final CommandContext context) {
+  public CheckRecordImplementationStep(final CommandContext context, final Class implementation) {
     super(context);
+    this.implementation = implementation;
   }
 
   @Override
@@ -38,7 +40,6 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
     final ResultSet upstream = prev.syncPull(context, nRecords);
     return new ResultSet() {
-
       @Override
       public boolean hasNext() {
         return upstream.hasNext();
@@ -46,22 +47,24 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
+        final Result result = upstream.next();
+
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          Result prevResult = upstream.next();
-          if (prevResult instanceof UpdatableResult) {
-            prevResult = ((UpdatableResult) prevResult).previousValue;
-            if (prevResult == null) {
-              throw new CommandExecutionException("Invalid status of record: no previous value available");
-            }
-            return prevResult;
-          } else {
-            throw new CommandExecutionException("Invalid status of record: no previous value available");
-          }
+          if (!result.isElement())
+            throw new CommandExecutionException("Record " + result + " is not an instance of " + implementation.getSimpleName());
+
+          final Document record = result.getElement().get();
+          if (record == null)
+            throw new CommandExecutionException("Record " + result + " is not an instance of " + implementation.getSimpleName());
+
+          if (!implementation.isAssignableFrom(record.getClass()))
+            throw new CommandExecutionException("Record " + result + " is not an instance of " + implementation.getSimpleName());
+
+          return result;
         } finally {
-          if( context.isProfiling() ) {
+          if (context.isProfiling())
             cost += (System.nanoTime() - begin);
-          }
         }
       }
 
@@ -74,10 +77,11 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ UNWRAP PREVIOUS VALUE";
-    if( context.isProfiling() ) {
+    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CHECK RECORD IMPLEMENTATION";
+    if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
-    }
+
+    result += (ExecutionStepInternal.getIndent(depth, indent) + "  " + implementation.getSimpleName());
     return result;
   }
 

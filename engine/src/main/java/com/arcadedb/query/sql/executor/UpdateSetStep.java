@@ -30,8 +30,8 @@ import java.util.*;
 public class UpdateSetStep extends AbstractExecutionStep {
   private final List<UpdateItem> items;
 
-  public UpdateSetStep(final List<UpdateItem> updateItems, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UpdateSetStep(final List<UpdateItem> updateItems, final CommandContext context) {
+    super(context);
     this.items = updateItems;
   }
 

@@ -55,7 +55,7 @@ public class CreateEdgeStatement extends Statement {
 
     final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
     try {
-      final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
+      final InsertExecutionPlan executionPlan = createExecutionPlan(context);
       executionPlan.executeInternal();
       return new LocalResultSet(executionPlan);
     } finally {
@@ -76,8 +76,7 @@ public class CreateEdgeStatement extends Statement {
 
     final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
     try {
-
-      final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
+      final InsertExecutionPlan executionPlan = createExecutionPlan(context);
       executionPlan.executeInternal();
       return new LocalResultSet(executionPlan);
     } finally {
@@ -86,9 +85,9 @@ public class CreateEdgeStatement extends Statement {
     }
   }
 
-  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
     final CreateEdgeExecutionPlanner planner = new CreateEdgeExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

@@ -35,8 +35,8 @@ public class IfStep extends AbstractExecutionStep {
   ScriptExecutionPlan negativePlan;
   Boolean             conditionMet = null;
 
-  public IfStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public IfStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -67,7 +67,7 @@ public class IfStep extends AbstractExecutionStep {
       subCtx1.setParent(context);
       final ScriptExecutionPlan positivePlan = new ScriptExecutionPlan(subCtx1);
       for (final Statement stm : positiveStatements) {
-        positivePlan.chain(stm.createExecutionPlan(subCtx1, profilingEnabled), profilingEnabled);
+        positivePlan.chain(stm.createExecutionPlan(subCtx1));
       }
       setPositivePlan(positivePlan);
     }
@@ -80,7 +80,7 @@ public class IfStep extends AbstractExecutionStep {
         subCtx2.setParent(context);
         final ScriptExecutionPlan negativePlan = new ScriptExecutionPlan(subCtx2);
         for (final Statement stm : negativeStatements) {
-          negativePlan.chain(stm.createExecutionPlan(subCtx2, profilingEnabled), profilingEnabled);
+          negativePlan.chain(stm.createExecutionPlan(subCtx2));
         }
         setNegativePlan(negativePlan);
       }

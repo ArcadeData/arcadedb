@@ -31,8 +31,8 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
   private final Class  cls;
   private final String clsName;
 
-  public CastToStepAbstract(final Class cls, final String clsName, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CastToStepAbstract(final Class cls, final String clsName, final CommandContext context) {
+    super(context);
     this.cls = cls;
     this.clsName = clsName;
   }
@@ -50,7 +50,7 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
       @Override
       public Result next() {
         Result result = upstream.next();
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final Document element = result.getElement().orElse(null);
           if (element != null && cls.isAssignableFrom(element.getClass()))
@@ -69,7 +69,7 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
           }
           return result;
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -85,7 +85,7 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CAST TO " + clsName.toUpperCase(Locale.ENGLISH);
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

@@ -12,9 +12,8 @@ public class MoveVertexStep extends AbstractExecutionStep {
   private String targetBucket;
   private String targetType;
 
-  public MoveVertexStep(final Identifier targetType, final Bucket targetBucket, final CommandContext ctx,
-      final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public MoveVertexStep(final Identifier targetType, final Bucket targetBucket, final CommandContext ctx) {
+    super(ctx);
     this.targetType = targetType == null ? null : targetType.getStringValue();
     if (targetBucket != null) {
       this.targetBucket = targetBucket.getBucketName();

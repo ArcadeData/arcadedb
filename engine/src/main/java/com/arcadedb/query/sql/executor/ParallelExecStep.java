@@ -32,9 +32,8 @@ public class ParallelExecStep extends AbstractExecutionStep {
   int current = 0;
   private ResultSet currentResultSet = null;
 
-  public ParallelExecStep(final List<InternalExecutionPlan> subExecutionPlans, final CommandContext context,
-      final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ParallelExecStep(final List<InternalExecutionPlan> subExecutionPlans, final CommandContext context) {
+    super(context);
     this.subExecutionPlans = subExecutionPlans;
   }
 
@@ -209,7 +208,6 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(context)).collect(Collectors.toList()), context,
-        profilingEnabled);
+    return new ParallelExecStep(subExecutionPlans.stream().map(x -> x.copy(context)).collect(Collectors.toList()), context);
   }
 }

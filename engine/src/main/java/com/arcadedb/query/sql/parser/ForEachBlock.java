@@ -21,7 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -55,7 +54,7 @@ public class ForEachBlock extends Statement {
 
     context.setDatabase(db);
     context.setInputParameters(args);
-    final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
@@ -68,12 +67,12 @@ public class ForEachBlock extends Statement {
 
     context.setDatabase(db);
     context.setInputParameters(params);
-    final UpdateExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
     ForEachExecutionPlan plan = new ForEachExecutionPlan(context);
     int nextProg = FOREACH_VARIABLE_PROGR.incrementAndGet();
     if (nextProg < 0)
@@ -82,8 +81,8 @@ public class ForEachBlock extends Statement {
     SQLQueryEngine.validateVariableName(loopVariable.getStringValue());
 
     final Identifier varName = new Identifier("$__ARCADEDB_FOREACH_VAR_" + nextProg);
-    plan.chain(new GlobalLetExpressionStep(varName, loopValues, context, enableProfiling));
-    plan.chain(new ForEachStep(loopVariable, new Expression(varName), statements, context, enableProfiling));
+    plan.chain(new GlobalLetExpressionStep(varName, loopValues, context));
+    plan.chain(new ForEachStep(loopVariable, new Expression(varName), statements, context));
     return plan;
   }
 

@@ -31,8 +31,8 @@ public class FilterStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public FilterStep(final WhereClause whereClause, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FilterStep(final WhereClause whereClause, final CommandContext context) {
+    super(context);
     this.whereClause = whereClause;
   }
 
@@ -67,7 +67,7 @@ public class FilterStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
-          final long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (whereClause.matchesFilters(nextItem, context)) {
               break;
@@ -75,9 +75,8 @@ public class FilterStep extends AbstractExecutionStep {
 
             nextItem = null;
           } finally {
-            if (profilingEnabled) {
+            if (context.isProfiling())
               cost += (System.nanoTime() - begin);
-            }
           }
         }
       }
@@ -121,7 +120,7 @@ public class FilterStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder result = new StringBuilder();
     result.append(ExecutionStepInternal.getIndent(depth, indent)).append("+ FILTER ITEMS WHERE ");
-    if (profilingEnabled)
+    if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
 
     result.append("\n");
@@ -138,6 +137,6 @@ public class FilterStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FilterStep(this.whereClause.copy(), context, profilingEnabled);
+    return new FilterStep(this.whereClause.copy(), context);
   }
 }

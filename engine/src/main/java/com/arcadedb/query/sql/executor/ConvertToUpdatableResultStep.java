@@ -36,8 +36,8 @@ import java.util.*;
 public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
   ResultSet prevResult = null;
 
-  public ConvertToUpdatableResultStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ConvertToUpdatableResultStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -71,7 +71,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
-          final long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (nextItem instanceof UpdatableResult) {
               break;
@@ -132,7 +132,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CONVERT TO UPDATABLE ITEM";
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

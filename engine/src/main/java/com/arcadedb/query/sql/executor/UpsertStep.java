@@ -38,8 +38,8 @@ public class UpsertStep extends AbstractExecutionStep {
   private final WhereClause initialFilter;
   boolean applied = false;
 
-  public UpsertStep(final FromClause target, final WhereClause where, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UpsertStep(final FromClause target, final WhereClause where, final CommandContext context) {
+    super(context);
     this.commandTarget = target;
     this.initialFilter = where;
   }

@@ -39,8 +39,8 @@ public class ConvertToResultInternalStepTest {
       database.getSchema().createDocumentType("test");
 
       final CommandContext context = new BasicCommandContext();
-      final ConvertToResultInternalStep step = new ConvertToResultInternalStep(context, false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final ConvertToResultInternalStep step = new ConvertToResultInternalStep(context);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override

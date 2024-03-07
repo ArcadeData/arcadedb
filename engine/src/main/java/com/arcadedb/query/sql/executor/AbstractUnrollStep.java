@@ -33,8 +33,8 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
-  public AbstractUnrollStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public AbstractUnrollStep(final CommandContext context) {
+    super(context);
   }
 
   @Override

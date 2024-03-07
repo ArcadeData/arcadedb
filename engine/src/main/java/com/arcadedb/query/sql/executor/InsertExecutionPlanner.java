@@ -54,55 +54,52 @@ public class InsertExecutionPlanner {
     this.selectStatement = statement.getSelectStatement() == null ? null : statement.getSelectStatement().copy();
   }
 
-  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
     final InsertExecutionPlan result = new InsertExecutionPlan(context);
 
     if (selectStatement != null) {
-      handleInsertSelect(result, this.selectStatement, context, enableProfiling);
+      handleInsertSelect(result, this.selectStatement, context);
     } else {
-      handleCreateRecord(result, this.insertBody, context, enableProfiling);
+      handleCreateRecord(result, this.insertBody, context);
     }
-    handleTargetClass(result, targetType, context, enableProfiling);
-    handleSetFields(result, insertBody, context, enableProfiling);
+    handleTargetClass(result, targetType, context);
+    handleSetFields(result, insertBody, context);
     if (targetBucket != null) {
       String name = targetBucket.getBucketName();
       if (name == null) {
         name = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber()).getName();
       }
-      handleSave(result, new Identifier(name), context, enableProfiling);
+      handleSave(result, new Identifier(name), context);
     } else {
-      handleSave(result, targetBucketName, context, enableProfiling);
+      handleSave(result, targetBucketName, context);
     }
-    handleReturn(result, returnStatement, context, enableProfiling);
+    handleReturn(result, returnStatement, context);
 
     return result;
   }
 
-  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context,
-      final boolean profilingEnabled) {
-    result.chain(new SaveElementStep(context, targetClusterName, profilingEnabled));
+  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context) {
+    result.chain(new SaveElementStep(context, targetClusterName));
   }
 
-  private void handleReturn(final InsertExecutionPlan result, final Projection returnStatement, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleReturn(final InsertExecutionPlan result, final Projection returnStatement, final CommandContext context) {
     if (returnStatement != null)
-      result.chain(new ProjectionCalculationStep(returnStatement, context, profilingEnabled));
+      result.chain(new ProjectionCalculationStep(returnStatement, context));
   }
 
-  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext context) {
     if (insertBody == null)
       return;
 
     if (insertBody.getIdentifierList() != null) {
       result.chain(
-          new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), context, profilingEnabled));
+          new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), context));
     } else if (insertBody.getJsonContent() != null) {
-      result.chain(new UpdateContentStep(insertBody.getJsonContent(), context, profilingEnabled));
+      result.chain(new UpdateContentStep(insertBody.getJsonContent(), context));
     } else if (insertBody.getJsonArrayContent() != null) {
-      result.chain(new UpdateContentStep(insertBody.getJsonArrayContent(), context, profilingEnabled));
+      result.chain(new UpdateContentStep(insertBody.getJsonArrayContent(), context));
     } else if (insertBody.getContentInputParam() != null) {
-      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), context, profilingEnabled));
+      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), context));
     } else if (insertBody.getSetExpressions() != null) {
       final List<UpdateItem> items = new ArrayList<>();
       for (final InsertSetExpression exp : insertBody.getSetExpressions()) {
@@ -112,18 +109,16 @@ public class InsertExecutionPlanner {
         item.setRight(exp.getRight().copy());
         items.add(item);
       }
-      result.chain(new UpdateSetStep(items, context, profilingEnabled));
+      result.chain(new UpdateSetStep(items, context));
     }
   }
 
-  private void handleTargetClass(final InsertExecutionPlan result, final Identifier targetClass, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleTargetClass(final InsertExecutionPlan result, final Identifier targetClass, final CommandContext context) {
     if (targetClass != null)
-      result.chain(new SetDocumentStepStep(targetClass, context, profilingEnabled));
+      result.chain(new SetDocumentStepStep(targetClass, context));
   }
 
-  private void handleCreateRecord(final InsertExecutionPlan result, final InsertBody body, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleCreateRecord(final InsertExecutionPlan result, final InsertBody body, final CommandContext context) {
     int tot = 1;
     if (body != null && body.getValueExpressions() != null && body.getValueExpressions().size() > 0)
       tot = body.getValueExpressions().size();
@@ -143,16 +138,16 @@ public class InsertExecutionPlanner {
       targetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }
 
-    result.chain(new CreateRecordStep(targetType.getStringValue(), context, tot, profilingEnabled));
+    result.chain(new CreateRecordStep(targetType.getStringValue(), context, tot));
   }
 
   private void handleInsertSelect(final InsertExecutionPlan result, final SelectStatement selectStatement,
-      final CommandContext context, final boolean profilingEnabled) {
-    final InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(context, profilingEnabled);
-    result.chain(new SubQueryStep(subPlan, context, context, profilingEnabled));
+      final CommandContext context) {
+    final InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(context);
+    result.chain(new SubQueryStep(subPlan, context, context));
     if (targetType != null)
-      result.chain(new CopyDocumentStep(context, targetType.getStringValue(), profilingEnabled));
+      result.chain(new CopyDocumentStep(context, targetType.getStringValue()));
 
-    result.chain(new RemoveEdgePointersStep(context, profilingEnabled));
+    result.chain(new RemoveEdgePointersStep(context));
   }
 }

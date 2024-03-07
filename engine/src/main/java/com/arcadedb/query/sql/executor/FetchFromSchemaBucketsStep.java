@@ -36,8 +36,8 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
 
   private int cursor = 0;
 
-  public FetchFromSchemaBucketsStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromSchemaBucketsStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -45,7 +45,7 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
     pullPrevious(context, nRecords);
 
     if (cursor == 0) {
-      final long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         final Schema schema = context.getDatabase().getSchema();
 
@@ -64,7 +64,7 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
           context.setVariable("current", r);
         }
       } finally {
-        if (profilingEnabled) {
+        if( context.isProfiling() ) {
           cost += (System.nanoTime() - begin);
         }
       }
@@ -96,7 +96,7 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA BUCKETS";
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

@@ -33,7 +33,7 @@ public class CheckTypeTypeStepTest {
       context.setDatabase(db);
       final DocumentType parentClass = TestHelper.createRandomType(db);
       final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
-      final CheckTypeTypeStep step = new CheckTypeTypeStep(childClass.getName(), parentClass.getName(), context, false);
+      final CheckTypeTypeStep step = new CheckTypeTypeStep(childClass.getName(), parentClass.getName(), context);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(0, result.stream().count());
@@ -46,7 +46,7 @@ public class CheckTypeTypeStepTest {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final String className = TestHelper.createRandomType(db).getName();
-      final CheckTypeTypeStep step = new CheckTypeTypeStep(className, className, context, false);
+      final CheckTypeTypeStep step = new CheckTypeTypeStep(className, className, context);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(0, result.stream().count());
@@ -60,7 +60,7 @@ public class CheckTypeTypeStepTest {
         final BasicCommandContext context = new BasicCommandContext();
         context.setDatabase(db);
         final CheckTypeTypeStep step = new CheckTypeTypeStep(TestHelper.createRandomType(db).getName(),
-            TestHelper.createRandomType(db).getName(), context, false);
+            TestHelper.createRandomType(db).getName(), context);
 
         step.syncPull(context, 20);
       });

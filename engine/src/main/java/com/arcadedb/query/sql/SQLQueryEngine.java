@@ -99,8 +99,11 @@ public class SQLQueryEngine implements QueryEngine {
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
+
     final CommandContext context = new BasicCommandContext();
+    context.setInputParameters(parameters);
     context.setConfiguration(configuration);
+
     return statement.execute(database, parameters, context);
   }
 

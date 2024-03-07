@@ -28,8 +28,8 @@ public class LimitExecutionStep extends AbstractExecutionStep {
   private final Limit limit;
   private       int   loaded = 0;
 
-  public LimitExecutionStep(final Limit limit, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public LimitExecutionStep(final Limit limit, final CommandContext context) {
+    super(context);
     this.limit = limit;
   }
 

@@ -184,7 +184,8 @@ public class SelectStatement extends Statement {
     setProfilingConstraints((DatabaseInternal) db);
 
     context.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
+
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context);
     final LocalResultSet result = new LocalResultSet(executionPlan);
     return result;
   }
@@ -199,28 +200,22 @@ public class SelectStatement extends Statement {
     context.setDatabase(db);
 
     setProfilingConstraints((DatabaseInternal) db);
-
-    boolean profileExecution = false;
-    if (params != null && params.containsKey("$profileExecution")) {
-      profileExecution = (Boolean) params.remove("$profileExecution");
-    }
-
     context.setInputParameters(params);
 
-    final InternalExecutionPlan executionPlan = usePlanCache ? createExecutionPlan(context, profileExecution) :
-        createExecutionPlanNoCache(context, profileExecution);
+    final InternalExecutionPlan executionPlan = usePlanCache ? createExecutionPlan(context) :
+        createExecutionPlanNoCache(context);
     return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling, true);
+    return planner.createExecutionPlan(context, true);
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context) {
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling, false);
+    return planner.createExecutionPlan(context, false);
   }
 
   @Override

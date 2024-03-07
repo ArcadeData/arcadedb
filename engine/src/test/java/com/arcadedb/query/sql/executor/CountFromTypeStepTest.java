@@ -38,7 +38,7 @@ public class CountFromTypeStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final CountFromTypeStep step = new CountFromTypeStep(className, ALIAS, context, false);
+      final CountFromTypeStep step = new CountFromTypeStep(className, ALIAS, context);
 
       final ResultSet result = step.syncPull(context, 20);
       Assertions.assertEquals(20, (long) result.next().getProperty(ALIAS));

@@ -12,8 +12,8 @@ public class BatchStep extends AbstractExecutionStep {
   private Integer batchSize;
   private int     count = 0;
 
-  public BatchStep(Batch batch, CommandContext ctx, boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
+  public BatchStep(Batch batch, CommandContext ctx) {
+    super(ctx);
     batchSize = batch.evaluate(ctx);
   }
 
