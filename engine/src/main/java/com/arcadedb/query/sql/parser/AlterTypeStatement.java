@@ -113,13 +113,10 @@ public class AlterTypeStatement extends DDLStatement {
       switch (property.toLowerCase(Locale.ENGLISH)) {
       case "name":
         final String newTypeName = identifierValue.getStringValue();
-        if (context.getDatabase().getSchema().existsType(newTypeName))
-          throw new CommandExecutionException("Type '" + newTypeName + "' already exists");
-
         final int bucketSize = type.getInvolvedBuckets().size();
         final int pageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
-
         // TODO: Update documentation with the details & performance penalties of this operation
+        // NOTE copyType() checks for type existence, no need to check it here
         context.getDatabase().getSchema().copyType(name.getStringValue(), newTypeName, type.getClass(), bucketSize, pageSize, 0);
         context.getDatabase().getSchema().dropType(name.getStringValue());
         result.setProperty("name", newTypeName);
