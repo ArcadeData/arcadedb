@@ -37,7 +37,7 @@ public class Limit extends SimpleNode {
     if (num == null && inputParam == null)
       return;
 
-    builder.append("LIMIT ");
+    builder.append(" LIMIT ");
     if (num != null)
       num.toString(params, builder);
     else

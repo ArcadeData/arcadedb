@@ -90,7 +90,6 @@ public class SelectStatement extends Statement {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-
     builder.append("SELECT");
     if (projection != null) {
       builder.append(" ");
@@ -126,17 +125,14 @@ public class SelectStatement extends Statement {
       unwind.toString(params, builder);
     }
 
-    if (skip != null) {
+    if (skip != null)
       skip.toString(params, builder);
-    }
 
-    if (limit != null) {
+    if (limit != null)
       limit.toString(params, builder);
-    }
 
-    if (timeout != null) {
+    if (timeout != null)
       timeout.toString(params, builder);
-    }
   }
 
   public void validate() throws CommandSQLParsingException {
@@ -168,9 +164,9 @@ public class SelectStatement extends Statement {
   @Override
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentContext != null) {
+    if (parentContext != null)
       context.setParentWithoutOverridingChild(parentContext);
-    }
+
     context.setDatabase(db);
     final Map<String, Object> params = new HashMap<>();
     if (args != null) {
