@@ -28,8 +28,8 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
-  public UnwrapPreviousValueStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UnwrapPreviousValueStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -46,7 +46,7 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           Result prevResult = upstream.next();
           if (prevResult instanceof UpdatableResult) {
@@ -59,7 +59,7 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
             throw new CommandExecutionException("Invalid status of record: no previous value available");
           }
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -75,7 +75,7 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ UNWRAP PREVIOUS VALUE";
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

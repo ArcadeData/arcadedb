@@ -34,9 +34,9 @@ public class InsertValuesStep extends AbstractExecutionStep {
   private final List<List<Expression>> values;
   private       int                    nextValueSet = 0;
 
-  public InsertValuesStep(final List<Identifier> identifierList, final List<List<Expression>> valueExpressions, final CommandContext context,
-      final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public InsertValuesStep(final List<Identifier> identifierList, final List<List<Expression>> valueExpressions,
+      final CommandContext context) {
+    super(context);
     this.identifiers = identifierList;
     this.values = valueExpressions;
   }
@@ -62,7 +62,8 @@ public class InsertValuesStep extends AbstractExecutionStep {
         final List<Expression> currentValues = values.get(nextValueSet++);
         if (currentValues.size() != identifiers.size()) {
           throw new CommandExecutionException(
-              "Cannot execute INSERT, the number of fields is different from the number of expressions: " + identifiers + " " + currentValues);
+              "Cannot execute INSERT, the number of fields is different from the number of expressions: " + identifiers + " "
+                  + currentValues);
         }
         nextValueSet %= values.size();
         for (int i = 0; i < currentValues.size(); i++) {

@@ -32,8 +32,8 @@ import java.util.*;
 public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
   public DepthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
-      final CommandContext context, final boolean profilingEnabled) {
-    super(projections, whileClause, maxDepth, context, profilingEnabled);
+      final CommandContext context) {
+    super(projections, whileClause, maxDepth, context);
   }
 
   @Override

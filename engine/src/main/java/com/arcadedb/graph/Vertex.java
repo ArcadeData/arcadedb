@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 
 /**
  * A Vertex represents the main information in a Property Graph. Vertices are connected with edges. Vertices can be Immutable (read-only) and Mutable.
@@ -67,6 +68,10 @@ public interface Vertex extends Document {
   boolean isConnectedTo(Identifiable toVertex, DIRECTION direction);
 
   boolean isConnectedTo(Identifiable toVertex, DIRECTION direction, String edgeType);
+
+  RID moveToType(String targetType);
+
+  RID moveToBucket(String targetBucket);
 
   @Override
   default Vertex asVertex() {

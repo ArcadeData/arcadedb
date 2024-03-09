@@ -34,8 +34,8 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class CheckSafeDeleteStep extends AbstractExecutionStep {
 
-  public CheckSafeDeleteStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CheckSafeDeleteStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -50,7 +50,7 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result result = upstream.next();
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
 //          if (result.isElement()) {
 //
@@ -71,7 +71,7 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
 //          }
           return result;
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -86,7 +86,7 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK SAFE DELETE");
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();

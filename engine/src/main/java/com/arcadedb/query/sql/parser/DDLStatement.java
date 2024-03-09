@@ -45,7 +45,7 @@ public abstract class DDLStatement extends Statement {
 
     context.setDatabase(db);
     context.setInputParameters(args);
-    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(context, false);
+    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(context);
     return executionPlan.executeInternal();
   }
 
@@ -56,11 +56,11 @@ public abstract class DDLStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(params);
-    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(context, false);
+    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(context);
     return executionPlan.executeInternal();
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
     return new DDLExecutionPlan(context, this);
   }
 }

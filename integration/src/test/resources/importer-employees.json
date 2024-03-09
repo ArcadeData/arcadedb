@@ -1,14 +1,27 @@
 {
   "Users": [
     {
+      "id": "1",
       "EmployeeID": "1234",
-      "ManagerID": "1230",
       "Name": "Marcus"
     },
     {
+      "id": "2",
       "EmployeeID": "1230",
-      "ManagerID": "1231",
+      "ManagerID": "1234",
       "Name": "Win"
+    },
+    {
+      "id": "3",
+      "EmployeeID": "1232",
+      "ManagerID": "1234",
+      "Name": "Dave"
+    },
+    {
+      "id": "4",
+      "EmployeeID": "1239",
+      "ManagerID": "1232",
+      "Name": "Albert"
     }
   ]
 }

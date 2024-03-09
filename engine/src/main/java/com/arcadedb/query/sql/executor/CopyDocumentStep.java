@@ -35,8 +35,8 @@ public class CopyDocumentStep extends AbstractExecutionStep {
 
   private final String targetType;
 
-  public CopyDocumentStep(final CommandContext context, final String targetType, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CopyDocumentStep(final CommandContext context, final String targetType) {
+    super(context);
     this.targetType = targetType;
   }
 
@@ -52,7 +52,7 @@ public class CopyDocumentStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result toCopy = upstream.next();
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           Record resultDoc = null;
           if (toCopy.isElement()) {
@@ -72,9 +72,8 @@ public class CopyDocumentStep extends AbstractExecutionStep {
           }
           return new UpdatableResult((MutableDocument) resultDoc);
         } finally {
-          if (profilingEnabled) {
+          if (context.isProfiling())
             cost += (System.nanoTime() - begin);
-          }
         }
       }
 
@@ -92,9 +91,9 @@ public class CopyDocumentStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COPY DOCUMENT");
-    if (profilingEnabled) {
+    if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
-    }
+
     return result.toString();
   }
 

@@ -59,7 +59,7 @@ public class Neo4jImporter {
   protected            Database                       database;
   protected            Callable<Void, JSONObject>     parsingCallback;
   protected            int                            indexPageSize            = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
-  protected            int                            bucketsPerType           = -1;
+  protected            int                            bucketsPerType           = 1;
   private              boolean                        closeDatabaseAfterImport = true;
   private              InputStream                    inputStream;
   private              String                         databasePath;
@@ -71,7 +71,6 @@ public class Neo4jImporter {
   private final        Map<String, Long>              totalEdgesByType         = new HashMap<>();
   private              long                           totalEdgesParsed         = 0L;
   private              long                           totalAttributesParsed    = 0L;
-  private              DatabaseFactory                factory;
   private              int                            batchSize                = 10_000;
   private              long                           beginTimeVerticesCreation;
   private              long                           beginTimeEdgesCreation;
@@ -89,7 +88,6 @@ public class Neo4jImporter {
     this.context = new ImporterContext();
     if (inputStream == null)
       syntaxError("Input Stream is null");
-    this.bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
   }
 
   public Neo4jImporter(final String... args) {
@@ -97,13 +95,11 @@ public class Neo4jImporter {
     this.context = new ImporterContext();
     if (inputFile == null)
       syntaxError("Missing input file. Use -f <file-path>");
-    this.bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
   }
 
   public Neo4jImporter(final Database database, final ImporterContext context) {
     this.database = database;
     this.context = context;
-    this.bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
     this.closeDatabaseAfterImport = false;
   }
 
@@ -117,7 +113,7 @@ public class Neo4jImporter {
     else {
       log("Importing Neo4j database from file '%s' to '%s'", inputFile, databasePath);
 
-      factory = new DatabaseFactory(databasePath);
+      DatabaseFactory factory = new DatabaseFactory(databasePath);
       if (factory.exists()) {
         if (!overwriteDatabase) {
           error("Database already exists on path '%s'", databasePath);
@@ -137,7 +133,7 @@ public class Neo4jImporter {
       context.startedOn = System.currentTimeMillis();
 
       // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
-      log("Creation of the schema: types, properties and indexes");
+      log("- Creation of the schema: types, properties and indexes");
       syncSchema();
 
       // PARSE THE FILE AGAIN TO CREATE VERTICES
@@ -146,7 +142,7 @@ public class Neo4jImporter {
       parseVertices();
 
       // PARSE THE FILE AGAIN TO CREATE EDGES
-      log("Creation of edges started: creating edges between vertices");
+      log("- Creation of edges started: creating edges between vertices");
       beginTimeEdgesCreation = System.currentTimeMillis();
       parseEdges();
 
@@ -193,28 +189,29 @@ public class Neo4jImporter {
   }
 
   private void syncSchema() throws IOException {
+    final VertexType rootNodeType = database.getSchema().buildVertexType().withName("Node")
+        .withTotalBuckets(bucketsPerType).withIgnoreIfExists(true).create();
+    rootNodeType.getOrCreateProperty("id", Type.STRING);
+    rootNodeType.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" }, indexPageSize);
+
     readFile(json -> {
       switch (json.getString("type")) {
       case "node":
         final Pair<String, List<String>> labels = typeNameFromLabels(json);
 
-        database.transaction(() -> {
-          if (!database.getSchema().existsType(labels.getFirst())) {
-            final VertexType type = database.getSchema().buildVertexType().withName(labels.getFirst())
-                .withTotalBuckets(bucketsPerType).withIgnoreIfExists(true).create();
-            if (labels.getSecond() != null) {
-              for (final String parent : labels.getSecond()) {
-                final VertexType parentType = database.getSchema().getOrCreateVertexType(parent);
-                parentType.getOrCreateProperty("id", Type.STRING);
-                parentType.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" }, indexPageSize);
-                type.addSuperType(parentType);
-              }
-            }
+        if (!database.getSchema().existsType(labels.getFirst())) {
+          final VertexType type = database.getSchema().buildVertexType().withName(labels.getFirst())
+              .withTotalBuckets(bucketsPerType).withIgnoreIfExists(true).create();
+          if (labels.getSecond() != null) {
+            for (final String parent : labels.getSecond()) {
+              final VertexType parentType = database.getSchema().getOrCreateVertexType(parent);
+              parentType.addSuperType(rootNodeType);
 
-            type.getOrCreateProperty("id", Type.STRING);
-            type.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" }, indexPageSize);
-          }
-        });
+              type.addSuperType(parentType);
+            }
+          } else
+            type.addSuperType(rootNodeType);
+        }
 
         inferPropertyType(json, labels.getFirst());
 
@@ -564,12 +561,12 @@ public class Neo4jImporter {
 
   private Pair<String, List<String>> typeNameFromLabels(final JSONObject json) {
     final JSONArray nodeLabels = json.has("labels") && !json.isNull("labels") ? json.getJSONArray("labels") : null;
-    if (nodeLabels != null && nodeLabels.length() > 0) {
+    if (nodeLabels != null && !nodeLabels.isEmpty()) {
       if (nodeLabels.length() > 1) {
         // MULTI LABEL, CREATE A NEW MIXED TYPE THAT EXTEND ALL THE LABELS BY USING INHERITANCE
         final List<String> list = nodeLabels.toList().stream().map(String.class::cast).sorted(Comparator.naturalOrder())
             .collect(Collectors.toList());
-        return new Pair<>(list.stream().collect(Collectors.joining("_")), list);
+        return new Pair<>(String.join("_", list), list);
       } else
         return new Pair<>((String) nodeLabels.get(0), null);
     }

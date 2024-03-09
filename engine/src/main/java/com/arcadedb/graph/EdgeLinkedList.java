@@ -46,20 +46,20 @@ public class EdgeLinkedList {
 
   public Iterator<Pair<RID, RID>> entryIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new EdgeVertexIterator(lastSegment, vertex.getIdentity(), direction);
-    return new EdgeVertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
+      return new EdgeVertexIterator(lastSegment.copy(), vertex.getIdentity(), direction);
+    return new EdgeVertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment.copy(), edgeTypes);
   }
 
   public Iterator<Edge> edgeIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new EdgeIterator(lastSegment, vertex.getIdentity(), direction);
-    return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes);
+      return new EdgeIterator(lastSegment.copy(), vertex.getIdentity(), direction);
+    return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment.copy(), edgeTypes);
   }
 
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new VertexIterator(lastSegment);
-    return new VertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
+      return new VertexIterator(lastSegment.copy());
+    return new VertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment.copy(), edgeTypes);
   }
 
   public boolean containsEdge(final RID rid) {

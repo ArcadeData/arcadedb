@@ -66,10 +66,12 @@ public class DefaultLogger implements Logger {
           stream = new FileInputStream(file);
         } catch (Exception e) {
           // USE DEFAULT SETTINGS
-          System.err.println("Error on loading logging configuration file '" + defaultLogConfigurationFile + "'. Using default settings");
+          System.err.println(
+              "Error on loading logging configuration file '" + defaultLogConfigurationFile + "'. Using default settings");
         }
       } else
-        System.err.println("Error on loading logging configuration file '" + defaultLogConfigurationFile + "': file not found. Using default settings");
+        System.err.println("Error on loading logging configuration file '" + defaultLogConfigurationFile
+            + "': file not found. Using default settings");
     }
 
     if (stream == null) {
@@ -119,10 +121,10 @@ public class DefaultLogger implements Logger {
     }
   }
 
-  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context, final Object arg1,
-      final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
-      final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16,
-      final Object arg17) {
+  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context,
+      final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
+      final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12,
+      final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
     if (message == null)
       return;
 
@@ -150,6 +152,11 @@ public class DefaultLogger implements Logger {
       }
     }
 
+    final boolean hasParams =
+        arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null || arg8 != null
+            || arg9 != null || arg10 != null || arg11 != null || arg12 != null || arg13 != null || arg14 != null || arg15 != null
+            || arg16 != null || arg17 != null;
+
     if (log == null) {
       if (context != null)
         message = "<" + context + "> " + message;
@@ -157,9 +164,9 @@ public class DefaultLogger implements Logger {
       // USE SYSERR
       try {
         String msg = message;
-        if (arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null || arg8 != null || arg9 != null
-            || arg10 != null || arg11 != null || arg12 != null || arg13 != null || arg14 != null || arg15 != null || arg16 != null || arg17 != null)
-          msg = String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+        if (hasParams)
+          msg = String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+              arg15, arg16, arg17);
 
         System.err.println(msg);
 
@@ -176,9 +183,9 @@ public class DefaultLogger implements Logger {
           message = "<" + context + "> " + message;
 
         String msg = message;
-        if (arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null || arg8 != null || arg9 != null
-            || arg10 != null || arg11 != null || arg12 != null || arg13 != null || arg14 != null || arg15 != null || arg16 != null || arg17 != null)
-          msg = String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+        if (hasParams)
+          msg = String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+              arg15, arg16, arg17);
 
         if (exception != null)
           log.log(level, msg, exception);
@@ -189,13 +196,14 @@ public class DefaultLogger implements Logger {
           flush();
 
       } catch (final Exception e) {
-        System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
+        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
         System.err.flush();
       }
     }
   }
 
-  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context, final Object... args) {
+  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context,
+      final Object... args) {
     if (message != null) {
       final String requesterName;
       if (requester instanceof String)

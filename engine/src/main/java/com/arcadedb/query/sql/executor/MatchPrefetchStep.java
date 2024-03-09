@@ -34,8 +34,8 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public MatchPrefetchStep(final CommandContext context, final InternalExecutionPlan prefetchExecPlan, final String alias, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public MatchPrefetchStep(final CommandContext context, final InternalExecutionPlan prefetchExecPlan, final String alias) {
+    super(context);
     this.prefetchExecutionPlan = prefetchExecPlan;
     this.alias = alias;
   }

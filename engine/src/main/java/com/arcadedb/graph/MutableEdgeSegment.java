@@ -55,6 +55,11 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     }
   }
 
+  @Override
+  public EdgeSegment copy() {
+    return new MutableEdgeSegment(database, rid, buffer.copyOfContent());
+  }
+
   public MutableEdgeSegment(final DatabaseInternal database, final int bufferSize) {
     super(database, null, new Binary(bufferSize));
     NULL_RID = new RID(database, -1, -1);
@@ -93,11 +98,13 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     if (used + ridSerializedSize <= bufferSize) {
       // APPEND AT THE BEGINNING OF THE CURRENT CHUNK
       buffer.move(CONTENT_START_POSITION, CONTENT_START_POSITION + ridSerializedSize, used - CONTENT_START_POSITION);
+
       buffer.putByteArray(CONTENT_START_POSITION, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(),
           ridSerializedSize);
 
       // UPDATE USED BYTES
       buffer.putInt(Binary.BYTE_SERIALIZED_SIZE, used + ridSerializedSize);
+
       return true;
     }
 

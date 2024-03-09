@@ -34,9 +34,9 @@ public class LetItem extends SimpleNode {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     varName.toString(params, builder);
     builder.append(" = ");
-    if (expression != null) {
+    if (expression != null)
       expression.toString(params, builder);
-    } else if (query != null) {
+    else if (query != null) {
       builder.append("(");
       query.toString(params, builder);
       builder.append(")");
@@ -82,9 +82,8 @@ public class LetItem extends SimpleNode {
 
   public void extractSubQueries(final SubQueryCollector collector) {
     //this is to transform LET expressions with subqueries in simple LET, plus LET with query only, so the direct query is ignored
-    if (expression != null) {
+    if (expression != null)
       expression.extractSubQueries(varName, collector);
-    }
   }
 
   @Override

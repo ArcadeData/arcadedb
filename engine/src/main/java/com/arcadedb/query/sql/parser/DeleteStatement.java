@@ -82,7 +82,7 @@ public class DeleteStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(params);
-    final DeleteExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final DeleteExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
@@ -95,14 +95,14 @@ public class DeleteStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(args);
-    final DeleteExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final DeleteExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public DeleteExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public DeleteExecutionPlan createExecutionPlan(final CommandContext context) {
     final DeleteExecutionPlanner planner = new DeleteExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context);
   }
 
   public FromClause getFromClause() {

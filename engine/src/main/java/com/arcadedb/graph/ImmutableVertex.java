@@ -167,12 +167,24 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
+  public RID moveToType(final String targetType) {
+    return database.getGraphEngine().moveToType(this, targetType);
+  }
+
+  @Override
+  public RID moveToBucket(String targetBucket) {
+    return database.getGraphEngine().moveToBucket(this, targetBucket);
+  }
+
+  @Override
   public Vertex asVertex() {
     return this;
   }
 
   @Override
   public Vertex asVertex(final boolean loadContent) {
+    if (loadContent)
+      checkForLazyLoading();
     return this;
   }
 

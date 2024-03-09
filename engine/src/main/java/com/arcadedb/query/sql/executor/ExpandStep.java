@@ -35,8 +35,8 @@ public class ExpandStep extends AbstractExecutionStep {
   Iterator  nextSubsequence = null;
   Result    nextElement     = null;
 
-  public ExpandStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ExpandStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -82,7 +82,7 @@ public class ExpandStep extends AbstractExecutionStep {
   private void fetchNext(final CommandContext context, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final Object nextElementObj = nextSubsequence.next();
           if (nextElementObj instanceof Result) {
@@ -101,7 +101,7 @@ public class ExpandStep extends AbstractExecutionStep {
           }
           break;
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -117,7 +117,7 @@ public class ExpandStep extends AbstractExecutionStep {
         return;
 
       final Result nextAggregateItem = lastResult.next();
-      final long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         if (nextAggregateItem.getPropertyNames().size() == 0) {
           continue;
@@ -148,7 +148,7 @@ public class ExpandStep extends AbstractExecutionStep {
           nextSubsequence = ((Iterable) projValue).iterator();
         }
       } finally {
-        if (profilingEnabled)
+        if ( context.isProfiling() )
           cost += (System.nanoTime() - begin);
       }
     } while (true);
@@ -158,7 +158,7 @@ public class ExpandStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ EXPAND";
-    if (profilingEnabled)
+    if ( context.isProfiling() )
       result += " (" + getCostFormatted() + ")";
 
     return result;

@@ -35,8 +35,8 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public ScriptLineStep(final InternalExecutionPlan nextPlan, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ScriptLineStep(final InternalExecutionPlan nextPlan, final CommandContext context) {
+    super(context);
     this.plan = nextPlan;
   }
 
@@ -107,7 +107,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
     if (plan instanceof SingleOpExecutionPlan) {
       if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement) {
-        return new ReturnStep(((SingleOpExecutionPlan) plan).statement, context, profilingEnabled);
+        return new ReturnStep(((SingleOpExecutionPlan) plan).statement, context);
       }
     }
     if (plan instanceof IfExecutionPlan)
@@ -118,9 +118,9 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(int depth, int indent) {
-    if (plan == null) {
+    if (plan == null)
       return "Script Line";
-    }
+
     return plan.prettyPrint(depth, indent);
   }
 }

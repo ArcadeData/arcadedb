@@ -39,7 +39,7 @@ public class RetryStep extends AbstractExecutionStep {
 
   public RetryStep(List<Statement> statements, int retries, List<Statement> elseStatements, Boolean elseFail, CommandContext ctx,
       boolean enableProfiling) {
-    super(ctx, enableProfiling);
+    super(ctx);
     this.body = statements;
     this.retries = retries;
     this.elseBody = elseStatements;
@@ -91,7 +91,7 @@ public class RetryStep extends AbstractExecutionStep {
       }
     }
 
-    finalResult = new EmptyStep(ctx, false);
+    finalResult = new EmptyStep(ctx);
     return finalResult.syncPull(ctx, nRecords);
   }
 
@@ -101,7 +101,7 @@ public class RetryStep extends AbstractExecutionStep {
 
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
     for (Statement stm : body)
-      plan.chain(stm.createExecutionPlan(subCtx1, profilingEnabled), profilingEnabled);
+      plan.chain(stm.createExecutionPlan(subCtx1));
 
     return plan;
   }

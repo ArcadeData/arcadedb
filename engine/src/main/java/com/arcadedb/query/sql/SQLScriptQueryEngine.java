@@ -179,7 +179,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
       if (nestedTxLevel <= 0) {
         final InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
-        plan.chain(sub, false);
+        plan.chain(sub);
       } else
         lastRetryBlock.add(stm);
 
@@ -193,16 +193,17 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
               if (nRetries <= 0)
                 throw new CommandExecutionException("Invalid retry number " + nRetries);
 
-              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(), ((CommitStatement) stm).getElseFail(),
+              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(),
+                  ((CommitStatement) stm).getElseFail(),
                   scriptContext, false);
               final RetryExecutionPlan retryPlan = new RetryExecutionPlan(scriptContext);
               retryPlan.chain(step);
-              plan.chain(retryPlan, false);
+              plan.chain(retryPlan);
               lastRetryBlock = new ArrayList<>();
             } else {
               for (final Statement statement : lastRetryBlock) {
                 final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
-                plan.chain(sub, false);
+                plan.chain(sub);
               }
             }
           }
@@ -211,7 +212,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
       }
 
       if (stm instanceof LetStatement)
-        scriptContext.declareScriptVariable(((LetStatement) stm).getName().getStringValue());
+        scriptContext.declareScriptVariable(((LetStatement) stm).getVariableName().getStringValue());
     }
 
     return new LocalResultSet(plan);

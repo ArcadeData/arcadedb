@@ -50,13 +50,13 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
   }
 
-  protected FetchFromTypeExecutionStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  protected FetchFromTypeExecutionStep(final CommandContext context) {
+    super(context);
   }
 
   public FetchFromTypeExecutionStep(final String typeName, final Set<String> clusters, final CommandContext context,
-      final Boolean ridOrder, final boolean profilingEnabled) {
-    this(typeName, clusters, null, context, ridOrder, profilingEnabled);
+      final Boolean ridOrder) {
+    this(typeName, clusters, null, context, ridOrder);
   }
 
   /**
@@ -68,8 +68,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
    * @param ridOrder true to sort by RID asc, false to sort by RID desc, null for no sort.
    */
   public FetchFromTypeExecutionStep(final String typeName, final Set<String> clusters, final QueryPlanningInfo planningInfo,
-      final CommandContext context, final Boolean ridOrder, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+      final CommandContext context, final Boolean ridOrder) {
+    super(context);
 
     this.typeName = typeName;
 
@@ -122,8 +122,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     sortBuckets(bucketIds);
     for (final int bucketId : bucketIds) {
       if (bucketId > 0) {
-        final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, context,
-            profilingEnabled);
+        final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, context);
         if (orderByRidAsc)
           step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
         else if (orderByRidDesc)
@@ -230,7 +229,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM TYPE ").append(typeName);
-    if (profilingEnabled) {
+    if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
     }
     builder.append("\n");
@@ -262,7 +261,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    final FetchFromTypeExecutionStep result = new FetchFromTypeExecutionStep(context, profilingEnabled);
+    final FetchFromTypeExecutionStep result = new FetchFromTypeExecutionStep(context);
     result.typeName = this.typeName;
     result.orderByRidAsc = this.orderByRidAsc;
     result.orderByRidDesc = this.orderByRidDesc;

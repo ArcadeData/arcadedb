@@ -28,8 +28,8 @@ public class ReturnStep extends AbstractExecutionStep {
   private final SimpleExecStatement statement;
   boolean executed = false;
 
-  public ReturnStep(final SimpleExecStatement statement, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ReturnStep(final SimpleExecStatement statement, final CommandContext context) {
+    super(context);
     this.statement = statement;
   }
 

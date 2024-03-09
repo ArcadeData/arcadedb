@@ -32,8 +32,8 @@ import java.util.*;
 public class UpdateMergeStep extends AbstractExecutionStep {
   private final Json json;
 
-  public UpdateMergeStep(final Json json, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UpdateMergeStep(final Json json, final CommandContext context) {
+    super(context);
     this.json = json;
   }
 

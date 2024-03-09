@@ -49,6 +49,10 @@ public interface CommandContext {
 
   CommandContext setChild(CommandContext context);
 
+  boolean isProfiling();
+
+  CommandContext setProfiling(boolean profilingEnabled);
+
   Map<String, Object> getInputParameters();
 
   void setInputParameters(Map<String, Object> inputParameters);

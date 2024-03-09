@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.MutableEdge;
@@ -115,12 +116,27 @@ public class RemoteVertex {
     return resultSet.hasNext();
   }
 
+  public RID moveTo(final String targetType, final String targetBucket) {
+    final StringBuilder command = new StringBuilder(
+        "move vertex ").append(vertex.getIdentity()).append(" to");
+
+    if (targetType != null)
+      command.append(" TYPE:`").append(targetType).append("`");
+    if (targetBucket != null)
+      command.append(" `").append(targetBucket).append("`");
+
+    final ResultSet resultSet = remoteDatabase.command("sql", command.toString());
+
+    return resultSet.nextIfAvailable().getVertex().get().getIdentity();
+  }
+
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       final Object... properties) {
     if (!bidirectional)
       throw new UnsupportedOperationException("Creating unidirectional edges is not supported from remote database");
 
-    StringBuilder query = new StringBuilder("create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
+    StringBuilder query = new StringBuilder(
+        "create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
     if (properties.length > 0) {
       query.append(" set ");
       for (int i = 0; i < properties.length; i += 2) {

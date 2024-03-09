@@ -37,18 +37,18 @@ public class UpdateContentStep extends AbstractExecutionStep {
   private int            arrayIndex = 0;
   private InputParameter inputParameter;
 
-  public UpdateContentStep(final Json json, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UpdateContentStep(final Json json, final CommandContext context) {
+    super(context);
     this.json = json;
   }
 
-  public UpdateContentStep(final JsonArray jsonArray, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UpdateContentStep(final JsonArray jsonArray, final CommandContext context) {
+    super(context);
     this.jsonArray = jsonArray;
   }
 
-  public UpdateContentStep(final InputParameter inputParameter, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UpdateContentStep(final InputParameter inputParameter, final CommandContext context) {
+    super(context);
     this.inputParameter = inputParameter;
   }
 

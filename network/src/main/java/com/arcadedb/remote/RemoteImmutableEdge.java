@@ -92,6 +92,8 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   @Override
   public Edge asEdge(final boolean loadContent) {
+    if (loadContent)
+      checkForLazyLoading();
     return this;
   }
 }

@@ -37,8 +37,8 @@ public class UnwindStep extends AbstractExecutionStep {
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
-  public UnwindStep(final Unwind unwind, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UnwindStep(final Unwind unwind, final CommandContext context) {
+    super(context);
     this.unwind = unwind;
     unwindFields = unwind.getItems().stream().map(x -> x.getStringValue()).collect(Collectors.toList());
   }

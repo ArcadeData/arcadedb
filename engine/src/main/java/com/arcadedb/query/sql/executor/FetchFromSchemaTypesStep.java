@@ -40,8 +40,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
   private int cursor = 0;
 
-  public FetchFromSchemaTypesStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromSchemaTypesStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -49,7 +49,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
     pullPrevious(context, nRecords);
 
     if (cursor == 0) {
-      final long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         final Schema schema = context.getDatabase().getSchema();
 
@@ -134,7 +134,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           context.setVariable("current", r);
         }
       } finally {
-        if (profilingEnabled) {
+        if( context.isProfiling() ) {
           cost += (System.nanoTime() - begin);
         }
       }
@@ -166,7 +166,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA TYPES";
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

@@ -27,8 +27,8 @@ import com.arcadedb.query.sql.parser.Projection;
 public class ProjectionCalculationStep extends AbstractExecutionStep {
   protected final Projection projection;
 
-  public ProjectionCalculationStep(final Projection projection, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ProjectionCalculationStep(final Projection projection, final CommandContext context) {
+    super(context);
     this.projection = projection;
   }
 
@@ -61,11 +61,11 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
   }
 
   private Result calculateProjections(final CommandContext context, final Result next) {
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       return this.projection.calculateSingle(context, next);
     } finally {
-      if (profilingEnabled) {
+      if( context.isProfiling() ) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -75,7 +75,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE PROJECTIONS";
-    if (profilingEnabled)
+    if ( context.isProfiling() )
       result += " (" + getCostFormatted() + ")";
 
     result += ("\n" + spaces + "  " + projection.toString() + "");
@@ -89,6 +89,6 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new ProjectionCalculationStep(projection.copy(), context, profilingEnabled);
+    return new ProjectionCalculationStep(projection.copy(), context);
   }
 }

@@ -33,8 +33,8 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   private       Iterator<RID> iterator;
   private       Result        nextResult = null;
 
-  public FetchFromRidsStep(final Iterable<RID> rids, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromRidsStep(final Iterable<RID> rids, final CommandContext context) {
+    super(context);
     this.rids = rids;
     reset();
   }

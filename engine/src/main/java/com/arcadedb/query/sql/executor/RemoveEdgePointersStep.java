@@ -33,8 +33,8 @@ import java.util.stream.*;
  */
 public class RemoveEdgePointersStep extends AbstractExecutionStep {
 
-  public RemoveEdgePointersStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public RemoveEdgePointersStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -49,7 +49,7 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final ResultInternal elem = (ResultInternal) upstream.next();
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
 
           final Set<String> propNames = elem.getPropertyNames();
@@ -71,7 +71,7 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
             }
           }
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -91,7 +91,7 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK AND EXCLUDE (possible) EXISTING EDGES ");
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();

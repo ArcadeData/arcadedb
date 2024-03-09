@@ -39,8 +39,8 @@ public class ConvertToUpdatableResultStepTest {
       final String type = TestHelper.createRandomType(database).getName();
 
       final CommandContext context = new BasicCommandContext();
-      final ConvertToUpdatableResultStep step = new ConvertToUpdatableResultStep(context, false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final ConvertToUpdatableResultStep step = new ConvertToUpdatableResultStep(context);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override

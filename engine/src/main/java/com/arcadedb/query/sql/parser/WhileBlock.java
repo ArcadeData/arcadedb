@@ -39,46 +39,45 @@ public class WhileBlock extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null)
-      context.setParentWithoutOverridingChild(parentcontext);
+    if (parentContext != null)
+      context.setParentWithoutOverridingChild(parentContext);
 
     context.setDatabase(db);
     context.setInputParameters(args);
     final UpdateExecutionPlan executionPlan;
     if (usePlanCache)
-      executionPlan = createExecutionPlan(context, false);
+      executionPlan = createExecutionPlan(context);
     else
-      executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(context, false);
+      executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(context);
 
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
-      context.setParentWithoutOverridingChild(parentcontext);
+    if (parentContext != null) {
+      context.setParentWithoutOverridingChild(parentContext);
     }
     context.setDatabase(db);
     context.setInputParameters(params);
 
     final UpdateExecutionPlan executionPlan;
-    if (usePlanCache) {
-      executionPlan = createExecutionPlan(context, false);
-    } else {
-      executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(context, false);
-    }
+    if (usePlanCache)
+      executionPlan = createExecutionPlan(context);
+    else
+      executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(context);
 
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
     final ForEachExecutionPlan plan = new ForEachExecutionPlan(context);
-    plan.chain(new WhileStep(condition, statements, context, enableProfiling));
+    plan.chain(new WhileStep(condition, statements, context));
     return plan;
   }
 

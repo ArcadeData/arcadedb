@@ -27,8 +27,8 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class DeleteStep extends AbstractExecutionStep {
 
-  public DeleteStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public DeleteStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -43,14 +43,14 @@ public class DeleteStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result result = upstream.next();
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (result.isElement()) {
             context.getDatabase().deleteRecord(result.getElement().get());
           }
           return result;
         } finally {
-          if (profilingEnabled) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -69,7 +69,7 @@ public class DeleteStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ DELETE");
-    if (profilingEnabled)
+    if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
 
     return result.toString();

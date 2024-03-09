@@ -52,30 +52,30 @@ public class ExplainStatement extends Statement {
     context.setDatabase(db);
     context.setInputParameters(args);
 
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, false);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
 
     final ExplainResultSet result = new ExplainResultSet(executionPlan);
     return result;
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map args, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
     if (parentcontext != null) {
       context.setParentWithoutOverridingChild(parentcontext);
     }
     context.setDatabase(db);
-    context.setInputParameters(args);
+    context.setInputParameters(params);
 
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, false);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
 
     final ExplainResultSet result = new ExplainResultSet(executionPlan);
     return result;
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
-    return statement.createExecutionPlan(context, enableProfiling);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
+    return statement.createExecutionPlan(context);
   }
 
   @Override
@@ -86,7 +86,7 @@ public class ExplainStatement extends Statement {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

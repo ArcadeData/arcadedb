@@ -42,8 +42,8 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
   private Iterator<Edge> currentToEdgesIter;
 
   public FetchEdgesToVerticesStep(final String toAlias, final Identifier targetType, final Identifier targetBucket,
-      final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+      final CommandContext context) {
+    super(context);
     this.toAlias = toAlias;
     this.targetType = targetType;
     this.targetBucket = targetBucket;

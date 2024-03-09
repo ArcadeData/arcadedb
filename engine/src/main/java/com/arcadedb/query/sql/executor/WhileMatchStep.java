@@ -30,8 +30,8 @@ public class WhileMatchStep extends AbstractUnrollStep {
   private final InternalExecutionPlan body;
   private final WhereClause           condition;
 
-  public WhileMatchStep(final CommandContext context, final WhereClause condition, final InternalExecutionPlan body, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public WhileMatchStep(final CommandContext context, final WhereClause condition, final InternalExecutionPlan body) {
+    super(context);
     this.body = body;
     this.condition = condition;
   }

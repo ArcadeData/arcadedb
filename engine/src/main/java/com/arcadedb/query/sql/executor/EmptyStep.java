@@ -24,8 +24,8 @@ import com.arcadedb.exception.TimeoutException;
  * Created by luigidellaquila on 08/07/16.
  */
 public class EmptyStep extends AbstractExecutionStep {
-  public EmptyStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public EmptyStep(final CommandContext context) {
+    super(context);
   }
 
   @Override

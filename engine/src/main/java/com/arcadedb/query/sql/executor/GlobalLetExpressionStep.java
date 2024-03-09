@@ -31,8 +31,8 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public GlobalLetExpressionStep(final Identifier varName, final Expression expression, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public GlobalLetExpressionStep(final Identifier varName, final Expression expression, final CommandContext context) {
+    super(context);
     this.varname = varName;
     this.expression = expression;
   }
@@ -46,17 +46,33 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
   }
 
   private void calculate(final CommandContext context) {
-    if (executed) {
+    if (executed)
       return;
+
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      final Object value = expression.execute((Result) null, context);
+      context.setVariable(varname.getStringValue(), value);
+      executed = true;
+    } finally {
+      if (context.isProfiling())
+        cost += (System.nanoTime() - begin);
     }
-    final Object value = expression.execute((Result) null, context);
-    context.setVariable(varname.getStringValue(), value);
-    executed = true;
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder result = new StringBuilder();
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (once)\n" + spaces + "  " + varname + " = " + expression;
+
+    result.append(spaces).append("+ LET (once)");
+
+    if (context.isProfiling())
+      result.append(" (").append(getCostFormatted()).append(")");
+
+    result.append("\n").append(spaces).append("  + ").append(varname).append(" = ")
+        .append(expression.prettyPrint(depth, indent + 2));
+
+    return result.toString();
   }
 }

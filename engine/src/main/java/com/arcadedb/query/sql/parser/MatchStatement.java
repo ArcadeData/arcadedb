@@ -135,7 +135,7 @@ public class MatchStatement extends Statement {
 
     setProfilingConstraints((DatabaseInternal) database);
 
-    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context);
 
     return new LocalResultSet(executionPlan);
   }
@@ -152,28 +152,26 @@ public class MatchStatement extends Statement {
     setProfilingConstraints((DatabaseInternal) database);
 
     context.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context);
 
     return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
     final MatchExecutionPlanner planner = new MatchExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context);
   }
 
   protected void buildPatterns() {
     assignDefaultAliases(this.matchExpressions);
     pattern = new Pattern();
-    for (final MatchExpression expr : this.matchExpressions) {
+    for (final MatchExpression expr : this.matchExpressions)
       pattern.addExpression(expr);
-    }
 
     final Map<String, WhereClause> aliasFilters = new LinkedHashMap<String, WhereClause>();
     final Map<String, String> aliasUserTypes = new LinkedHashMap<String, String>();
-    for (final MatchExpression expr : this.matchExpressions) {
+    for (final MatchExpression expr : this.matchExpressions)
       addAliases(database, expr, aliasFilters, aliasUserTypes, context);
-    }
 
 //    this.aliasFilters = aliasFilters;
 //    this.aliasUserTypes = aliasUserTypes;

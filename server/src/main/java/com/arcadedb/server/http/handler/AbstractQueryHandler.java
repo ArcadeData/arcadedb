@@ -159,9 +159,13 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     case "record": {
       final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false)
           .setUseCollectionSizeForEdges(false);
-      final JSONArray result = new JSONArray(limit > -1 ?
-          qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()) :
-          qResult.stream().map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
+      final JSONArray result = new JSONArray();
+      while (qResult.hasNext()) {
+        final Result r = qResult.next();
+        result.put(serializerImpl.serializeResult(database, r));
+        if (limit > 0 && response.length() >= limit)
+          break;
+      }
       response.put("result", result);
       break;
     }

@@ -35,20 +35,20 @@ public class ParallelExecStepTest {
       final CommandContext ctx = new BasicCommandContext();
       final List<InternalExecutionPlan> subPlans = new ArrayList<>();
       for (int i = 0; i < 4; i++) {
-        final FetchFromRidsStep step0 = new FetchFromRidsStep(Collections.singleton(new RID(db, 12, i)), ctx, false);
-        final FetchFromRidsStep step1 = new FetchFromRidsStep(Collections.singleton(new RID(db, 12, i)), ctx, false);
+        final FetchFromRidsStep step0 = new FetchFromRidsStep(Collections.singleton(new RID(db, 12, i)), ctx);
+        final FetchFromRidsStep step1 = new FetchFromRidsStep(Collections.singleton(new RID(db, 12, i)), ctx);
         final InternalExecutionPlan plan = new SelectExecutionPlan(ctx);
         plan.getSteps().add(step0);
         plan.getSteps().add(step1);
         subPlans.add(plan);
       }
 
-      final ParallelExecStep step = new ParallelExecStep(subPlans, ctx, false);
+      final ParallelExecStep step = new ParallelExecStep(subPlans, ctx);
 
       final SelectExecutionPlan plan = new SelectExecutionPlan(ctx);
-      plan.getSteps().add(new FetchFromRidsStep(Collections.singleton(new RID(db, 12, 100)), ctx, false));
+      plan.getSteps().add(new FetchFromRidsStep(Collections.singleton(new RID(db, 12, 100)), ctx));
       plan.getSteps().add(step);
-      plan.getSteps().add(new FetchFromRidsStep(Collections.singleton(new RID(db, 12, 100)), ctx, false));
+      plan.getSteps().add(new FetchFromRidsStep(Collections.singleton(new RID(db, 12, 100)), ctx));
     });
   }
 }

@@ -29,8 +29,8 @@ public class CheckSafeDeleteStepTest {
   public void shouldSafelyDeleteRecord() throws Exception {
     TestHelper.executeInNewDatabase((database) -> {
       final CommandContext context = new BasicCommandContext();
-      final CheckSafeDeleteStep step = new CheckSafeDeleteStep(context, false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CheckSafeDeleteStep step = new CheckSafeDeleteStep(context);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override

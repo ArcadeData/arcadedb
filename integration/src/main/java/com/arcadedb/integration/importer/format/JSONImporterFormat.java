@@ -56,17 +56,18 @@ import static com.google.gson.stream.JsonToken.END_OBJECT;
 
 public class JSONImporterFormat implements FormatImporter {
   static class CascadingProperties {
-    CascadingProperties parent;
-    Map<String, Object> map;
+    final CascadingProperties parent;
+    final Map<String, Object> map;
 
-    public CascadingProperties(CascadingProperties parent, Map<String, Object> map) {
+    public CascadingProperties(final CascadingProperties parent, final Map<String, Object> map) {
       this.parent = parent;
       this.map = map;
     }
   }
 
   @Override
-  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser,
+      final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
 
     final JSONObject mapping = settings.mapping != null ? new JSONObject(settings.mapping) : null;
@@ -119,7 +120,8 @@ public class JSONImporterFormat implements FormatImporter {
     return "JSON";
   }
 
-  private void parseRecords(final JsonReader reader, final Database database, final ImporterSettings settings, final ImporterContext context,
+  private void parseRecords(final JsonReader reader, final Database database, final ImporterSettings settings,
+      final ImporterContext context,
       final JSONArray mapping, boolean ignore) throws IOException {
     reader.beginArray();
 
@@ -148,13 +150,15 @@ public class JSONImporterFormat implements FormatImporter {
     reader.endArray();
   }
 
-  private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings, final Map<String, Object> map) {
+  private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings,
+      final Map<String, Object> map) {
     // NO MAPPING, SAVE THE RECORD AS A DOCUMENT
     database.getSchema().getOrCreateDocumentType(settings.documentTypeName);
     return database.newDocument(settings.documentTypeName).set(map).save();
   }
 
-  private Object parseRecord(final JsonReader reader, final ImporterSettings settings, final ImporterContext context, final Database database,
+  private Object parseRecord(final JsonReader reader, final ImporterSettings settings, final ImporterContext context,
+      final Database database,
       final JSONObject mapping, final boolean ignore) throws IOException {
     final CascadingProperties attributes = ignore ? null : new CascadingProperties(null, new LinkedHashMap<>());
 
@@ -250,20 +254,23 @@ public class JSONImporterFormat implements FormatImporter {
     return properties.map.get(name);
   }
 
-  private Document createRecord(final Database database, final ImporterContext context, final CascadingProperties attributes, final JSONObject mapping,
+  private Document createRecord(final Database database, final ImporterContext context, final CascadingProperties attributes,
+      final JSONObject mapping,
       final ImporterSettings settings) {
     if (mapping == null)
       return null;
     //return saveAnonymousRecord(database, settings, (Map<String, Object>) attributes.map);
 
     if (!mapping.has("@cat")) {
-      LogManager.instance().log(this, Level.WARNING, "No @cat tag defined in mapping object. The following object will be skipped %s", attributes);
+      LogManager.instance()
+          .log(this, Level.WARNING, "No @cat tag defined in mapping object. The following object will be skipped %s", attributes);
       context.errors.incrementAndGet();
       return null;
     }
 
     if (!mapping.has("@type")) {
-      LogManager.instance().log(this, Level.WARNING, "No @type tag defined in mapping object. The following object will be skipped %s", attributes);
+      LogManager.instance()
+          .log(this, Level.WARNING, "No @type tag defined in mapping object. The following object will be skipped %s", attributes);
       context.errors.incrementAndGet();
       return null;
     }
@@ -314,7 +321,8 @@ public class JSONImporterFormat implements FormatImporter {
       if (prop == null) {
         if (idValue == null) {
           // NO ID FOUND, SKIP THE RECORD
-          LogManager.instance().log(this, Level.WARNING, "@id property not found on current record, skipping record: %s", attributes);
+          LogManager.instance()
+              .log(this, Level.WARNING, "@id property not found on current record, skipping record: %s", attributes);
           context.errors.incrementAndGet();
           return null;
         }
@@ -362,7 +370,8 @@ public class JSONImporterFormat implements FormatImporter {
     return record;
   }
 
-  private void applyMappingRules(final Database database, final ImporterContext context, final MutableDocument record, final CascadingProperties attributes,
+  private void applyMappingRules(final Database database, final ImporterContext context, final MutableDocument record,
+      final CascadingProperties attributes,
       final JSONObject mapping, final ImporterSettings settings) {
     resolveProperties(mapping, attributes);
 
@@ -390,7 +399,8 @@ public class JSONImporterFormat implements FormatImporter {
       } else if (mappingValue instanceof JSONArray) {
         if (!(attributeValue instanceof Collection)) {
           LogManager.instance()
-              .log(this, Level.WARNING, "Defined an array on mapping for property '%s' but found the object of class %s as attribute", mappingName,
+              .log(this, Level.WARNING,
+                  "Defined an array on mapping for property '%s' but found the object of class %s as attribute", mappingName,
                   attributeValue.getClass());
           context.errors.incrementAndGet();
           continue;
@@ -411,7 +421,8 @@ public class JSONImporterFormat implements FormatImporter {
     }
   }
 
-  private List<Object> parseArray(final JsonReader reader, final ImporterSettings settings, final ImporterContext context, final Database database,
+  private List<Object> parseArray(final JsonReader reader, final ImporterSettings settings, final ImporterContext context,
+      final Database database,
       final JSONArray mapping, boolean ignore) throws IOException {
     final List<Object> list = ignore ? null : new ArrayList<>();
     reader.beginArray();
@@ -455,7 +466,8 @@ public class JSONImporterFormat implements FormatImporter {
     return list;
   }
 
-  private Object convertMap(final Database database, final ImporterContext context, final MutableDocument record, final Object value, final Object mapping,
+  private Object convertMap(final Database database, final ImporterContext context, final MutableDocument record,
+      final Object value, final Object mapping,
       final CascadingProperties attributes, final ImporterSettings settings) {
     if (mapping instanceof JSONObject) {
       final JSONObject mappingObject = (JSONObject) mapping;
@@ -464,10 +476,9 @@ public class JSONImporterFormat implements FormatImporter {
       if (value instanceof Map)
         // CONVERT EMBEDDED MAP INTO A RECORD
         attributeMap = new LinkedHashMap<>((Map<String, Object>) value);
-      else {
+      else
         // TREAT THE VALUE AS ID
         attributeMap = new LinkedHashMap<>();
-      }
 
       final String subCategory = mappingObject.has("@cat") ? mappingObject.getString("@cat") : null;
       final String subTypeName = mappingObject.has("@type") ? mappingObject.getString("@type") : null;
@@ -475,13 +486,15 @@ public class JSONImporterFormat implements FormatImporter {
       if ("e".equals(subCategory)) {
         // TRANSFORM INTO AN EDGE
         if (subTypeName == null) {
-          LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the edge @type is not defined");
+          LogManager.instance()
+              .log(this, Level.WARNING, "Cannot convert object into an edge because the edge @type is not defined");
           context.errors.incrementAndGet();
           return null;
         }
 
         if (!(record instanceof Vertex)) {
-          LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the root record is not a vertex");
+          LogManager.instance()
+              .log(this, Level.WARNING, "Cannot convert object into an edge because the root record is not a vertex");
           context.errors.incrementAndGet();
           return null;
         }
@@ -497,15 +510,18 @@ public class JSONImporterFormat implements FormatImporter {
             destVertexItem = attributeMap.get(inVertex);
           } else if (inValue instanceof JSONObject) {
             destVertexMappingObject = (JSONObject) inValue;
+            attributeMap.put((String) destVertexMappingObject.get("@id"), value);
             destVertexItem = attributeMap;
           } else {
             LogManager.instance()
-                .log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in type is not supported: " + inValue);
+                .log(this, Level.WARNING,
+                    "Cannot convert object into an edge because the destination vertx @in type is not supported: " + inValue);
             context.errors.incrementAndGet();
             return null;
           }
         } else {
-          LogManager.instance().log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in is not defined");
+          LogManager.instance()
+              .log(this, Level.WARNING, "Cannot convert object into an edge because the destination vertx @in is not defined");
           context.errors.incrementAndGet();
           return null;
         }
@@ -514,7 +530,8 @@ public class JSONImporterFormat implements FormatImporter {
         if (destVertexItem instanceof Document)
           destVertex = (MutableVertex) destVertexItem;
         else if (destVertexItem instanceof Map) {
-          destVertex = (MutableVertex) createRecord(record.getDatabase(), context, new CascadingProperties(attributes, (Map<String, Object>) destVertexItem),
+          destVertex = (MutableVertex) createRecord(record.getDatabase(), context,
+              new CascadingProperties(attributes, (Map<String, Object>) destVertexItem),
               destVertexMappingObject, settings);
           if (destVertex == null) {
             LogManager.instance().log(this, Level.WARNING, "Cannot convert inner map into destination vertex: %s", destVertexItem);

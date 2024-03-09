@@ -57,13 +57,13 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   private IndexCursor cursor;
 
   public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
-      final BooleanExpression ridCondition, final CommandContext context, final boolean profilingEnabled) {
-    this(index, condition, additionalRangeCondition, ridCondition, true, context, profilingEnabled);
+      final BooleanExpression ridCondition, final CommandContext context) {
+    this(index, condition, additionalRangeCondition, ridCondition, true, context);
   }
 
   public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
-      final BooleanExpression ridCondition, final boolean orderAsc, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+      final BooleanExpression ridCondition, final boolean orderAsc, final CommandContext context) {
+    super(context);
     this.index = index;
     this.condition = condition;
     this.additional = additionalRangeCondition;
@@ -87,7 +87,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (!hasNext()) {
             throw new NoSuchElementException();
@@ -101,7 +101,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
           nextEntry = loadNextEntry(context);
           return result;
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -115,14 +115,14 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       return;
     }
     inited = true;
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       init(condition);
       nextEntry = loadNextEntry(context);
     } catch (final IOException e) {
       e.printStackTrace();
     } finally {
-      if (profilingEnabled) {
+      if( context.isProfiling() ) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -347,7 +347,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ DELETE FROM INDEX " + index.getName();
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     result += (condition == null ?

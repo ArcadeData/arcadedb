@@ -55,13 +55,16 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
 
     final HnswVectorIndex vIndex = (HnswVectorIndex) index;
 
-    final Object key = iParams[1];
+    Object key = iParams[1];
     if (key == null)
       throw new CommandSQLParsingException("key is null");
 
+    if( key instanceof List)
+      key = ((List<?>) key).toArray();
+
     final int limit = iParams[2] instanceof Number ? ((Number) iParams[2]).intValue() : Integer.parseInt(iParams[2].toString());
 
-    final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighborsFromId(key, limit, null);
+    final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighborsFromVector(key, limit, null);
 
     final ArrayList<Object> result = new ArrayList<>(neighbors.size());
     for (Pair<Vertex, ? extends Number> n : neighbors)

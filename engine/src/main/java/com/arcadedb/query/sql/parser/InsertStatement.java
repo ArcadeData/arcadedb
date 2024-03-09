@@ -107,7 +107,7 @@ public class InsertStatement extends Statement {
 
     context.setDatabase(db);
     context.setInputParameters(args);
-    final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
@@ -120,14 +120,14 @@ public class InsertStatement extends Statement {
 
     context.setDatabase(db);
     context.setInputParameters(params);
-    final InsertExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public InsertExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
     final InsertExecutionPlanner planner = new InsertExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context);
   }
 
   @Override

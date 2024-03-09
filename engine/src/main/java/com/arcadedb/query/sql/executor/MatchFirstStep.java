@@ -33,12 +33,12 @@ public class MatchFirstStep extends AbstractExecutionStep {
   Iterator<Result> iterator;
   ResultSet        subResultSet;
 
-  public MatchFirstStep(final CommandContext context, final PatternNode node, final boolean profilingEnabled) {
-    this(context, node, null, profilingEnabled);
+  public MatchFirstStep(final CommandContext context, final PatternNode node) {
+    this(context, node, null);
   }
 
-  public MatchFirstStep(final CommandContext context, final PatternNode node, final InternalExecutionPlan subPlan, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public MatchFirstStep(final CommandContext context, final PatternNode node, final InternalExecutionPlan subPlan) {
+    super(context);
     this.node = node;
     this.executionPlan = subPlan;
   }

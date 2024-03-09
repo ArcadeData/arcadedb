@@ -51,8 +51,8 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   private Edge nextEdge = null;
 
   public FetchEdgesFromToVerticesStep(final String fromAlias, final String toAlias, final Identifier targetType,
-      final Identifier targetCluster, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+      final Identifier targetCluster, final CommandContext context) {
+    super(context);
     this.targetType = targetType;
     this.targetCluster = targetCluster;
     this.fromAlias = fromAlias;
@@ -208,6 +208,6 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetType, targetCluster, context, profilingEnabled);
+    return new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetType, targetCluster, context);
   }
 }
