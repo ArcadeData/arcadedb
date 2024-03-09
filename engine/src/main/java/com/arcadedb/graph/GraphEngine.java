@@ -314,29 +314,31 @@ public class GraphEngine {
 
     final Database database = edge.getDatabase();
 
-    try {
-      final VertexInternal vOut = (VertexInternal) edge.getOutVertex();
-      if (vOut != null) {
-        final EdgeLinkedList outEdges = getEdgeHeadChunk(vOut, Vertex.DIRECTION.OUT);
-        if (outEdges != null)
-          outEdges.removeEdge(edge);
+    if (database.existsRecord(edge.getOut()))
+      try {
+        final VertexInternal vOut = (VertexInternal) edge.getOutVertex();
+        if (vOut != null) {
+          final EdgeLinkedList outEdges = getEdgeHeadChunk(vOut, Vertex.DIRECTION.OUT);
+          if (outEdges != null)
+            outEdges.removeEdge(edge);
+        }
+      } catch (final SchemaException | RecordNotFoundException e) {
+        LogManager.instance()
+            .log(this, Level.FINE, "Error on loading outgoing vertex %s from edge %s", e, edge.getOut(), edge.getIdentity());
       }
-    } catch (final SchemaException | RecordNotFoundException e) {
-      LogManager.instance()
-          .log(this, Level.FINE, "Error on loading outgoing vertex %s from edge %s", e, edge.getOut(), edge.getIdentity());
-    }
 
-    try {
-      final VertexInternal vIn = (VertexInternal) edge.getInVertex();
-      if (vIn != null) {
-        final EdgeLinkedList inEdges = getEdgeHeadChunk(vIn, Vertex.DIRECTION.IN);
-        if (inEdges != null)
-          inEdges.removeEdge(edge);
+    if (database.existsRecord(edge.getIn()))
+      try {
+        final VertexInternal vIn = (VertexInternal) edge.getInVertex();
+        if (vIn != null) {
+          final EdgeLinkedList inEdges = getEdgeHeadChunk(vIn, Vertex.DIRECTION.IN);
+          if (inEdges != null)
+            inEdges.removeEdge(edge);
+        }
+      } catch (final SchemaException | RecordNotFoundException e) {
+        LogManager.instance()
+            .log(this, Level.FINE, "Error on loading incoming vertex %s from edge %s", e, edge.getIn(), edge.getIdentity());
       }
-    } catch (final SchemaException | RecordNotFoundException e) {
-      LogManager.instance()
-          .log(this, Level.FINE, "Error on loading incoming vertex %s from edge %s", e, edge.getIn(), edge.getIdentity());
-    }
 
     final RID edgeRID = edge.getIdentity();
     if (edgeRID != null && !(edge instanceof LightEdge))
@@ -384,7 +386,7 @@ public class GraphEngine {
         } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance()
-              .log(this, Level.WARNING, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
+              .log(this, Level.FINE, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
         }
       }
 

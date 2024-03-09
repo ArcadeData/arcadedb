@@ -62,8 +62,8 @@ import java.util.logging.*;
  */
 public class BinarySerializer {
   private final BinaryComparator comparator = new BinaryComparator();
-  private       Class            dateImplementation;
-  private       Class            dateTimeImplementation;
+  private       Class<?>         dateImplementation;
+  private       Class<?>         dateTimeImplementation;
 
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
@@ -397,9 +397,9 @@ public class BinarySerializer {
     }
     case BinaryTypes.TYPE_LIST: {
       if (value instanceof Collection) {
-        final Collection list = (Collection) value;
+        final Collection<Object> list = (Collection<Object>) value;
         content.putUnsignedNumber(list.size());
-        for (final Iterator it = list.iterator(); it.hasNext(); ) {
+        for (final Iterator<Object> it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
@@ -601,7 +601,7 @@ public class BinarySerializer {
       break;
     case BinaryTypes.TYPE_LIST: {
       final int count = (int) content.getUnsignedNumber();
-      final List list = new ArrayList(count);
+      final List<Object> list = new ArrayList<>(count);
       for (int i = 0; i < count; ++i) {
         final byte entryType = content.getByte();
         list.add(deserializeValue(database, content, entryType, embeddedModifier));
@@ -752,7 +752,7 @@ public class BinarySerializer {
 
   public void setDateTimeImplementation(final Object dateTimeImplementation) throws ClassNotFoundException {
     this.dateTimeImplementation = dateTimeImplementation instanceof Class ?
-        (Class) dateTimeImplementation :
+        (Class<?>) dateTimeImplementation :
         Class.forName(dateTimeImplementation.toString());
   }
 
