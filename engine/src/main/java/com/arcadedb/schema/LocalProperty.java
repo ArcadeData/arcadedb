@@ -113,6 +113,16 @@ public class LocalProperty extends AbstractProperty {
   }
 
   @Override
+  public Property setHidden(final boolean hidden) {
+    final boolean changed = !Objects.equals(this.hidden, hidden);
+    if (changed) {
+      this.hidden = hidden;
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  @Override
   public Property setMax(final String max) {
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {
