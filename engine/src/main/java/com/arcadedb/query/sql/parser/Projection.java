@@ -39,8 +39,17 @@ public class Projection extends SimpleNode {
 
   public Projection(final List<ProjectionItem> items, final boolean distinct) {
     super(-1);
-    this.items = items;
+
+    if (items.size() > 0) {
+      this.items = items;
+    } else {
+      final ProjectionItem all = new ProjectionItem(null,null,null);
+      all.setAll(true);
+      this.items.add(all);
+    }
+
     this.distinct = distinct;
+
     //TODO make the whole class immutable!
   }
 
@@ -93,11 +102,6 @@ public class Projection extends SimpleNode {
     initExcludes();
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
-
-    if (items.size() == 0 ||//
-        (items.size() == 1 && (/*items.get(0).isAll() ||*/ items.get(0).getExpression().toString().equals("@this")))//
-            && items.get(0).nestedProjection == null)
-      return iRecord;
 
     final ResultInternal result = new ResultInternal();
     for (final ProjectionItem item : items) {
