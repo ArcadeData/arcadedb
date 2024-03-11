@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.*;
 import java.time.*;
@@ -134,4 +135,6 @@ public interface Document extends Record {
   default Document asDocument(final boolean loadContent) {
     return this;
   }
+
+  JSONObject toJSON(String... includeProperties);
 }
