@@ -7,6 +7,7 @@ on:
     branch: ["dev"]
     types:
       - completed
+  workflow_dispatch:
 
 env:
   GHCR_REGISTRY: ghcr.io
@@ -25,6 +26,16 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4.0.0
+
+      - name: Check if PATCH value is 0
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        working-directory: source
+        run: |
+          patch_value=$(grep -E '^PATCH=' VERSION | cut -d '=' -f2)
+          if [[ "$patch_value" != "0" ]]; then
+            echo "PATCH value is not 0. Exiting workflow. This is a patch release!"
+            exit 1
+          fi
 
       - name: Set Tag
         run: |
