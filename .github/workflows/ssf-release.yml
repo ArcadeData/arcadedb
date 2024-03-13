@@ -23,7 +23,6 @@ jobs:
 
       - name: Check if PATCH value is 0
         if: ${{ github.event_name != 'workflow_dispatch' }}
-        working-directory: source
         run: |
           patch_value=$(grep -E '^PATCH=' VERSION | cut -d '=' -f2)
           if [[ "$patch_value" != "0" ]]; then
