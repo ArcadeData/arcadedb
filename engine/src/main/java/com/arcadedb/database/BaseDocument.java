@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JavaBinarySerializer;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.math.*;
@@ -168,5 +169,10 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
   @Override
   public void readExternal(final ObjectInput in) throws IOException {
     JavaBinarySerializer.readExternal(this, in);
+  }
+
+  @Override
+  public JSONObject toJSON(final String... includeProperties) {
+    return new JSONSerializer(database).map2json(propertiesAsMap(), includeProperties);
   }
 }

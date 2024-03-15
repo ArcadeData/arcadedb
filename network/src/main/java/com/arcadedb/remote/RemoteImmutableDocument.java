@@ -98,7 +98,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
   @Override
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map);
+    final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", typeName);

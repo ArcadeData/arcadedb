@@ -120,6 +120,9 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   while (result.hasNext()) {
                     final Result record = result.next();
                     record.toJSON();
+                    if (randomUUID != (Long) record.getProperty("uuid")) {
+                      System.out.printf("Looking for %d but found %d%n", randomUUID, (Long) record.getProperty("uuid"));
+                    }
                     Assertions.assertEquals(randomUUID, (Long) record.getProperty("uuid"));
                   }
                 } else if (op >= 60 && op <= 64) {

@@ -26,7 +26,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.*;
 import java.time.temporal.*;
 import java.util.*;
 import java.util.logging.*;
@@ -38,9 +37,21 @@ public class JSONSerializer {
     this.database = database;
   }
 
-  public JSONObject map2json(final Map<String, Object> map) {
+  public JSONObject map2json(final Map<String, Object> map, final String... includeProperties) {
     final JSONObject json = new JSONObject();
+
+    final Set<String> includePropertiesSet;
+    if (includeProperties != null && includeProperties.length > 0) {
+      includePropertiesSet = new HashSet<>();
+      for (String p : includeProperties)
+        includePropertiesSet.add(p);
+    } else
+      includePropertiesSet = null;
+
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      if (includePropertiesSet != null && !includePropertiesSet.contains(entry.getKey()))
+        continue;
+
       final Object value = convertToJSONType(entry.getValue());
 
       if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {

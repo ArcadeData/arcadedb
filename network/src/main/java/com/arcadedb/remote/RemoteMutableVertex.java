@@ -101,7 +101,7 @@ public class RemoteMutableVertex extends MutableVertex {
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map);
+    final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "v");
       result.put("@type", typeName);

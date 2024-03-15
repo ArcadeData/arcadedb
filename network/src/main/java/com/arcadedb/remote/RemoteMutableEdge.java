@@ -102,7 +102,7 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map);
+    final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "e");
       result.put("@type", typeName);
