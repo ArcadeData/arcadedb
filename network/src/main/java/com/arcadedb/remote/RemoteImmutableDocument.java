@@ -31,11 +31,10 @@ import java.util.*;
 
 public class RemoteImmutableDocument extends ImmutableDocument {
   protected final RemoteDatabase      remoteDatabase;
-  protected final String              typeName;
   protected final Map<String, Object> map;
 
   protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes) {
-    super(null, null, null, null);
+    super(null, remoteDatabase.getSchema().getType((String) attributes.get("@type")), null, null);
     this.remoteDatabase = remoteDatabase;
     this.map = new HashMap<>(attributes);
 
@@ -45,8 +44,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     else
       this.rid = null;
 
-    this.typeName = (String) map.remove("@type");
-
+    map.remove("@type");
     map.remove("@out");
     map.remove("@in");
     map.remove("@cat");
@@ -54,15 +52,14 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
   protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes,
       final String typeName, final RID rid) {
-    super(null, null, rid, null);
+    super(null, remoteDatabase.getSchema().getType(typeName), rid, null);
     this.remoteDatabase = remoteDatabase;
     this.map = new HashMap<>(attributes);
-    this.typeName = typeName;
   }
 
   @Override
   public String getTypeName() {
-    return typeName;
+    return type.getName();
   }
 
   @Override
@@ -89,7 +86,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     final HashMap<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
       result.put("@cat", "d");
-      result.put("@type", typeName);
+      result.put("@type", getTypeName());
       if (getIdentity() != null)
         result.put("@rid", getIdentity().toString());
     }
@@ -101,7 +98,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "d");
-      result.put("@type", typeName);
+      result.put("@type", getTypeName());
       if (getIdentity() != null)
         result.put("@rid", getIdentity().toString());
     }
@@ -110,7 +107,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
   @Override
   public DocumentType getType() {
-    throw new UnsupportedOperationException("Schema API are not supported in remote database");
+    return type;
   }
 
   @Override

@@ -31,6 +31,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -38,26 +39,18 @@ import java.util.*;
 public class RemoteMutableVertex extends MutableVertex {
   private final   RemoteVertex   internal;
   protected final RemoteDatabase remoteDatabase;
-  protected final String         typeName;
 
   protected RemoteMutableVertex(final RemoteDatabase database, final String typeName) {
-    super(null, null, null);
+    super(null, (VertexType) database.getSchema().getType(typeName), null);
     this.internal = new RemoteVertex(this, database);
     this.remoteDatabase = database;
-    this.typeName = typeName;
   }
 
   protected RemoteMutableVertex(final RemoteImmutableVertex source) {
-    super(null, null, source.getIdentity());
+    super(null, (VertexType) source.getType(), source.getIdentity());
     this.internal = new RemoteVertex(this, source.getRemoteDatabase());
     this.remoteDatabase = source.remoteDatabase;
-    this.typeName = source.typeName;
     this.map.putAll(source.map);
-  }
-
-  @Override
-  public String getTypeName() {
-    return typeName;
   }
 
   @Override
@@ -92,7 +85,7 @@ public class RemoteMutableVertex extends MutableVertex {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
       result.put("@cat", "v");
-      result.put("@type", typeName);
+      result.put("@type", getTypeName());
       if (getIdentity() != null)
         result.put("@rid", getIdentity().toString());
     }
@@ -104,7 +97,7 @@ public class RemoteMutableVertex extends MutableVertex {
     final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "v");
-      result.put("@type", typeName);
+      result.put("@type", getTypeName());
       if (getIdentity() != null)
         result.put("@rid", getIdentity().toString());
     }
