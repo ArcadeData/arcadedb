@@ -37,7 +37,7 @@ jobs:
           echo "New Version: $DISPLAY_VERSION"
           # Set NEW_VERSION for use in subsequent steps
           echo "NEW_VERSION=${DISPLAY_VERSION}" >> $GITHUB_ENV
-          NEW_VERSION="MAJOR=${MAJOR}\nMINOR=${MINOR}\nPATCH=${PATCH}\nADDOPTS=${ADDOPTS}"
+          NEW_VERSION="MAJOR=${MAJOR}\nMINOR=${MINOR}\nPATCH=${PATCH}\nADDOPTS="
           echo -e "$NEW_VERSION" > VERSION
           
       - name: Commit and Push Changes
