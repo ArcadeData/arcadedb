@@ -137,7 +137,11 @@ public class TraverseStatement extends Statement {
         throw new IllegalArgumentException("Strategy " + strategy + " not supported");
       }
     }
+  }
 
+  @Override
+  public boolean refersToParent() {
+    return false;
   }
 
   @Override
