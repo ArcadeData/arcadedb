@@ -140,6 +140,19 @@ public class TraverseStatement extends Statement {
 
   }
 
+  public boolean refersToParent() {
+    if (projections != null && projections.stream().anyMatch(x -> x.refersToParent()))
+      return true;
+
+    if (this.target != null && this.target.refersToParent())
+      return true;
+
+    if (this.whileClause != null && this.whileClause.refersToParent())
+      return true;
+
+    return false;
+  }
+
   @Override
   public Statement copy() {
     final TraverseStatement result = new TraverseStatement(-1);
