@@ -26,11 +26,12 @@ jobs:
         run: |
           patch_value=$(grep -E '^PATCH=' VERSION | cut -d '=' -f2)
           if [[ "$patch_value" != "0" ]]; then
+            echo "SKIP_REMAINING_STEPS=true" >> $GITHUB_ENV
             echo "PATCH value is not 0. Exiting workflow. This is a patch release!"
-            exit 1
           fi
 
       - name: Get TAG var
+        if: env.SKIP_REMAINING_STEPS != 'true'
         run: |
           MAJOR=$(grep 'MAJOR' VERSION | cut -d '=' -f 2)
           MINOR=$(grep 'MINOR' VERSION | cut -d '=' -f 2)
@@ -47,10 +48,12 @@ jobs:
           echo "TAG=$TAG" >> $GITHUB_ENV
 
       - name: Set Branch Name
+        if: env.SKIP_REMAINING_STEPS != 'true'
         run: |
           echo "BRANCH_NAME=release/${TAG}" >> $GITHUB_ENV
 
       - name: Create and Push Branch
+        if: env.SKIP_REMAINING_STEPS != 'true'
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GHCR_PAT }}
