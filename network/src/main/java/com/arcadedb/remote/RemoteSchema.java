@@ -108,7 +108,7 @@ public class RemoteSchema implements Schema {
     final String propList = Arrays.stream(propertyNames).collect(Collectors.joining(","));
     remoteDatabase.command("sql", "create index on `" + typeName +//
         "`(" + propList + ") " +//
-        (unique ? "UNIQUE" : "NOT UNIQUE") +//
+        (unique ? "UNIQUE" : "NOTUNIQUE") +//
         " ENGINE " + indexType.name());
     return null;
   }
@@ -119,7 +119,7 @@ public class RemoteSchema implements Schema {
     final String propList = Arrays.stream(propertyNames).collect(Collectors.joining(","));
     remoteDatabase.command("sql", "create index if not exists on `" + typeName +//
         "`(" + propList + ") " +//
-        (unique ? "UNIQUE" : "NOT UNIQUE") +//
+        (unique ? "UNIQUE" : "NOTUNIQUE") +//
         " ENGINE " + indexType.name());
     return null;
   }
