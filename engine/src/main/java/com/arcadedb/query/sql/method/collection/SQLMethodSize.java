@@ -42,6 +42,8 @@ public class SQLMethodSize extends AbstractSQLMethod {
     if (ioResult != null) {
       if (ioResult instanceof Identifiable) {
         size = 1;
+      } else if (ioResult instanceof String) {
+        size = ioResult.toString().length();
       } else {
         size = MultiValue.getSize(ioResult);
       }
