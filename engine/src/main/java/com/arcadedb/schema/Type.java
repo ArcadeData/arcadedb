@@ -465,6 +465,8 @@ public enum Type {
         if (value instanceof LocalDateTime) {
           if (property != null)
             return ((LocalDateTime) value).truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+        } else if (value instanceof Number) {
+          return DateUtils.date(database, ((Number) value).longValue(), LocalDateTime.class);
         } else if (value instanceof Date)
           return DateUtils.dateTime(database, ((Date) value).getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
