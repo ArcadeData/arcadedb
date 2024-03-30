@@ -49,7 +49,8 @@ public class JSONTest extends TestHelper {
 
   @Test
   public void testListsOfLists() {
-    final List<List<Integer>> list = List.of(Collections.unmodifiableList(List.of(1, 2, 3)), Collections.unmodifiableList(List.of(7, 8, 9)));
+    final List<List<Integer>> list = List.of(Collections.unmodifiableList(List.of(1, 2, 3)),
+        Collections.unmodifiableList(List.of(7, 8, 9)));
     JSONObject json = new JSONObject().put("list", list);
     final String serialized = json.toString();
     JSONObject deserialized = new JSONObject(serialized);
@@ -90,5 +91,18 @@ public class JSONTest extends TestHelper {
 // NOT SUPPORTED BY GSON LIBRARY
 //    json = new JSONObject("{'map':{'a':3,}");
 //    Assertions.assertEquals(2, json.getJSONArray("map").length());
+  }
+
+  @Test
+  public void testNaN() {
+    final JSONObject json = new JSONObject().put("a", 10);
+    json.put("nan", Double.NaN);
+    json.put("arrayNan", new JSONArray().put(0).put(Double.NaN).put(5));
+    json.validate();
+
+    Assertions.assertEquals(json.getInt("nan"), 0);
+    Assertions.assertEquals(json.getJSONArray("arrayNan").get(0), 0);
+    Assertions.assertEquals(json.getJSONArray("arrayNan").get(1), 0);
+    Assertions.assertEquals(json.getJSONArray("arrayNan").get(2), 5);
   }
 }
