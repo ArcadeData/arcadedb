@@ -37,12 +37,12 @@ import java.util.logging.*;
 public class TypeBuilder<T> {
   final DatabaseInternal database;
   final Class<T>         type;
-  boolean                    ignoreIfExists  = false;
+  boolean                 ignoreIfExists  = false;
   String                  typeName;
   List<LocalDocumentType> superTypes;
   List<Bucket>            bucketInstances = Collections.emptyList();
-  int                        buckets;
-  int                        pageSize;
+  int                     buckets;
+  int                     pageSize;
 
   protected TypeBuilder(final DatabaseInternal database, final Class<T> type) {
     this.database = database;
@@ -61,13 +61,31 @@ public class TypeBuilder<T> {
 
     final LocalDocumentType t = schema.types.get(typeName);
     if (t != null) {
-      if (type.isAssignableFrom(t.getClass()))
-        return (T) t;
+      if (!ignoreIfExists)
+        throw new SchemaException("Cannot create type '" + typeName + "' because already exists");
 
-      final String expectedType = type.isAssignableFrom(VertexType.class) ?
-          "vertex" :
-          type.isAssignableFrom(EdgeType.class) ? "edge" : "document";
-      throw new SchemaException("Type '" + typeName + "' is not a " + expectedType + " type");
+      if (!type.isAssignableFrom(t.getClass())) {
+        final String expectedType = type.isAssignableFrom(VertexType.class) ?
+            "vertex" :
+            type.isAssignableFrom(EdgeType.class) ? "edge" : "document";
+        throw new SchemaException("Type '" + typeName + "' is not a " + expectedType + " type");
+      }
+
+      boolean modified = false;
+      if (superTypes != null)
+        for (LocalDocumentType sup : superTypes) {
+          if (!t.getSuperTypes().contains(sup)) {
+            t.addSuperType(sup);
+            modified = true;
+          }
+        }
+
+      if (modified) {
+        schema.saveConfiguration();
+        schema.updateSecurity();
+      }
+
+      return (T) t;
     }
 
     if (buckets > 32)
@@ -75,9 +93,6 @@ public class TypeBuilder<T> {
 
     if (typeName.contains(","))
       throw new IllegalArgumentException("Type name '" + typeName + "' contains non valid characters");
-
-    if (schema.types.containsKey(typeName))
-      throw new SchemaException("Type '" + typeName + "' already exists");
 
     return schema.recordFileChanges(() -> {
       final LocalDocumentType c;
