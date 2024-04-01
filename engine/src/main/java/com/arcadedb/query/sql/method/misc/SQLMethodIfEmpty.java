@@ -16,41 +16,40 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.collection;
+package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.*;
+
 /**
- * @author Johann Sorel (Geomatys)
+ * Returns argument if result is empty else return result.
+ *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodSize extends AbstractSQLMethod {
+public class SQLMethodIfEmpty extends AbstractSQLMethod {
 
-  public static final String NAME = "size";
+  public static final String NAME = "ifempty";
 
-  public SQLMethodSize() {
+  public SQLMethodIfEmpty() {
     super(NAME);
+  }
+
+  @Override
+  public String getSyntax() {
+    return "Syntax error: ifempty(<return_value_if_empty>)";
   }
 
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
 
-    final Number size;
-    if (ioResult != null) {
-      if (ioResult instanceof Identifiable) {
-        size = 1;
-      } else if (ioResult instanceof String) {
-        size = ioResult.toString().length();
-      } else {
-        size = MultiValue.getSize(ioResult);
-      }
-    } else {
-      size = 0;
-    }
-
-    return size;
+    if ( (ioResult instanceof String && ioResult.toString().length() == 0)
+         || (ioResult instanceof Collection<?> && MultiValue.getSize(ioResult) == 0) )
+      return iParams[0];
+    else
+      return ioResult;
   }
 }

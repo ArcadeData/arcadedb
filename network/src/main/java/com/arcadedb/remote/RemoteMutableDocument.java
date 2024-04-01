@@ -26,32 +26,25 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
 public class RemoteMutableDocument extends MutableDocument {
   protected final RemoteDatabase remoteDatabase;
-  protected final String         typeName;
 
   protected RemoteMutableDocument(final RemoteDatabase database, final String typeName) {
-    super(null, null, null);
+    super(null, database.getSchema().getType(typeName), null);
     this.remoteDatabase = database;
-    this.typeName = typeName;
   }
 
   protected RemoteMutableDocument(final RemoteImmutableDocument source) {
-    super(null, null, source.getIdentity());
+    super(null, source.getType(), source.getIdentity());
     this.remoteDatabase = source.remoteDatabase;
-    this.typeName = source.typeName;
     this.map.putAll(source.map);
     map.remove("@cat");
     map.remove("@type");
-  }
-
-  @Override
-  public String getTypeName() {
-    return typeName;
   }
 
   @Override
@@ -91,7 +84,7 @@ public class RemoteMutableDocument extends MutableDocument {
     final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "d");
-      result.put("@type", typeName);
+      result.put("@type", getTypeName());
       if (getIdentity() != null)
         result.put("@rid", getIdentity().toString());
     }
@@ -103,7 +96,7 @@ public class RemoteMutableDocument extends MutableDocument {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
       result.put("@cat", "d");
-      result.put("@type", typeName);
+      result.put("@type", getTypeName());
       if (getIdentity() != null)
         result.put("@rid", getIdentity().toString());
     }
