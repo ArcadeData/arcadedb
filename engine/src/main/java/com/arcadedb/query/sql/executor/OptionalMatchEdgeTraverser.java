@@ -18,13 +18,15 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Database;
+
 import java.util.*;
 
 /**
  * Created by luigidellaquila on 17/10/16.
  */
 public class OptionalMatchEdgeTraverser extends MatchEdgeTraverser {
-  public static final Result EMPTY_OPTIONAL = new ResultInternal();
+  public static final Result EMPTY_OPTIONAL = new ResultInternal((Database) null);
 
   public OptionalMatchEdgeTraverser(final Result lastUpstreamRecord, final EdgeTraversal edge) {
     super(lastUpstreamRecord, edge);
@@ -60,7 +62,7 @@ public class OptionalMatchEdgeTraverser extends MatchEdgeTraverser {
       }
     }
 
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     for (final String prop : sourceRecord.getPropertyNames()) {
       result.setProperty(prop, sourceRecord.getProperty(prop));
     }

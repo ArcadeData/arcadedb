@@ -18,14 +18,17 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 
 import java.text.*;
+import java.time.*;
 import java.util.*;
 
 /**
@@ -128,19 +131,17 @@ public interface Result {
     } else if (val instanceof Result) {
       jsonVal = ((Result) val).toJSON();
     } else if (val instanceof Record) {
-      final RID id = ((Record) val).getIdentity();
-
-      jsonVal = "\"" + id + "\"";
+      jsonVal = "\"" + ((Record) val).getIdentity() + "\"";
     } else if (val instanceof RID) {
       jsonVal = "\"" + val + "\"";
     } else if (val instanceof Iterable) {
       final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      for (final Object o : (Iterable) val) {
-        if (!first) {
+      for (final Object o : (Iterable<?>) val) {
+        if (!first)
           builder.append(", ");
-        }
+
         builder.append(toJson(o));
         first = false;
       }
@@ -150,11 +151,11 @@ public interface Result {
       final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      final Iterator iterator = (Iterator) val;
+      final Iterator<?> iterator = (Iterator<?>) val;
       while (iterator.hasNext()) {
-        if (!first) {
+        if (!first)
           builder.append(", ");
-        }
+
         builder.append(toJson(iterator.next()));
         first = false;
       }
@@ -164,11 +165,11 @@ public interface Result {
       final StringBuilder builder = new StringBuilder();
       builder.append("{");
       boolean first = true;
-      final Map<String, Object> map = (Map) val;
-      for (final Map.Entry entry : map.entrySet()) {
-        if (!first) {
+      final Map<String, Object> map = (Map<String, Object>) val;
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
+        if (!first)
           builder.append(", ");
-        }
+
         builder.append(toJson(entry.getKey()));
         builder.append(": ");
         builder.append(toJson(entry.getValue()));
@@ -192,17 +193,29 @@ public interface Result {
       else
         jsonVal = Arrays.toString((Object[]) val);
     } else if (val instanceof Date) {
-      new SimpleDateFormat().format(val);//TODO
-//      jsonVal = "\"" + ODateHelper.getDateTimeFormatInstance().format(val) + "\"";
-    } else if (val instanceof Type) {
-      jsonVal = ((Type) val).name();
-    } else {
+      final Database database = getDatabase();
+      if (database != null)
+        jsonVal = "\"" + DateUtils.format(val, database.getSchema().getDateTimeFormat()) + "\"";
+      else
+        jsonVal = "\"" + new SimpleDateFormat().format(val) + "\"";
 
-      jsonVal = val.toString();
-      //throw new UnsupportedOperationException("Cannot convert " + val + " - " + val.getClass() + " to JSON");
+    } else if (val instanceof LocalDateTime) {
+      final Database database = getDatabase();
+      if (database != null)
+        jsonVal = "\"" + DateUtils.format(val, getDatabase().getSchema().getDateTimeFormat()) + "\"";
+      else
+        jsonVal = "\"" + val + "\"";
+    } else if (val instanceof Type) {
+      jsonVal = "\"" + ((Type) val).name() + "\"";
+    } else {
+      // ANYTHING ELSE: RETURN A STRING
+      jsonVal = "\"" + encode(val.toString()) + "\"";
     }
+
     return jsonVal;
   }
+
+  Database getDatabase();
 
   default String encode(final String s) {
     String result = s.replace("\"", "\\\\\"");

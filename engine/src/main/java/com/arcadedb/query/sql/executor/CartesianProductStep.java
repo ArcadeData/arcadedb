@@ -133,7 +133,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
         nextRecord = null;
         return;
       }
-      nextRecord = new ResultInternal();
+      nextRecord = new ResultInternal(context.getDatabase());
 
       for (int i = 0; i < this.currentTuple.size(); i++) {
         final Result res = this.currentTuple.get(i);

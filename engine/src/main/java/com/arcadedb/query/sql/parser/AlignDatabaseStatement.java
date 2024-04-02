@@ -35,7 +35,7 @@ public class AlignDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "align database");
 
     if (context.getDatabase().isTransactionActive())

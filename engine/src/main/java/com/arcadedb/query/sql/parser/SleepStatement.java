@@ -39,7 +39,7 @@ public class SleepStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
 
     final InternalResultSet result = new InternalResultSet();
-    final ResultInternal item = new ResultInternal();
+    final ResultInternal item = new ResultInternal(context.getDatabase());
     item.setProperty("operation", "sleep");
 
     final long millis = ((Number) expression.execute((Identifiable) null, context)).longValue();

@@ -42,7 +42,7 @@ public class ConsoleStatement extends SimpleExecStatement {
   @Override
   public ResultSet executeSimple(final CommandContext context) {
     final InternalResultSet result = new InternalResultSet();
-    final ResultInternal item = new ResultInternal();
+    final ResultInternal item = new ResultInternal(context.getDatabase());
     final Object msg = "" + message.execute((Identifiable) null, context);
 
     final String logLevelAsString = logLevel.getStringValue().toLowerCase(Locale.ENGLISH);

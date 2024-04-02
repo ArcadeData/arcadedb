@@ -78,7 +78,7 @@ public class CountFromTypeStep extends AbstractExecutionStep {
 
           final long size = context.getDatabase().countType(targetName, true);
           executed = true;
-          final ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(alias, size);
           return result;
 

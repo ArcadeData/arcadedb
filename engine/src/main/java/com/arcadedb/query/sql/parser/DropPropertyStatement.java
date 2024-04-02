@@ -62,7 +62,7 @@ public class DropPropertyStatement extends DDLStatement {
       if (force) {
         for (final Index index : indexes) {
           database.getSchema().dropIndex(index.getName());
-          final ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal(database);
           result.setProperty("operation", "cascade drop index");
           result.setProperty("indexName", index.getName());
           rs.add(result);
@@ -81,14 +81,15 @@ public class DropPropertyStatement extends DDLStatement {
         }
 
         throw new CommandExecutionException(
-            "Property used in indexes (" + indexNames + "). Please drop these indexes before removing property or use FORCE parameter.");
+            "Property used in indexes (" + indexNames
+                + "). Please drop these indexes before removing property or use FORCE parameter.");
       }
     }
 
     // REMOVE THE PROPERTY
     sourceClass.dropProperty(propertyName.getStringValue());
 
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "drop property");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("propertyName", propertyName.getStringValue());
@@ -121,7 +122,7 @@ public class DropPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

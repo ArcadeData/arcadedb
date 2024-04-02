@@ -108,7 +108,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public Result toResult() {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("type", "QueryExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("stmText", statement.toString());

@@ -56,7 +56,7 @@ public class AlterPropertyStatement extends DDLStatement {
     if (property == null)
       throw new CommandExecutionException("Property '" + propertyName + "' not found on type " + typez);
 
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("type", typeName.getStringValue());
     result.setProperty("property", propertyName.getStringValue());
 

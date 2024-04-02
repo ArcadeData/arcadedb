@@ -96,12 +96,12 @@ public class ExpandStep extends AbstractExecutionStep {
           } else if (nextElementObj instanceof Map) {
             nextElement = new ResultInternal((Map) nextElementObj);
           } else {
-            nextElement = new ResultInternal();
+            nextElement = new ResultInternal(context.getDatabase());
             ((ResultInternal) nextElement).setProperty("value", nextElementObj);
           }
           break;
         } finally {
-          if( context.isProfiling() ) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -148,7 +148,7 @@ public class ExpandStep extends AbstractExecutionStep {
           nextSubsequence = ((Iterable) projValue).iterator();
         }
       } finally {
-        if ( context.isProfiling() )
+        if (context.isProfiling())
           cost += (System.nanoTime() - begin);
       }
     } while (true);
@@ -158,7 +158,7 @@ public class ExpandStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ EXPAND";
-    if ( context.isProfiling() )
+    if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
 
     return result;

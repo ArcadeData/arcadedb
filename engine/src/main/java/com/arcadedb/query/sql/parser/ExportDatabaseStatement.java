@@ -58,7 +58,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     }
 
     final String targetUrl = this.url.getUrlString();
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "export database");
     result.setProperty("toUrl", targetUrl);
 

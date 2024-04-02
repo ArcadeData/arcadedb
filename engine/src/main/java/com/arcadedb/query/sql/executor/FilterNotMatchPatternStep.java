@@ -72,7 +72,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
             nextItem = null;
           } finally {
-            if( context.isProfiling() ) {
+            if (context.isProfiling()) {
               cost += (System.nanoTime() - begin);
             }
           }
@@ -139,13 +139,13 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
       }
 
       private Result copy(final Result nextItem) {
-        final ResultInternal result = new ResultInternal();
-        for (final String prop : nextItem.getPropertyNames()) {
+        final ResultInternal result = new ResultInternal(context.getDatabase());
+        for (final String prop : nextItem.getPropertyNames())
           result.setProperty(prop, nextItem.getProperty(prop));
-        }
-        for (final String md : nextItem.getMetadataKeys()) {
+
+        for (final String md : nextItem.getMetadataKeys())
           result.setMetadata(md, nextItem.getMetadata(md));
-        }
+
         return result;
       }
     });

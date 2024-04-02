@@ -54,7 +54,7 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
         for (final String bucketName : orderedBuckets) {
           final Bucket bucket = schema.getBucketByName(bucketName);
 
-          final ResultInternal r = new ResultInternal();
+          final ResultInternal r = new ResultInternal(context.getDatabase());
           result.add(r);
 
           r.setProperty("name", bucket.getName());
@@ -64,7 +64,7 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
           context.setVariable("current", r);
         }
       } finally {
-        if( context.isProfiling() ) {
+        if (context.isProfiling()) {
           cost += (System.nanoTime() - begin);
         }
       }
@@ -96,7 +96,7 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA BUCKETS";
-    if( context.isProfiling() ) {
+    if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;
