@@ -28,6 +28,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -497,7 +498,9 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public Object getCustomValue(String key) {
-    throw new UnsupportedOperationException();
+    ResultSet r = remoteDatabase.command("SQL", "select custom from schema:types where name=?",name);
+    Map customs = (Map)r.next().getProperty("custom");
+    return customs.get(key);
   }
 
   @Override
