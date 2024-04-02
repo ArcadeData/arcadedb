@@ -118,16 +118,15 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       }
       ResultInternal preAggr = aggregateResults.get(key);
       if (preAggr == null) {
-        if (limit > 0 && aggregateResults.size() > limit) {
+        if (limit > 0 && aggregateResults.size() > limit)
           return;
-        }
-        preAggr = new ResultInternal();
+
+        preAggr = new ResultInternal(context.getDatabase());
 
         for (final ProjectionItem proj : this.projection.getItems()) {
           final String alias = proj.getProjectionAlias().getStringValue();
-          if (!proj.isAggregate(context)) {
+          if (!proj.isAggregate(context))
             preAggr.setProperty(alias, proj.execute(next, context));
-          }
         }
         aggregateResults.put(key, preAggr);
       }

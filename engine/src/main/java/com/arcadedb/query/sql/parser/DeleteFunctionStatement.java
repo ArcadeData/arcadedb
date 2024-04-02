@@ -24,7 +24,7 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
 
     database.getSchema().getFunctionLibrary(libraryName.getStringValue()).unregisterFunction(functionName.getStringValue());
 
-    return new InternalResultSet().add(new ResultInternal().setProperty("operation", "delete function").setProperty("libraryName", libraryName.getStringValue())
+    return new InternalResultSet().add(new ResultInternal(database).setProperty("operation", "delete function").setProperty("libraryName", libraryName.getStringValue())
         .setProperty("functionName", functionName.getStringValue()));
   }
 

@@ -143,7 +143,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public Result toResult() {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("type", "ScriptExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("cost", getCost());

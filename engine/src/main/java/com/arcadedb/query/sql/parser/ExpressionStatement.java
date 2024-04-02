@@ -18,18 +18,13 @@ public class ExpressionStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
-    InternalResultSet result = new InternalResultSet();
-    Object expResult = expression.execute(new ResultInternal(), ctx);
-    ResultInternal item = new ResultInternal();
+  public ResultSet executeSimple(final CommandContext context) {
+    final InternalResultSet result = new InternalResultSet();
+    final Object expResult = expression.execute(new ResultInternal(context.getDatabase()), context);
+    final ResultInternal item = new ResultInternal();
     item.setProperty("result", expResult);
     result.add(item);
     return result;
-  }
-
-  @Override
-  public boolean executionPlanCanBeCached() {
-    return false;
   }
 
   @Override

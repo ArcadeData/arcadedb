@@ -60,15 +60,15 @@ public class CountFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        if (executed) {
+        if (executed)
           throw new NoSuchElementException();
-        }
+
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final Index idx = context.getDatabase().getSchema().getIndexByName(target.getIndexName());
           final long size = idx.countEntries();
           executed = true;
-          final ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(alias, size);
           return result;
         } finally {

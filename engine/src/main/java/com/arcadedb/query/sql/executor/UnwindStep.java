@@ -133,7 +133,7 @@ public class UnwindStep extends AbstractExecutionStep {
         iterator = ((Iterable) fieldValue).iterator();
       }
       if (!iterator.hasNext()) {
-        final ResultInternal unwindedDoc = new ResultInternal();
+        final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
         copy(doc, unwindedDoc);
 
         unwindedDoc.setProperty(firstField, null);
@@ -141,7 +141,7 @@ public class UnwindStep extends AbstractExecutionStep {
       } else {
         do {
           final Object o = iterator.next();
-          final ResultInternal unwindedDoc = new ResultInternal();
+          final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
           copy(doc, unwindedDoc);
           unwindedDoc.setProperty(firstField, o);
           result.addAll(unwind(unwindedDoc, nextFields, iContext));

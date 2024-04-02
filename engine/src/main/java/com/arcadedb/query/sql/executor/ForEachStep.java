@@ -73,7 +73,7 @@ public class ForEachStep extends AbstractExecutionStep {
 
   protected void init(final CommandContext context) {
     if (!this.initiated) {
-      final Object val = source.execute(new ResultInternal(), context);
+      final Object val = source.execute(new ResultInternal(context.getDatabase()), context);
       this.iterator = MultiValue.getMultiValueIterator(val);
       this.initiated = true;
     }

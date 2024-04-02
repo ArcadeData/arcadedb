@@ -82,7 +82,7 @@ public class TruncateTypeStatement extends DDLStatement {
       return true;
     });
 
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "truncate type");
     result.setProperty("typeName", typeName.getStringValue());
     rs.add(result);

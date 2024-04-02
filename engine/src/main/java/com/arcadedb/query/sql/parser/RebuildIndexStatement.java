@@ -56,7 +56,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "rebuild index");
 
     int batchSize = IndexBuilder.BUILD_BATCH_SIZE;

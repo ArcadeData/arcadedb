@@ -55,7 +55,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
         final Schema schema = context.getDatabase().getSchema();
 
         for (final Index index : schema.getIndexes()) {
-          final ResultInternal r = new ResultInternal();
+          final ResultInternal r = new ResultInternal(context.getDatabase());
           result.add(r);
 
           try {

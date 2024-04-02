@@ -49,7 +49,7 @@ public class DropIndexStatement extends DDLStatement {
       for (final Index idx : db.getSchema().getIndexes()) {
         db.getSchema().dropIndex(idx.getName());
 
-        final ResultInternal result = new ResultInternal();
+        final ResultInternal result = new ResultInternal(db);
         result.setProperty("operation", "drop index");
         result.setProperty("bucketName", idx.getName());
         rs.add(result);

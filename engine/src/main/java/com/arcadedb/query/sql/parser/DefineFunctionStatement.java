@@ -81,7 +81,7 @@ public class DefineFunctionStatement extends SimpleExecStatement {
     fLib.registerFunction(f);
 
     return new InternalResultSet().add(
-        new ResultInternal().setProperty("operation", "create function").setProperty("libraryName", libraryName.getStringValue())
+        new ResultInternal(context.getDatabase()).setProperty("operation", "create function").setProperty("libraryName", libraryName.getStringValue())
             .setProperty("functionName", functionName.getStringValue()));
   }
 

@@ -40,7 +40,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "check database");
 
     if (context.getDatabase().isTransactionActive())

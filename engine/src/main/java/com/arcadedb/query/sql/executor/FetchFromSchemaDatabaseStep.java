@@ -52,9 +52,9 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
         try {
 
           if (!served) {
-            final ResultInternal result = new ResultInternal();
-
             final Database db = context.getDatabase();
+
+            final ResultInternal result = new ResultInternal(db);
             result.setProperty("name", db.getName());
             result.setProperty("path", db.getDatabasePath());
             result.setProperty("mode", db.getMode());
@@ -86,7 +86,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
           }
           throw new NoSuchElementException();
         } finally {
-          if( context.isProfiling() ) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -103,7 +103,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA";
-    if( context.isProfiling() ) {
+    if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

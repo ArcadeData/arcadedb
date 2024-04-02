@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
@@ -31,21 +32,35 @@ import java.util.stream.*;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
-  protected Map<String, Object> content;
-  protected Map<String, Object> temporaryContent;
-  protected Map<String, Object> metadata;
-  protected Document            element;
+  protected final Database            database;
+  protected       Map<String, Object> content;
+  protected       Map<String, Object> temporaryContent;
+  protected       Map<String, Object> metadata;
+  protected       Document            element;
 
   public ResultInternal() {
     content = new LinkedHashMap<>();
+    database = null;
   }
 
   public ResultInternal(final Map<String, Object> map) {
     this.content = map;
+    database = null;
   }
 
-  public ResultInternal(final Identifiable ident) {
-    this.element = (Document) ident.getRecord();
+  public ResultInternal(final Identifiable indent) {
+    this.element = (Document) indent.getRecord();
+    database = null;
+  }
+
+  public ResultInternal(final Database database) {
+    this.content = new LinkedHashMap<>();
+    this.database = database;
+  }
+
+  @Override
+  public Database getDatabase() {
+    return database;
   }
 
   public void setTemporaryProperty(final String name, Object value) {
@@ -255,7 +270,7 @@ public class ResultInternal implements Result {
 
     if (hasProperty("@rid")) {
       final Object rid = getProperty("@rid");
-      return Optional.of((RID) (rid instanceof RID ? rid : new RID( rid.toString())));
+      return Optional.of((RID) (rid instanceof RID ? rid : new RID(rid.toString())));
     }
     return Optional.empty();
   }
@@ -304,7 +319,8 @@ public class ResultInternal implements Result {
       return element.toString();
 
     if (content != null)
-      return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n") + " }";
+      return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n")
+          + " }";
 
     return "{}";
   }

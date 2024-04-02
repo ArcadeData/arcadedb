@@ -73,7 +73,7 @@ public class ReturnStatement extends SimpleExecStatement {
       }
       return (ResultSet) result;
     } else {
-      final ResultInternal res = new ResultInternal();
+      final ResultInternal res = new ResultInternal(context.getDatabase());
       res.setProperty("value", result);
       rs.add(res);
     }

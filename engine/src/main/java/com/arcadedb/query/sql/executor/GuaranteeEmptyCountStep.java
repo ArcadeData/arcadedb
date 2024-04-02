@@ -40,24 +40,22 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
     return new ResultSet() {
       @Override
       public boolean hasNext() {
-        if (!executed) {
+        if (!executed)
           return true;
-        }
 
         return upstream.hasNext();
       }
 
       @Override
       public Result next() {
-        if (!hasNext()) {
+        if (!hasNext())
           throw new NoSuchElementException();
-        }
 
         try {
-          if (upstream.hasNext()) {
+          if (upstream.hasNext())
             return upstream.next();
-          }
-          final ResultInternal result = new ResultInternal();
+
+          final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(item.getProjectionAliasAsString(), 0L);
           return result;
         } finally {
@@ -68,11 +66,6 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
       @Override
       public void close() {
         prev.close();
-      }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
       }
     };
   }

@@ -111,7 +111,7 @@ public class CreateIndexStatement extends DDLStatement {
         }).create();
 
     final InternalResultSet rs = new InternalResultSet();
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "create index");
     result.setProperty("name", name.getValue());
     result.setProperty("type", indexType);

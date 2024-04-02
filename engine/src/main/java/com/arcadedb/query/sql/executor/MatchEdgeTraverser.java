@@ -55,27 +55,27 @@ public class MatchEdgeTraverser {
 
   public Result next(final CommandContext context) {
     init(context);
-    if (!downstream.hasNext()) {
+    if (!downstream.hasNext())
       throw new NoSuchElementException();
-    }
+
     final String endPointAlias = getEndpointAlias();
     final ResultInternal nextR = downstream.next();
     final Document nextElement = nextR.getElement().get();
     final Object prevValue = sourceRecord.getProperty(endPointAlias);
-    if (prevValue != null && !equals(prevValue, nextElement)) {
+    if (prevValue != null && !equals(prevValue, nextElement))
       return null;
-    }
-    final ResultInternal result = new ResultInternal();
-    for (final String prop : sourceRecord.getPropertyNames()) {
+
+    final ResultInternal result = new ResultInternal(context.getDatabase());
+    for (final String prop : sourceRecord.getPropertyNames())
       result.setProperty(prop, sourceRecord.getProperty(prop));
-    }
+
     result.setProperty(endPointAlias, toResult(nextElement));
-    if (edge.edge.item.getFilter().getDepthAlias() != null) {
+    if (edge.edge.item.getFilter().getDepthAlias() != null)
       result.setProperty(edge.edge.item.getFilter().getDepthAlias(), nextR.getMetadata("$depth"));
-    }
-    if (edge.edge.item.getFilter().getPathAlias() != null) {
+
+    if (edge.edge.item.getFilter().getPathAlias() != null)
       result.setProperty(edge.edge.item.getFilter().getPathAlias(), nextR.getMetadata("$matchPath"));
-    }
+
     return result;
   }
 
