@@ -287,34 +287,6 @@ public class LocalDocumentType implements DocumentType {
     return createProperty(propertyName, Type.getTypeByClass(propertyType));
   }
 
-  @Override
-  public Property createProperty(final String propName, final JSONObject prop) {
-    final LocalProperty p = createProperty(propName, prop.getString("type"));
-
-    if (prop.has("of"))
-      p.setOfType(prop.getString("of"));
-    if (prop.has("default"))
-      p.setDefaultValue(prop.get("default"));
-    if (prop.has("readonly"))
-      p.setReadonly(prop.getBoolean("readonly"));
-    if (prop.has("mandatory"))
-      p.setMandatory(prop.getBoolean("mandatory"));
-    if (prop.has("notNull"))
-      p.setNotNull(prop.getBoolean("notNull"));
-    if (prop.has("max"))
-      p.setMax(prop.getString("max"));
-    if (prop.has("min"))
-      p.setMin(prop.getString("min"));
-    if (prop.has("regexp"))
-      p.setRegexp(prop.getString("regexp"));
-
-    p.custom.clear();
-    if (prop.has("custom"))
-      p.custom.putAll(prop.getJSONObject("custom").toMap());
-
-    return p;
-  }
-
   /**
    * Creates a new property with type `propertyType`.
    *

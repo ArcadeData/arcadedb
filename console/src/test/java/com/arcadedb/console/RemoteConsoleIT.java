@@ -246,8 +246,15 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   public void testCustomPropertyInSchema() throws IOException {
     Assertions.assertTrue(console.parse("connect " + URL));
     Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
+    Assertions.assertTrue(console.parse("ALTER TYPE doc CUSTOM testType = 444;"));
     Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING;"));
     Assertions.assertTrue(console.parse("ALTER PROPERTY doc.prop CUSTOM test = true;"));
+
+    Assertions.assertEquals(444, console.getDatabase().getSchema().getType("doc").getCustomValue("testType"));
+    Assertions.assertEquals(true, console.getDatabase().getSchema().getType("doc").getProperty("prop").getCustomValue("test"));
+
+    console.getDatabase().getSchema().getType("doc").setCustomValue("testType", "555");
+    Assertions.assertEquals("555", console.getDatabase().getSchema().getType("doc").getCustomValue("testType"));
 
     Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
         console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
@@ -321,6 +328,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @AfterAll
   public static void afterAll() {
-    GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT.setValue(GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT.getDefValue());
+    GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT.setValue(
+        GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT.getDefValue());
   }
 }

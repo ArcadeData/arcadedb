@@ -167,9 +167,8 @@ public class AlterTypeStatement extends DDLStatement {
 
     if (customKey != null) {
       Object value = null;
-      if (customValue != null) {
+      if (customValue != null)
         value = customValue.execute((Identifiable) null, context);
-      }
 
       type.setCustomValue(customKey.getStringValue(), value);
       result.setProperty("custom", customKey.getStringValue() + "=" + value);
