@@ -151,10 +151,12 @@ public class QueryTest extends TestHelper {
       Assertions.assertEquals(1, total.get());
 
       // CHECK STATEMENT CACHE
-      Assertions.assertTrue(((DatabaseInternal) database).getStatementCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname"));
+      Assertions.assertTrue(
+          ((DatabaseInternal) database).getStatementCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname"));
 
       // CHECK EXECUTION PLAN CACHE
-      Assertions.assertTrue(((DatabaseInternal) database).getExecutionPlanCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname"));
+      Assertions.assertTrue(((DatabaseInternal) database).getExecutionPlanCache()
+          .contains("SELECT FROM V WHERE name = :name AND surname = :surname"));
 
       // EXECUTE THE 2ND TIME
       rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
@@ -291,7 +293,8 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE EDGE TYPE TheEdge");
       database.command("SQL", "CREATE VERTEX Foo SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX Foo SET name = 'bar'");
-      database.command("SQL", "CREATE EDGE TheEdge FROM (SELECT FROM Foo WHERE name ='foo') TO (SELECT FROM Foo WHERE name ='bar')");
+      database.command("SQL",
+          "CREATE EDGE TheEdge FROM (SELECT FROM Foo WHERE name ='foo') TO (SELECT FROM Foo WHERE name ='bar')");
 
       final ResultSet rs = database.query("SQL", "SELECT FROM TheEdge");
       Assertions.assertTrue(rs.hasNext());
@@ -312,7 +315,8 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'bar'");
       database.command("SQL",
-          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass + " WHERE name ='bar')");
+          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass
+              + " WHERE name ='bar')");
 
       ResultSet rs = database.query("SQL", "SELECT FROM " + edgeClass);
       Assertions.assertTrue(rs.hasNext());
@@ -355,7 +359,8 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'bar'");
       database.command("SQL",
-          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass + " WHERE name ='bar')");
+          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass
+              + " WHERE name ='bar')");
 
       ResultSet rs = database.query("SQL", "SELECT FROM " + edgeClass);
       Assertions.assertTrue(rs.hasNext());
@@ -384,7 +389,8 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'bar'");
       database.command("SQL",
-          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass + " WHERE name ='bar')");
+          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass
+              + " WHERE name ='bar')");
 
       ResultSet rs = database.query("SQL", "SELECT FROM " + edgeClass);
       Assertions.assertTrue(rs.hasNext());
@@ -520,4 +526,33 @@ public class QueryTest extends TestHelper {
       }
     });
   }
+
+  @Test
+  public void testCollectionsInProjections() {
+    try (ResultSet set = database.query("sql", "SELECT [\"a\",\"b\",\"c\"] as coll")) {
+      Collection coll = set.nextIfAvailable().getProperty("coll");
+      Assertions.assertEquals(3, coll.size());
+      Assertions.assertTrue(coll.contains("a"));
+      Assertions.assertTrue(coll.contains("b"));
+      Assertions.assertTrue(coll.contains("c"));
+    }
+  }
+
+  @Test
+  public void testCollectionsInProjectionsContains() {
+    try (ResultSet set = database.query("sql", "SELECT ([\"a\",\"b\",\"c\"] CONTAINS (@this ILIKE \"C\")) as coll")) {
+      final Object coll = set.nextIfAvailable().getProperty("coll");
+      Assertions.assertTrue((Boolean) coll);
+    }
+  }
+
+  @Test
+  public void testCollectionsOfObjectsInProjectionsContains() {
+    try (ResultSet set = database.query("sql",
+        "SELECT ([{\"x\":\"a\"},{\"x\":\"b\"},{\"x\":\"c\"}] CONTAINS (x ILIKE \"C\")) as coll")) {
+      final Object coll = set.nextIfAvailable().getProperty("coll");
+      Assertions.assertTrue((Boolean) coll);
+    }
+  }
+
 }
