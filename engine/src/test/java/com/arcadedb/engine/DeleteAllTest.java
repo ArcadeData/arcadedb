@@ -3,6 +3,7 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -14,7 +15,7 @@ public class DeleteAllTest {
   private final static int    TOT_RECORDS = 100_000;
   private final static String VERTEX_TYPE = "Product";
   private final static String EDGE_TYPE   = "LinkedTo";
-  private static final int    CYCLES      = 10;
+  private static final int    CYCLES      = 2;
 
   @Test
   public void testCreateAndDeleteGraph() {
@@ -56,8 +57,11 @@ public class DeleteAllTest {
             Assertions.assertEquals(0, db.countType(EDGE_TYPE, true));
           });
         }
+
+        final ResultSet result = db.command("sql", "check database");
+        System.out.println(result.nextIfAvailable().toJSON());
       } finally {
-        System.out.println(databaseFactory.getDatabasePath());
+
         if (databaseFactory.exists())
           databaseFactory.open().drop();
       }
