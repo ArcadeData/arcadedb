@@ -63,7 +63,10 @@ public class AnalyzedEntity {
 
   public void setRowSize(final String[] row) {
     for (int i = 0; i < row.length; ++i) {
-      totalRowLength += row[i].length() + 1;
+      if (row[i] != null)
+        totalRowLength += row[i].length();
+
+      ++totalRowLength; // Delimiter
     }
     ++totalRowLength; // ADD LF
 
