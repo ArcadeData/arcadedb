@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -98,7 +99,7 @@ public class ContainsAnyCondition extends BooleanExpression {
           if (!rightBlock.evaluate((Result) item, context)) {
             return false;
           }
-        } else {
+        } else if (!rightBlock.evaluate(new ResultInternal(item), context)) {
           return false;
         }
       }
@@ -127,7 +128,7 @@ public class ContainsAnyCondition extends BooleanExpression {
           if (!rightBlock.evaluate((Result) item, context)) {
             return false;
           }
-        } else {
+        } else if (!rightBlock.evaluate(new ResultInternal(item), context)) {
           return false;
         }
       }

@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -38,12 +39,12 @@ public class ContainsAllCondition extends BooleanExpression {
 
   public boolean execute(Object left, Object right) {
     if (left instanceof Collection) {
-      if (right instanceof Collection) {
+      if (right instanceof Collection)
         return ((Collection) left).containsAll((Collection) right);
-      }
-      if (right instanceof Iterable) {
+
+      if (right instanceof Iterable)
         right = ((Iterable) right).iterator();
-      }
+
       if (right instanceof Iterator) {
         final Iterator iterator = (Iterator) right;
         while (iterator.hasNext()) {
@@ -55,13 +56,13 @@ public class ContainsAllCondition extends BooleanExpression {
       }
       return ((Collection) left).contains(right);
     }
-    if (left instanceof Iterable) {
+    if (left instanceof Iterable)
       left = ((Iterable) left).iterator();
-    }
+
     if (left instanceof Iterator) {
-      if (!(right instanceof Iterable)) {
+      if (!(right instanceof Iterable))
         right = Collections.singleton(right);
-      }
+
       right = ((Iterable) right).iterator();
 
       final Iterator leftIterator = (Iterator) left;
@@ -76,9 +77,8 @@ public class ContainsAllCondition extends BooleanExpression {
             break;
           }
         }
-        if (!found) {
+        if (!found)
           return false;
-        }
       }
       return true;
     }
@@ -92,23 +92,23 @@ public class ContainsAllCondition extends BooleanExpression {
       final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
-      if (!MultiValue.isMultiValue(leftValue)) {
+      if (!MultiValue.isMultiValue(leftValue))
         return false;
-      }
+
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, context)) {
+          if (!rightBlock.evaluate((Identifiable) item, context))
             return false;
-          }
+
         } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, context)) {
+          if (!rightBlock.evaluate((Result) item, context))
             return false;
-          }
-        } else {
+
+        } else if (!rightBlock.evaluate(new ResultInternal(item), context))
           return false;
-        }
+
       }
       return true;
     }
@@ -121,23 +121,21 @@ public class ContainsAllCondition extends BooleanExpression {
       final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
-      if (!MultiValue.isMultiValue(leftValue)) {
+      if (!MultiValue.isMultiValue(leftValue))
         return false;
-      }
+
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, context)) {
+          if (!rightBlock.evaluate((Identifiable) item, context))
             return false;
-          }
         } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, context)) {
+          if (!rightBlock.evaluate((Result) item, context))
             return false;
-          }
-        } else {
+        } else if (!rightBlock.evaluate(new ResultInternal(item), context))
           return false;
-        }
+
       }
       return true;
     }
@@ -168,12 +166,12 @@ public class ContainsAllCondition extends BooleanExpression {
   @Override
   public void extractSubQueries(final SubQueryCollector collector) {
     left.extractSubQueries(collector);
-    if (right != null) {
+    if (right != null)
       right.extractSubQueries(collector);
-    }
-    if (rightBlock != null) {
+
+    if (rightBlock != null)
       rightBlock.extractSubQueries(collector);
-    }
+
   }
 
   @Override
