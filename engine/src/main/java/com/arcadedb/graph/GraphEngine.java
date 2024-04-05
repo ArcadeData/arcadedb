@@ -352,13 +352,16 @@ public class GraphEngine {
 
   public void deleteVertex(final VertexInternal vertex) {
     // RETRIEVE ALL THE EDGES TO DELETE AT THE END
+    final Set<RID> edgeChunkToDelete = new HashSet<>();
     final List<Identifiable> edgesToDelete = new ArrayList<>();
 
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
     if (outEdges != null) {
-      final Iterator<Edge> outIterator = outEdges.edgeIterator();
+      final EdgeIterator outIterator = (EdgeIterator) outEdges.edgeIterator();
 
       while (outIterator.hasNext()) {
+        edgeChunkToDelete.add(outIterator.currentContainer.getIdentity());
+
         RID inV = null;
         try {
           final Edge nextEdge = outIterator.next();
@@ -371,16 +374,15 @@ public class GraphEngine {
                   vertex.getIdentity());
         }
       }
-
-      final RID outRID = vertex.getOutEdgesHeadChunk();
-      outRID.getRecord(false).delete();
     }
 
     final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
     if (inEdges != null) {
-      final Iterator<Edge> inIterator = inEdges.edgeIterator();
+      final EdgeIterator inIterator = (EdgeIterator) inEdges.edgeIterator();
 
       while (inIterator.hasNext()) {
+        edgeChunkToDelete.add(inIterator.currentContainer.getIdentity());
+
         RID outV = null;
         try {
           final Edge nextEdge = inIterator.next();
@@ -396,6 +398,10 @@ public class GraphEngine {
       final RID inRID = vertex.getInEdgesHeadChunk();
       inRID.getRecord(false).delete();
     }
+
+    // DELETE CHUNKS FIRST (SPEED UP FOLLOWING EDGE DELETION)
+    for (Identifiable chunk : edgeChunkToDelete)
+      chunk.getRecord().delete();
 
     for (Identifiable edge : edgesToDelete)
       edge.asEdge().delete();
