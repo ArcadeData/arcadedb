@@ -88,7 +88,7 @@ public interface DocumentType {
     if (prop.has("notNull"))
       p.setNotNull(prop.getBoolean("notNull"));
     if (prop.has("hidden"))
-      p.setNotNull(prop.getBoolean("hidden"));
+      p.setHidden(prop.getBoolean("hidden"));
     if (prop.has("max"))
       p.setMax(prop.getString("max"));
     if (prop.has("min"))
