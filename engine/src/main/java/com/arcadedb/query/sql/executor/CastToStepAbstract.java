@@ -60,18 +60,17 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
             if (result instanceof ResultInternal) {
               ((ResultInternal) result).setElement(result.getElement().get());
             } else {
-              final ResultInternal r = new ResultInternal();
+              final ResultInternal r = new ResultInternal(context.getDatabase());
               r.setElement(result.getElement().get());
               result = r;
             }
-          } else {
+          } else
             throw new CommandExecutionException("Current element is not a " + clsName + ": " + result);
-          }
+
           return result;
         } finally {
-          if( context.isProfiling() ) {
+          if (context.isProfiling())
             cost += (System.nanoTime() - begin);
-          }
         }
       }
 
@@ -85,7 +84,7 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CAST TO " + clsName.toUpperCase(Locale.ENGLISH);
-    if( context.isProfiling() ) {
+    if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

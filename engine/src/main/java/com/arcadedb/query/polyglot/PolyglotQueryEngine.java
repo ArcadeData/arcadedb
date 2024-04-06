@@ -84,9 +84,11 @@ public class PolyglotQueryEngine implements QueryEngine {
     this.language = language;
     this.database = database;
     this.allowedPackages = allowedPackages;
-    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
+    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language)
+        .setAllowedPackages(allowedPackages).build();
     this.userCodeExecutorQueue = new ArrayBlockingQueue<>(10000);
-    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, new ThreadPoolExecutor.CallerRunsPolicy());
+    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue,
+        new ThreadPoolExecutor.CallerRunsPolicy());
     this.timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT);
   }
 
@@ -99,7 +101,8 @@ public class PolyglotQueryEngine implements QueryEngine {
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     if (parameters == null || parameters.length == 0)
       return command(query, configuration, (Map) null);
-    throw new UnsupportedOperationException("Execution of a command with positional parameter is not supported for polyglot engine");
+    throw new UnsupportedOperationException(
+        "Execution of a command with positional parameter is not supported for polyglot engine");
   }
 
   @Override
@@ -153,7 +156,7 @@ public class PolyglotQueryEngine implements QueryEngine {
             // UNKNOWN OR NOT SUPPORTED
             value = null;
 
-          resultSet.add(new ResultInternal().setProperty("value", value));
+          resultSet.add(new ResultInternal(database).setProperty("value", value));
           return resultSet;
         }
 
@@ -185,7 +188,8 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   @Override
   public QueryEngine unregisterFunctions() {
-    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
+    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language)
+        .setAllowedPackages(allowedPackages).build();
     return this;
   }
 
@@ -212,12 +216,14 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
+    throw new UnsupportedOperationException(
+        "Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
-    throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
+    throw new UnsupportedOperationException(
+        "Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   @Override
@@ -254,7 +260,7 @@ public class PolyglotQueryEngine implements QueryEngine {
     else if (o instanceof Map)
       return new ResultInternal((Map) o);
 
-    return new ResultInternal().setProperty("value", o);
+    return new ResultInternal(database).setProperty("value", o);
   }
 
 }

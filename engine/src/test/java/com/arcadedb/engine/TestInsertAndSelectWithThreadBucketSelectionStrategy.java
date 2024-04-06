@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 import java.time.*;
 import java.time.format.*;
 
-public class testInsertAndSelectWithThreadBucketSelectionStrategy {
+public class TestInsertAndSelectWithThreadBucketSelectionStrategy {
   @Test
   public void testInsertAndSelectWithThreadBucketSelectionStrategy() {
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {

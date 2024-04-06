@@ -48,7 +48,7 @@ public class CommitStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
     context.getDatabase().commit(); // no RETRY and ELSE here, that case is allowed only for batch scripts;
     final InternalResultSet result = new InternalResultSet();
-    final ResultInternal item = new ResultInternal();
+    final ResultInternal item = new ResultInternal(context.getDatabase());
     item.setProperty("operation", "commit");
     result.add(item);
     return result;

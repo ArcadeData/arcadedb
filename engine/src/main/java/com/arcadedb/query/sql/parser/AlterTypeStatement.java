@@ -106,7 +106,7 @@ public class AlterTypeStatement extends DDLStatement {
     if (type == null)
       throw new CommandExecutionException("Type not found: " + name);
 
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
 
     if (property != null) {
       switch (property.toLowerCase(Locale.ENGLISH)) {
@@ -167,9 +167,8 @@ public class AlterTypeStatement extends DDLStatement {
 
     if (customKey != null) {
       Object value = null;
-      if (customValue != null) {
+      if (customValue != null)
         value = customValue.execute((Identifiable) null, context);
-      }
 
       type.setCustomValue(customKey.getStringValue(), value);
       result.setProperty("custom", customKey.getStringValue() + "=" + value);

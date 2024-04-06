@@ -374,18 +374,18 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private List<PCollection> cartesianProduct(final PCollection head, final PCollection key) {
-    if (key.getExpressions().size() == 0) {
+    if (key.getExpressions().isEmpty())
       return Collections.singletonList(head);
-    }
+
     final Expression nextElementInKey = key.getExpressions().get(0);
-    final Object value = nextElementInKey.execute(new ResultInternal(), context);
+    final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
     if (value instanceof Iterable && !(value instanceof Identifiable)) {
       final List<PCollection> result = new ArrayList<>();
       for (final Object elemInKey : (Iterable<?>) value) {
         final PCollection newHead = new PCollection(-1);
-        for (final Expression exp : head.getExpressions()) {
+        for (final Expression exp : head.getExpressions())
           newHead.add(exp.copy());
-        }
+
         newHead.add(toExpression(elemInKey));
         final PCollection tail = key.copy();
         tail.getExpressions().remove(0);
@@ -394,9 +394,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return result;
     } else {
       final PCollection newHead = new PCollection(-1);
-      for (final Expression exp : head.getExpressions()) {
+      for (final Expression exp : head.getExpressions())
         newHead.add(exp.copy());
-      }
+
       newHead.add(nextElementInKey);
       final PCollection tail = key.copy();
       tail.getExpressions().remove(0);

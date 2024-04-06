@@ -80,7 +80,7 @@ public class DropTypeStatement extends DDLStatement {
     schema.dropType(typeName);
 
     final InternalResultSet rs = new InternalResultSet();
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "drop type");
     result.setProperty("typeName", typeName);
     rs.add(result);

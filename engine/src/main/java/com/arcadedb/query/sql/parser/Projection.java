@@ -90,12 +90,17 @@ public class Projection extends SimpleNode {
     }
   }
 
-  public Result calculateSingle(final CommandContext iContext, final Result iRecord) {
+  public Result calculateSingle(final CommandContext context, final Result iRecord) {
     initExcludes();
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
-    final ResultInternal result = new ResultInternal();
+    if (items.isEmpty() ||//
+        (items.size() == 1 && (items.get(0).isAll() || items.get(0).getExpression().toString().equals("@this")))//
+            && items.get(0).nestedProjection == null)
+      return iRecord;
+
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     for (final ProjectionItem item : items) {
       if (item.exclude)
         continue;
@@ -110,7 +115,7 @@ public class Projection extends SimpleNode {
 
           Object val = item.convert(iRecord.getProperty(alias));
           if (item.nestedProjection != null) {
-            val = item.nestedProjection.apply(item.expression, val, iContext);
+            val = item.nestedProjection.apply(item.expression, val, context);
           }
           result.setProperty(alias, val);
         }
@@ -123,7 +128,7 @@ public class Projection extends SimpleNode {
           }
         }
       } else {
-        result.setProperty(item.getProjectionAliasAsString(), item.execute(iRecord, iContext));
+        result.setProperty(item.getProjectionAliasAsString(), item.execute(iRecord, context));
       }
     }
 

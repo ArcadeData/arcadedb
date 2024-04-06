@@ -47,7 +47,7 @@ public class CreatePropertyStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "create property");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("propertyName", propertyName.getStringValue());

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -87,6 +88,11 @@ public class EmptyResult implements Result {
 
   @Override
   public Set<String> getMetadataKeys() {
+    return null;
+  }
+
+  @Override
+  public Database getDatabase() {
     return null;
   }
 

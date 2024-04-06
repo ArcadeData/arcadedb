@@ -87,7 +87,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public Result toResult() {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("type", "QueryExecutionPlan");
     result.setProperty(JAVA_TYPE, getClass().getName());
     result.setProperty("cost", getCost());

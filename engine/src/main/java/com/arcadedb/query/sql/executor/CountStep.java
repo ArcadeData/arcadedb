@@ -43,7 +43,7 @@ public class CountStep extends AbstractExecutionStep {
     if (executed)
       return new InternalResultSet();
 
-    final ResultInternal resultRecord = new ResultInternal();
+    final ResultInternal resultRecord = new ResultInternal(context.getDatabase());
     executed = true;
     long count = 0;
     while (true) {
@@ -57,7 +57,7 @@ public class CountStep extends AbstractExecutionStep {
           result.add(resultRecord);
           return result;
         } finally {
-          if( context.isProfiling() ) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -75,7 +75,7 @@ public class CountStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COUNT");
-    if( context.isProfiling() ) {
+    if (context.isProfiling()) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();

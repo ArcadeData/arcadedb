@@ -58,7 +58,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
         for (final String typeName : orderedTypes) {
           final DocumentType type = schema.getType(typeName);
 
-          final ResultInternal r = new ResultInternal();
+          final ResultInternal r = new ResultInternal(context.getDatabase());
           result.add(r);
 
           r.setProperty("name", type.getName());
@@ -82,7 +82,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
           final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase)
               .map(name -> type.getProperty(name)).map(property -> {
-                final ResultInternal propRes = new ResultInternal();
+                final ResultInternal propRes = new ResultInternal(context.getDatabase());
                 propRes.setProperty("id", property.getId());
                 propRes.setProperty("name", property.getName());
                 propRes.setProperty("type", property.getType());
@@ -136,7 +136,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           context.setVariable("current", r);
         }
       } finally {
-        if( context.isProfiling() ) {
+        if (context.isProfiling()) {
           cost += (System.nanoTime() - begin);
         }
       }
@@ -168,7 +168,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA TYPES";
-    if( context.isProfiling() ) {
+    if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

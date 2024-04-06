@@ -27,26 +27,20 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
 public class RemoteMutableEdge extends MutableEdge {
   protected final RemoteDatabase remoteDatabase;
-  protected final String         typeName;
 
   protected RemoteMutableEdge(final RemoteImmutableEdge source) {
-    super(null, null, source.getIdentity());
+    super(null, (EdgeType) source.getType(), source.getIdentity());
     this.remoteDatabase = source.remoteDatabase;
-    this.typeName = source.typeName;
     this.map.putAll(source.map);
     this.out = source.getOut();
     this.in = source.getIn();
-  }
-
-  @Override
-  public String getTypeName() {
-    return typeName;
   }
 
   @Override
@@ -55,7 +49,7 @@ public class RemoteMutableEdge extends MutableEdge {
     if (rid != null)
       remoteDatabase.command("sql", "update " + rid + " content " + toJSON());
     else
-      remoteDatabase.command("sql", "insert into " + typeName + " content " + toJSON());
+      remoteDatabase.command("sql", "insert into " + getTypeName() + " content " + toJSON());
     dirty = false;
     return this;
   }
@@ -65,7 +59,7 @@ public class RemoteMutableEdge extends MutableEdge {
     dirty = true;
     if (rid != null)
       throw new IllegalStateException("Cannot update a record in a custom bucket");
-    remoteDatabase.command("sql", "insert into " + typeName + " bucket " + bucketName + " content " + toJSON());
+    remoteDatabase.command("sql", "insert into " + getTypeName() + " bucket " + bucketName + " content " + toJSON());
     dirty = false;
     return this;
   }
@@ -93,7 +87,7 @@ public class RemoteMutableEdge extends MutableEdge {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
       result.put("@cat", "e");
-      result.put("@type", typeName);
+      result.put("@type", getTypeName());
       if (getIdentity() != null)
         result.put("@rid", getIdentity().toString());
     }
@@ -102,10 +96,10 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map);
+    final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "e");
-      result.put("@type", typeName);
+      result.put("@type", getTypeName());
       if (getIdentity() != null)
         result.put("@rid", getIdentity().toString());
     }

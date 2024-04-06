@@ -335,7 +335,7 @@ public class Console {
     if (databaseProxy instanceof DatabaseInternal) {
       final TransactionContext tx = ((DatabaseInternal) databaseProxy).getTransaction();
       if (tx.isActive()) {
-        final ResultInternal row = new ResultInternal();
+        final ResultInternal row = new ResultInternal((Database) databaseProxy);
         row.setPropertiesFromMap(tx.getStats());
         printRecord(row);
 
@@ -467,7 +467,7 @@ public class Console {
     checkHasSpaces("User name", userName);
 
     final String password;
-    Map<String,String> databases = new HashMap<String,String>();
+    Map<String, String> databases = new HashMap<String, String>();
 
     if (databasesByPos > -1) {
       password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1, databasesByPos).trim();
@@ -477,11 +477,11 @@ public class Console {
       for (final String db : databasesName) {
         final int colonPos = db.indexOf(":");
         if (colonPos > -1) {
-          final String dbname = db.substring(0,colonPos -1).trim();
+          final String dbname = db.substring(0, colonPos - 1).trim();
           final String dbgroup = db.substring(colonPos + 1).trim();
-          databases.put(dbname,dbgroup);
+          databases.put(dbname, dbgroup);
         } else {
-          databases.put(db,"admin");
+          databases.put(db, "admin");
         }
       }
     } else {

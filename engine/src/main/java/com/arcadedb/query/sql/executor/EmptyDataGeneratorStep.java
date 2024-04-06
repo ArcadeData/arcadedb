@@ -50,13 +50,13 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
 
           if (served < size) {
             served++;
-            final ResultInternal result = new ResultInternal();
+            final ResultInternal result = new ResultInternal(context.getDatabase());
             context.setVariable("current", result);
             return result;
           }
           throw new NoSuchElementException();
         } finally {
-          if( context.isProfiling() ) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -73,7 +73,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ GENERATE " + size + " EMPTY " + (size == 1 ? "RECORD" : "RECORDS");
-    if( context.isProfiling() ) {
+    if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

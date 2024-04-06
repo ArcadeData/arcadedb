@@ -102,6 +102,8 @@ public class DateUtils {
       ((Calendar) value).setTimeInMillis(timestamp * MS_IN_A_DAY);
     } else if (dateImplementation.equals(LocalDate.class)) {
       value = LocalDate.ofEpochDay(timestamp);
+    } else if (dateImplementation.equals(LocalDateTime.class)) {
+      value = LocalDateTime.ofEpochSecond(timestamp / 1000, (int) ((timestamp % 1000) * 1000), ZoneOffset.UTC);
     } else
       throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
     return value;

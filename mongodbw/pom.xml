@@ -24,7 +24,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>24.1.1</version>
+        <version>24.2.1</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -32,7 +32,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <mongo-java-server.version>1.44.0</mongo-java-server.version>
+        <mongo-java-server.version>1.45.0</mongo-java-server.version>
         <mongo-java-driver.version>3.12.13</mongo-java-driver.version>
         <netty.version>4.1.104.Final</netty.version>
     </properties>

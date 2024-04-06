@@ -185,7 +185,7 @@ public interface BasicDatabase extends AutoCloseable {
    *
    * @return The number of records found
    */
-  Iterator<Record> iterateType(String typeName, boolean polymorphic);
+  <T extends Record> Iterator<T> iterateType(String typeName, boolean polymorphic);
 
   /**
    * Iterates the records contained in a bucket.
@@ -194,7 +194,7 @@ public interface BasicDatabase extends AutoCloseable {
    *
    * @return The number of records found
    */
-  Iterator<Record> iterateBucket(String bucketName);
+  <T extends Record> Iterator<T> iterateBucket(String bucketName);
 
   /**
    * Executes a command by specifying the language and arguments in a map.

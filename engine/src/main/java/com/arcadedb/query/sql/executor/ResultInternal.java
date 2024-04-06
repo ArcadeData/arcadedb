@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
@@ -31,21 +32,45 @@ import java.util.stream.*;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
-  protected Map<String, Object> content;
-  protected Map<String, Object> temporaryContent;
-  protected Map<String, Object> metadata;
-  protected Document            element;
+  protected final Database            database;
+  protected final Object              value;
+  protected       Map<String, Object> content;
+  protected       Map<String, Object> temporaryContent;
+  protected       Map<String, Object> metadata;
+  protected       Document            element;
 
   public ResultInternal() {
-    content = new LinkedHashMap<>();
+    this.content = new LinkedHashMap<>();
+    this.database = null;
+    this.value = null;
   }
 
   public ResultInternal(final Map<String, Object> map) {
     this.content = map;
+    this.database = null;
+    this.value = null;
   }
 
-  public ResultInternal(final Identifiable ident) {
-    this.element = (Document) ident.getRecord();
+  public ResultInternal(final Identifiable indent) {
+    this.element = (Document) indent.getRecord();
+    this.database = null;
+    this.value = null;
+  }
+
+  public ResultInternal(final Database database) {
+    this.content = new LinkedHashMap<>();
+    this.database = database;
+    this.value = null;
+  }
+
+  public ResultInternal(final Object value) {
+    this.value = value;
+    this.database = null;
+  }
+
+  @Override
+  public Database getDatabase() {
+    return database;
   }
 
   public void setTemporaryProperty(final String name, Object value) {
@@ -255,7 +280,7 @@ public class ResultInternal implements Result {
 
     if (hasProperty("@rid")) {
       final Object rid = getProperty("@rid");
-      return Optional.of((RID) (rid instanceof RID ? rid : new RID( rid.toString())));
+      return Optional.of((RID) (rid instanceof RID ? rid : new RID(rid.toString())));
     }
     return Optional.empty();
   }
@@ -300,34 +325,35 @@ public class ResultInternal implements Result {
 
   @Override
   public String toString() {
-    if (element != null)
+    if (value != null)
+      return value.toString();
+    else if (element != null)
       return element.toString();
-
-    if (content != null)
-      return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n") + " }";
-
+    else if (content != null)
+      return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n")
+          + " }";
     return "{}";
   }
 
   @Override
-  public boolean equals(final Object obj) {
-    if (this == obj)
+  public boolean equals(final Object other) {
+    if (this == other)
       return true;
 
-    if (!(obj instanceof ResultInternal))
+    if (!(other instanceof ResultInternal))
       return false;
 
-    final ResultInternal resultObj = (ResultInternal) obj;
+    final ResultInternal otherResult = (ResultInternal) other;
     if (element != null) {
-      if (resultObj.getElement().isEmpty()) {
+      if (otherResult.getElement().isEmpty())
         return false;
-      }
-      return element.equals(resultObj.getElement().get());
-    } else {
-      if (resultObj.getElement().isPresent())
+      return element.equals(otherResult.getElement().get());
+    } else if (value != null)
+      return value.equals(otherResult.value);
+    else {
+      if (otherResult.getElement().isPresent())
         return false;
-
-      return this.content != null && this.content.equals(resultObj.content);
+      return this.content != null && this.content.equals(otherResult.content);
     }
   }
 
@@ -335,10 +361,10 @@ public class ResultInternal implements Result {
   public int hashCode() {
     if (element != null)
       return element.hashCode();
-
-    if (content != null)
+    else if (content != null)
       return content.hashCode();
-
+    else if (value != null)
+      return value.hashCode();
     return super.hashCode();
   }
 

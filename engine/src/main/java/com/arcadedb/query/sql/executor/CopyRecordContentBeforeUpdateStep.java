@@ -53,22 +53,22 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
         try {
 
           if (result instanceof UpdatableResult) {
-            final ResultInternal prevValue = new ResultInternal();
+            final ResultInternal prevValue = new ResultInternal(context.getDatabase());
             final Record rec = result.getElement().get().getRecord();
             prevValue.setProperty("@rid", rec.getIdentity());
-            if (rec instanceof Document) {
+            if (rec instanceof Document)
               prevValue.setProperty("@type", ((Document) rec).getTypeName());
-            }
-            for (final String propName : result.getPropertyNames()) {
+
+            for (final String propName : result.getPropertyNames())
               prevValue.setProperty(propName, result.getProperty(propName));
-            }
+
             ((UpdatableResult) result).previousValue = prevValue;
           } else {
             throw new CommandExecutionException("Cannot fetch previous value: " + result);
           }
           return result;
         } finally {
-          if( context.isProfiling() ) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -87,7 +87,7 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COPY RECORD CONTENT BEFORE UPDATE");
-    if( context.isProfiling() ) {
+    if (context.isProfiling()) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();

@@ -44,7 +44,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   @Override
   public ResultSet executeSimple(final CommandContext context) {
     final String targetUrl = this.url != null ? this.url.getUrlString() : null;
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "backup database");
     if (targetUrl != null)
       result.setProperty("target", targetUrl);

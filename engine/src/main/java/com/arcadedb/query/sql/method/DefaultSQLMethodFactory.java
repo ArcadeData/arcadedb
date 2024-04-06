@@ -49,6 +49,7 @@ import com.arcadedb.query.sql.method.geo.SQLMethodIntersectsWith;
 import com.arcadedb.query.sql.method.geo.SQLMethodIsWithin;
 import com.arcadedb.query.sql.method.misc.SQLMethodExclude;
 import com.arcadedb.query.sql.method.misc.SQLMethodHash;
+import com.arcadedb.query.sql.method.misc.SQLMethodIfEmpty;
 import com.arcadedb.query.sql.method.misc.SQLMethodIfNull;
 import com.arcadedb.query.sql.method.misc.SQLMethodInclude;
 import com.arcadedb.query.sql.method.misc.SQLMethodJavaType;
@@ -120,6 +121,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     // Misc
     register(SQLMethodExclude.NAME, new SQLMethodExclude());
     register(SQLMethodHash.NAME, new SQLMethodHash());
+    register(SQLMethodIfEmpty.NAME, new SQLMethodIfEmpty());
     register(SQLMethodIfNull.NAME, new SQLMethodIfNull());
     register(SQLMethodInclude.NAME, new SQLMethodInclude());
     register(SQLMethodJavaType.NAME, new SQLMethodJavaType());
