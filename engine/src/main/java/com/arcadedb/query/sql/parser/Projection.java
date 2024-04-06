@@ -95,10 +95,14 @@ public class Projection extends SimpleNode {
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
-    if (items.isEmpty() ||//
-        (items.size() == 1 && (items.get(0).isAll() || items.get(0).getExpression().toString().equals("@this")))//
-            && items.get(0).nestedProjection == null)
-      return iRecord;
+    if (items.size() == 1 && items.get(0).getExpression().toString().equals("@this"))
+      items.clear();
+
+    if (items.isEmpty()) {
+      final ProjectionItem star = new ProjectionItem(new Expression(new Identifier("*")),null,null);
+      star.setAll(true);
+      items.add(star);
+    }
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     for (final ProjectionItem item : items) {
@@ -106,7 +110,7 @@ public class Projection extends SimpleNode {
         continue;
 
       if (item.isAll()) {
-        // result.setElement(iRecord.toElement()); // TODO: Can this be removed?
+        result.setElement(iRecord.toElement());
         final Document doc = iRecord.getElement().get();
         for (final String alias : iRecord.getPropertyNames()) {
           if (this.excludes.contains(alias) || doc.getType().getProperty(alias).isHidden()) {
