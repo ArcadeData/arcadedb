@@ -87,7 +87,7 @@ public class AlterPropertyStatement extends DDLStatement {
         property.setNotNull((boolean) finalValue);
       } else if (setting.equalsIgnoreCase("hidden")) {
         oldValue = property.isHidden();
-        property.setNotNull((boolean) finalValue);
+        property.setHidden((boolean) finalValue);
       } else if (setting.equalsIgnoreCase("max")) {
         oldValue = property.getMax();
         property.setMax("" + finalValue);
