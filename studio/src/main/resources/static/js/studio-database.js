@@ -632,6 +632,7 @@ function displaySchema() {
         panelHtml += "<th scope='col'>Mandatory</th>";
         panelHtml += "<th scope='col'>Not Null</th>";
         panelHtml += "<th scope='col'>Read Only</th>";
+        panelHtml += "<th scope='col'>Hidden</th>";
         panelHtml += "<th scope='col'>Default Value</th>";
         panelHtml += "<th scope='col'>Min</th>";
         panelHtml += "<th scope='col'>Max</th>";
@@ -712,6 +713,7 @@ function renderProperties(row, results) {
     panelHtml += "<td>" + (property.mandatory ? true : false) + "</td>";
     panelHtml += "<td>" + (property.notNull ? true : false) + "</td>";
     panelHtml += "<td>" + (property.readOnly ? true : false) + "</td>";
+    panelHtml += "<td>" + (property.hidden ? true : false) + "</td>";
     panelHtml += "<td>" + (property["default"] != null ? property["default"] : "") + "</td>";
     panelHtml += "<td>" + (property.min != null ? property.min : "") + "</td>";
     panelHtml += "<td>" + (property.max != null ? property.max : "") + "</td>";
