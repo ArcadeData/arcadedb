@@ -57,7 +57,6 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
@@ -261,7 +260,7 @@ public class LocalSchema implements Schema {
     if (fileId >= files.size())
       return;
 
-    database.getTransaction().removePagesOfFile(fileId);
+    database.getTransaction().removeFile(fileId);
 
     files.set(fileId, null);
   }

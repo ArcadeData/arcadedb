@@ -152,14 +152,14 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       try {
         database.command("sql", "DROP TYPE SuperV");
-        Assertions.assertTrue(false);
+        Assertions.fail();
       } catch (final CommandExecutionException e) {
         Assertions.assertTrue(true);
       }
 
       try {
         database.command("sql", "DROP TYPE SuperE");
-        Assertions.assertTrue(false);
+        Assertions.fail();
       } catch (final CommandExecutionException e) {
         Assertions.assertTrue(true);
       }
