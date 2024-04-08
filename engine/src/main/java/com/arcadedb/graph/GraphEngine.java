@@ -394,9 +394,6 @@ public class GraphEngine {
               .log(this, Level.FINE, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
         }
       }
-
-      final RID inRID = vertex.getInEdgesHeadChunk();
-      inRID.getRecord(false).delete();
     }
 
     // DELETE CHUNKS FIRST (SPEED UP FOLLOWING EDGE DELETION)
@@ -405,6 +402,9 @@ public class GraphEngine {
 
     for (Identifiable edge : edgesToDelete)
       edge.asEdge().delete();
+
+    for (Identifiable chunk : edgeChunkToDelete)
+      chunk.getRecord().delete();
 
     // DELETE VERTEX RECORD
     vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
