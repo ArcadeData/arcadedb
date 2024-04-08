@@ -22,6 +22,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
@@ -38,6 +40,10 @@ public class JSONSerializer {
   }
 
   public JSONObject map2json(final Map<String, Object> map, final String... includeProperties) {
+    return map2json(map, null, includeProperties);
+  }
+
+  public JSONObject map2json(final Map<String, Object> map, final DocumentType type, final String... includeProperties) {
     final JSONObject json = new JSONObject();
 
     final Set<String> includePropertiesSet;
@@ -52,7 +58,11 @@ public class JSONSerializer {
       if (includePropertiesSet != null && !includePropertiesSet.contains(entry.getKey()))
         continue;
 
-      final Object value = convertToJSONType(entry.getValue());
+      Type propertyType = null;
+      if (type != null && type.existsProperty(entry.getKey()))
+        propertyType = type.getProperty(entry.getKey()).getType();
+
+      final Object value = convertToJSONType(entry.getValue(), propertyType);
 
       if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {
         LogManager.instance()
@@ -78,6 +88,10 @@ public class JSONSerializer {
   }
 
   private Object convertToJSONType(Object value) {
+    return convertToJSONType(value, null);
+  }
+
+  private Object convertToJSONType(Object value, final Type type) {
     if (value instanceof Document) {
       value = ((Document) value).toJSON();
     } else if (value instanceof Collection) {
@@ -89,7 +103,7 @@ public class JSONSerializer {
     } else if (value instanceof Date)
       value = ((Date) value).getTime();
     else if (value instanceof Temporal)
-      value = DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
+      value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) : ChronoUnit.MILLIS);
     else if (value instanceof Map) {
       final Map<String, Object> m = (Map<String, Object>) value;
       final JSONObject map = new JSONObject();

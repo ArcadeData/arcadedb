@@ -35,6 +35,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -76,7 +77,8 @@ public class RemoteDateIT {
       database.begin();
       sqlString = "INSERT INTO Order SET vstart = ?";
       try (ResultSet resultSet = database.command("sql", sqlString, vstart)) {
-        Assertions.assertEquals(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.NANOS), new JSONObject(resultSet.next().toJSON()).getLong("vstart"));
+        Assertions.assertEquals(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.MICROS),
+            new JSONObject(resultSet.next().toJSON()).getLong("vstart"));
       }
       sqlString = "select from Order";
       System.out.println(sqlString);
@@ -101,6 +103,15 @@ public class RemoteDateIT {
     } finally {
       arcadeDBServer.stop();
     }
+  }
+
+  @BeforeEach
+  public void beginTest() {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+    DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
   }
 
   @AfterEach
