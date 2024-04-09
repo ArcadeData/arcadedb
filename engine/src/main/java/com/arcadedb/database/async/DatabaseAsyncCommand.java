@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -30,9 +31,12 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
   public final Object[]               parameters;
   public final Map<String, Object>    parametersMap;
   public final AsyncResultsetCallback userCallback;
+  public final ContextConfiguration   configuration;
 
-  public DatabaseAsyncCommand(final boolean idempotent, final String language, final String command, final Object[] parameters,
+  public DatabaseAsyncCommand(final ContextConfiguration configuration, final boolean idempotent, final String language,
+      final String command, final Object[] parameters,
       final AsyncResultsetCallback userCallback) {
+    this.configuration = configuration;
     this.idempotent = idempotent;
     this.language = language;
     this.command = command;
@@ -41,8 +45,10 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
     this.userCallback = userCallback;
   }
 
-  public DatabaseAsyncCommand(final boolean idempotent, final String language, final String command, final Map<String, Object> parametersMap,
+  public DatabaseAsyncCommand(final ContextConfiguration configuration, final boolean idempotent, final String language,
+      final String command, final Map<String, Object> parametersMap,
       final AsyncResultsetCallback userCallback) {
+    this.configuration = configuration;
     this.idempotent = idempotent;
     this.language = language;
     this.command = command;
@@ -55,8 +61,12 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
       final ResultSet resultset = idempotent ?
-          parametersMap != null ? database.query(language, command, parametersMap) : database.query(language, command, parameters) :
-          parametersMap != null ? database.command(language, command, parametersMap) : database.command(language, command, parameters);
+          parametersMap != null ?
+              database.query(language, command, configuration, parametersMap) :
+              database.query(language, command, configuration, parameters) :
+          parametersMap != null ?
+              database.command(language, command, configuration, parametersMap) :
+              database.command(language, command, configuration, parameters);
 
       if (userCallback != null)
         userCallback.onComplete(resultset);

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
@@ -43,17 +44,18 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
-  private final DatabaseInternal   database;
-  private final Random             random                        = new Random();
-  private       AsyncThread[]      executorThreads;
-  private       int                parallelLevel                 = 1;
-  private       int                commitEvery;
-  private       int                backPressurePercentage        = 0;
-  private       boolean            transactionUseWAL             = true;
-  private       WALFile.FLUSH_TYPE transactionSync               = WALFile.FLUSH_TYPE.NO;
-  private       long               checkForStalledQueuesMaxDelay = 5_000;
-  private final AtomicLong         transactionCounter            = new AtomicLong();
-  private final AtomicLong         commandRoundRobinIndex        = new AtomicLong();
+  private final DatabaseInternal     database;
+  private final Random               random                        = new Random();
+  private final ContextConfiguration configuration;
+  private       AsyncThread[]        executorThreads;
+  private       int                  parallelLevel                 = 1;
+  private       int                  commitEvery;
+  private       int                  backPressurePercentage        = 0;
+  private       boolean              transactionUseWAL             = true;
+  private       WALFile.FLUSH_TYPE   transactionSync               = WALFile.FLUSH_TYPE.NO;
+  private       long                 checkForStalledQueuesMaxDelay = 5_000;
+  private final AtomicLong           transactionCounter            = new AtomicLong();
+  private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
 
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
@@ -187,8 +189,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
   }
 
-  public DatabaseAsyncExecutorImpl(final DatabaseInternal database) {
+  public DatabaseAsyncExecutorImpl(final DatabaseInternal database, final ContextConfiguration configuration) {
     this.database = database;
+    this.configuration = configuration;
     this.commitEvery = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_TX_BATCH_SIZE);
     createThreads(database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS));
   }
@@ -327,27 +330,31 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public void query(final String language, final String query, final AsyncResultsetCallback callback, final Object... args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(true, language, query, args, callback), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncCommand(configuration, true, language, query, args, callback), true,
+        backPressurePercentage);
   }
 
   @Override
   public void query(final String language, final String query, final AsyncResultsetCallback callback,
       final Map<String, Object> args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(true, language, query, args, callback), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncCommand(configuration, true, language, query, args, callback), true,
+        backPressurePercentage);
   }
 
   @Override
   public void command(final String language, final String query, final AsyncResultsetCallback callback, final Object... args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(false, language, query, args, callback), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncCommand(configuration, false, language, query, args, callback), true,
+        backPressurePercentage);
   }
 
   @Override
   public void command(final String language, final String query, final AsyncResultsetCallback callback,
       final Map<String, Object> args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(false, language, query, args, callback), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncCommand(configuration, false, language, query, args, callback), true,
+        backPressurePercentage);
   }
 
   @Override
