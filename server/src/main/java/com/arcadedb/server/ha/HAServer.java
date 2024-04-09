@@ -44,6 +44,7 @@ import com.arcadedb.server.ha.message.HAMessageFactory;
 import com.arcadedb.server.ha.message.UpdateClusterConfiguration;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
 import com.arcadedb.utility.Callable;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RecordTableFormatter;
@@ -145,13 +146,13 @@ public class HAServer implements ServerPlugin {
   }
 
   @Override
-  public void configure(final ArcadeDBServer server, final ContextConfiguration configuration) {
-  }
-
-  @Override
   public void startService() {
     if (started)
       return;
+
+    // WAIT THE HTTP SERVER IS CONNECTED AND ACQUIRES A LISTENING ADDRESS
+    while (!server.getHttpServer().isConnected())
+      CodeUtils.sleep(200);
 
     started = true;
 

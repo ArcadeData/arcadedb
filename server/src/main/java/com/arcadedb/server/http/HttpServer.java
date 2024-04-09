@@ -68,13 +68,12 @@ import static com.arcadedb.server.http.ssl.KeystoreType.PKCS12;
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
-  private final ArcadeDBServer     server;
-  private final HttpSessionManager sessionManager;
-  private final WebSocketEventBus  webSocketEventBus;
-  private       Undertow           undertow;
-  private       String             listeningAddress;
-  private       String             host;
-  private       int                httpPortListening;
+  private final    ArcadeDBServer     server;
+  private final    HttpSessionManager sessionManager;
+  private final    WebSocketEventBus  webSocketEventBus;
+  private          Undertow           undertow;
+  private volatile String             listeningAddress;
+  private          int                httpPortListening;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -102,7 +101,7 @@ public class HttpServer implements ServerPlugin {
   public void startService() {
     final ContextConfiguration configuration = server.getConfiguration();
 
-    host = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
+    final String host = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
 
     final Object configuredHTTPPort = configuration.getValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
     final int[] httpPortRange = extractPortRange(configuredHTTPPort);
@@ -294,4 +293,7 @@ public class HttpServer implements ServerPlugin {
     return storePropertyValue;
   }
 
+  public boolean isConnected() {
+    return undertow != null && listeningAddress != null;
+  }
 }
