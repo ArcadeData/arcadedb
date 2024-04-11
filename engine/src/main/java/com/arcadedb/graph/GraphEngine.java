@@ -396,10 +396,6 @@ public class GraphEngine {
       }
     }
 
-    // DELETE CHUNKS FIRST (SPEED UP FOLLOWING EDGE DELETION)
-    for (Identifiable chunk : edgeChunkToDelete)
-      chunk.getRecord().delete();
-
     for (Identifiable edge : edgesToDelete)
       edge.asEdge().delete();
 
