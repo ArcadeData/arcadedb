@@ -24,7 +24,11 @@ import com.arcadedb.database.Binary;
  * Base interface for compression.
  */
 public interface Compression {
+  byte[] compress(byte[] data);
+
   Binary compress(Binary data);
+
+  byte[] decompress(byte[] data, int decompressedLength);
 
   Binary decompress(Binary requestBytes, int decompressedLength);
 }

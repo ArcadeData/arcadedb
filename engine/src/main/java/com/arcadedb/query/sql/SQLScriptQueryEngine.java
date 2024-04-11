@@ -98,7 +98,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
+  public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();
@@ -109,7 +109,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
+  public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();

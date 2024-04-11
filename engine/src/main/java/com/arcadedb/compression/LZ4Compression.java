@@ -23,6 +23,8 @@ import net.jpountz.lz4.LZ4Compressor;
 import net.jpountz.lz4.LZ4Factory;
 import net.jpountz.lz4.LZ4FastDecompressor;
 
+import java.util.*;
+
 /**
  * Compression implementation that uses the popular LZ4 algorithm.
  */
@@ -39,13 +41,31 @@ public class LZ4Compression implements Compression {
   }
 
   @Override
+  public byte[] compress(final byte[] data) {
+    final int maxCompressedLength = compressor.maxCompressedLength(data.length);
+    byte[] compressed = new byte[maxCompressedLength];
+    final int compressedLength = compressor.compress(data, 0, data.length, compressed, 0, maxCompressedLength);
+    if (compressedLength != maxCompressedLength)
+      compressed = Arrays.copyOf(compressed, compressedLength);
+    return compressed;
+  }
+
+  @Override
   public Binary compress(final Binary data) {
     final int decompressedLength = data.size() - data.position();
     final int maxCompressedLength = compressor.maxCompressedLength(decompressedLength);
     final byte[] compressed = new byte[maxCompressedLength];
-    final int compressedLength = compressor.compress(data.getContent(), data.position(), data.size(), compressed, 0, maxCompressedLength);
+    final int compressedLength = compressor.compress(data.getContent(), data.position(), data.size(), compressed, 0,
+        maxCompressedLength);
 
     return new Binary(compressed, compressedLength);
+  }
+
+  @Override
+  public byte[] decompress(final byte[] data, final int decompressedLength) {
+    final byte[] decompressed = new byte[decompressedLength];
+    decompressor.decompress(data, 0, decompressed, 0, decompressedLength);
+    return decompressed;
   }
 
   @Override

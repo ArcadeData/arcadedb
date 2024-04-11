@@ -128,7 +128,6 @@ public class TestLinkedPropertiesSchemaReloadIT {
     String url = DATABASE_NAME;
 
     try {
-      System.out.println("Starting server...");
       server = new ArcadeDBServer(config);
       server.start();
     } catch (Exception e) {
@@ -141,13 +140,8 @@ public class TestLinkedPropertiesSchemaReloadIT {
       } else {
         sdb = server.getDatabase(url);
       }
-      if (sdb.isOpen())
-        System.out.println("\n\nDatabase is open");
-      System.out.println("AUTO_TRANS=" + AUTO_TRANS);
-      System.out.println("Transactions=" + DatabaseContext.INSTANCE.getContextIfExists(sdb.getDatabasePath()).transactions.size());
       if (AUTO_TRANS)
         sdb.setAutoTransaction(true);
-      System.out.println("Transactions=" + DatabaseContext.INSTANCE.getContextIfExists(sdb.getDatabasePath()).transactions.size());
     } catch (Exception e) {
       System.out.println("Error at getDatabase " + e.getMessage());
       //e.printStackTrace();
@@ -158,7 +152,6 @@ public class TestLinkedPropertiesSchemaReloadIT {
         DocumentType dt = sdb.getSchema().getType("menuItem");
         DocumentType dt2 = sdb.getSchema().getType("identity");
         DocumentType dt3 = sdb.getSchema().getType("userProfile");
-        System.out.println("\n\nUpdate script has already run\n\n");
       } catch (Exception e) {
         System.out.println("\nCould not find menuItem or identity: " + e.getMessage());
         System.out.println("\n\nRunning update script");

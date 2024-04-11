@@ -294,7 +294,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       asyncLock.lock();
       try {
         if (async == null)
-          async = new DatabaseAsyncExecutorImpl(wrappedDatabaseInstance);
+          async = new DatabaseAsyncExecutorImpl(wrappedDatabaseInstance, getConfiguration());
       } finally {
         asyncLock.unlock();
       }

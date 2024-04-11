@@ -58,6 +58,7 @@ function renderTable() {
     for (let i in orderedColumns) {
       if (orderedColumns[i] == "@rid")
         tableColumns.push({
+          sTitle: escapeHtml(orderedColumns[i]),
           mRender: function (data, type, full) {
             return $("<div/>").html(data).text();
           },
