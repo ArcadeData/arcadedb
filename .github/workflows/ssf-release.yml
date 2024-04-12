@@ -21,15 +21,6 @@ jobs:
         with:
           token: ${{ secrets.GHCR_PAT }}
 
-      - name: Check if PATCH value is 0
-        if: ${{ github.event_name != 'workflow_dispatch' }}
-        run: |
-          patch_value=$(grep -E '^PATCH=' VERSION | cut -d '=' -f2)
-          if [[ "$patch_value" != "0" ]]; then
-            echo "SKIP_REMAINING_STEPS=true" >> $GITHUB_ENV
-            echo "PATCH value is not 0. Exiting workflow. This is a patch release!"
-          fi
-
       - name: Get TAG var
         if: env.SKIP_REMAINING_STEPS != 'true'
         run: |
