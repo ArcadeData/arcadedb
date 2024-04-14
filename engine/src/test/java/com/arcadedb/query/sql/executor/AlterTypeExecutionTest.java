@@ -102,4 +102,11 @@ public class AlterTypeExecutionTest extends TestHelper {
     Assertions.assertNull(database.getSchema().getType("Suv").getCustomValue("age"));
     Assertions.assertFalse(database.getSchema().getType("Suv").getCustomKeys().contains("age"));
   }
+
+  @Test
+  public void sqlAlterTypeName() {
+    database.command("sql", "CREATE VERTEX TYPE Mpv");
+    database.command("sql", "ALTER TYPE Mpv NAME Sedan");
+    Assertions.assertNotNull(database.getSchema().getType("Sedan"));
+  }
 }
