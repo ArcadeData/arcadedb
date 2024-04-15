@@ -46,7 +46,7 @@ public class ImmutableDocument extends BaseDocument {
       return false;
 
     checkForLazyLoading();
-    return database.getSerializer().hasProperty(database, buffer, propertyName);
+    return database.getSerializer().hasProperty(database, buffer, propertyName, rid);
   }
 
   @Override
@@ -56,7 +56,7 @@ public class ImmutableDocument extends BaseDocument {
 
     checkForLazyLoading();
     return database.getSerializer()
-        .deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, type);
+        .deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
   }
 
   @Override
@@ -88,7 +88,7 @@ public class ImmutableDocument extends BaseDocument {
   public  JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
+        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
     final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "d");
@@ -104,7 +104,7 @@ public class ImmutableDocument extends BaseDocument {
     if (database == null || buffer == null)
       return Collections.emptyMap();
     buffer.position(propertiesStartingPosition);
-    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
+    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
   }
 
   @Override
@@ -116,7 +116,7 @@ public class ImmutableDocument extends BaseDocument {
   public  Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
     final Map<String, Object> result = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
+        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", type.getName());
@@ -139,7 +139,7 @@ public class ImmutableDocument extends BaseDocument {
 
       buffer.position(propertiesStartingPosition);
       final Map<String, Object> map = this.database.getSerializer()
-          .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
+          .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
 
       buffer.position(currPosition);
 
@@ -168,7 +168,7 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public  Set<String> getPropertyNames() {
     checkForLazyLoading();
-    return database.getSerializer().getPropertyNames(database, buffer);
+    return database.getSerializer().getPropertyNames(database, buffer, rid);
   }
 
   protected boolean checkForLazyLoading() {
