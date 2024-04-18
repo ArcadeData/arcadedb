@@ -146,7 +146,9 @@ public class ArcadeDBServer {
 
     security.loadUsers();
 
+    // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
     httpServer = new HttpServer(this);
+    httpServer.startService();
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       haServer = new HAServer(this, configuration);
@@ -159,8 +161,6 @@ public class ArcadeDBServer {
 
     // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
     loadDatabases();
-
-    httpServer.startService();
 
     status = STATUS.ONLINE;
 
