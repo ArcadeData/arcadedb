@@ -26,24 +26,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodToUpperCaseTest {
 
-    private SQLMethod method;
+  private SQLMethod method;
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodToUpperCase();
-    }
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodToUpperCase();
+  }
 
-    @Test
-    void testNulIReturnedAsNull() {
-        final Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isNull();
-    }
+  @Test
+  void testNulIReturnedAsNull() {
+    final Object result = method.execute(null, null, null, null);
+    assertThat(result).isNull();
+  }
 
+  @Test
+  void testToUpperCase() {
+    final Object result = method.execute("lower case", null, null, null);
+    assertThat(result).isEqualTo("LOWER CASE");
 
-    @Test
-    void testToUpperCase() {
-        final Object result = method.execute(null, null, null, "lower case", null);
-        assertThat(result).isEqualTo("LOWER CASE");
-
-    }
+  }
 }

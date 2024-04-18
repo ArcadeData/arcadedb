@@ -87,7 +87,7 @@ public class SQLMethodExclude extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(Object current, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+  public Object execute(Object current, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
     if (current != null) {
       if (current instanceof Identifiable)
         current = ((Identifiable) current).getRecord();

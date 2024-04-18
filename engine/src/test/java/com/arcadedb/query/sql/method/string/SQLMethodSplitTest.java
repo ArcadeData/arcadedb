@@ -40,18 +40,18 @@ class SQLMethodSplitTest {
   @Test
   void testNull() {
     //null ithis
-    Object result = method.execute(null, null, null, null, new Object[] { "," });
+    Object result = method.execute(null, null, null, new Object[] { "," });
     assertThat(result).isNull();
 
     //null prefix
-    result = method.execute("first, second", null, null, null, null);
+    result = method.execute("first, second", null, null, null);
     assertThat(result).isEqualTo("first, second");
   }
 
   @Test
   void testSplitByComma() {
     //null separator
-    final Object result = method.execute("first,second", null, null, null, new Object[] { "," });
+    final Object result = method.execute("first,second", null, null, new Object[] { "," });
     assertThat(result).isInstanceOf(String[].class);
     final String[] splitted = (String[]) result;
     assertThat(splitted).hasSize(2).contains("first", "second");

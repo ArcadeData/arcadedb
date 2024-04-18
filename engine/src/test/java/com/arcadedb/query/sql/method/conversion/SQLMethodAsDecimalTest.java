@@ -38,34 +38,34 @@ class SQLMethodAsDecimalTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testStringToDecimal() {
-    final Object result = method.execute("10.0", null, null, "10.0", null);
+    final Object result = method.execute("10.0", null, null, null);
     assertThat(result).isInstanceOf(BigDecimal.class);
     assertThat(result).isEqualTo(new BigDecimal("10.0"));
   }
 
   @Test
   void testLongToDecimal() {
-    final Object result = method.execute(10l, null, null, 10l, null);
+    final Object result = method.execute(10l, null, null, null);
     assertThat(result).isInstanceOf(BigDecimal.class);
     assertThat(result).isEqualTo(new BigDecimal("10"));
   }
 
   @Test
   void testDecimalToDecimal() {
-    final Object result = method.execute(10.0f, null, null, 10.0f, null);
+    final Object result = method.execute(10.0f, null, null, null);
     assertThat(result).isInstanceOf(BigDecimal.class);
     assertThat(result).isEqualTo(new BigDecimal("10.0"));
   }
 
   @Test
   void testIntegerToDecimal() {
-    final Object result = method.execute(10, null, null, 10, null);
+    final Object result = method.execute(10, null, null, null);
     assertThat(result).isInstanceOf(BigDecimal.class);
     assertThat(result).isEqualTo(new BigDecimal("10"));
   }

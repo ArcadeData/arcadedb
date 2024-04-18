@@ -42,11 +42,11 @@ public class SQLMethodLeft extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (iParams[0] == null || iThis == null)
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    if (iParams[0] == null || value == null)
       return null;
 
-    final String valueAsString = iThis.toString();
+    final String valueAsString = value.toString();
 
     final int len = Integer.parseInt(iParams[0].toString());
     return valueAsString.substring(0, len <= valueAsString.length() ? len : valueAsString.length());

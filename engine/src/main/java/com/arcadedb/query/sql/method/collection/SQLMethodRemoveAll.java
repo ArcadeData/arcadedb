@@ -31,33 +31,26 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
  */
 public class SQLMethodRemoveAll extends AbstractSQLMethod {
 
-    public static final String NAME = "removeall";
+  public static final String NAME = "removeall";
 
-    public SQLMethodRemoveAll() {
-        super(NAME, 1, -1);
-    }
+  public SQLMethodRemoveAll() {
+    super(NAME, 1, -1);
+  }
 
-    @Override
-    public Object execute(final Object self,
-                          final Identifiable currentRecord,
-                          final CommandContext context,
-                          Object result,
-                          final Object[] params) {
-        if (params != null &&
-                params.length > 0 &&
-                params[0] != null) {
-            final Object[] arguments = MultiValue.array(params, Object.class, iArgument -> {
-                if (iArgument instanceof String &&
-                        ((String) iArgument).startsWith("$")) {
-                    return context.getVariable((String) iArgument);
-                }
-                return iArgument;
-            });
-            for (final Object o : arguments) {
-                result = MultiValue.remove(result, o, true);
-            }
+  @Override
+  public Object execute(Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+    if (params != null && params.length > 0 && params[0] != null) {
+      final Object[] arguments = MultiValue.array(params, Object.class, iArgument -> {
+        if (iArgument instanceof String &&
+            ((String) iArgument).startsWith("$")) {
+          return context.getVariable((String) iArgument);
         }
-
-        return result;
+        return iArgument;
+      });
+      for (final Object o : arguments)
+        value = MultiValue.remove(value, o, true);
     }
+
+    return value;
+  }
 }

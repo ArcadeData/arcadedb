@@ -45,10 +45,10 @@ public class SQLMethodIntersectsWith extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext context, final Object ioResult, final Object[] iParams) {
-    if (iThis == null)
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context, final Object[] iParams) {
+    if (value == null)
       return null;
-    else if (!(iThis instanceof Shape))
+    else if (!(value instanceof Shape))
       return null;
 
     if (iParams.length != 1 || iParams[0] == null)
@@ -56,6 +56,6 @@ public class SQLMethodIntersectsWith extends AbstractSQLMethod {
 
     final Shape shape = (Shape) iParams[0];
 
-    return ((Shape) iThis).relate(shape) != SpatialRelation.DISJOINT;
+    return ((Shape) value).relate(shape) != SpatialRelation.DISJOINT;
   }
 }

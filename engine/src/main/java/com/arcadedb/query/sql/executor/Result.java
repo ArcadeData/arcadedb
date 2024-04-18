@@ -25,6 +25,8 @@ import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
 import java.text.*;
@@ -134,6 +136,10 @@ public interface Result {
       jsonVal = "\"" + ((Record) val).getIdentity() + "\"";
     } else if (val instanceof RID) {
       jsonVal = "\"" + val + "\"";
+    } else if (val instanceof JSONObject) {
+      jsonVal = val.toString();
+    } else if (val instanceof JSONArray) {
+      jsonVal = val.toString();
     } else if (val instanceof Iterable) {
       final StringBuilder builder = new StringBuilder();
       builder.append("[");

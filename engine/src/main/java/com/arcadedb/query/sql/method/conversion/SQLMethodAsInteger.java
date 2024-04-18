@@ -37,12 +37,10 @@ public class SQLMethodAsInteger extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof Number) {
-      ioResult = ((Number) ioResult).intValue();
-    } else {
-      ioResult = ioResult != null ? Integer.valueOf(ioResult.toString().trim()) : null;
-    }
-    return ioResult;
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+    if (value instanceof Number)
+      return ((Number) value).intValue();
+    return value != null ? Integer.valueOf(value.toString().trim()) : null;
   }
 }

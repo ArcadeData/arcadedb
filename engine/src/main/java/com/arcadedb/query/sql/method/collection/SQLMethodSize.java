@@ -36,16 +36,16 @@ public class SQLMethodSize extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
 
     final Number size;
-    if (ioResult != null) {
-      if (ioResult instanceof Identifiable) {
+    if (value != null) {
+      if (value instanceof Identifiable) {
         size = 1;
-      } else if (ioResult instanceof String) {
-        size = ioResult.toString().length();
+      } else if (value instanceof String) {
+        size = value.toString().length();
       } else {
-        size = MultiValue.getSize(ioResult);
+        size = MultiValue.getSize(value);
       }
     } else {
       size = 0;

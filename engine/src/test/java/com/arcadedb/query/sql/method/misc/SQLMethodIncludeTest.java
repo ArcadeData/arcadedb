@@ -44,7 +44,7 @@ class SQLMethodIncludeTest {
     resultInternal.setProperty("name", "Foo");
     resultInternal.setProperty("surname", "Bar");
 
-    final Object result = method.execute(resultInternal, null, null, null, new Object[] { "name" });
+    final Object result = method.execute(resultInternal, null, null, new Object[] { "name" });
     Assertions.assertNotNull(result);
     Assertions.assertTrue(((Map) result).containsKey("name"));
     Assertions.assertFalse(((Map) result).containsKey("surname"));

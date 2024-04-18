@@ -36,12 +36,10 @@ public class SQLMethodAsDouble extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof Number)
-      ioResult = ((Number) ioResult).doubleValue();
-    else
-      ioResult = ioResult != null ? Double.valueOf(ioResult.toString().trim()) : null;
-
-    return ioResult;
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+    if (value instanceof Number)
+      return ((Number) value).doubleValue();
+    return value != null ? Double.valueOf(value.toString().trim()) : null;
   }
 }

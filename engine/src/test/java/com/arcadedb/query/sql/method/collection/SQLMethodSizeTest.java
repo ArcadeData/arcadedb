@@ -30,37 +30,36 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodSizeTest {
-    private SQLMethod method;
+  private SQLMethod method;
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodSize();
-    }
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodSize();
+  }
 
-    @Test
-    void testNulIsReturnedAsZero() {
-        final Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isInstanceOf(Number.class);
-        assertThat(result).isEqualTo(0);
-    }
+  @Test
+  void testNulIsReturnedAsZero() {
+    final Object result = method.execute(null, null, null, null);
+    assertThat(result).isInstanceOf(Number.class);
+    assertThat(result).isEqualTo(0);
+  }
 
-    @Test
-    void testSizeOfIdentifiable() {
-        final Database db = Mockito.mock(Database.class);
-        final RID rid = new RID(db, 1, 1);
-        final Object result = method.execute(null, null, null, rid, null);
-        assertThat(result).isInstanceOf(Number.class);
-        assertThat(result).isEqualTo(1);
-    }
+  @Test
+  void testSizeOfIdentifiable() {
+    final Database db = Mockito.mock(Database.class);
+    final RID rid = new RID(db, 1, 1);
+    final Object result = method.execute(rid, null, null, null);
+    assertThat(result).isInstanceOf(Number.class);
+    assertThat(result).isEqualTo(1);
+  }
 
-    @Test
-    void testSizeOfMultiValue() {
-        final Database db = Mockito.mock(Database.class);
-        final RID rid = new RID(db, 1, 1);
-        final Collection<RID> multiValue = List.of(rid, rid, rid);
-        final Object result = method.execute(null, null, null, multiValue, null);
-        assertThat(result).isInstanceOf(Number.class);
-        assertThat(result).isEqualTo(3);
-    }
-
+  @Test
+  void testSizeOfMultiValue() {
+    final Database db = Mockito.mock(Database.class);
+    final RID rid = new RID(db, 1, 1);
+    final Collection<RID> multiValue = List.of(rid, rid, rid);
+    final Object result = method.execute(multiValue, null, null, null);
+    assertThat(result).isInstanceOf(Number.class);
+    assertThat(result).isEqualTo(3);
+  }
 }
