@@ -35,10 +35,10 @@ public class SQLMethodPrefix extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, final Identifiable iRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (iThis == null || null == iParams || null == iParams[0])
-      return iThis;
+  public Object execute( final Object value, final Identifiable iRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value == null || null == iParams || null == iParams[0])
+      return value;
 
-    return iParams[0] + iThis.toString();
+    return iParams[0] + value.toString();
   }
 }

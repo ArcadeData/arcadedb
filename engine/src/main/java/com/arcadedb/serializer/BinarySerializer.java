@@ -182,135 +182,152 @@ public class BinarySerializer {
     return record.getContent();
   }
 
-  public Set<String> getPropertyNames(final Database database, final Binary buffer) {
-    buffer.getInt(); // HEADER-SIZE
-    final int properties = (int) buffer.getUnsignedNumber();
-    final Set<String> result = new LinkedHashSet<>(properties);
+  public Set<String> getPropertyNames(final Database database, final Binary buffer, final RID rid) {
+    try {
+      buffer.getInt(); // HEADER-SIZE
+      final int properties = (int) buffer.getUnsignedNumber();
+      final Set<String> result = new LinkedHashSet<>(properties);
 
-    for (int i = 0; i < properties; ++i) {
-      final int nameId = (int) buffer.getUnsignedNumber();
-      buffer.getUnsignedNumber(); //contentPosition
-      final String name = database.getSchema().getDictionary().getNameById(nameId);
-      result.add(name);
+      for (int i = 0; i < properties; ++i) {
+        final int nameId = (int) buffer.getUnsignedNumber();
+        buffer.getUnsignedNumber(); //contentPosition
+        final String name = database.getSchema().getDictionary().getNameById(nameId);
+        result.add(name);
+      }
+
+      return result;
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
-
-    return result;
+    return null;
   }
 
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
-      final EmbeddedModifier embeddedModifier, final DocumentType documentType, final String... fieldNames) {
-    final int headerEndOffset = buffer.getInt();
-    final int properties = (int) buffer.getUnsignedNumber();
+      final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
+    try {
+      final int headerEndOffset = buffer.getInt();
+      final int properties = (int) buffer.getUnsignedNumber();
 
-    if (properties < 0)
-      throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-    else if (properties == 0)
-      // EMPTY: NOT FOUND
-      return new LinkedHashMap<>();
+      if (properties < 0)
+        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+      else if (properties == 0)
+        // EMPTY: NOT FOUND
+        return new LinkedHashMap<>();
 
-    final Map<String, Object> values = new LinkedHashMap<>(properties);
+      final Map<String, Object> values = new LinkedHashMap<>(properties);
 
-    int lastHeaderPosition;
+      int lastHeaderPosition;
 
-    final int[] fieldIds = new int[fieldNames.length];
+      final int[] fieldIds = new int[fieldNames.length];
 
-    final Dictionary dictionary = database.getSchema().getDictionary();
-    for (int i = 0; i < fieldNames.length; ++i)
-      fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
+      final Dictionary dictionary = database.getSchema().getDictionary();
+      for (int i = 0; i < fieldNames.length; ++i)
+        fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
 
-    for (int i = 0; i < properties; ++i) {
-      final int nameId = (int) buffer.getUnsignedNumber();
-      final int contentPosition = (int) buffer.getUnsignedNumber();
+      for (int i = 0; i < properties; ++i) {
+        final int nameId = (int) buffer.getUnsignedNumber();
+        final int contentPosition = (int) buffer.getUnsignedNumber();
 
-      lastHeaderPosition = buffer.position();
+        lastHeaderPosition = buffer.position();
 
-      if (fieldIds.length > 0) {
-        boolean found = false;
-        // FILTER BY FIELD
-        for (final int f : fieldIds)
-          if (f == nameId) {
-            found = true;
-            break;
-          }
+        if (fieldIds.length > 0) {
+          boolean found = false;
+          // FILTER BY FIELD
+          for (final int f : fieldIds)
+            if (f == nameId) {
+              found = true;
+              break;
+            }
 
-        if (!found)
-          continue;
+          if (!found)
+            continue;
+        }
+
+        final String propertyName = dictionary.getNameById(nameId);
+
+        buffer.position(headerEndOffset + contentPosition);
+
+        final byte type = buffer.getByte();
+
+        final EmbeddedModifierProperty propertyModifier =
+            embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
+
+        final Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+
+        values.put(propertyName, propertyValue);
+
+        buffer.position(lastHeaderPosition);
+
+        if (fieldIds.length > 0 && values.size() >= fieldIds.length)
+          // ALL REQUESTED PROPERTIES ALREADY FOUND
+          break;
       }
 
-      final String propertyName = dictionary.getNameById(nameId);
-
-      buffer.position(headerEndOffset + contentPosition);
-
-      final byte type = buffer.getByte();
-
-      final EmbeddedModifierProperty propertyModifier =
-          embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
-
-      final Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
-
-      values.put(propertyName, propertyValue);
-
-      buffer.position(lastHeaderPosition);
-
-      if (fieldIds.length > 0 && values.size() >= fieldIds.length)
-        // ALL REQUESTED PROPERTIES ALREADY FOUND
-        break;
+      return values;
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
-
-    return values;
+    return Collections.emptyMap();
   }
 
-  public boolean hasProperty(final Database database, final Binary buffer, final String fieldName) {
-    buffer.getInt(); // headerEndOffset
-    final int properties = (int) buffer.getUnsignedNumber();
-    if (properties < 0)
-      throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-    else if (properties == 0)
-      // EMPTY: NOT FOUND
-      return false;
+  public boolean hasProperty(final Database database, final Binary buffer, final String fieldName, final RID rid) {
+    try {
+      buffer.getInt(); // headerEndOffset
+      final int properties = (int) buffer.getUnsignedNumber();
+      if (properties < 0)
+        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+      else if (properties == 0)
+        // EMPTY: NOT FOUND
+        return false;
 
-    final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
+      final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
 
-    for (int i = 0; i < properties; ++i) {
-      if (fieldId == (int) buffer.getUnsignedNumber())
-        return true;
-      buffer.getUnsignedNumber(); // contentPosition
+      for (int i = 0; i < properties; ++i) {
+        if (fieldId == (int) buffer.getUnsignedNumber())
+          return true;
+        buffer.getUnsignedNumber(); // contentPosition
+      }
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
 
     return false;
   }
 
   public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier,
-      final String fieldName, final DocumentType documentType) {
-    final int headerEndOffset = buffer.getInt();
-    final int properties = (int) buffer.getUnsignedNumber();
+      final String fieldName, final RID rid) {
+    try {
+      final int headerEndOffset = buffer.getInt();
+      final int properties = (int) buffer.getUnsignedNumber();
 
-    if (properties < 0)
-      throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-    else if (properties == 0)
-      // EMPTY: NOT FOUND
-      return null;
+      if (properties < 0)
+        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+      else if (properties == 0)
+        // EMPTY: NOT FOUND
+        return null;
 
-    final Dictionary dictionary = database.getSchema().getDictionary();
-    final int fieldId = dictionary.getIdByName(fieldName, false);
+      final Dictionary dictionary = database.getSchema().getDictionary();
+      final int fieldId = dictionary.getIdByName(fieldName, false);
 
-    for (int i = 0; i < properties; ++i) {
-      final int nameId = (int) buffer.getUnsignedNumber();
-      final int contentPosition = (int) buffer.getUnsignedNumber();
+      for (int i = 0; i < properties; ++i) {
+        final int nameId = (int) buffer.getUnsignedNumber();
+        final int contentPosition = (int) buffer.getUnsignedNumber();
 
-      if (fieldId != nameId)
-        continue;
+        if (fieldId != nameId)
+          continue;
 
-      buffer.position(headerEndOffset + contentPosition);
+        buffer.position(headerEndOffset + contentPosition);
 
-      final byte type = buffer.getByte();
+        final byte type = buffer.getByte();
 
-      final EmbeddedModifierProperty propertyModifier =
-          embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
+        final EmbeddedModifierProperty propertyModifier =
+            embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
 
-      return deserializeValue(database, buffer, type, propertyModifier);
+        return deserializeValue(database, buffer, type, propertyModifier);
+      }
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
-
     return null;
   }
 

@@ -43,12 +43,12 @@ public class SQLMethodAppend extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object ioResult, final Object[] iParams) {
-    if (iThis == null || iParams[0] == null)
-      return iThis;
+  public Object execute( final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+    if (value == null || iParams[0] == null)
+      return value;
 
-    final StringBuilder buffer = new StringBuilder(iThis.toString());
+    final StringBuilder buffer = new StringBuilder(value.toString());
     for (int i = 0; i < iParams.length; ++i) {
       if (iParams[i] != null) {
         buffer.append(FileUtils.getStringContent(iParams[i]));

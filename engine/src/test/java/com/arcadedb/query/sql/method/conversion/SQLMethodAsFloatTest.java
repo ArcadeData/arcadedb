@@ -25,7 +25,6 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodAsFloatTest {
-
   private SQLMethod method;
 
   @BeforeEach
@@ -35,36 +34,35 @@ class SQLMethodAsFloatTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testStringToFloat() {
-    final Object result = method.execute(null, null, null, "10.0", null);
+    final Object result = method.execute("10.0", null, null, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
   void testLongToFloat() {
-    final Object result = method.execute(null, null, null, 10l, null);
+    final Object result = method.execute(10l, null, null, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
   void testFloatToFloat() {
-    final Object result = method.execute(null, null, null, 10.0f, null);
+    final Object result = method.execute(10.0f, null, null, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
   void testIntegerToFloat() {
-    final Object result = method.execute(null, null, null, 10, null);
+    final Object result = method.execute(10, null, null, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
-
 }

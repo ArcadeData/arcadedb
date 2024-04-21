@@ -43,7 +43,7 @@ class SQLMethodPrecisionTest {
   @Test
   void testRequiredArgs() {
     try {
-      method.execute(null, null, null, null, new Object[] { null });
+      method.execute(null, null, null, new Object[] { null });
       Assertions.fail();
     } catch (IllegalArgumentException e) {
       // EXPECTED
@@ -72,7 +72,7 @@ class SQLMethodPrecisionTest {
   @Test
   void testDate() {
     final Date now = new Date();
-    Object result = method.execute(null, null, null, now, new String[] { "millisecond" });
+    Object result = method.execute(now, null, null, new String[] { "millisecond" });
     assertThat(result).isInstanceOf(Date.class);
     Assertions.assertEquals(now, result);
   }
@@ -85,7 +85,7 @@ class SQLMethodPrecisionTest {
     for (int retry = 0; retry < 10; retry++) {
       final Object now = getNow.call();
 
-      result = method.execute(null, null, null, now, new String[] { precisionAsString });
+      result = method.execute(now, null, null, new String[] { precisionAsString });
       assertThat(result).isInstanceOf(now.getClass());
 
       if (DateUtils.getPrecision(DateUtils.getNanos(result)) == precision)

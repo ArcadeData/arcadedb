@@ -44,12 +44,12 @@ public class SQLMethodIfEmpty extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
 
-    if ( (ioResult instanceof String && ioResult.toString().length() == 0)
-         || (ioResult instanceof Collection<?> && MultiValue.getSize(ioResult) == 0) )
+    if ( (value instanceof String && value.toString().length() == 0)
+         || (value instanceof Collection<?> && MultiValue.getSize(value) == 0) )
       return iParams[0];
     else
-      return ioResult;
+      return value;
   }
 }

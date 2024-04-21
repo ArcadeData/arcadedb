@@ -36,12 +36,10 @@ public class SQLMethodAsByte extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof Number)
-      ioResult = ((Number) ioResult).byteValue();
-    else
-      ioResult = ioResult != null ? Byte.valueOf(ioResult.toString().trim()) : null;
-
-    return ioResult;
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+    if (value instanceof Number)
+      return ((Number) value).byteValue();
+    return value != null ? Byte.valueOf(value.toString().trim()) : null;
   }
 }

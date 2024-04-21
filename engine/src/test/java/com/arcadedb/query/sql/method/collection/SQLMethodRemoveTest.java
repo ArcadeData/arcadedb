@@ -29,35 +29,32 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodRemoveTest {
+  private SQLMethod method;
 
-    private SQLMethod method;
+  @BeforeEach
+  public void setup() {
+    method = new SQLMethodRemove();
+  }
 
-    @BeforeEach
-    public void setup() {
-        method = new SQLMethodRemove();
-    }
+  @Test
+  void testNull() {
+    final Object result = method.execute(null, null, null, null);
+    assertThat(result).isNull();
+  }
 
-    @Test
-    void testNull() {
-        final Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isNull();
-    }
+  @Test
+  void testRemoveSingleValueFromList() {
+    final List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three"));
+    final List<String> result = (List<String>) method.execute(numbers, null, null, new Object[] { "one" });
+    assertThat(result).contains("one", "two", "three");
+  }
 
-    @Test
-    void testRemoveSingleValueFromList() {
-        final List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three"));
-        final List<String> result = (List<String>) method.execute(null, null, null, numbers, new Object[]{"one"});
-        assertThat(result).contains("one", "two", "three");
-    }
-
-    @Test
-    void testRemoveFromListWithVariableInContext() {
-        final List<String> numbers = new ArrayList<>(List.of("one", "two", "three"));
-        final CommandContext context = new BasicCommandContext();
-        context.setVariable("name", "one");
-        final List<String> result = (List<String>) method.execute(null, null, context, numbers, new Object[]{"$name"});
-        assertThat(result).contains("two", "three");
-    }
-
-
+  @Test
+  void testRemoveFromListWithVariableInContext() {
+    final List<String> numbers = new ArrayList<>(List.of("one", "two", "three"));
+    final CommandContext context = new BasicCommandContext();
+    context.setVariable("name", "one");
+    final List<String> result = (List<String>) method.execute(numbers, null, context, new Object[] { "$name" });
+    assertThat(result).contains("two", "three");
+  }
 }

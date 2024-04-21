@@ -37,7 +37,7 @@ public class SQLMethodToLowerCase extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    return ioResult != null ? ioResult.toString().toLowerCase(Locale.ENGLISH) : null;
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    return value != null ? value.toString().toLowerCase(Locale.ENGLISH) : null;
   }
 }

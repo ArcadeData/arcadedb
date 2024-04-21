@@ -38,12 +38,11 @@ public class SQLMethodKeysTest {
 
   @Test
   public void testWithResult() {
-
     final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("name", "Foo");
     resultInternal.setProperty("surname", "Bar");
 
-    final Object result = function.execute(null, null, null, resultInternal, null);
+    final Object result = function.execute(resultInternal, null, null, null);
     assertEquals(new LinkedHashSet(Arrays.asList("name", "surname")), result);
   }
 }

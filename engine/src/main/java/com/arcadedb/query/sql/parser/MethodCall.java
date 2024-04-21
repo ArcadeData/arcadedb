@@ -127,7 +127,7 @@ public class MethodCall extends SimpleNode {
       if (val instanceof Result)
         val = ((Result) val).getElement().orElse(null);
 
-      return method.execute(targetObjects, (Identifiable) val, context, targetObjects, paramValues.toArray());
+      return method.execute(targetObjects, (Identifiable) val, context, paramValues.toArray());
     }
     throw new UnsupportedOperationException("OMethod call, something missing in the implementation...?");
   }

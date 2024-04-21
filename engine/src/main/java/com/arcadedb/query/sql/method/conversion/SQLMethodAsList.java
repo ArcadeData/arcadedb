@@ -39,31 +39,31 @@ public class SQLMethodAsList extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof List)
+  public Object execute(Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value instanceof List)
       // ALREADY A LIST
-      return ioResult;
+      return value;
 
-    if (ioResult == null)
+    if (value == null)
       // NULL VALUE, RETURN AN EMPTY LIST
       return Collections.emptyList();
 
-    if (ioResult instanceof Collection<?>) {
-      return new ArrayList<>((Collection<Object>) ioResult);
-    } else if (ioResult instanceof Iterable<?>) {
-      ioResult = ((Iterable<?>) ioResult).iterator();
+    if (value instanceof Collection<?>) {
+      return new ArrayList<>((Collection<Object>) value);
+    } else if (value instanceof Iterable<?>) {
+      value = ((Iterable<?>) value).iterator();
     }
 
-    if (ioResult instanceof Iterator<?>) {
+    if (value instanceof Iterator<?>) {
       final List<Object> list = new ArrayList<>();
 
-      for (final Iterator<Object> iter = (Iterator<Object>) ioResult; iter.hasNext(); ) {
+      for (final Iterator<Object> iter = (Iterator<Object>) value; iter.hasNext(); ) {
         list.add(iter.next());
       }
       return list;
     }
 
     // SINGLE ITEM: ADD IT AS UNIQUE ITEM
-    return Collections.singletonList(ioResult);
+    return Collections.singletonList(value);
   }
 }

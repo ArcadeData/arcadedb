@@ -36,31 +36,31 @@ class SQLMethodAsRIDTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testFromString() {
-    final Object result = method.execute(null, null, null, "#10:10", null);
+    final Object result = method.execute("#10:10", null, null, null);
     assertThat(result).isEqualTo(new RID( "#10:10"));
   }
 
   @Test
   void testFromRID() {
-    final Object result = method.execute(null, null, null, new RID( "#10:10"), null);
+    final Object result = method.execute(new RID( "#10:10"), null, null, null);
     assertThat(result).isEqualTo(new RID( "#10:10"));
   }
 
   @Test
   void testFromInvalidString() {
-    final Object result = method.execute(null, null, null, "INVALID", null);
+    final Object result = method.execute("INVALID", null, null, null);
     assertThat(result).isEqualTo(null);
   }
 
   @Test
   void testNotStringAsNull() {
-    final Object result = method.execute(null, null, null, 10, null);
+    final Object result = method.execute(10, null, null, null);
     assertThat(result).isEqualTo(null);
   }
 }

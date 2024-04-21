@@ -20,61 +20,26 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
-import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import com.arcadedb.serializer.json.JSONObject;
-
-import java.util.*;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsJSON;
 
 /**
  * Converts a document in JSON string.
+ * <p>
+ * Deprecated, use `.asJSON()` instead.
  *
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodToJSON extends AbstractSQLMethod {
-
+@Deprecated
+public class SQLMethodToJSON extends SQLMethodAsJSON {
   public static final String NAME = "tojson";
 
   public SQLMethodToJSON() {
-    super(NAME, 0, 0);
+    super(NAME);
   }
 
   @Override
   public String getSyntax() {
     return "toJSON()";
-  }
-
-  @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (iThis == null)
-      return null;
-
-    if (iThis instanceof Result) {
-      return ((Result) iThis).toJSON();
-    } else if (iThis instanceof Document) {
-      return ((Document) iThis).toJSON();
-    } else if (iThis instanceof Map) {
-      return new JSONObject(iThis.toString());
-    } else if (MultiValue.isMultiValue(iThis)) {
-      final StringBuilder builder = new StringBuilder();
-      builder.append("[");
-      boolean first = true;
-      for (final Object o : MultiValue.getMultiValueIterable(iThis, false)) {
-        if (!first) {
-          builder.append(",");
-        }
-        builder.append(execute(o, iCurrentRecord, iContext, ioResult, iParams));
-        first = false;
-      }
-
-      builder.append("]");
-      return builder.toString();
-    }
-    return null;
   }
 }

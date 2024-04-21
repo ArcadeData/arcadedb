@@ -49,14 +49,14 @@ public class SQLMethodHash extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult,
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
       final Object[] iParams) {
-    if (iThis == null)
+    if (value == null)
       return null;
 
     final String algorithm = iParams.length > 0 ? iParams[0].toString() : HASH_ALGORITHM;
     try {
-      return createHash(iThis.toString(), algorithm);
+      return createHash(value.toString(), algorithm);
 
     } catch (final NoSuchAlgorithmException e) {
       throw new CommandExecutionException("hash(): algorithm '" + algorithm + "' is not supported", e);

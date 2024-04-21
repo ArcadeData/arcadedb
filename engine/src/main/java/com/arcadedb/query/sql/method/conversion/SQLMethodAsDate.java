@@ -47,16 +47,16 @@ public class SQLMethodAsDate extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext context, final Object ioResult, final Object[] iParams) {
-    if (iThis == null)
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context, final Object[] iParams) {
+    if (value == null)
       return null;
 
-    if (iThis instanceof Date)
-      return iThis;
-    else if (iThis instanceof Number)
-      return new Date(((Number) iThis).longValue());
+    if (value instanceof Date)
+      return value;
+    else if (value instanceof Number)
+      return new Date(((Number) value).longValue());
 
     final String format = iParams.length > 0 ? iParams[0].toString() : context.getDatabase().getSchema().getDateFormat();
-    return DateUtils.getDate(DateUtils.parse(iThis.toString(), format), context.getDatabase().getSerializer().getDateImplementation());
+    return DateUtils.getDate(DateUtils.parse(value.toString(), format), context.getDatabase().getSerializer().getDateImplementation());
   }
 }
