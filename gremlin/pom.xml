@@ -139,6 +139,8 @@
                     </execution>
                 </executions>
                 <configuration>
+                    <shadedArtifactAttached>true</shadedArtifactAttached>
+                    <shadedClassifierName>shaded</shadedClassifierName>
                     <shadeTestJar>true</shadeTestJar>
                     <minimizeJar>false</minimizeJar>
                     <promoteTransitiveDependencies>true</promoteTransitiveDependencies>
