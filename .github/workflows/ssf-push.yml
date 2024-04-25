@@ -6,8 +6,6 @@ on:
     branches:
       - dev
       - main
-      - rc/*
-      - release/*
 
 jobs:
   push-to-ssf:
