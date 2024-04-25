@@ -135,6 +135,7 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-redisw</artifactId>
             <version>${project.parent.version}</version>
+            <classifier>shaded</classifier>
             <exclusions>
                 <exclusion>
                     <groupId>*</groupId>
@@ -146,6 +147,7 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-postgresw</artifactId>
             <version>${project.parent.version}</version>
+            <classifier>shaded</classifier>
             <exclusions>
                 <exclusion>
                     <groupId>*</groupId>
@@ -157,6 +159,7 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-mongodbw</artifactId>
             <version>${project.parent.version}</version>
+            <classifier>shaded</classifier>
             <exclusions>
                 <exclusion>
                     <groupId>*</groupId>
