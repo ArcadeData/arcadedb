@@ -189,15 +189,15 @@ public class ResultInternal implements Result {
     if (!(input instanceof Set))
       return false;
 
-      final Set<?> inputSet = (Set<?>) input;
+    final Set<?> inputSet = (Set<?>) input;
 
-      for (Object value : inputSet) {
-        if (value instanceof Record)
-          return false;
+    for (Object value : inputSet) {
+      if (value instanceof Record)
+        return false;
 
-        if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
-          return true;
-      }
+      if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
+        return true;
+    }
 
     return false;
   }
@@ -206,15 +206,15 @@ public class ResultInternal implements Result {
     if (!(input instanceof Map))
       return false;
 
-      final Map<?, ?> inputMap = (Map<?, ?>) input;
+    final Map<?, ?> inputMap = (Map<?, ?>) input;
 
-      for (Object value : inputMap.values()) {
-        if (value instanceof Record)
-          return false;
+    for (Object value : inputMap.values()) {
+      if (value instanceof Record)
+        return false;
 
-        if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
-          return true;
-      }
+      if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
+        return true;
+    }
 
     return false;
   }
@@ -223,15 +223,15 @@ public class ResultInternal implements Result {
     if (!(input instanceof List))
       return false;
 
-      final List<?> inputList = (List<?>) input;
+    final List<?> inputList = (List<?>) input;
 
-      for (Object value : inputList) {
-        if (value instanceof Record)
-          return false;
+    for (Object value : inputList) {
+      if (value instanceof Record)
+        return false;
 
-        if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
-          return true;
-      }
+      if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
+        return true;
+    }
 
     return false;
   }
