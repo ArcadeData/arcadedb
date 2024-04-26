@@ -30,6 +30,7 @@ jobs:
           PATCH=$((PATCH + 1))
           NEW_VERSION="$MAJOR.$MINOR.$PATCH"
           echo "New Version: $NEW_VERSION"
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
           NEW_VERSION_FILE="MAJOR=${MAJOR}\nMINOR=${MINOR}\nPATCH=${PATCH}\nADDOPTS="
           echo -e "$NEW_VERSION_FILE" > VERSION
           
