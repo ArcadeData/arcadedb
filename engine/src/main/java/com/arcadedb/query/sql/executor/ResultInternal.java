@@ -189,9 +189,7 @@ public class ResultInternal implements Result {
     if (!(input instanceof Set))
       return false;
 
-    final Set<?> inputSet = (Set<?>) input;
-
-    for (Object value : inputSet) {
+    for (Object value : (Set<?>) input) {
       if (value instanceof Record)
         return false;
 
@@ -206,9 +204,7 @@ public class ResultInternal implements Result {
     if (!(input instanceof Map))
       return false;
 
-    final Map<?, ?> inputMap = (Map<?, ?>) input;
-
-    for (Object value : inputMap.values()) {
+    for (Object value : ((Map<?,?>) input).values()) {
       if (value instanceof Record)
         return false;
 
@@ -223,9 +219,7 @@ public class ResultInternal implements Result {
     if (!(input instanceof List))
       return false;
 
-    final List<?> inputList = (List<?>) input;
-
-    for (Object value : inputList) {
+    for (Object value : (List<?>) input) {
       if (value instanceof Record)
         return false;
 
