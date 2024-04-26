@@ -186,52 +186,54 @@ public class ResultInternal implements Result {
   }
 
   private boolean isEmbeddedSet(final Object input) {
-    if (input instanceof Set) {
-      for (final Object o : (Set) input) {
-        if (o instanceof Record)
+    if (!(input instanceof Set))
+      return false;
+
+      final Set<?> inputSet = (Set<?>) input;
+
+      for (Object value : inputSet) {
+        if (value instanceof Record)
           return false;
 
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
+        if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
           return true;
       }
-    }
-    return false;
+
+      return false;
   }
 
   private boolean isEmbeddedMap(final Object input) {
-    if (input instanceof Map) {
-      for (final Object o : ((Map) input).values()) {
-        if (o instanceof Record)
-          return false;//TODO
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
+    if (!(input instanceof Map))
+      return false;
+
+      final Map<?, ?> inputMap = (Map<?, ?>) input;
+
+      for (Object value : inputMap.values()) {
+        if (value instanceof Record)
+          return false;
+
+        if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
           return true;
       }
-    }
-    return false;
+
+      return false;
   }
 
   private boolean isEmbeddedList(final Object input) {
-    if (input instanceof List) {
-      for (final Object o : (List) input) {
-        if (o instanceof Record)
+    if (!(input instanceof List))
+      return false;
+
+      final List<?> inputList = (List<?>) input;
+
+      for (Object value : inputList) {
+        if (value instanceof Record)
           return false;
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
+
+        if (isEmbeddedList(value) || isEmbeddedSet(value) || isEmbeddedMap(value))
           return true;
       }
-    }
-    return false;
+
+      return false;
   }
 
   public Set<String> getPropertyNames() {
