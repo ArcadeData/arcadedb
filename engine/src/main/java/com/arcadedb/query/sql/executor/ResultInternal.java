@@ -199,7 +199,7 @@ public class ResultInternal implements Result {
           return true;
       }
 
-      return false;
+    return false;
   }
 
   private boolean isEmbeddedMap(final Object input) {
@@ -216,7 +216,7 @@ public class ResultInternal implements Result {
           return true;
       }
 
-      return false;
+    return false;
   }
 
   private boolean isEmbeddedList(final Object input) {
@@ -233,7 +233,7 @@ public class ResultInternal implements Result {
           return true;
       }
 
-      return false;
+    return false;
   }
 
   public Set<String> getPropertyNames() {
