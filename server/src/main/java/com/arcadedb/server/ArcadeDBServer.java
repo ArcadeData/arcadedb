@@ -512,7 +512,8 @@ public class ArcadeDBServer {
         final int credentialEnd = db.indexOf(']', credentialBegin);
         final String credentials = db.substring(credentialBegin + 1, credentialEnd);
 
-        parseCredentials(dbName, credentials);
+        if (!credentials.isEmpty())
+          parseCredentials(dbName, credentials);
 
         Database database = existsDatabase(dbName) ? getDatabase(dbName) : null;
 
