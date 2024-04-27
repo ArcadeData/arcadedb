@@ -24,6 +24,9 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
 
 import java.io.*;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
+import java.util.List;
 import java.util.concurrent.atomic.*;
 
 /**
@@ -104,25 +107,31 @@ public class ServerMonitor {
   }
 
   private void checkJVMHotSpot() {
-    final sun.management.HotspotRuntimeMBean runtime = sun.management.ManagementFactoryHelper.getHotspotRuntimeMBean();
+// Get the GarbageCollectorMXBeans
+    List<GarbageCollectorMXBean> gcMXBeans = ManagementFactory.getGarbageCollectorMXBeans();
 
-    final long hotspotSafepointTime = runtime.getTotalSafepointTime();
-    final long hotspotSafepointCount = runtime.getSafepointCount();
+// Calculate the total GC time and count
+    long totalGCTime = 0;
+    long totalGCCount = 0;
+    for (GarbageCollectorMXBean gcMXBean : gcMXBeans) {
+      totalGCTime += gcMXBean.getCollectionTime();
+      totalGCCount += gcMXBean.getCollectionCount();
+    }
 
     if (lastHotspotSafepointCount > 0) {
       final float lastAvgSafepointTime = lastHotspotSafepointTime / (float) lastHotspotSafepointCount;
-      final float avgSafepointTime = hotspotSafepointTime / (float) hotspotSafepointCount;
+      final float avgSafepointTime = totalGCTime / (float) totalGCCount;
       final float deltaPerc = (avgSafepointTime - lastAvgSafepointTime) * 100 / lastAvgSafepointTime;
 
       if (deltaPerc > 20) {
         // REPORT THE SPIKE
         server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null,
-            "Server overloaded: JVM Safepoint spiked up " + ((int) deltaPerc) + "% from the last sampling");
+                "Server overloaded: JVM Safepoint spiked up " + ((int) deltaPerc) + "% from the last sampling");
       }
     }
 
-    lastHotspotSafepointTime = hotspotSafepointTime;
-    lastHotspotSafepointCount = hotspotSafepointCount;
+    lastHotspotSafepointTime = totalGCTime;
+    lastHotspotSafepointCount = totalGCCount;
   }
 
   public void stop() {

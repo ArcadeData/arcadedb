@@ -225,12 +225,12 @@ public class SelectExecutionPlanner {
    */
   protected static Projection translateDistinct(Projection projection) {
     if (projection != null && projection.getItems().size() == 1) {
-      if (isDistinct(projection.getItems().get(0))) {
+      if (isDistinct(projection.getItems().getFirst())) {
         projection = projection.copy();
-        final ProjectionItem item = projection.getItems().get(0);
+        final ProjectionItem item = projection.getItems().getFirst();
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
-        final Expression exp = function.getParams().get(0);
+        final Expression exp = function.getParams().getFirst();
         final ProjectionItem resultItem = new ProjectionItem(-1);
         resultItem.setAlias(item.getAlias());
         resultItem.setExpression(exp.copy());
@@ -302,7 +302,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().iterator().next(), context));
+    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().getFirst(), context));
     return true;
   }
 
@@ -324,7 +324,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info)) {
       return false;
     }
-    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().iterator().next(), context));
+    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().getFirst(), context));
     return true;
   }
 
@@ -344,7 +344,7 @@ public class SelectExecutionPlanner {
         || info.projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().get(0);
+    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
     return item.getExpression().toString().equalsIgnoreCase("count(*)");
   }
 
@@ -354,7 +354,7 @@ public class SelectExecutionPlanner {
             .count() != 1) {
       return false;
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().get(0);
+    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
     final Expression exp = item.getExpression();
     if (exp.getMathExpression() != null && exp.getMathExpression() instanceof BaseExpression) {
       final BaseExpression base = (BaseExpression) exp.getMathExpression();
@@ -368,7 +368,7 @@ public class SelectExecutionPlanner {
         || projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = aggregateProjection.getItems().get(0);
+    final ProjectionItem item = aggregateProjection.getItems().getFirst();
     return item.getExpression().isCount();
   }
 
@@ -408,7 +408,7 @@ public class SelectExecutionPlanner {
         result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, context,
             info.timeout != null ? info.timeout.getVal().longValue() : -1));
         if (isCountOnly(info) && info.groupBy == null) {
-          result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().get(0), context));
+          result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().getFirst(), context));
         }
       }
       result.chain(new ProjectionCalculationStep(info.projection, context));
@@ -493,7 +493,7 @@ public class SelectExecutionPlanner {
   private static void addOrderByProjections(final QueryPlanningInfo info) {
     if (info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().get(0).isAll())) {
+        && info.projection.getItems().getFirst().isAll())) {
       return;
     }
 
@@ -834,8 +834,7 @@ public class SelectExecutionPlanner {
 
         if (variable instanceof Iterable)
           info.fetchExecutionPlan.chain(new FetchFromRidsStep((Iterable<RID>) variable, context));
-        else if (variable instanceof ResultSet) {
-          final ResultSet resultSet = (ResultSet) variable;
+        else if (variable instanceof ResultSet resultSet) {
           info.fetchExecutionPlan.chain(new FetchFromRidsStep(() -> new Iterator<>() {
             @Override
             public boolean hasNext() {
@@ -934,21 +933,21 @@ public class SelectExecutionPlanner {
 
     if (paramValue == null) {
       result.chain(new EmptyStep(context));//nothing to return
-    } else if (paramValue instanceof LocalDocumentType) {
+    } else if (paramValue instanceof LocalDocumentType type) {
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);
-      item.setIdentifier(new Identifier(((DocumentType) paramValue).getName()));
+      item.setIdentifier(new Identifier(type.getName()));
       handleClassAsTarget(result, filterClusters, from, info, context);
-    } else if (paramValue instanceof String) {
+    } else if (paramValue instanceof String string1) {
       //strings are treated as classes
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);
-      item.setIdentifier(new Identifier((String) paramValue));
+      item.setIdentifier(new Identifier(string1));
       handleClassAsTarget(result, filterClusters, from, info, context);
-    } else if (paramValue instanceof Identifiable) {
-      final RID orid = ((Identifiable) paramValue).getIdentity();
+    } else if (paramValue instanceof Identifiable identifiable) {
+      final RID orid = identifiable.getIdentity();
 
       final Rid rid = new Rid(-1);
       final PInteger bucket = new PInteger(-1);
@@ -1040,7 +1039,7 @@ public class SelectExecutionPlanner {
       } else if (info.flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
       } else {
-        final AndBlock andBlock = info.flattenedWhereClause.get(0);
+        final AndBlock andBlock = info.flattenedWhereClause.getFirst();
         if (andBlock.getSubBlocks().size() == 1) {
 
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
@@ -2316,7 +2315,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      final OrderByItem item = info.orderBy.getItems().get(0);
+      final OrderByItem item = info.orderBy.getItems().getFirst();
       final String recordAttr = item.getRecordAttr();
       return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));
@@ -2368,7 +2367,7 @@ public class SelectExecutionPlanner {
 
     if (item.getRids() != null && item.getRids().size() > 0) {
       if (item.getRids().size() == 1) {
-        final PInteger bucket = item.getRids().get(0).getBucket();
+        final PInteger bucket = item.getRids().getFirst().getBucket();
         result.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
       } else {
         for (final Rid rid : item.getRids()) {

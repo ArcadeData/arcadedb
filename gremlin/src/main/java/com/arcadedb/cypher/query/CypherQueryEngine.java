@@ -87,8 +87,10 @@ public class CypherQueryEngine implements QueryEngine {
       if (list.size() == 1)
         return list.getFirst();
       return list;
-    } else if (value instanceof List listValue) {
-      final List<Object> transformed = listValue.stream().map(value1 -> transformValue(value1, false)).collect(Collectors.toList());
+    } else if (value instanceof List<?> listValue) {
+      final List<Object> transformed = listValue.stream()
+              .map(value1 -> transformValue(value1, false))
+              .collect(Collectors.toList());
       return flatArrays && transformed.size() == 1 ? transformed.getFirst() : transformed;
     }
     return value;

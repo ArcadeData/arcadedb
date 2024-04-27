@@ -92,7 +92,7 @@ public class BinarySerializer {
     final DatabaseContext.DatabaseContextTL context = database.getContext();
 
     final boolean serializeProperties;
-    if (header == null || (document instanceof MutableDocument && ((MutableDocument) document).isDirty())) {
+    if (header == null || (document instanceof MutableDocument mutableDocument && mutableDocument.isDirty())) {
       header = context.getTemporaryBuffer1();
       header.putByte(document.getRecordType()); // RECORD TYPE
       serializeProperties = true;
@@ -115,7 +115,7 @@ public class BinarySerializer {
     final DatabaseContext.DatabaseContextTL context = database.getContext();
 
     final boolean serializeProperties;
-    if (header == null || (vertex instanceof MutableVertex && ((MutableVertex) vertex).isDirty())) {
+    if (header == null || (vertex instanceof MutableVertex mutableVertex && mutableVertex.isDirty())) {
       header = context.getTemporaryBuffer1();
       header.putByte(vertex.getRecordType()); // RECORD TYPE
       serializeProperties = true;
@@ -157,7 +157,7 @@ public class BinarySerializer {
     final DatabaseContext.DatabaseContextTL context = database.getContext();
 
     final boolean serializeProperties;
-    if (header == null || (edge instanceof MutableEdge && ((MutableEdge) edge).isDirty())) {
+    if (header == null || (edge instanceof MutableEdge mutableEdge && mutableEdge.isDirty())) {
       header = context.getTemporaryBuffer1();
       header.putByte(edge.getRecordType()); // RECORD TYPE
       serializeProperties = true;
@@ -342,14 +342,14 @@ public class BinarySerializer {
       content.putUnsignedNumber((Integer) value);
       break;
     case BinaryTypes.TYPE_BINARY:
-      if (value instanceof byte[])
-        content.putBytes((byte[]) value);
-      else if (value instanceof Binary)
-        content.putBytes(((Binary) value).getContent());
+      if (value instanceof byte[] bytes)
+        content.putBytes(bytes);
+      else if (value instanceof Binary binary)
+        content.putBytes(binary.getContent());
       break;
     case BinaryTypes.TYPE_STRING:
-      if (value instanceof byte[])
-        content.putBytes((byte[]) value);
+      if (value instanceof byte[] bytes)
+        content.putBytes(bytes);
       else
         content.putString(value.toString());
       break;
@@ -375,10 +375,10 @@ public class BinarySerializer {
       content.putNumber(Double.doubleToLongBits(((Number) value).doubleValue()));
       break;
     case BinaryTypes.TYPE_DATE:
-      if (value instanceof Date)
-        content.putUnsignedNumber(((Date) value).getTime() / DateUtils.MS_IN_A_DAY);
-      else if (value instanceof LocalDate)
-        content.putUnsignedNumber(((LocalDate) value).toEpochDay());
+      if (value instanceof Date date)
+        content.putUnsignedNumber(date.getTime() / DateUtils.MS_IN_A_DAY);
+      else if (value instanceof LocalDate date)
+        content.putUnsignedNumber(date.toEpochDay());
       break;
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME:
@@ -397,9 +397,9 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_RID: {
-      if (value instanceof Result)
+      if (value instanceof Result result)
         // COMING FROM A QUERY
-        value = ((Result) value).getElement().get();
+        value = result.getElement().get();
 
       final RID rid = ((Identifiable) value).getIdentity();
       content.putInt(rid.getBucketId());
@@ -413,8 +413,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_LIST: {
-      if (value instanceof Collection) {
-        final Collection<Object> list = (Collection<Object>) value;
+      if (value instanceof Collection list) {
         content.putUnsignedNumber(list.size());
         for (final Iterator<Object> it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
@@ -422,17 +421,14 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      } else if (value instanceof Object[]) {
-        // ARRAY
-        final Object[] array = (Object[]) value;
+      } else if (value instanceof Object[] array) {
         content.putUnsignedNumber(array.length);
         for (final Object entryValue : array) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      } else if (value instanceof Iterable) {
-        final Iterable iter = (Iterable) value;
+      } else if (value instanceof Iterable iter) {
 
         final List list = new ArrayList();
         for (final Iterator it = iter.iterator(); it.hasNext(); )
@@ -758,8 +754,8 @@ public class BinarySerializer {
   }
 
   public void setDateImplementation(final Object dateImplementation) throws ClassNotFoundException {
-    this.dateImplementation = dateImplementation instanceof Class ?
-        (Class) dateImplementation :
+    this.dateImplementation = dateImplementation instanceof Class c ?
+        c :
         Class.forName(dateImplementation.toString());
   }
 
@@ -768,8 +764,8 @@ public class BinarySerializer {
   }
 
   public void setDateTimeImplementation(final Object dateTimeImplementation) throws ClassNotFoundException {
-    this.dateTimeImplementation = dateTimeImplementation instanceof Class ?
-        (Class<?>) dateTimeImplementation :
+    this.dateTimeImplementation = dateTimeImplementation instanceof Class c ?
+        c :
         Class.forName(dateTimeImplementation.toString());
   }
 

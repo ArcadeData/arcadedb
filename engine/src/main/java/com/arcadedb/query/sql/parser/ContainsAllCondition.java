@@ -98,12 +98,12 @@ public class ContainsAllCondition extends BooleanExpression {
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, context))
+        if (item instanceof Identifiable identifiable) {
+          if (!rightBlock.evaluate(identifiable, context))
             return false;
 
-        } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, context))
+        } else if (item instanceof Result result) {
+          if (!rightBlock.evaluate(result, context))
             return false;
 
         } else if (!rightBlock.evaluate(new ResultInternal(item), context))
@@ -127,11 +127,11 @@ public class ContainsAllCondition extends BooleanExpression {
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, context))
+        if (item instanceof Identifiable identifiable) {
+          if (!rightBlock.evaluate(identifiable, context))
             return false;
-        } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, context))
+        } else if (item instanceof Result result) {
+          if (!rightBlock.evaluate(result, context))
             return false;
         } else if (!rightBlock.evaluate(new ResultInternal(item), context))
           return false;

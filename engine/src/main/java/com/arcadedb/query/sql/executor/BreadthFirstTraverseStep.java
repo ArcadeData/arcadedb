@@ -97,7 +97,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   @Override
   protected void fetchNextResults(final CommandContext context, final int nRecords) {
     if (!this.entryPoints.isEmpty()) {
-      final TraverseResult item = (TraverseResult) this.entryPoints.remove(0);
+      final TraverseResult item = (TraverseResult) this.entryPoints.removeFirst();
       this.results.add(item);
       for (final TraverseProjectionItem proj : projections) {
         final Object nextStep = proj.execute(item, context);
@@ -192,7 +192,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
   private void tryAddEntryPoint(final Result res, final CommandContext context) {
     if (whileClause == null || whileClause.matchesFilters(res, context)) {
-      this.entryPoints.add(0, res);
+      this.entryPoints.addFirst(res);
     }
 
     if (res.isElement()) {

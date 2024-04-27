@@ -68,8 +68,8 @@ public class ParenthesisExpression extends MathExpression {
 
       executionPlan = statement.createExecutionPlan(subCtx);
 
-      if (executionPlan instanceof InsertExecutionPlan)
-        ((InsertExecutionPlan) executionPlan).executeInternal();
+      if (executionPlan instanceof InsertExecutionPlan plan)
+        plan.executeInternal();
 
       final LocalResultSet rs = new LocalResultSet(executionPlan);
       final List<Result> result = new ArrayList<>();

@@ -48,9 +48,9 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
     else if (value == null)
       // NULL VALUE, RETURN AN EMPTY MAP
       return Collections.emptyMap();
-    else if (value instanceof Document)
+    else if (value instanceof Document document)
       // CONVERT DOCUMENT TO MAP
-      return ((Document) value).toMap(false);
+      return document.toMap(false);
 
     final Iterator<Object> iter;
     if (value instanceof Iterator<?>)

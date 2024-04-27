@@ -1378,7 +1378,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof List);
     Assertions.assertEquals(1, ((List) foo).size());
-    final Vertex resultVertex = (Vertex) ((List) foo).get(0);
+    final Vertex resultVertex = (Vertex) ((List) foo).getFirst();
     Assertions.assertEquals(2, resultVertex.getInteger("uid"));
     result.close();
   }

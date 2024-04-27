@@ -39,8 +39,8 @@ public class SQLMethodAsString extends AbstractSQLMethod {
       final Object[] iParams) {
     if (value == null)
       return null;
-    else if (value instanceof byte[])
-      return new String((byte[]) value);
+    else if (value instanceof byte[] bytes)
+      return new String(bytes);
     else
       return value.toString();
   }

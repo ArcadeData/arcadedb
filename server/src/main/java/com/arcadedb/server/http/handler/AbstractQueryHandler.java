@@ -197,13 +197,13 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   protected void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl,
       final Set<Identifiable> includedVertices, final JSONArray vertices, final JSONArray edges, final Object value) {
-    if (value instanceof Identifiable) {
+    if (value instanceof Identifiable identifiable) {
 
       final DocumentType type;
       if (value instanceof Document document)
         type = document.getType();
       else {
-        final RID rid = ((Identifiable) value).getIdentity();
+        final RID rid = identifiable.getIdentity();
         type = database.getSchema().getTypeByBucketId(rid.getBucketId());
       }
 

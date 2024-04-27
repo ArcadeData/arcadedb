@@ -53,14 +53,14 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
     final List<Step> steps = traversal.getSteps();
     for (int i = 1; i < steps.size(); i++) {
       final Step step = steps.get(i);
-      if (step instanceof HasStep) {
+      if (step instanceof HasStep hasStep) {
         final Step prevStep = steps.get(i - 1);
         if (prevStep instanceof GraphStep prevStepGraph) {
 
           if (prevStepGraph.getIds().length != 0)
             continue;
 
-          final List<HasContainer> hasContainers = new ArrayList<>(((HasStep) step).getHasContainers());
+          final List<HasContainer> hasContainers = new ArrayList<>(hasStep.getHasContainers());
 
           String typeNameToMatch = null;
 
@@ -86,7 +86,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
           }
 
           for (final HasContainer c : containersToRemove)
-            ((HasStep<?>) step).removeHasContainer(c);
+            hasStep.removeHasContainer(c);
 
           if (totalLabels == 1 && typeNameToMatch != null) {
 

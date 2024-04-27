@@ -35,7 +35,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
   @Test
   public void testGetAbsoluteId() {
     database.transaction(() -> {
-      final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("absoluteId").get(0);
+      final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("absoluteId").getFirst();
       for (int i = 0; i < TOT * TOT; ++i) {
         final IndexCursor value = index.get(new Object[] { i });
         Assertions.assertTrue(value.hasNext());
@@ -47,7 +47,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
   @Test
   public void testGetRelative() {
     database.transaction(() -> {
-      final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("directoryId", "fileId").get(0);
+      final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("directoryId", "fileId").getFirst();
       for (int i = 0; i < TOT; ++i) {
         for (int k = 0; k < TOT; ++k) {
           final IndexCursor value = index.get(new Object[] { i, k });
@@ -64,7 +64,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
   @Test
   public void testPartialNullGet() {
     database.transaction(() -> {
-      final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("directoryId", "fileId").get(0);
+      final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("directoryId", "fileId").getFirst();
       for (int i = 0; i < TOT; ++i) {
         final IndexCursor value = index.get(new Object[] { i, null });
         Assertions.assertTrue(value.hasNext(), "id[" + i + "]");

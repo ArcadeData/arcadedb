@@ -405,7 +405,7 @@ public class InsertStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(list instanceof List);
       Assertions.assertEquals(1, ((List) list).size());
 
-      final Object o = ((List) list).get(0);
+      final Object o = ((List) list).getFirst();
       Assertions.assertTrue(o instanceof Map);
       Assertions.assertEquals("foo", ((Map) o).get("name"));
     }
@@ -433,7 +433,7 @@ public class InsertStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(list instanceof List);
       Assertions.assertEquals(1, ((List) list).size());
 
-      final Object o = ((List) list).get(0);
+      final Object o = ((List) list).getFirst();
       Assertions.assertTrue(o instanceof Map);
       Assertions.assertEquals("foo", ((Map) o).get("name"));
     }

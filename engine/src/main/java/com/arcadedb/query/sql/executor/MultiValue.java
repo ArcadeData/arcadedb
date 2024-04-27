@@ -86,16 +86,16 @@ public class MultiValue {
       return ((Map<?, Object>) object).size();
     else if (object.getClass().isArray())
       return Array.getLength(object);
-    else if ((object instanceof ResettableIterator))
-      return (int) ((ResettableIterator<?>) object).countEntries();
-    else if ((object instanceof Iterable)) {
+    else if ((object instanceof ResettableIterator<?> iterator))
+      return (int) iterator.countEntries();
+    else if ((object instanceof Iterable iterable)) {
       int i = 0;
-      for (final Object o : (Iterable) object) {
+      for (final Object o : iterable) {
         i++;
       }
       return i;
-    } else if ((object instanceof Iterator)) {
-      return (int) CollectionUtils.countEntries((Iterator) object);
+    } else if ((object instanceof Iterator iterator)) {
+      return (int) CollectionUtils.countEntries(iterator);
     }
 
     return 0;
@@ -140,7 +140,7 @@ public class MultiValue {
 
     try {
       if (object instanceof List<?>)
-        return ((List<Object>) object).get(0);
+        return ((List<Object>) object).getFirst();
       else if (object instanceof Iterable<?>)
         return ((Iterable<Object>) object).iterator().next();
       else if (object instanceof Map<?, ?>)
@@ -437,8 +437,7 @@ public class MultiValue {
    */
   public static Object add(final Object iObject, final Object iToAdd) {
     if (iObject != null) {
-      if (iObject instanceof Collection<?>) {
-        final Collection coll = (Collection) iObject;
+      if (iObject instanceof Collection coll) {
 
         if (!(iToAdd instanceof Map) && isMultiValue(iToAdd)) {
           // COLLECTION - COLLECTION
@@ -463,8 +462,9 @@ public class MultiValue {
           coll.add(iToAdd);
         } else if (iToAdd instanceof Iterator<?> it) {
           // ITERATOR
-          for (; it.hasNext(); )
-            coll.add(it.next());
+            while (it.hasNext()) {
+                coll.add(it.next());
+            }
         } else
           coll.add(iToAdd);
 

@@ -130,21 +130,21 @@ public interface Result {
       jsonVal = "\"" + encode(val.toString()) + "\"";
     } else if (val instanceof Number || val instanceof Boolean) {
       jsonVal = val.toString();
-    } else if (val instanceof Result) {
-      jsonVal = ((Result) val).toJSON();
-    } else if (val instanceof Record) {
-      jsonVal = "\"" + ((Record) val).getIdentity() + "\"";
+    } else if (val instanceof Result result) {
+      jsonVal = result.toJSON();
+    } else if (val instanceof Record record) {
+      jsonVal = "\"" + record.getIdentity() + "\"";
     } else if (val instanceof RID) {
       jsonVal = "\"" + val + "\"";
     } else if (val instanceof JSONObject) {
       jsonVal = val.toString();
     } else if (val instanceof JSONArray) {
       jsonVal = val.toString();
-    } else if (val instanceof Iterable) {
+    } else if (val instanceof Iterable iterable) {
       final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      for (final Object o : (Iterable<?>) val) {
+      for (final Object o : iterable) {
         if (!first)
           builder.append(", ");
 
@@ -157,7 +157,6 @@ public interface Result {
       final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      final Iterator<?> iterator = (Iterator<?>) val;
       while (iterator.hasNext()) {
         if (!first)
           builder.append(", ");
@@ -168,14 +167,14 @@ public interface Result {
       builder.append("]");
       jsonVal = builder.toString();
     } else if (val instanceof Map) {
-      Map<String,Object> map = (Map) val;
       final StringBuilder builder = new StringBuilder();
       builder.append("{");
       boolean first = true;
-      for (final Map.Entry entry : map.entrySet()) {
-        if (!first) {
+      final Map<String, Object> map = (Map<String, Object>) val;
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
+        if (!first)
           builder.append(", ");
-        }
+
         builder.append(toJson(entry.getKey()));
         builder.append(": ");
         builder.append(toJson(entry.getValue()));
@@ -211,8 +210,8 @@ public interface Result {
         jsonVal = "\"" + DateUtils.format(val, getDatabase().getSchema().getDateTimeFormat()) + "\"";
       else
         jsonVal = "\"" + val + "\"";
-    } else if (val instanceof Type) {
-      jsonVal = "\"" + ((Type) val).name() + "\"";
+    } else if (val instanceof Type type) {
+      jsonVal = "\"" + type.name() + "\"";
     } else {
       // ANYTHING ELSE: RETURN A STRING
       jsonVal = "\"" + encode(val.toString()) + "\"";

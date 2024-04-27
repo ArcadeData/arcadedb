@@ -201,9 +201,9 @@ public class ArraySingleValuesSelector extends SimpleNode {
   }
 
   private int compareKeysForRemoval(final Object o1, final Object o2) {
-    if (o1 instanceof Integer) {
+    if (o1 instanceof Integer integer1) {
       if (o2 instanceof Integer integer) {
-        return integer - (int) o1;
+        return integer - integer1;
       } else {
         return -1;
       }

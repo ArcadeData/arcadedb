@@ -39,14 +39,14 @@ public class ContainsAnyCondition extends BooleanExpression {
   }
 
   public boolean execute(Object left, Object right) {
-    if (left instanceof Collection) {
+    if (left instanceof Collection collection) {
       if (right instanceof Iterable iterable) {
         right = iterable.iterator();
       }
       if (right instanceof Iterator iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (((Collection) left).contains(next)) {
+          if (collection.contains(next)) {
             return true;
           }
         }

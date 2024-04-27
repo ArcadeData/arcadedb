@@ -58,7 +58,9 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
     if (obj instanceof String string)
       return new RID(database, string);
 
-    if (obj instanceof Map map) {
+    if (obj instanceof Map) {
+      @SuppressWarnings({ "unchecked", "rawtypes" })
+      final Map<String, Number> map = (Map) obj;
       return new RID(database, map.get(BUCKET_ID).intValue(), map.get(BUCKET_POSITION).longValue());
     }
 

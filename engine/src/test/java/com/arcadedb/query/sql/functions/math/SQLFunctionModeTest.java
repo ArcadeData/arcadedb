@@ -52,7 +52,7 @@ public class SQLFunctionModeTest {
         }
 
         final Object result = mode.getResult();
-        assertEquals(3, (int) ((List<Integer>) result).get(0));
+        assertEquals(3, (int) ((List<Integer>) result).getFirst());
     }
 
     @Test
@@ -81,6 +81,6 @@ public class SQLFunctionModeTest {
         }
 
         final Object result = mode.getResult();
-        assertEquals(1, (int) ((List<Integer>) result).get(0));
+        assertEquals(1, (int) ((List<Integer>) result).getFirst());
     }
 }

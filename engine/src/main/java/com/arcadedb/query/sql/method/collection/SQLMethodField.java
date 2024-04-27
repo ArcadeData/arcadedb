@@ -42,8 +42,8 @@ public class SQLMethodField extends AbstractSQLMethod {
 
     final String field = iParams[0].toString();
 
-    if (value instanceof Identifiable) {
-      final Document doc = (Document) ((Identifiable) value).getRecord();
+    if (value instanceof Identifiable identifiable) {
+      final Document doc = (Document) identifiable.getRecord();
       return doc.get(field);
     }
 

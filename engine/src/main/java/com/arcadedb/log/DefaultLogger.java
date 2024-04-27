@@ -165,8 +165,8 @@ public class DefaultLogger implements Logger {
       try {
         String msg = message;
         if (hasParams)
-          msg = String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-              arg15, arg16, arg17);
+          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+            arg15, arg16, arg17);
 
         System.err.println(msg);
 
@@ -184,8 +184,8 @@ public class DefaultLogger implements Logger {
 
         String msg = message;
         if (hasParams)
-          msg = String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-              arg15, arg16, arg17);
+          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+            arg15, arg16, arg17);
 
         if (exception != null)
           log.log(level, msg, exception);

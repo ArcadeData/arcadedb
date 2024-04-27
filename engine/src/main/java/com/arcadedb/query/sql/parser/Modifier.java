@@ -124,12 +124,12 @@ public class Modifier extends SimpleNode {
     if (iResult instanceof Identifiable)
       iResult = Collections.singleton(iResult);
 
-    if (iResult instanceof Iterable)
-      iResult = ((Iterable) iResult).iterator();
+    if (iResult instanceof Iterable iterable)
+      iResult = iterable.iterator();
 
-    if (iResult instanceof Iterator) {
-      while (((Iterator) iResult).hasNext()) {
-        final Object item = ((Iterator) iResult).next();
+    if (iResult instanceof Iterator iterator) {
+      while (iterator.hasNext()) {
+        final Object item = iterator.next();
         if (condition.evaluate(item, context))
           result.add(item);
       }

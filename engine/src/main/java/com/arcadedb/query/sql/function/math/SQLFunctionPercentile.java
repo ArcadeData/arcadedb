@@ -96,7 +96,7 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
 
       return results;
     } else
-      return this.evaluate(iValues, this.quantiles.get(0));
+      return this.evaluate(iValues, this.quantiles.getFirst());
   }
 
   private Number evaluate(final List<Number> iValues, final double iQuantile) {

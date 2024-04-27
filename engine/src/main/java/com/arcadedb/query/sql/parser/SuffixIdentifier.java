@@ -115,9 +115,9 @@ public class SuffixIdentifier extends SimpleNode {
         if (iCurrentRecord.getMetadataKeys().contains(varName)) {
           return iCurrentRecord.getMetadata(varName);
         }
-        if (iCurrentRecord instanceof ResultInternal && ((ResultInternal) iCurrentRecord).getTemporaryProperties()
+        if (iCurrentRecord instanceof ResultInternal internal && internal.getTemporaryProperties()
             .contains(varName)) {
-          return ((ResultInternal) iCurrentRecord).getTemporaryProperty(varName);
+          return internal.getTemporaryProperty(varName);
         }
       }
       return null;
@@ -179,9 +179,9 @@ public class SuffixIdentifier extends SimpleNode {
     while (iterator.hasNext()) {
       result.add(execute(iterator.next(), context));
     }
-    if (iterator instanceof ResultSet) {
+    if (iterator instanceof ResultSet set) {
       try {
-        ((ResultSet) iterator).reset();
+        set.reset();
       } catch (final Exception ignore) {
       }
     }
@@ -206,23 +206,23 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public Object execute(final Object currentValue, final CommandContext context) {
-    if (currentValue instanceof Result)
-      return execute((Result) currentValue, context);
+    if (currentValue instanceof Result result)
+      return execute(result, context);
 
-    if (currentValue instanceof Identifiable)
-      return execute((Identifiable) currentValue, context);
+    if (currentValue instanceof Identifiable identifiable)
+      return execute(identifiable, context);
 
-    if (currentValue instanceof Map)
-      return execute((Map) currentValue, context);
+    if (currentValue instanceof Map map)
+      return execute(map, context);
 
-    if (currentValue instanceof CommandContext)
-      return execute((CommandContext) currentValue);
+    if (currentValue instanceof CommandContext commandContext)
+      return execute(commandContext);
 
-    if (currentValue instanceof Iterable)
-      return execute((Iterable) currentValue, context);
+    if (currentValue instanceof Iterable iterable)
+      return execute(iterable, context);
 
-    if (currentValue instanceof Iterator)
-      return execute((Iterator) currentValue, context);
+    if (currentValue instanceof Iterator iterator)
+      return execute(iterator, context);
 
     if (currentValue == null)
       return execute((Result) null, context);
@@ -282,12 +282,12 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public void setValue(final Object target, final Object value, final CommandContext context) {
-    if (target instanceof Result)
-      setValue((Result) target, value, context);
-    else if (target instanceof Identifiable)
-      setValue((Identifiable) target, value, context);
-    else if (target instanceof Map)
-      setValue((Map) target, value, context);
+    if (target instanceof Result result)
+      setValue(result, value, context);
+    else if (target instanceof Identifiable identifiable)
+      setValue(identifiable, value, context);
+    else if (target instanceof Map map)
+      setValue(map, value, context);
   }
 
   public void setValue(final Identifiable target, final Object value, final CommandContext context) {
@@ -295,8 +295,8 @@ public class SuffixIdentifier extends SimpleNode {
       return;
 
     MutableDocument doc = null;
-    if (target instanceof MutableDocument)
-      doc = (MutableDocument) target;
+    if (target instanceof MutableDocument document)
+      doc = document;
     else
       doc = target.getRecord().asDocument().modify();
 
@@ -320,8 +320,7 @@ public class SuffixIdentifier extends SimpleNode {
     if (target == null)
       return;
 
-    if (target instanceof ResultInternal) {
-      final ResultInternal intTarget = (ResultInternal) target;
+    if (target instanceof ResultInternal intTarget) {
       if (identifier != null)
         intTarget.setProperty(identifier.getStringValue(), value);
       else if (recordAttribute != null)
@@ -337,16 +336,16 @@ public class SuffixIdentifier extends SimpleNode {
       return;
 
     if (identifier != null) {
-      if (currentValue instanceof Result && ((Result) currentValue).isElement())
-        currentValue = ((Result) currentValue).toElement();
+      if (currentValue instanceof Result result && result.isElement())
+        currentValue = result.toElement();
 
-      if (currentValue instanceof ResultInternal) {
-        ((ResultInternal) currentValue).removeProperty(identifier.getStringValue());
-      } else if (currentValue instanceof Document) {
-        final MutableDocument doc = ((Document) currentValue).modify();
+      if (currentValue instanceof ResultInternal internal) {
+        internal.removeProperty(identifier.getStringValue());
+      } else if (currentValue instanceof Document document) {
+        final MutableDocument doc = document.modify();
         doc.remove(identifier.getStringValue());
-      } else if (currentValue instanceof Map) {
-        ((Map) currentValue).remove(identifier.getStringValue());
+      } else if (currentValue instanceof Map map) {
+        map.remove(identifier.getStringValue());
       }
     }
   }

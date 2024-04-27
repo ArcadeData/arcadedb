@@ -147,10 +147,10 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
         <configuration>
-          <compilerArgs>
-            <arg>--add-exports</arg>
-            <arg>java.management/sun.management=ALL-UNNAMED</arg>
-          </compilerArgs>
+<!--          <compilerArgs>-->
+<!--            <arg>&#45;&#45;add-exports</arg>-->
+<!--            <arg>java.management/sun.management=ALL-UNNAMED</arg>-->
+<!--          </compilerArgs>-->
           <release>21</release>
                 </configuration>
             </plugin>

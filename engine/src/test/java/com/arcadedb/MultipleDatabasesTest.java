@@ -92,7 +92,7 @@ public class MultipleDatabasesTest extends TestHelper {
 
     // CHECK COPIED RECORDS TOO
     Assertions.assertEquals(1, database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded1").get("db"));
-    Assertions.assertEquals(2, ((List<EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("list2")).get(0).get("db"));
+    Assertions.assertEquals(2, ((List<EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("list2")).getFirst().get("db"));
     Assertions.assertEquals(2, ((Map<String, EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("map2")).get("copied2").get("db"));
 
     database.close();

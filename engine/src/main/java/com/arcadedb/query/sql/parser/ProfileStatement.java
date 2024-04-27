@@ -56,8 +56,8 @@ public class ProfileStatement extends Statement {
     context.setProfiling(true);
 
     final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
-    if (executionPlan instanceof UpdateExecutionPlan)
-      ((UpdateExecutionPlan) executionPlan).executeInternal();
+    if (executionPlan instanceof UpdateExecutionPlan plan)
+      plan.executeInternal();
 
     final LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
     while (rs.hasNext())

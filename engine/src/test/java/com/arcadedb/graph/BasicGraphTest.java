@@ -467,7 +467,7 @@ public class BasicGraphTest extends BaseGraphTest {
           Assertions.assertTrue(line.getPropertyNames().contains("sp"));
           Assertions.assertNotNull(line.getProperty("sp"));
           Assertions.assertEquals(2, ((List) line.getProperty("sp")).size());
-          Assertions.assertEquals(v1, ((List) line.getProperty("sp")).get(0));
+          Assertions.assertEquals(v1, ((List) line.getProperty("sp")).getFirst());
           Assertions.assertEquals(v2, ((List) line.getProperty("sp")).get(1));
         }
       }

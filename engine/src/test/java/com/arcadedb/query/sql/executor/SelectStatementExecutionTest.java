@@ -813,7 +813,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final String className = "testFetchFromBucketNumber";
     final Schema schema = database.getSchema();
     final DocumentType clazz = schema.createDocumentType(className);
-    final String targetClusterName = clazz.getBuckets(false).get(0).getName();
+    final String targetClusterName = clazz.getBuckets(false).getFirst().getName();
 
     database.begin();
     for (int i = 0; i < 10; i++) {
@@ -842,7 +842,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final Schema schema = database.getSchema();
     final DocumentType clazz = schema.createDocumentType(className);
 
-    final String targetBucketName = clazz.getBuckets(false).get(0).getName();
+    final String targetBucketName = clazz.getBuckets(false).getFirst().getName();
 
     database.begin();
     for (int i = 0; i < 10; i++) {
@@ -870,7 +870,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final Schema schema = database.getSchema();
     final DocumentType clazz = schema.createDocumentType(className);
 
-    final String targetClusterName = clazz.getBuckets(false).get(0).getName();
+    final String targetClusterName = clazz.getBuckets(false).getFirst().getName();
 
     database.begin();
     for (int i = 0; i < 10; i++) {
@@ -902,7 +902,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       return;
     }
 
-    final String targetClusterName = clazz.getBuckets(false).get(0).getName();
+    final String targetClusterName = clazz.getBuckets(false).getFirst().getName();
     final String targetClusterName2 = clazz.getBuckets(false).get(1).getName();
 
     database.begin();
@@ -991,7 +991,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
       Assertions.assertNotNull(item.getProperty("name"));
-      Assertions.assertEquals("STRING", ((List<String>) item.getProperty("keyTypes")).get(0));
+      Assertions.assertEquals("STRING", ((List<String>) item.getProperty("keyTypes")).getFirst());
       Assertions.assertFalse((Boolean) item.getProperty("unique"));
     }
     Assertions.assertFalse(result.hasNext());
@@ -1011,7 +1011,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNonExistingRids() {
-    final int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).get(0).getFileId();
+    final int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).getFirst().getFileId();
     final ResultSet result = database.query("sql", "select from #" + bucketId + ":100000000");
     Assertions.assertTrue(result.hasNext());
 
@@ -1136,7 +1136,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ExecutionPlan p2 = p.get();
     Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
     final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
-    Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
+    Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().getFirst().getClass());
     result.close();
   }
 
@@ -1169,7 +1169,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ExecutionPlan p2 = p.get();
     Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
     final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
-    Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
+    Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().getFirst().getClass());
     result.close();
   }
 
@@ -1207,8 +1207,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ExecutionPlan p2 = p.get();
     Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
     final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
-    Assertions.assertEquals(ParallelExecStep.class, plan.getSteps().get(0).getClass());
-    final ParallelExecStep parallel = (ParallelExecStep) plan.getSteps().get(0);
+    Assertions.assertEquals(ParallelExecStep.class, plan.getSteps().getFirst().getClass());
+    final ParallelExecStep parallel = (ParallelExecStep) plan.getSteps().getFirst();
     Assertions.assertEquals(2, parallel.getSubExecutionPlans().size());
     result.close();
   }
@@ -1877,7 +1877,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final Object one = item.getProperty("one");
     Assertions.assertTrue(one instanceof List);
     Assertions.assertEquals(1, ((List) one).size());
-    final Object x = ((List) one).get(0);
+    final Object x = ((List) one).getFirst();
     Assertions.assertTrue(x instanceof Result);
     Assertions.assertEquals(1, (Object) ((Result) x).getProperty("a"));
     result.close();
@@ -2141,7 +2141,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
+    Assertions.assertTrue(plan.getSteps().getFirst() instanceof ParallelExecStep);
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2186,7 +2186,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
+    Assertions.assertTrue(plan.getSteps().getFirst() instanceof ParallelExecStep);
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2230,7 +2230,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep); // no index used
+    Assertions.assertTrue(plan.getSteps().getFirst() instanceof FetchFromTypeExecutionStep); // no index used
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2280,7 +2280,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     Assertions.assertTrue(
-        plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep); // no index, because the superclass is not empty
+        plan.getSteps().getFirst() instanceof FetchFromTypeExecutionStep); // no index, because the superclass is not empty
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2342,7 +2342,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
+    Assertions.assertTrue(plan.getSteps().getFirst() instanceof ParallelExecStep);
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();
@@ -2401,7 +2401,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep);
+    Assertions.assertTrue(plan.getSteps().getFirst() instanceof FetchFromTypeExecutionStep);
     for (int i = 0; i < 3; i++) {
       Assertions.assertTrue(result.hasNext());
       final Result item = result.next();

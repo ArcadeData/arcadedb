@@ -53,8 +53,8 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
 
     if (value instanceof Date)
       return value;
-    else if (value instanceof Number)
-      return new Date(((Number) value).longValue());
+    else if (value instanceof Number number)
+      return new Date(number.longValue());
 
     final String format = iParams.length > 0 ? iParams[0].toString() : context.getDatabase().getSchema().getDateTimeFormat();
     final Object date = DateUtils.parse(value.toString(), format);

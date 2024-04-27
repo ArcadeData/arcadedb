@@ -69,7 +69,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
       }
     }
     if (plan instanceof IfExecutionPlan) {
-      final IfStep step = (IfStep) plan.getSteps().get(0);
+      final IfStep step = (IfStep) plan.getSteps().getFirst();
       if (step.positivePlan != null && step.positivePlan.containsReturn()) {
         return true;
       } else if (step.positiveStatements != null) {
@@ -105,8 +105,8 @@ public class ScriptLineStep extends AbstractExecutionStep {
     if (plan instanceof ScriptExecutionPlan executionPlan)
       return executionPlan.executeUntilReturn();
 
-    if (plan instanceof SingleOpExecutionPlan) {
-      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement) {
+    if (plan instanceof SingleOpExecutionPlan opExecutionPlan) {
+      if (opExecutionPlan.statement instanceof ReturnStatement) {
         return new ReturnStep(((SingleOpExecutionPlan) plan).statement, context);
       }
     }

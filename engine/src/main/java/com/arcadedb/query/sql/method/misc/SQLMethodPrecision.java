@@ -48,20 +48,20 @@ public class SQLMethodPrecision extends AbstractSQLMethod {
 
     final ChronoUnit targetPrecision = DateUtils.parsePrecision(iParams[0].toString());
 
-    if (value instanceof LocalDateTime)
-      return ((LocalDateTime) value).truncatedTo(targetPrecision);
-    else if (value instanceof ZonedDateTime)
-      return ((ZonedDateTime) value).truncatedTo(targetPrecision);
-    else if (value instanceof Instant)
-      return ((Instant) value).truncatedTo(targetPrecision);
-    else if (value instanceof Date) {
+    if (value instanceof LocalDateTime time)
+      return time.truncatedTo(targetPrecision);
+    else if (value instanceof ZonedDateTime time)
+      return time.truncatedTo(targetPrecision);
+    else if (value instanceof Instant instant)
+      return instant.truncatedTo(targetPrecision);
+    else if (value instanceof Date date) {
       if (targetPrecision == ChronoUnit.MILLIS)
         return value;
-      return DateUtils.dateTime(iContext.getDatabase(), ((Date) value).getTime(), ChronoUnit.MILLIS, LocalDateTime.class, targetPrecision);
-    } else if (value instanceof Calendar) {
+      return DateUtils.dateTime(iContext.getDatabase(), date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class, targetPrecision);
+    } else if (value instanceof Calendar calendar) {
       if (targetPrecision == ChronoUnit.MILLIS)
         return value;
-      return DateUtils.dateTime(iContext.getDatabase(), ((Calendar) value).getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class, targetPrecision);
+      return DateUtils.dateTime(iContext.getDatabase(), calendar.getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class, targetPrecision);
     }
 
     throw new CommandExecutionException("Error on changing precision for unsupported type '" + value.getClass() + "'");

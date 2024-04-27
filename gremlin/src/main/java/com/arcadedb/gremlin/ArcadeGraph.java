@@ -178,17 +178,16 @@ public class ArcadeGraph implements Graph, Closeable {
     if (traversal != null)
       return traversal;
 
-    if (database instanceof RemoteDatabase) {
+    if (database instanceof RemoteDatabase remoteDatabase) {
       try {
         final List<String> remoteAddresses = new ArrayList<>();
-        final RemoteDatabase remoteDatabase = (RemoteDatabase) database;
 
         remoteAddresses.add(remoteDatabase.getLeaderAddress());
         remoteAddresses.addAll(remoteDatabase.getReplicaAddresses());
 
         final String[] hosts = new String[remoteAddresses.size()];
         for (int i = 0; i < remoteAddresses.size(); i++) {
-          final String host = remoteAddresses.get(0);
+          final String host = remoteAddresses.getFirst();
           hosts[i] = host.substring(0, host.indexOf(":"));
         }
 

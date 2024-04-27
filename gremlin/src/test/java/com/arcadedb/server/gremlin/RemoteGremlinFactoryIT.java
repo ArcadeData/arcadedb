@@ -87,7 +87,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
         graph.tx().commit(); // <-- WITHOUT THIS COMMIT THE NEXT 2 TRAVERSALS WOULD NOT SEE THE ADDED VERTICES
 
         Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().next());
-        Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().toList().get(0));
+        Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().toList().getFirst());
       }
     }
   }
@@ -118,7 +118,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       executorService.awaitTermination(60, TimeUnit.SECONDS);
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertTrue(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800);
+        Assertions.assertTrue(graph.traversal().V().hasLabel("Country").count().toList().getFirst() > 800);
       }
     }
   }
@@ -145,7 +145,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       executorService.awaitTermination(60, TimeUnit.SECONDS);
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertTrue(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800);
+        Assertions.assertTrue(graph.traversal().V().hasLabel("Country").count().toList().getFirst() > 800);
       }
     }
   }
@@ -165,7 +165,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       }
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().getFirst());
       }
     }
   }
@@ -186,7 +186,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       }
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().getFirst());
       }
     }
   }
@@ -204,7 +204,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       }
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().getFirst());
       }
     }
   }

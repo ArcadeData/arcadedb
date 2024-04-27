@@ -32,8 +32,8 @@ import java.util.ArrayList;
 import java.util.*;
 import java.util.function.*;
 
-import static java.lang.String.*;
-import static java.util.Arrays.*;
+import static java.lang.String.valueOf;
+import static java.util.Arrays.asList;
 import static java.util.stream.Collectors.*;
 
 /**
@@ -148,7 +148,7 @@ public final class ArcadeCustomFunctions {
   }
 
   public static Function<Traverser, Object> cypherRound() {
-    return cypherFunction(a -> (Math.round((Double) a.get(0))), Double.class);
+    return cypherFunction(a -> (Math.round((Double) a.getFirst())), Double.class);
   }
 
   public static Function<Traverser, Object> cypherProperties() {
@@ -175,15 +175,14 @@ public final class ArcadeCustomFunctions {
   public static Function<Traverser, Object> cypherContainerIndex() {
     return traverser -> {
       List<?> args = (List<?>) traverser.get();
-      Object container = args.get(0);
+      Object container = args.getFirst();
       Object index = args.get(1);
 
       if (container == Tokens.NULL || index == Tokens.NULL) {
         return Tokens.NULL;
       }
 
-      if (container instanceof List) {
-        List list = (List) container;
+      if (container instanceof List list) {
         int size = list.size();
         int i = normalizeContainerIndex(index, size);
         if (i < 0 || i > size) {
@@ -192,22 +191,20 @@ public final class ArcadeCustomFunctions {
         return list.get(i);
       }
 
-      if (container instanceof Map) {
+      if (container instanceof Map map) {
         if (!(index instanceof String)) {
           String indexClass = index.getClass().getName();
           throw new IllegalArgumentException("Map element access by non-string: " + indexClass);
         }
-        Map map = (Map) container;
         String key = (String) index;
         return map.getOrDefault(key, Tokens.NULL);
       }
 
-      if (container instanceof Element) {
+      if (container instanceof Element element) {
         if (!(index instanceof String)) {
           String indexClass = index.getClass().getName();
           throw new IllegalArgumentException("Property access by non-string: " + indexClass);
         }
-        Element element = (Element) container;
         String key = (String) index;
         return element.property(key).orElse(Tokens.NULL);
       }
@@ -223,7 +220,7 @@ public final class ArcadeCustomFunctions {
   public static Function<Traverser, Object> cypherListSlice() {
     return traverser -> {
       List<?> args = (List<?>) traverser.get();
-      Object container = args.get(0);
+      Object container = args.getFirst();
       Object from = args.get(1);
       Object to = args.get(2);
 
@@ -231,8 +228,7 @@ public final class ArcadeCustomFunctions {
         return Tokens.NULL;
       }
 
-      if (container instanceof List) {
-        List list = (List) container;
+      if (container instanceof List list) {
         int size = list.size();
         int f = normalizeRangeIndex(from, size);
         int t = normalizeRangeIndex(to, size);
@@ -302,7 +298,7 @@ public final class ArcadeCustomFunctions {
         throw new IllegalArgumentException("Number out of range: " + percentile);
       }
 
-      Collection<?> coll = (Collection<?>) args.get(0);
+      Collection<?> coll = (Collection<?>) args.getFirst();
       boolean invalid = coll.stream()
           .anyMatch(o -> !(o == null || o instanceof Number));
       if (invalid) {
@@ -318,7 +314,7 @@ public final class ArcadeCustomFunctions {
       if (size == 0) {
         return Tokens.NULL;
       } else if (size == 1) {
-        return data.get(0);
+        return data.getFirst();
       }
 
       return percentileStrategy.apply(data, percentile);
@@ -343,7 +339,7 @@ public final class ArcadeCustomFunctions {
   public static Function<Traverser, Object> cypherPlus() {
     return traverser -> {
       List<?> args = (List<?>) traverser.get();
-      Object a = args.get(0);
+      Object a = args.getFirst();
       Object b = args.get(1);
 
       if (a == Tokens.NULL || b == Tokens.NULL) {
@@ -352,13 +348,13 @@ public final class ArcadeCustomFunctions {
 
       if (a instanceof List || b instanceof List) {
         List<Object> objects = new ArrayList<>();
-        if (a instanceof List) {
-          objects.addAll((List<?>) a);
+        if (a instanceof List list) {
+          objects.addAll(list);
         } else {
           objects.add(a);
         }
-        if (b instanceof List) {
-          objects.addAll((List<?>) b);
+        if (b instanceof List list) {
+          objects.addAll(list);
         } else {
           objects.add(b);
         }
@@ -370,12 +366,12 @@ public final class ArcadeCustomFunctions {
         throw new TypeException("Illegal use of plus operator");
       }
 
-      if (a instanceof Number && b instanceof Number) {
+      if (a instanceof Number number && b instanceof Number other) {
         if (a instanceof Double || b instanceof Double ||
             a instanceof Float || b instanceof Float) {
-          return ((Number) a).doubleValue() + ((Number) b).doubleValue();
+          return number.doubleValue() + other.doubleValue();
         } else {
-          return ((Number) a).longValue() + ((Number) b).longValue();
+          return number.longValue() + other.longValue();
         }
       } else {
         return String.valueOf(a) + String.valueOf(b);
@@ -388,15 +384,15 @@ public final class ArcadeCustomFunctions {
       Object o = traverser.get();
       if (o == Tokens.NULL) {
         return Tokens.NULL;
-      } else if (o instanceof Collection) {
-        ArrayList result = new ArrayList((Collection) o);
+      } else if (o instanceof Collection collection) {
+        ArrayList result = new ArrayList(collection);
         Collections.reverse(result);
         return result;
-      } else if (o instanceof String) {
-        return new StringBuilder((String) o).reverse().toString();
+      } else if (o instanceof String string) {
+        return new StringBuilder(string).reverse().toString();
       } else {
-        throw new TypeException(format("Expected a string or list value for reverse, but got: %s(%s)",
-            o.getClass().getSimpleName(), o));
+        throw new TypeException("Expected a string or list value for reverse, but got: %s(%s)".formatted(
+          o.getClass().getSimpleName(), o));
       }
     };
   }
@@ -404,17 +400,17 @@ public final class ArcadeCustomFunctions {
   public static Function<Traverser, Object> cypherSubstring() {
     return traverser -> {
       List<?> args = (List<?>) traverser.get();
-      Object a = args.get(0);
+      Object a = args.getFirst();
       Object b = args.get(1);
 
       if (a == Tokens.NULL) {
         return Tokens.NULL;
       } else if (!(a instanceof String) || (!(b instanceof Number))) {
-        throw new TypeException(format("Expected substring(String, Integer, [Integer]), but got: (%s, %s)",
-            a, b));
+        throw new TypeException("Expected substring(String, Integer, [Integer]), but got: (%s, %s)".formatted(
+          a, b));
       } else if (args.size() == 3 && (!(args.get(2) instanceof Number))) {
-        throw new TypeException(format("Expected substring(String, Integer, [Integer]), but got: (%s, %s, %s)",
-            a, b, args.get(2)));
+        throw new TypeException("Expected substring(String, Integer, [Integer]), but got: (%s, %s, %s)".formatted(
+          a, b, args.get(2)));
       } else if (args.size() == 3) {
         String s = (String) a;
         int endIndex = ((Number) b).intValue() + ((Number) args.get(2)).intValue();
@@ -436,10 +432,10 @@ public final class ArcadeCustomFunctions {
         }
 
         if (!clazzes[i].isInstance(args.get(i))) {
-          throw new TypeException(format("Expected a %s value for <function1>, but got: %s(%s)",
-              clazzes[i].getSimpleName(),
-              args.get(i).getClass().getSimpleName(),
-              args.get(i)));
+          throw new TypeException("Expected a %s value for <function1>, but got: %s(%s)".formatted(
+            clazzes[i].getSimpleName(),
+            args.get(i).getClass().getSimpleName(),
+            args.get(i)));
         }
       }
 
@@ -448,24 +444,24 @@ public final class ArcadeCustomFunctions {
   }
 
   public static Function<Traverser, Object> cypherTrim() {
-    return cypherFunction(a -> ((String) a.get(0)).trim(), String.class);
+    return cypherFunction(a -> ((String) a.getFirst()).trim(), String.class);
   }
 
   public static Function<Traverser, Object> cypherToUpper() {
-    return cypherFunction(a -> ((String) a.get(0)).toUpperCase(), String.class);
+    return cypherFunction(a -> ((String) a.getFirst()).toUpperCase(), String.class);
   }
 
   public static Function<Traverser, Object> cypherToLower() {
-    return cypherFunction(a -> ((String) a.get(0)).toLowerCase(), String.class);
+    return cypherFunction(a -> ((String) a.getFirst()).toLowerCase(), String.class);
   }
 
   public static Function<Traverser, Object> cypherSplit() {
-    return cypherFunction(a -> asList(((String) a.get(0)).split((String) a.get(1))), String.class, String.class);
+    return cypherFunction(a -> asList(((String) a.getFirst()).split((String) a.get(1))), String.class, String.class);
   }
 
   public static Function<Traverser, Object> cypherReplace() {
     return cypherFunction(a ->
-            ((String) a.get(0)).replace((String) a.get(1), (String) a.get(2)),
+            ((String) a.getFirst()).replace((String) a.get(1), (String) a.get(2)),
         String.class, String.class, String.class);
   }
 
@@ -488,8 +484,8 @@ public final class ArcadeCustomFunctions {
     if (clazz.isInstance(o)) {
       return clazz.cast(o);
     } else {
-      throw new TypeException(format("Expected %s to be %s, but it was %s",
-          o, clazz.getSimpleName(), o.getClass().getSimpleName()));
+      throw new TypeException("Expected %s to be %s, but it was %s".formatted(
+        o, clazz.getSimpleName(), o.getClass().getSimpleName()));
     }
   }
 }

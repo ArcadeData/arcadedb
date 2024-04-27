@@ -64,7 +64,7 @@ public class JSONSerializer {
 
       final Object value = convertToJSONType(entry.getValue(), propertyType);
 
-      if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {
+      if (value instanceof Number number && !Float.isFinite(number.floatValue())) {
         LogManager.instance()
             .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion",
                 entry.getKey());
@@ -92,16 +92,15 @@ public class JSONSerializer {
   }
 
   private Object convertToJSONType(Object value, final Type type) {
-    if (value instanceof Document) {
-      value = ((Document) value).toJSON();
-    } else if (value instanceof Collection) {
-      final Collection c = (Collection) value;
+    if (value instanceof Document document) {
+      value = document.toJSON();
+    } else if (value instanceof Collection c) {
       final JSONArray array = new JSONArray();
       for (final Iterator it = c.iterator(); it.hasNext(); )
         array.put(convertToJSONType(it.next()));
       value = array;
-    } else if (value instanceof Date)
-      value = ((Date) value).getTime();
+    } else if (value instanceof Date date)
+      value = date.getTime();
     else if (value instanceof Temporal)
       value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) : ChronoUnit.MILLIS);
     else if (value instanceof Map) {

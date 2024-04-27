@@ -138,8 +138,8 @@ public class BinaryComparator {
 
     case BinaryTypes.TYPE_STRING: {
       if (value1 instanceof byte[]) {
-        if (value2 instanceof byte[] bytes)
-          return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1, bytes);
+        if (value2 instanceof byte[])
+          return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1, (byte[]) value2);
         else
           return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1,
               ((String) value2).getBytes(DatabaseFactory.getDefaultCharset()));

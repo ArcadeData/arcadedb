@@ -4433,11 +4433,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6438,7 +6438,7 @@ jjtree.closeNodeScope(jjtn000, true);
 if(jjtn000.getChildExpressions().size() != 1){
       {if ("" != null) return jjtn000;}
     } else {
-      {if ("" != null) return jjtn000.getChildExpressions().get(0);}
+      {if ("" != null) return jjtn000.getChildExpressions().getFirst();}
     }
     } catch (Throwable jjte000) {
 if (jjtc000) {
@@ -10902,11 +10902,11 @@ if (jjtc000) {
       } else {
         jjtree.popNode();
       }
-      if (jjte000 instanceof RuntimeException) {
-        {if (true) throw (RuntimeException)jjte000;}
+      if (jjte000 instanceof RuntimeException exception) {
+        {if (true) throw exception;}
       }
-      if (jjte000 instanceof ParseException) {
-        {if (true) throw (ParseException)jjte000;}
+      if (jjte000 instanceof ParseException exception) {
+        {if (true) throw exception;}
       }
       {if (true) throw (Error)jjte000;}
     } finally {

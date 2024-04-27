@@ -377,9 +377,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (key.getExpressions().isEmpty())
       return Collections.singletonList(head);
 
-    final Expression nextElementInKey = key.getExpressions().get(0);
+    final Expression nextElementInKey = key.getExpressions().getFirst();
     final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
-    if (value instanceof Iterable && !(value instanceof Identifiable)) {
+    if (value instanceof Iterable iterable && !(value instanceof Identifiable)) {
       final List<PCollection> result = new ArrayList<>();
       for (final Object elemInKey : iterable) {
         final PCollection newHead = new PCollection(-1);
@@ -388,7 +388,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
         newHead.add(toExpression(elemInKey));
         final PCollection tail = key.copy();
-        tail.getExpressions().remove(0);
+        tail.getExpressions().removeFirst();
         result.addAll(cartesianProduct(newHead, tail));
       }
       return result;
@@ -399,7 +399,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       newHead.add(nextElementInKey);
       final PCollection tail = key.copy();
-      tail.getExpressions().remove(0);
+      tail.getExpressions().removeFirst();
       return cartesianProduct(newHead, tail);
     }
 

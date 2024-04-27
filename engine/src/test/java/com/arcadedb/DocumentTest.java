@@ -88,7 +88,7 @@ public class DocumentTest extends TestHelper {
       Assertions.assertEquals(embeddedObj, map.get("embeddedObj"));
       Assertions.assertTrue(((DetachedDocument) map.get("embeddedObj")).getBoolean("embeddedObj"));
       Assertions.assertEquals(embeddedList, map.get("embeddedList"));
-      Assertions.assertTrue(((List<DetachedDocument>) map.get("embeddedList")).get(0).getBoolean("embeddedList"));
+      Assertions.assertTrue(((List<DetachedDocument>) map.get("embeddedList")).getFirst().getBoolean("embeddedList"));
       Assertions.assertEquals(embeddedMap, map.get("embeddedMap"));
       Assertions.assertTrue(((Map<String, DetachedDocument>) map.get("embeddedMap")).get("first").getBoolean("embeddedMap"));
 

@@ -95,8 +95,8 @@ public class Projection extends SimpleNode {
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
     if (items.isEmpty() ||//
-        (items.size() == 1 && (items.get(0).isAll() || items.get(0).getExpression().toString().equals("@this")))//
-            && items.get(0).nestedProjection == null)
+        (items.size() == 1 && (items.getFirst().isAll() || items.getFirst().getExpression().toString().equals("@this")))//
+            && items.getFirst().nestedProjection == null)
       return iRecord;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
@@ -148,7 +148,7 @@ public class Projection extends SimpleNode {
   }
 
   public boolean isExpand() {
-    return items != null && items.size() == 1 && items.get(0).isExpand();
+    return items != null && items.size() == 1 && items.getFirst().isExpand();
   }
 
   public void validate() {
@@ -163,7 +163,7 @@ public class Projection extends SimpleNode {
   public Projection getExpandContent() {
     final Projection result = new Projection(-1);
     result.setItems(new ArrayList<>());
-    result.getItems().add(this.getItems().get(0).getExpandContent());
+    result.getItems().add(this.getItems().getFirst().getExpandContent());
     return result;
   }
 

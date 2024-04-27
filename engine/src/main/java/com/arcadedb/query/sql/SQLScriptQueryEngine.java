@@ -183,26 +183,26 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
       } else
         lastRetryBlock.add(stm);
 
-      if (stm instanceof CommitStatement) {
+      if (stm instanceof CommitStatement statement) {
         if (nestedTxLevel > 0) {
           nestedTxLevel--;
           if (nestedTxLevel == 0) {
 
-            if (((CommitStatement) stm).getRetry() != null) {
-              int nRetries = ((CommitStatement) stm).getRetry().getValue().intValue();
+            if (statement.getRetry() != null) {
+              int nRetries = statement.getRetry().getValue().intValue();
               if (nRetries <= 0)
                 throw new CommandExecutionException("Invalid retry number " + nRetries);
 
-              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(),
-                  ((CommitStatement) stm).getElseFail(),
+              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, statement.getElseStatements(),
+                  statement.getElseFail(),
                   scriptContext, false);
               final RetryExecutionPlan retryPlan = new RetryExecutionPlan(scriptContext);
               retryPlan.chain(step);
               plan.chain(retryPlan);
               lastRetryBlock = new ArrayList<>();
             } else {
-              for (final Statement statement : lastRetryBlock) {
-                final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
+              for (final Statement stmt : lastRetryBlock) {
+                final InternalExecutionPlan sub = stmt.createExecutionPlan(scriptContext);
                 plan.chain(sub);
               }
             }
@@ -211,8 +211,8 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
           throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
       }
 
-      if (stm instanceof LetStatement)
-        scriptContext.declareScriptVariable(((LetStatement) stm).getVariableName().getStringValue());
+      if (stm instanceof LetStatement statement)
+        scriptContext.declareScriptVariable(statement.getVariableName().getStringValue());
     }
 
     return new LocalResultSet(plan);

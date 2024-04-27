@@ -59,10 +59,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
     if (key == null)
       throw new CommandSQLParsingException("key is null");
 
-    if( key instanceof List)
-      key = ((List<?>) key).toArray();
+    if( key instanceof List list)
+      key = list.toArray();
 
-    final int limit = iParams[2] instanceof Number ? ((Number) iParams[2]).intValue() : Integer.parseInt(iParams[2].toString());
+    final int limit = iParams[2] instanceof Number n ? n.intValue() : Integer.parseInt(iParams[2].toString());
 
     final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighborsFromVector(key, limit, null);
 

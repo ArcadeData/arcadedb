@@ -133,26 +133,26 @@ public class TraverseExecutionPlanner {
       final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
 
-    if (paramValue instanceof String && RID.is(paramValue))
-      paramValue = new RID(context.getDatabase(), (String) paramValue);
+    if (paramValue instanceof String string && RID.is(paramValue))
+      paramValue = new RID(context.getDatabase(), string);
 
     if (paramValue == null) {
       result.chain(new EmptyStep(context));//nothing to return
-    } else if (paramValue instanceof LocalDocumentType) {
+    } else if (paramValue instanceof LocalDocumentType type) {
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);
-      item.setIdentifier(new Identifier(((DocumentType) paramValue).getName()));
+      item.setIdentifier(new Identifier(type.getName()));
       handleClassAsTarget(result, from, context);
-    } else if (paramValue instanceof String) {
+    } else if (paramValue instanceof String string) {
       //strings are treated as classes
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);
-      item.setIdentifier(new Identifier((String) paramValue));
+      item.setIdentifier(new Identifier(string));
       handleClassAsTarget(result, from, context);
-    } else if (paramValue instanceof Identifiable) {
-      final RID orid = ((Identifiable) paramValue).getIdentity();
+    } else if (paramValue instanceof Identifiable identifiable) {
+      final RID orid = identifiable.getIdentity();
       final Rid rid = new Rid(-1);
       final PInteger bucket = new PInteger(-1);
       bucket.setValue(orid.getBucketId());
@@ -163,7 +163,7 @@ public class TraverseExecutionPlanner {
       rid.setPosition(position);
 
       handleRidsAsTarget(result, Collections.singletonList(rid), context);
-    } else if (paramValue instanceof Iterable) {
+    } else if (paramValue instanceof Iterable iterable) {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
       for (final Object x : iterable) {

@@ -41,10 +41,10 @@ public class SQLMethodAsBoolean extends AbstractSQLMethod {
       return null;
     if (value instanceof Boolean)
       return value;
-    if (value instanceof String)
-      return Boolean.valueOf(((String) value).trim());
-    else if (value instanceof Number)
-      return ((Number) value).intValue() != 0;
+    if (value instanceof String string)
+      return Boolean.valueOf(string.trim());
+    else if (value instanceof Number number)
+      return number.intValue() != 0;
     return Boolean.FALSE;
   }
 }
