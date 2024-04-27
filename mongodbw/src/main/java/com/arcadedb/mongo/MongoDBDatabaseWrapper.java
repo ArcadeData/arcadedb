@@ -121,12 +121,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final IteratorResultSet resultset = new IteratorResultSet(result.iterator()) {
       @Override
       public Result next() {
-        final Document doc = super.next().getProperty("value");
-
-        final Map<String, Object> values = new HashMap<>(doc.size());
-        values.putAll(doc);
-
-        return new ResultInternal(values);
+        final Map doc = super.next().getProperty("value");
+        return new ResultInternal(doc);
       }
     };
 

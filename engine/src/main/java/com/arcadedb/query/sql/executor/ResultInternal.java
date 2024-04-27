@@ -171,67 +171,17 @@ public class ResultInternal implements Result {
         result.setProperty("@type", elem.getTypeName());
       return result;
 
-    } else if (isEmbeddedList(input)) {
+    } else if (input instanceof List) {
       return ((List) input).stream().map(this::wrap).collect(Collectors.toList());
-    } else if (isEmbeddedSet(input)) {
+    } else if (input instanceof Set) {
       return ((Set) input).stream().map(this::wrap).collect(Collectors.toSet());
-    } else if (isEmbeddedMap(input)) {
+    } else if (input instanceof Map) {
       final Map result = new HashMap();
-      for (final Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet()) {
+      for (final Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet())
         result.put(o.getKey(), wrap(o.getValue()));
-      }
       return result;
     }
     return input;
-  }
-
-  private boolean isEmbeddedSet(final Object input) {
-    if (input instanceof Set) {
-      for (final Object o : (Set) input) {
-        if (o instanceof Record)
-          return false;
-
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
-          return true;
-      }
-    }
-    return false;
-  }
-
-  private boolean isEmbeddedMap(final Object input) {
-    if (input instanceof Map) {
-      for (final Object o : ((Map) input).values()) {
-        if (o instanceof Record)
-          return false;//TODO
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
-          return true;
-      }
-    }
-    return false;
-  }
-
-  private boolean isEmbeddedList(final Object input) {
-    if (input instanceof List) {
-      for (final Object o : (List) input) {
-        if (o instanceof Record)
-          return false;
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
-          return true;
-      }
-    }
-    return false;
   }
 
   public Set<String> getPropertyNames() {
