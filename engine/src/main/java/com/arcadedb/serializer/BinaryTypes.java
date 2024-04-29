@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.*;
@@ -53,12 +54,12 @@ public class BinaryTypes {
   public final static byte TYPE_EMBEDDED          = 19;
   public final static byte TYPE_DATETIME_MICROS   = 20; // @SINCE 23.1.1
   public final static byte TYPE_DATETIME_NANOS    = 21; // @SINCE 23.1.1
-  public final static byte TYPE_DATETIME_SECOND = 22; // @SINCE 23.1.1
+  public final static byte TYPE_DATETIME_SECOND   = 22; // @SINCE 23.1.1
   public final static byte TYPE_ARRAY_OF_SHORTS   = 23; // @SINCE 23.6.1
   public final static byte TYPE_ARRAY_OF_INTEGERS = 24; // @SINCE 23.6.1
-  public final static byte TYPE_ARRAY_OF_LONGS  = 25; // @SINCE 23.6.1
-  public final static byte TYPE_ARRAY_OF_FLOATS  = 26; // @SINCE 23.6.1
-  public final static byte TYPE_ARRAY_OF_DOUBLES = 27; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_LONGS    = 25; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_FLOATS   = 26; // @SINCE 23.6.1
+  public final static byte TYPE_ARRAY_OF_DOUBLES  = 27; // @SINCE 23.6.1
 
   public static byte getTypeFromValue(final Object value) {
     final byte type;
@@ -102,7 +103,7 @@ public class BinaryTypes {
       type = TYPE_BINARY;
     else if (value instanceof UUID)
       type = TYPE_UUID;
-    else if (value instanceof Map)
+    else if (value instanceof Map || value instanceof JSONObject)
       type = TYPE_MAP;
     else if (value instanceof Document)
       type = ((Document) value).getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED;
