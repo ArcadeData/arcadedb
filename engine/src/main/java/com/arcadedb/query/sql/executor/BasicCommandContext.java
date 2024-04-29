@@ -161,9 +161,13 @@ public class BasicCommandContext implements CommandContext {
     if (name.startsWith("$"))
       name = name.substring(1);
 
-    init();
-
-    variables.put(name, value);
+    if (value == null) {
+      if (variables != null)
+        variables.remove(name);
+    } else {
+      init();
+      variables.put(name, value);
+    }
 
     return this;
   }
