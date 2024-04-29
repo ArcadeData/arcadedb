@@ -288,14 +288,16 @@ public class BasicCommandContext implements CommandContext {
     if (inputParameters != null) {
       dumpDepth(buffer, depth).append("PARAMETERS:");
       for (Map.Entry<String, Object> entry : inputParameters.entrySet()) {
-        dumpDepth(buffer, depth + 1).append(entry.getKey()).append(" = ").append(entry.getValue());
+        dumpDepth(buffer, depth + 1).append(entry.getKey()).append(" = ");
+        printValue(buffer, entry.getValue());
       }
     }
 
     if (variables != null) {
       dumpDepth(buffer, depth).append("VARIABLES:");
       for (Map.Entry<String, Object> entry : variables.entrySet()) {
-        dumpDepth(buffer, depth + 1).append(entry.getKey()).append(" = ").append(entry.getValue());
+        dumpDepth(buffer, depth + 1).append(entry.getKey()).append(" = ");
+        printValue(buffer, entry.getValue());
       }
     }
 
@@ -307,7 +309,7 @@ public class BasicCommandContext implements CommandContext {
 
     if (child != null) {
       dumpDepth(buffer, depth).append("CHILD:");
-      ((BasicCommandContext) child).toString(depth + 1);
+      buffer.append(((BasicCommandContext) child).toString(depth + 1));
     }
 
     return buffer.toString();
@@ -408,6 +410,17 @@ public class BasicCommandContext implements CommandContext {
     buffer.append('\n');
     for (int i = 0; i < depth; i++)
       buffer.append("  ");
+    return buffer;
+  }
+
+  private StringBuilder printValue(final StringBuilder buffer, final Object value) {
+    if (value == null)
+      buffer.append("null");
+    else if (value instanceof InternalResultSet)
+      buffer.append("resultset ").append(((InternalResultSet) value).countEntries()).append(" entries");
+    else
+      buffer.append(value);
+
     return buffer;
   }
 }
