@@ -105,8 +105,6 @@ public class SelectOrderTest {
         Object parameter = rids[1].toString();
         sqlString = "SELECT from Order WHERE @rid < ? ORDER BY @rid DESC LIMIT 10";
 
-        Result result;
-
         database.begin();
         try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
           while (resultSet.hasNext()) {
