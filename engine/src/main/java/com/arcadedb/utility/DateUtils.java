@@ -344,8 +344,8 @@ public class DateUtils {
   }
 
   public static String format(final Object obj, final String format) {
-    if (obj instanceof Long)
-      return getFormatter(format).format(millisToLocalDateTime((Long) obj));
+    if (obj instanceof Number)
+      return getFormatter(format).format(millisToLocalDateTime(((Number) obj).longValue()));
     else if (obj instanceof Date)
       return getFormatter(format).format(millisToLocalDateTime(((Date) obj).getTime()));
     else if (obj instanceof Calendar)
