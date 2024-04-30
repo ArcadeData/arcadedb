@@ -335,8 +335,10 @@ public class DateUtils {
     return highestPrecision;
   }
 
-  public static LocalDateTime millisToLocalDateTime(final long millis) {
-    return Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDateTime();
+  public static LocalDateTime millisToLocalDateTime(final long millis, final String timeZone) {
+    if (timeZone == null)
+      return Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDateTime();
+    return Instant.ofEpochMilli(millis).atZone(ZoneId.of(timeZone)).toLocalDateTime();
   }
 
   public static LocalDate millisToLocalDate(final long millis) {
@@ -344,12 +346,16 @@ public class DateUtils {
   }
 
   public static String format(final Object obj, final String format) {
+    return format(obj, format, null);
+  }
+
+  public static String format(final Object obj, final String format, final String timeZone) {
     if (obj instanceof Number)
-      return getFormatter(format).format(millisToLocalDateTime(((Number) obj).longValue()));
+      return getFormatter(format).format(millisToLocalDateTime(((Number) obj).longValue(), timeZone));
     else if (obj instanceof Date)
-      return getFormatter(format).format(millisToLocalDateTime(((Date) obj).getTime()));
+      return getFormatter(format).format(millisToLocalDateTime(((Date) obj).getTime(), timeZone));
     else if (obj instanceof Calendar)
-      return getFormatter(format).format(millisToLocalDateTime(((Calendar) obj).getTimeInMillis()));
+      return getFormatter(format).format(millisToLocalDateTime(((Calendar) obj).getTimeInMillis(), timeZone));
     else if (obj instanceof TemporalAccessor)
       return getFormatter(format).format((TemporalAccessor) obj);
     return null;
