@@ -74,6 +74,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.RWLockContext;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.*;
 import java.nio.channels.*;
@@ -855,8 +856,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
-    if (record instanceof MutableDocument)
-      ((MutableDocument) record).validateAndAccmCheck(getContext().getCurrentUser());
+    if (record instanceof MutableDocument) {
+      var rec = (MutableDocument) record;
+      var context = DatabaseContext.INSTANCE.getContext(rec.database.getDatabasePath());
+      if (context.getCurrentUser() != null)
+        rec.validateAndAccmCheck(context.getCurrentUser());
+    }
 
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeUpdate(record))

@@ -4,11 +4,10 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Deque;
+import java.util.Map;
 
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.Utils;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DataFabricRestClient;
@@ -100,13 +99,22 @@ public class PostRollbackHistoryHandler extends AbstractHandler {
 
                     var payload = new JSONObject(value).getJSONObject("history").getString("entity");
                     var content = new JSONObject(payload);
-
                     final ArcadeDBServer server = httpServer.getServer();
                     var activeDatabase = server.getDatabase(database);
                     Record record = server.getDatabase(database).lookupByRID(new RID(activeDatabase, rid), true);
+                    Map<String, Object> classification = null;
+                    if (activeDatabase.getSchema().getEmbedded().isClassificationValidationEnabled()) {
+                        var classificationObj = (JSONObject)content.remove(MutableDocument.CLASSIFICATION_PROPERTY);
+                        classification = classificationObj.toMap();
+                    }
 
                     MutableDocument mutable = record.asDocument().modify();
                     mutable.fromJSON(content);
+                    mutable.set(MutableDocument.CLASSIFICATION_PROPERTY, classification);
+
+                    if (activeDatabase.getSchema().getEmbedded().isClassificationValidationEnabled()) {
+                        mutable.set(MutableDocument.CLASSIFICATION_PROPERTY, classification);
+                    }
 
                     LocalDateTime createdDate = null;
                     if (record.asDocument().get(Utils.CREATED_DATE) instanceof Long) {
@@ -131,7 +139,8 @@ public class PostRollbackHistoryHandler extends AbstractHandler {
 
             return new ExecutionResponse(200, "{ \"result\" : \"Success\"}");
         } catch (Exception e) {
-            log.error("Error handling history rollback request.", e.getMessage());
+            e.printStackTrace();
+            log.error("Error handling history rollback request. Error {}", e.getMessage());
             log.debug("Exception", e);
         }
         return new ExecutionResponse(400, "{ \"error\" : \"Request failed\"}");
