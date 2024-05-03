@@ -118,7 +118,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       else if (result.fitsInFloat())
         return result.asFloat();
       else
-        return result.asFloat();
+        return result.asDouble();
     } else if (result.isNull())
       return null;
 

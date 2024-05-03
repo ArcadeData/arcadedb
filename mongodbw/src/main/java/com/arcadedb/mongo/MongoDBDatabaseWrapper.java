@@ -81,7 +81,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   @Override
-  public Document handleCommand(final Channel channel, final String command, final Document document, final DatabaseResolver databaseResolver,
+  public Document handleCommand(final Channel channel, final String command, final Document document,
+      final DatabaseResolver databaseResolver,
       final Oplog opLog) {
     try {
       if (command.equalsIgnoreCase("find"))
@@ -95,8 +96,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       else if (command.equalsIgnoreCase("aggregate"))
         return aggregateCollection(command, document, opLog);
       else {
-        LogManager.instance().log(this, Level.SEVERE, "Received unsupported command from MongoDB client '%s', (document=%s)", null, command, document);
-        throw new UnsupportedOperationException(String.format("Received unsupported command from MongoDB client '%s', (document=%s)", command, document));
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Received unsupported command from MongoDB client '%s', (document=%s)", null, command,
+                document);
+        throw new UnsupportedOperationException(
+            String.format("Received unsupported command from MongoDB client '%s', (document=%s)", command, document));
       }
     } catch (final Exception e) {
       throw new MongoServerException("Error on executing MongoDB '" + command + "' command", e);
@@ -121,7 +125,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final IteratorResultSet resultset = new IteratorResultSet(result.iterator()) {
       @Override
       public Result next() {
-        final Map doc = super.next().getProperty("value");
+        final Map doc = (Map) ResultInternal.wrap(super.next().getProperty("value"));
         return new ResultInternal(doc);
       }
     };
@@ -173,7 +177,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
   }
 
-  private Document aggregateCollection(final String command, final Document document, final Oplog oplog) throws MongoServerException {
+  private Document aggregateCollection(final String command, final Document document, final Oplog oplog)
+      throws MongoServerException {
     final String collectionName = document.get("aggregate").toString();
     database.countType(collectionName, false);
 
@@ -184,7 +189,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!pipeline.isEmpty()) {
       final Document changeStream = (Document) pipeline.get(0).get("$changeStream");
       if (changeStream != null) {
-        final Aggregation aggregation = Aggregation.fromPipeline(pipeline.subList(1, pipeline.size()), plugin, this, collection, oplog);
+        final Aggregation aggregation = Aggregation.fromPipeline(pipeline.subList(1, pipeline.size()), plugin, this, collection,
+            oplog);
         aggregation.validate(document);
         return commandChangeStreamPipeline(document, oplog, collectionName, changeStream, aggregation);
       }
@@ -195,7 +201,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
   }
 
-  private Document firstBatchCursorResponse(final String ns, final String key, final List<Document> documents, final long cursorId) {
+  private Document firstBatchCursorResponse(final String ns, final String key, final List<Document> documents,
+      final long cursorId) {
     final Document cursorResponse = new Document();
     cursorResponse.put("id", cursorId);
     cursorResponse.put("ns", getFullCollectionNamespace(ns));
@@ -246,7 +253,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     database.getSchema().dropBucket(collectionName);
   }
 
-  private Document commandChangeStreamPipeline(final Document query, final Oplog oplog, final String collectionName, final Document changeStreamDocument,
+  private Document commandChangeStreamPipeline(final Document query, final Oplog oplog, final String collectionName,
+      final Document changeStreamDocument,
       final Aggregation aggregation) {
     final Document cursorDocument = (Document) query.get("cursor");
     final int batchSize = (int) cursorDocument.getOrDefault("batchSize", 0);

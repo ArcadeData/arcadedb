@@ -30,48 +30,29 @@ public class JVMUtils {
   private static final    String                  HOTSPOT_BEAN_NAME = "com.sun.management:type=HotSpotDiagnostic";
   private static volatile HotSpotDiagnosticMXBean hotspotMBean;
 
-  public static String generateThreadDump(String filterInclude, String filterExclude) {
-    if (filterInclude != null && filterInclude.trim().isEmpty())
-      filterInclude = null;
+  public static String generateThreadDump(final String filterInclude, final String filterExclude) {
+    final String[] filterIncludeItems =
+        filterInclude != null && !filterInclude.trim().isEmpty() ? filterInclude.trim().split(",") : null;
+    final String[] filterExcludeItems =
+        filterExclude != null && !filterExclude.trim().isEmpty() ? filterExclude.trim().split(",") : null;
 
-    if (filterExclude != null && filterExclude.trim().isEmpty())
-      filterExclude = null;
-
-    final StringBuilder output = new StringBuilder();
+    final StringBuilder totalOutput = new StringBuilder();
     final ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
     final ThreadInfo[] threadInfos = threadMXBean.getThreadInfo(threadMXBean.getAllThreadIds(), 100);
     for (final ThreadInfo threadInfo : threadInfos) {
       if (threadInfo == null)
         continue;
 
-      if (filterInclude != null || filterExclude != null) {
-        boolean found = false;
-        final StackTraceElement[] stackTraceElements = threadInfo.getStackTrace();
-        for (final StackTraceElement stackTraceElement : stackTraceElements) {
-          if (filterInclude == null)
-            found = true;
-          else if (stackTraceElement.toString().contains(filterInclude)) {
-            found = true;
-            break;
-          }
-
-          if (found && stackTraceElement.toString().contains(filterExclude)) {
-            found = false;
-            break;
-          }
-        }
-
-        if (!found)
-          continue;
-      }
+      final StringBuilder output = new StringBuilder();
 
       output.append('"');
       output.append(threadInfo.getThreadName());
       output.append("\" ");
 
-      output.append(String.format("%nWaited %d times = %dms - Blocked %d times = %dms - Locked monitors=%d synchronizers=%d - InNative=%s",//
-          threadInfo.getWaitedCount(), threadInfo.getWaitedTime(), threadInfo.getBlockedCount(), threadInfo.getBlockedTime(),//
-          threadInfo.getLockedMonitors().length, threadInfo.getLockedSynchronizers().length, threadInfo.isInNative()));
+      output.append(
+          String.format("%nWaited %d times = %dms - Blocked %d times = %dms - Locked monitors=%d synchronizers=%d - InNative=%s",//
+              threadInfo.getWaitedCount(), threadInfo.getWaitedTime(), threadInfo.getBlockedCount(), threadInfo.getBlockedTime(),//
+              threadInfo.getLockedMonitors().length, threadInfo.getLockedSynchronizers().length, threadInfo.isInNative()));
 
       if (threadInfo.getLockInfo() != null) {
         output.append(String.format("%nWaiting for lock %s", threadInfo.getLockName()));
@@ -88,9 +69,23 @@ public class JVMUtils {
         output.append("\n        at ");
         output.append(stackTraceElement);
       }
-      output.append("\n\n");
+
+      if (filterIncludeItems != null || filterExcludeItems != null) {
+        boolean found = filterExcludeItems != null;
+
+        if (find(output.toString(), filterIncludeItems))
+          found = true;
+
+        if (find(output.toString(), filterExcludeItems))
+          found = false;
+
+        if (!found)
+          continue;
+      }
+
+      totalOutput.append(output).append("\n\n");
     }
-    return output.toString();
+    return totalOutput.toString();
   }
 
   public static String dumpHeap(final boolean live) {
@@ -124,5 +119,14 @@ public class JVMUtils {
     } catch (final Exception exp) {
       throw new ArcadeDBException(exp);
     }
+  }
+
+  private static boolean find(final String text, final String[] items) {
+    if (items != null)
+      for (int i = 0; i < items.length; i++)
+        if (text.contains(items[i]))
+          return true;
+
+    return false;
   }
 }

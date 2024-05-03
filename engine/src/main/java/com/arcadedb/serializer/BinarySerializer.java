@@ -44,6 +44,7 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.*;
@@ -460,6 +461,9 @@ public class BinarySerializer {
     }
     case BinaryTypes.TYPE_MAP: {
       final Dictionary dictionary = database.getSchema().getDictionary();
+
+      if( value instanceof JSONObject)
+        value = ((JSONObject) value).toMap();
 
       final Map<Object, Object> map = (Map<Object, Object>) value;
       content.putUnsignedNumber(map.size());
