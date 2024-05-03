@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.method;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.query.sql.method.collection.SQLMethodField;
+import com.arcadedb.query.sql.method.collection.SQLMethodJoin;
 import com.arcadedb.query.sql.method.collection.SQLMethodKeys;
 import com.arcadedb.query.sql.method.collection.SQLMethodRemove;
 import com.arcadedb.query.sql.method.collection.SQLMethodRemoveAll;
@@ -88,6 +89,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
   public DefaultSQLMethodFactory() {
     // Collections
     register(SQLMethodField.NAME, new SQLMethodField());
+    register(SQLMethodJoin.NAME, new SQLMethodJoin());
     register(SQLMethodKeys.NAME, new SQLMethodKeys());
     register(SQLMethodRemove.NAME, new SQLMethodRemove());
     register(SQLMethodRemoveAll.NAME, new SQLMethodRemoveAll());
