@@ -59,9 +59,9 @@ public class WhileBlock extends Statement {
   @Override
   public ResultSet execute(final Database db, final Map params, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentContext != null) {
+    if (parentContext != null)
       context.setParentWithoutOverridingChild(parentContext);
-    }
+
     context.setDatabase(db);
     context.setInputParameters(params);
 

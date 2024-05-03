@@ -29,6 +29,8 @@ import java.util.*;
 import java.util.stream.*;
 
 /**
+ * Implementation of a {@link Result}.
+ * <p>
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
@@ -120,9 +122,9 @@ public class ResultInternal implements Result {
     T result;
     if (content != null && !content.isEmpty())
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
-      result = (T) wrap(content.get(name));
+      result = (T) content.get(name);
     else if (element != null)
-      result = (T) wrap(element.get(name));
+      result = (T) element.get(name);
     else
       result = null;
 
@@ -135,9 +137,9 @@ public class ResultInternal implements Result {
   public <T> T getProperty(final String name, final Object defaultValue) {
     T result;
     if (content != null && content.containsKey(name))
-      result = (T) wrap(content.get(name));
+      result = (T) content.get(name);
     else if (element != null && element.has(name))
-      result = (T) wrap(element.get(name));
+      result = (T) element.get(name);
     else
       result = (T) defaultValue;
 
@@ -163,7 +165,15 @@ public class ResultInternal implements Result {
     return result instanceof Record ? (Record) result : null;
   }
 
-  private Object wrap(final Object input) {
+  /**
+   * Returns the input object transformed into a map when the value is a record. it works recursively.
+   * This method was originally used in OrientDB because all the record were immutable. With ArcadeDB all the
+   * records returned by a query are always immutable, so this method is not called automatically from the `getProperty()`.
+   * <p>
+   * From v24.5.1 this method is public to allow to be called for retro compatibility with existent code base or porting
+   * from OrientDB.
+   */
+  public static Object wrap(final Object input) {
     if (input instanceof Document && ((Document) input).getIdentity() == null && !(input instanceof EmbeddedDocument)) {
       final Document elem = ((Document) input);
       final ResultInternal result = new ResultInternal(elem.toMap(false));
@@ -172,9 +182,9 @@ public class ResultInternal implements Result {
       return result;
 
     } else if (input instanceof List) {
-      return ((List) input).stream().map(this::wrap).collect(Collectors.toList());
+      return ((List) input).stream().map(ResultInternal::wrap).collect(Collectors.toList());
     } else if (input instanceof Set) {
-      return ((Set) input).stream().map(this::wrap).collect(Collectors.toSet());
+      return ((Set) input).stream().map(ResultInternal::wrap).collect(Collectors.toSet());
     } else if (input instanceof Map) {
       final Map result = new HashMap();
       for (final Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet())

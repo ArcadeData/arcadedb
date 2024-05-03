@@ -69,9 +69,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
       @Override
       public Result next() {
-        if (!hasNext()) {
+        if (!hasNext())
           throw new NoSuchElementException();
-        }
+
         return finalResult.next();
       }
 
@@ -84,7 +84,6 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       public Optional<ExecutionPlan> getExecutionPlan() {
         return finalResult == null ? Optional.empty() : finalResult.getExecutionPlan();
       }
-
     };
   }
 
@@ -101,9 +100,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
           }
           partial = lastStep.syncPull(context, n);
         }
-        if (lastStep instanceof ScriptLineStep) {
+
+        if (lastStep instanceof ScriptLineStep)
           ((InternalResultSet) finalResult).setPlan(((ScriptLineStep) lastStep).plan);
-        }
       }
     }
   }
@@ -114,9 +113,8 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     for (int i = 0; i < steps.size(); i++) {
       final ExecutionStepInternal step = steps.get(i);
       result.append(step.prettyPrint(depth, indent));
-      if (i < steps.size() - 1) {
+      if (i < steps.size() - 1)
         result.append("\n");
-      }
     }
     return result.toString();
   }
@@ -159,12 +157,11 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
   public boolean containsReturn() {
     for (final ExecutionStepInternal step : steps) {
-      if (step instanceof ReturnStep) {
+      if (step instanceof ReturnStep)
         return true;
-      }
-      if (step instanceof ScriptLineStep) {
+
+      if (step instanceof ScriptLineStep)
         return ((ScriptLineStep) step).containsReturn();
-      }
     }
 
     return false;
@@ -191,9 +188,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
         ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
 
         while (lastResult.hasNext()) {
-          while (lastResult.hasNext()) {
+          while (lastResult.hasNext())
             lastResult.next();
-          }
+
           lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
         }
       }
@@ -212,16 +209,16 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     for (final ScriptLineStep step : steps) {
       if (step.containsReturn()) {
         final ExecutionStepInternal returnStep = step.executeUntilReturn(context);
-        if (returnStep != null) {
+        if (returnStep != null)
           return returnStep;
-        }
       }
+
       ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
 
       while (lastResult.hasNext()) {
-        while (lastResult.hasNext()) {
+        while (lastResult.hasNext())
           lastResult.next();
-        }
+
         lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       }
     }
