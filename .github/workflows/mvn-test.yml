@@ -64,11 +64,11 @@ jobs:
 
       - name: Get coverage files
         id: coverage-files-generator
-        run: |
-          echo ::set-output name=COVERAGE_FILES::$(find **/jacoco*.xml -printf '%p,')
+        run: echo "COVERAGE_FILES=$(find . -path **/jacoco*.xml -printf '%p,')" >> "$GITHUB_OUTPUT"
 
       - name: Codacy coverage reporter
-        uses: codacy/codacy-coverage-reporter-action@v1
+        uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
         with:
+          language: java
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports: ${{ steps.coverage-files-generator.COVERAGE_FILES }}
+          coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
