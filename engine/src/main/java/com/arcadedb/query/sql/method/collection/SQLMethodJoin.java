@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.method.collection;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.StringJoiner;
 import java.util.stream.Collectors;
 
 import com.arcadedb.database.Identifiable;
@@ -28,9 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
- * Splits a string using a delimiter.
- *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * Joins a list of objects using a delimiter.
  */
 public class SQLMethodJoin extends AbstractSQLMethod {
 
