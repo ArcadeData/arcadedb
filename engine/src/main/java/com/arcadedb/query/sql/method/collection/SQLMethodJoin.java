@@ -19,51 +19,47 @@
 package com.arcadedb.query.sql.method.collection;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
- * Splits a string using a delimiter.
- *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * Joins a list of objects using a delimiter.
  */
 public class SQLMethodJoin extends AbstractSQLMethod {
 
-  public static final String NAME = "join";
+    public static final String NAME = "join";
 
-  public SQLMethodJoin() {
-    super(NAME, 1);
-  }
-
-  @Override
-  public Object execute(final Object value, final Identifiable iRecord, final CommandContext iContext, final Object[] iParams) {
-
-    if (value == null) {
-      return null;
-    } else if (value instanceof List && !((List<?>) value).isEmpty()) {
-
-      final String separator;
-
-      if( null == iParams || iParams.length == 0 || null == iParams[0] )
-        separator = ",";
-      else
-        separator = iParams[0].toString();
-
-      StringBuilder result = new StringBuilder("");
-      Boolean isFirst = true;
-
-      for(Object elem : (List<?>) value) {
-        if(isFirst)
-          isFirst = false;
-        else
-          result.append(separator);
-        result.append(elem.toString());
-      }
-      return result;
+    public SQLMethodJoin() {
+        super(NAME, 1);
     }
-    else
-      return value.toString();
-  }
+
+    @Override
+    public Object execute(final Object value,
+                          final Identifiable record,
+                          final CommandContext context,
+                          final Object[] params) {
+
+        if (value == null) {
+            return null;
+        }
+
+        if (value instanceof List) {
+
+            final String separator = Optional.ofNullable(params)
+                    .filter(p -> p.length > 0)
+                    .filter(p -> p[0] != null)
+                    .map(p -> p[0].toString())
+                    .orElse(",");
+
+            return ((List<?>) value).stream()
+                    .map(Object::toString)
+                    .collect(Collectors.joining(separator));
+
+        } else
+            return value.toString();
+    }
 }
