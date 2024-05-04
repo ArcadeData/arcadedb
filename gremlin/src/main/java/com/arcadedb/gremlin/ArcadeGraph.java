@@ -64,7 +64,6 @@ import org.apache.tinkerpop.gremlin.structure.service.ServiceRegistry;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
-import org.opencypher.gremlin.traversal.CustomFunctions;
 import org.opencypher.gremlin.traversal.CustomPredicate;
 import org.opencypher.v9_0.util.SyntaxException;
 
@@ -509,8 +508,8 @@ public class ArcadeGraph implements Graph, Closeable {
   private void init() {
     // INITIALIZE CYPHER
     final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
-    importPlugin.classImports(Math.class, CustomFunctions.class, CustomPredicate.class);
-    importPlugin.methodImports(List.of("java.lang.Math#*", "org.opencypher.gremlin.traversal.CustomFunctions#*"));
+    importPlugin.classImports(Math.class, ArcadeCustomFunctions.class, CustomPredicate.class);
+    importPlugin.methodImports(List.of("java.lang.Math#*", "com.arcadedb.gremlin.ArcadeCustomFunctions#*"));
 
     // INITIALIZE JAVA ENGINE
     gremlinJavaEngine = new GremlinLangScriptEngine(importPlugin.create().getCustomizers().get());

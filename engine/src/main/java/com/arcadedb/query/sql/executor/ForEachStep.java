@@ -32,13 +32,12 @@ import java.util.*;
  * Created by luigidellaquila on 19/09/16.
  */
 public class ForEachStep extends AbstractExecutionStep {
-  private final Identifier      loopVariable;
-  private final Expression      source;
-  public final  List<Statement> body;
-
-  Iterator iterator;
-  private ExecutionStepInternal finalResult = null;
-  private boolean               initiated   = false;
+  private final Identifier            loopVariable;
+  private final Expression            source;
+  public final  List<Statement>       body;
+  private       Iterator              iterator;
+  private       ExecutionStepInternal finalResult = null;
+  private       boolean               initiated   = false;
 
   public ForEachStep(final Identifier loopVariable, final Expression oExpression, final List<Statement> statements,
       final CommandContext context) {
@@ -66,9 +65,10 @@ public class ForEachStep extends AbstractExecutionStep {
         return result.syncPull(context, nRecords);
       }
     }
+    context.setVariable(loopVariable.getStringValue(), null);
+
     finalResult = new EmptyStep(context);
     return finalResult.syncPull(context, nRecords);
-
   }
 
   protected void init(final CommandContext context) {

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.schema.LocalVertexType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -49,14 +50,14 @@ public class SQLMethodAsSetTest {
     final HashSet<Object> aSet = new HashSet<Object>();
     aSet.add(1);
     aSet.add("2");
-    final Object result = function.execute(null, null, null, aSet, null);
+    final Object result = function.execute(aSet, null, null, null);
     assertEquals(result, aSet);
   }
 
   @Test
   public void testNull() {
     // The expected behavior is to return an empty set.
-    final Object result = function.execute(null, null, null, null, null);
+    final Object result = function.execute(null, null, null, null);
     assertEquals(result, new HashSet<Object>());
   }
 
@@ -67,7 +68,7 @@ public class SQLMethodAsSetTest {
     final ArrayList<Object> aCollection = new ArrayList<Object>();
     aCollection.add(1);
     aCollection.add("2");
-    final Object result = function.execute(null, null, null, aCollection, null);
+    final Object result = function.execute(aCollection, null, null, null);
 
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(1);
@@ -84,7 +85,7 @@ public class SQLMethodAsSetTest {
     values.add("2");
 
     final TestIterable<Object> anIterable = new TestIterable<Object>(values);
-    final Object result = function.execute(null, null, null, anIterable, null);
+    final Object result = function.execute(anIterable, null, null, null);
 
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(1);
@@ -102,7 +103,7 @@ public class SQLMethodAsSetTest {
     values.add("2");
 
     final TestIterable<Object> anIterable = new TestIterable<Object>(values);
-    final Object result = function.execute(null, null, null, anIterable.iterator(), null);
+    final Object result = function.execute(anIterable.iterator(), null, null, null);
 
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(1);
@@ -111,16 +112,17 @@ public class SQLMethodAsSetTest {
     assertEquals(result, expected);
   }
 
-  public void testODocument() {
+  @Test
+  public void testDocument() {
     // The expected behavior is to return a set with only the single
     // ODocument in it.
-    final MutableDocument doc = new MutableDocument(null, null, null) {
+    final MutableDocument doc = new MutableDocument(null, new LocalVertexType(null, "Test"), null) {
     };
 
     doc.set("f1", 1);
     doc.set("f2", 2);
 
-    final Object result = function.execute(null, null, null, doc, null);
+    final Object result = function.execute(doc, null, null, null);
 
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(doc);
@@ -133,7 +135,7 @@ public class SQLMethodAsSetTest {
     // The expected behavior is to return a set with only the single
     // element in it.
 
-    final Object result = function.execute(null, null, null, Integer.valueOf(4), null);
+    final Object result = function.execute(Integer.valueOf(4), null, null, null);
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(Integer.valueOf(4));
     assertEquals(result, expected);

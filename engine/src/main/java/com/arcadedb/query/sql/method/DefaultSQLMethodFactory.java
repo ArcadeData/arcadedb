@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.method;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.query.sql.method.collection.SQLMethodField;
+import com.arcadedb.query.sql.method.collection.SQLMethodJoin;
 import com.arcadedb.query.sql.method.collection.SQLMethodKeys;
 import com.arcadedb.query.sql.method.collection.SQLMethodRemove;
 import com.arcadedb.query.sql.method.collection.SQLMethodRemoveAll;
@@ -36,6 +37,7 @@ import com.arcadedb.query.sql.method.conversion.SQLMethodAsDecimal;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsDouble;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsFloat;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsInteger;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsJSON;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsList;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsLong;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsMap;
@@ -87,6 +89,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
   public DefaultSQLMethodFactory() {
     // Collections
     register(SQLMethodField.NAME, new SQLMethodField());
+    register(SQLMethodJoin.NAME, new SQLMethodJoin());
     register(SQLMethodKeys.NAME, new SQLMethodKeys());
     register(SQLMethodRemove.NAME, new SQLMethodRemove());
     register(SQLMethodRemoveAll.NAME, new SQLMethodRemoveAll());
@@ -104,6 +107,8 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodAsDouble.NAME, new SQLMethodAsDouble());
     register(SQLMethodAsFloat.NAME, new SQLMethodAsFloat());
     register(SQLMethodAsInteger.NAME, new SQLMethodAsInteger());
+    register(SQLMethodToJSON.NAME, new SQLMethodToJSON());
+    register(SQLMethodAsJSON.NAME, new SQLMethodAsJSON());
     register(SQLMethodAsList.NAME, new SQLMethodAsList());
     register(SQLMethodAsLong.NAME, new SQLMethodAsLong());
     register(SQLMethodAsMap.NAME, new SQLMethodAsMap());
@@ -126,7 +131,6 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodInclude.NAME, new SQLMethodInclude());
     register(SQLMethodJavaType.NAME, new SQLMethodJavaType());
     register(SQLMethodPrecision.NAME, new SQLMethodPrecision());
-    register(SQLMethodToJSON.NAME, new SQLMethodToJSON());
     register(SQLMethodType.NAME, new SQLMethodType());
 
     // String

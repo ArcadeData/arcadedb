@@ -35,13 +35,13 @@ class SQLMethodCharAtTest {
 
     @Test
     void testNulIsReturnedAsNull() {
-        final Object result = method.execute(null, null, null, null, new Object[]{null});
+        final Object result = method.execute(null, null, null, new Object[]{null});
         assertThat(result).isNull();
     }
 
     @Test
     void testChartAt() {
-        final Object result = method.execute("chars", null, null, null, new Object[]{3});
+        final Object result = method.execute("chars", null, null, new Object[]{3});
         assertThat(result).isEqualTo("r");
     }
 

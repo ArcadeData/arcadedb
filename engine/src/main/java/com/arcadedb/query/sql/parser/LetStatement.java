@@ -57,11 +57,10 @@ public class LetStatement extends SimpleExecStatement {
     }
 
     if (context != null) {
-      if (context.getParent() != null) {
+      if (context.getParent() != null)
         context.getParent().setVariable(variableName.getStringValue(), result);
-      } else {
+      else
         context.setVariable(variableName.getStringValue(), result);
-      }
     }
     return new InternalResultSet();
   }

@@ -161,9 +161,13 @@ public class BasicCommandContext implements CommandContext {
     if (name.startsWith("$"))
       name = name.substring(1);
 
-    init();
-
-    variables.put(name, value);
+    if (value == null) {
+      if (variables != null)
+        variables.remove(name);
+    } else {
+      init();
+      variables.put(name, value);
+    }
 
     return this;
   }
@@ -275,7 +279,40 @@ public class BasicCommandContext implements CommandContext {
 
   @Override
   public String toString() {
-    return getVariables().toString();
+    return toString(0);
+  }
+
+  public String toString(final int depth) {
+    final StringBuilder buffer = new StringBuilder();
+
+    if (inputParameters != null) {
+      dumpDepth(buffer, depth).append("PARAMETERS:");
+      for (Map.Entry<String, Object> entry : inputParameters.entrySet()) {
+        dumpDepth(buffer, depth + 1).append(entry.getKey()).append(" = ");
+        printValue(buffer, entry.getValue());
+      }
+    }
+
+    if (variables != null) {
+      dumpDepth(buffer, depth).append("VARIABLES:");
+      for (Map.Entry<String, Object> entry : variables.entrySet()) {
+        dumpDepth(buffer, depth + 1).append(entry.getKey()).append(" = ");
+        printValue(buffer, entry.getValue());
+      }
+    }
+
+    if (configuration != null)
+      dumpDepth(buffer, depth).append("CONFIGURATION: ").append(configuration.toJSON());
+
+    if (declaredScriptVariables != null)
+      dumpDepth(buffer, depth).append("SCRIPT VARIABLES: ").append(declaredScriptVariables);
+
+    if (child != null) {
+      dumpDepth(buffer, depth).append("CHILD:");
+      buffer.append(((BasicCommandContext) child).toString(depth + 1));
+    }
+
+    return buffer.toString();
   }
 
   @Override
@@ -367,5 +404,23 @@ public class BasicCommandContext implements CommandContext {
   @Override
   public void setConfiguration(final ContextConfiguration configuration) {
     this.configuration = configuration;
+  }
+
+  private StringBuilder dumpDepth(final StringBuilder buffer, final int depth) {
+    buffer.append('\n');
+    for (int i = 0; i < depth; i++)
+      buffer.append("  ");
+    return buffer;
+  }
+
+  private StringBuilder printValue(final StringBuilder buffer, final Object value) {
+    if (value == null)
+      buffer.append("null");
+    else if (value instanceof InternalResultSet)
+      buffer.append("resultset ").append(((InternalResultSet) value).countEntries()).append(" entries");
+    else
+      buffer.append(value);
+
+    return buffer;
   }
 }

@@ -63,9 +63,8 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
       if (!nextBlock.hasNext())
         return;
 
-      while (nextBlock.hasNext()) {
+      while (nextBlock.hasNext())
         result.add(nextBlock.next());
-      }
     }
   }
 

@@ -38,7 +38,7 @@ public class SQLMethodRemove extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object self, final Identifiable currentRecord, final CommandContext context, Object result, final Object[] params) {
+  public Object execute(Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (params != null && params.length > 0 && params[0] != null) {
       final Object[] arguments = MultiValue.array(params, Object.class, argument -> {
         if (argument instanceof String && ((String) argument).startsWith("$")) {
@@ -47,12 +47,12 @@ public class SQLMethodRemove extends AbstractSQLMethod {
         return argument;
       });
       for (final Object o : arguments) {
-        result = MultiValue.remove(result, o, false);
+        value = MultiValue.remove(value, o, false);
       }
-      return result;
+      return value;
     }
 
-    return result;
+    return value;
   }
 
   @Override

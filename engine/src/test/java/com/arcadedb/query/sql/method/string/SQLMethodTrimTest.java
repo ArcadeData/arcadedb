@@ -25,26 +25,22 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodTrimTest {
+  private SQLMethod method;
 
-    private SQLMethod method;
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodTrim();
+  }
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodTrim();
-    }
+  @Test
+  void testNulIReturnedAsNull() {
+    final Object result = method.execute(null, null, null, null);
+    assertThat(result).isNull();
+  }
 
-    @Test
-    void testNulIReturnedAsNull() {
-        final Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isNull();
-    }
-
-
-    @Test
-    void testTrimSpaces() {
-        final Object result = method.execute(null, null, null, "trim me    ", null);
-        assertThat(result).isEqualTo("trim me");
-
-    }
-
+  @Test
+  void testTrimSpaces() {
+    final Object result = method.execute("trim me    ", null, null, null);
+    assertThat(result).isEqualTo("trim me");
+  }
 }

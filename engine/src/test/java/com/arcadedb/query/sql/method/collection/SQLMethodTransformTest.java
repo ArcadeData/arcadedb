@@ -78,7 +78,7 @@ class SQLMethodTransformTest {
 
   @Test
   void testNulIReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
@@ -86,12 +86,12 @@ class SQLMethodTransformTest {
   void testToLowerCase() {
     final BasicCommandContext context = getMockedContext();
 
-    final Object result = method.execute(null, null, context, Set.of("A", "B"), new String[] { "toLowerCase" });
+    final Object result = method.execute(Set.of("A", "B"), null, context, new String[] { "toLowerCase" });
     assertThat(result).isInstanceOf(Set.class);
     assertThat(new ArrayList<>((Set) result)).asList().contains("a");
     assertThat(new ArrayList<>((Set) result)).asList().contains("b");
 
-    final Object result2 = method.execute(null, null, context, List.of("A", "B"), new String[] { "toLowerCase" });
+    final Object result2 = method.execute(List.of("A", "B"), null, context, new String[] { "toLowerCase" });
     assertThat(result2).isInstanceOf(List.class);
     assertThat(result2).asList().contains("a");
     assertThat(result2).asList().contains("b");
@@ -101,12 +101,12 @@ class SQLMethodTransformTest {
   void testToUpperCase() {
     final BasicCommandContext context = getMockedContext();
 
-    final Object result = method.execute(null, null, context, Set.of("A", "b"), new String[] { "toUpperCase" });
+    final Object result = method.execute(Set.of("A", "b"), null, context, new String[] { "toUpperCase" });
     assertThat(result).isInstanceOf(Set.class);
     assertThat(new ArrayList<>((Set) result)).asList().contains("A");
     assertThat(new ArrayList<>((Set) result)).asList().contains("B");
 
-    final Object result2 = method.execute(null, null, context, List.of("a", "B"), new String[] { "toUpperCase" });
+    final Object result2 = method.execute(List.of("a", "B"), null, context, new String[] { "toUpperCase" });
     assertThat(result2).isInstanceOf(List.class);
     assertThat(result2).asList().contains("A");
     assertThat(result2).asList().contains("B");
@@ -116,12 +116,12 @@ class SQLMethodTransformTest {
   void testChain() {
     final BasicCommandContext context = getMockedContext();
 
-    final Object result = method.execute(null, null, context, Set.of(" AA ", " bb "), new String[] { "trim", "toUpperCase" });
+    final Object result = method.execute(Set.of(" AA ", " bb "), null, context, new String[] { "trim", "toUpperCase" });
     assertThat(result).isInstanceOf(Set.class);
     assertThat(new ArrayList<>((Set) result)).asList().contains("AA");
     assertThat(new ArrayList<>((Set) result)).asList().contains("BB");
 
-    final Object result2 = method.execute(null, null, context, List.of(" aa ", " BB "), new String[] { "trim", "toLowerCase" });
+    final Object result2 = method.execute(List.of(" aa ", " BB "), null, context, new String[] { "trim", "toLowerCase" });
     assertThat(result2).isInstanceOf(List.class);
     assertThat(result2).asList().contains("aa");
     assertThat(result2).asList().contains("bb");
@@ -398,7 +398,8 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback) {
+      public void scanType(String typeName, boolean polymorphic, DocumentCallback callback,
+          ErrorRecordCallback errorRecordCallback) {
 
       }
 
@@ -433,14 +434,17 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public Edge newEdgeByKeys(String sourceVertexType, String[] sourceVertexKeyNames, Object[] sourceVertexKeyValues, String destinationVertexType,
-          String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues, boolean createVertexIfNotExist, String edgeType, boolean bidirectional,
+      public Edge newEdgeByKeys(String sourceVertexType, String[] sourceVertexKeyNames, Object[] sourceVertexKeyValues,
+          String destinationVertexType,
+          String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues, boolean createVertexIfNotExist, String edgeType,
+          boolean bidirectional,
           Object... properties) {
         return null;
       }
 
       @Override
-      public Edge newEdgeByKeys(Vertex sourceVertex, String destinationVertexType, String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues,
+      public Edge newEdgeByKeys(Vertex sourceVertex, String destinationVertexType, String[] destinationVertexKeyNames,
+          Object[] destinationVertexKeyValues,
           boolean createVertexIfNotExist, String edgeType, boolean bidirectional, Object... properties) {
         return null;
       }
@@ -571,7 +575,8 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, OkCallback ok, ErrorCallback error) {
+      public boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, OkCallback ok,
+          ErrorCallback error) {
         return false;
       }
 

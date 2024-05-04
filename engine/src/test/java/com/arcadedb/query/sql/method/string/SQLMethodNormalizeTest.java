@@ -26,37 +26,35 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodNormalizeTest {
 
-    private SQLMethod method;
+  private SQLMethod method;
 
-    @BeforeEach
-    public void setup() {
-        method = new SQLMethodNormalize();
-    }
+  @BeforeEach
+  public void setup() {
+    method = new SQLMethodNormalize();
+  }
 
-    @Test
-    void testNull() {
-        final Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isNull();
-    }
+  @Test
+  void testNull() {
+    final Object result = method.execute(null, null, null, null);
+    assertThat(result).isNull();
+  }
 
-    @Test
-    void testNormalizeWithDefaultNormalizer() {
-        final Object result = method.execute(null, null, null, "À", null);
-        assertThat(result).isEqualTo("A");
+  @Test
+  void testNormalizeWithDefaultNormalizer() {
+    final Object result = method.execute("À", null, null, null);
+    assertThat(result).isEqualTo("A");
 
-    }
+  }
 
-    @Test
-    void testNormalizeWithNFC() {
-        final Object result = method.execute(null, null, null, "À", new Object[]{"NFC"});
-        assertThat(result).isEqualTo("À");
-    }
+  @Test
+  void testNormalizeWithNFC() {
+    final Object result = method.execute("À", null, null, new Object[] { "NFC" });
+    assertThat(result).isEqualTo("À");
+  }
 
-    @Test
-    void testNormalizeWithNFCAndPattern() {
-        final Object result = method.execute(null, null, null, "À", new Object[]{"NFC", ""});
-        assertThat(result).isEqualTo("À");
-    }
-
-
+  @Test
+  void testNormalizeWithNFCAndPattern() {
+    final Object result = method.execute("À", null, null, new Object[] { "NFC", "" });
+    assertThat(result).isEqualTo("À");
+  }
 }

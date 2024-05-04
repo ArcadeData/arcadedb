@@ -147,10 +147,25 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
         // CREATE DOCUMENT VIA API
         final MutableVertex jay = database.newVertex("Character").set("name", "Jay").save();
+        Assertions.assertTrue(jay instanceof RemoteMutableVertex);
+
         Assertions.assertNotNull(jay);
         Assertions.assertEquals("Jay", jay.getString("name"));
         Assertions.assertNotNull(jay.getIdentity());
         jay.save();
+
+        Assertions.assertNotNull(jay);
+        Assertions.assertEquals("Jay", jay.getString("name"));
+        Assertions.assertNotNull(jay.getIdentity());
+        jay.save();
+
+
+        // CREATE DOCUMENT VIA API
+        final Map<String, Object> map = Map.of("on", "today", "for", "5 days");
+        Edge edge = jay.newEdge(EDGE1_TYPE_NAME, jay, true, map).save();
+        Assertions.assertTrue(edge instanceof RemoteMutableEdge);
+        Assertions.assertEquals("today", edge.get("on"));
+        Assertions.assertEquals("5 days", edge.get("for"));
 
         // TEST DELETION AND LOOKUP
         jay.delete();
@@ -192,7 +207,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         // CREATE EDGE WITH COMMAND
         result = database.command("SQL", "create edge " + EDGE1_TYPE_NAME + " from " + rid1 + " to " + rid2);
         Assertions.assertTrue(result.hasNext());
-        final Edge edge = result.next().getEdge().get();
+        edge = result.next().getEdge().get();
 
         edge.toMap();
         edge.toJSON();

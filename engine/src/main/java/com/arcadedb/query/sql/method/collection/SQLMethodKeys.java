@@ -38,22 +38,23 @@ public class SQLMethodKeys extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof Map)
-      return ((Map<?, ?>) ioResult).keySet();
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+    if (value instanceof Map)
+      return ((Map<?, ?>) value).keySet();
 
-    if (ioResult instanceof Document)
-      return Collections.singletonList(((Document) ioResult).getPropertyNames());
+    if (value instanceof Document)
+      return Collections.singletonList(((Document) value).getPropertyNames());
 
-    if (ioResult instanceof Result) {
-      final Result res = (Result) ioResult;
+    if (value instanceof Result) {
+      final Result res = (Result) value;
       return res.getPropertyNames();
     }
 
-    if (ioResult instanceof Collection) {
+    if (value instanceof Collection) {
       final List<Object> result = new ArrayList<>();
-      for (final Object o : (Collection<Object>) ioResult) {
-        result.addAll((Collection<Object>) execute(iThis, iCurrentRecord, iContext, o, iParams));
+      for (final Object o : (Collection<Object>) value) {
+        result.addAll((Collection<Object>) execute(value, iCurrentRecord, iContext, iParams));
       }
       return result;
     }

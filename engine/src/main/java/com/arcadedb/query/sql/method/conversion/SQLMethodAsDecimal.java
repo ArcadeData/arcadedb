@@ -47,10 +47,11 @@ public class SQLMethodAsDecimal extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (iThis instanceof Date) {
-      return new BigDecimal(((Date) iThis).getTime());
-    }
-    return iThis != null ? new BigDecimal(iThis.toString().trim()) : null;
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+    if (value instanceof Date)
+      return new BigDecimal(((Date) value).getTime());
+
+    return value != null ? new BigDecimal(value.toString().trim()) : null;
   }
 }

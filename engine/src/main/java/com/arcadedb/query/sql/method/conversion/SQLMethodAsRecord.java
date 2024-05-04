@@ -39,8 +39,8 @@ public class SQLMethodAsRecord extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext context, Object ioResult, final Object[] iParams) {
-    return getRecord(ioResult, context);
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context, final Object[] iParams) {
+    return getRecord(value, context);
   }
 
   private Object getRecord(final Object obj, final CommandContext context) {

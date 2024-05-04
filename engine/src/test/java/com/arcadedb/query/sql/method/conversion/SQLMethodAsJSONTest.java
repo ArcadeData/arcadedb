@@ -16,45 +16,53 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.misc;
+package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
-class SQLMethodTypeTest {
+class SQLMethodAsJSONTest {
+
   private SQLMethod method;
 
   @BeforeEach
   void setUp() {
-    method = new SQLMethodType();
+    method = new SQLMethodAsJSON();
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void testNull() {
     final Object result = method.execute(null, null, null, null);
-    assertThat(result).isNull();
+    Assertions.assertNull(result);
   }
 
   @Test
-  void testUnknownTypesReturnedAsNull() {
-    final Object result = method.execute(new SQLMethodType(), null, null, null);
-    assertThat(result).isNull();
+  void testEmptyJsonIsReturned() {
+    final Object result = method.execute("", null, null, null);
+    Assertions.assertTrue(result instanceof JSONObject);
+    Assertions.assertTrue(((JSONObject) result).isEmpty());
   }
 
   @Test
-  void testTypeName() {
-    final Object result = method.execute("string", null, null, null);
-    assertThat(result).isEqualTo("STRING");
+  void testStringIsReturnedAsString() {
+    final Object result = method.execute(new JSONObject().put("name", "robot").toString(), null, null, null);
+    Assertions.assertTrue(result instanceof JSONObject);
+    Assertions.assertEquals("robot", ((JSONObject) result).getString("name"));
   }
 
   @Test
-  void testTypeNameOfList() {
-    final Object result = method.execute(new ArrayList<>(), null, null, null);
-    assertThat(result).isEqualTo("LIST");
+  void testErrorJsonParsing() {
+    try {
+      final Object result = method.execute("{\"name\"]", null, null, null);
+      Assertions.fail();
+    } catch (JSONException e) {
+      //EXPECTED
+    }
   }
 }

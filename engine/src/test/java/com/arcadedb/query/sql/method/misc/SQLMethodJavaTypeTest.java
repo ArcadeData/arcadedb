@@ -36,19 +36,19 @@ class SQLMethodJavaTypeTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testJavaClassName() {
-    final Object result = method.execute(null, null, null, "string", null);
+    final Object result = method.execute("string", null, null, null);
     assertThat(result).isEqualTo(String.class.getName());
   }
 
   @Test
   void testJavaClassNameOfList() {
-    final Object result = method.execute(null, null, null, new ArrayList<>(), null);
+    final Object result = method.execute(new ArrayList<>(), null, null, null);
     assertThat(result).isEqualTo(ArrayList.class.getName());
   }
 }

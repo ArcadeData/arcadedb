@@ -31,7 +31,7 @@ import java.time.*;
  * Returns a java.time.Duration.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
- * @see SQLFunctionSysdate, SQLFunctionDate
+ * @see {@link SQLFunctionSysdate}, {@link SQLFunctionDate}
  */
 public class SQLFunctionDuration extends SQLFunctionAbstract {
   public static final String NAME = "duration";

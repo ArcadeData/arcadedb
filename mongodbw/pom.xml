@@ -24,7 +24,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>24.2.1</version>
+        <version>24.5.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -34,7 +34,7 @@
     <properties>
         <mongo-java-server.version>1.45.0</mongo-java-server.version>
         <mongo-java-driver.version>3.12.13</mongo-java-driver.version>
-        <netty.version>4.1.108.Final</netty.version>
+        <netty.version>4.1.109.Final</netty.version>
     </properties>
 
     <dependencies>
@@ -77,14 +77,6 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>${maven-shade-plugin.version}</version>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                    </execution>
-                </executions>
             </plugin>
         </plugins>
     </build>

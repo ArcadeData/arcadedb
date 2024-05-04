@@ -37,12 +37,13 @@ public class SQLMethodAsRID extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    if (ioResult != null) {
-      if (ioResult instanceof Identifiable)
-        return ((Identifiable) ioResult).getIdentity();
-      else if (ioResult instanceof String && RID.is(ioResult))
-        return new RID(iContext != null ? iContext.getDatabase() : null, (String) ioResult);
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+    if (value != null) {
+      if (value instanceof Identifiable)
+        return ((Identifiable) value).getIdentity();
+      else if (value instanceof String && RID.is(value))
+        return new RID(iContext != null ? iContext.getDatabase() : null, (String) value);
     }
     return null;
   }

@@ -38,9 +38,9 @@ public class SQLMethodCapitalize extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    return ioResult != null ? Pattern.compile("\\b(.)(.*?)\\b")
-                                     .matcher(ioResult.toString())
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    return value != null ? Pattern.compile("\\b(.)(.*?)\\b")
+                                     .matcher(value.toString())
                                      .replaceAll(match -> match.group(1).toUpperCase(Locale.ENGLISH) +
                                                           match.group(2).toLowerCase(Locale.ENGLISH))
                             : null;

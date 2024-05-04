@@ -41,16 +41,16 @@ public class SQLMethodAsLong extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof Number) {
-      ioResult = ((Number) ioResult).longValue();
-    } else if (ioResult instanceof Date) {
-      ioResult = ((Date) ioResult).getTime();
-    } else if (DateUtils.isDate(ioResult)) {
-      ioResult = DateUtils.dateTimeToTimestamp(ioResult, ChronoUnit.MILLIS);
-    } else {
-      ioResult = ioResult != null ? Long.valueOf(ioResult.toString().trim()) : null;
-    }
-    return ioResult;
+  public Object execute(Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value instanceof Number)
+      value = ((Number) value).longValue();
+    else if (value instanceof Date)
+      value = ((Date) value).getTime();
+    else if (DateUtils.isDate(value))
+      value = DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
+    else
+      value = value != null ? Long.valueOf(value.toString().trim()) : null;
+
+    return value;
   }
 }

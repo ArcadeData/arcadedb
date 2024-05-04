@@ -25,7 +25,6 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodAsBooleanTest {
-
   private SQLMethod method;
 
   @BeforeEach
@@ -35,57 +34,56 @@ class SQLMethodAsBooleanTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testBooleanReturnedAsBoolean() {
-    Object result = method.execute(null, null, null, Boolean.TRUE, null);
+    Object result = method.execute(Boolean.TRUE, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.TRUE);
 
-    result = method.execute(null, null, null, Boolean.FALSE, null);
+    result = method.execute(Boolean.FALSE, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.FALSE);
 
     //literal
-    result = method.execute(null, null, null, true, null);
+    result = method.execute(true, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.TRUE);
 
-    result = method.execute(null, null, null, false, null);
+    result = method.execute(false, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.FALSE);
   }
 
   @Test
   void testStringReturnedAsBoolean() {
-    Object result = method.execute(null, null, null, "true", null);
+    Object result = method.execute("true", null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.TRUE);
 
-    result = method.execute(null, null, null, "false", null);
+    result = method.execute("false", null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.FALSE);
   }
 
   @Test
   void testNumberNotEqualsToZeroReturnedAsTrue() {
-    Object result = method.execute(null, null, null, 10, null);
+    Object result = method.execute(10, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.TRUE);
 
-    result = method.execute(null, null, null, -10, null);
+    result = method.execute(-10, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.TRUE);
   }
 
   @Test
   void testNumberEqualsToZeroReturnedAsFalse() {
-    final Object result = method.execute(null, null, null, 0, null);
+    final Object result = method.execute(0, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.FALSE);
-
   }
 }

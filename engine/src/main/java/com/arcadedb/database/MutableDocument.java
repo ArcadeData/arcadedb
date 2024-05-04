@@ -385,7 +385,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return;
 
       buffer.position(propertiesStartingPosition);
-      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this), type);
+      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this), rid);
     }
   }
 

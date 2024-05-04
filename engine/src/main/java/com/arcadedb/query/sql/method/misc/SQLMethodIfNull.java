@@ -41,13 +41,13 @@ public class SQLMethodIfNull extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
     /*
      * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
      */
-    if (ioResult == null)
+    if (value == null)
       return iParams[0];
     else
-      return ioResult;
+      return value;
   }
 }

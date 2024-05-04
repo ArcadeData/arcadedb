@@ -48,8 +48,8 @@ public class SQLMethodConvert extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (iThis == null || iParams[0] == null) {
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value == null || iParams[0] == null) {
       return null;
     }
 
@@ -57,14 +57,14 @@ public class SQLMethodConvert extends AbstractSQLMethod {
 
     if (destType.contains(".")) {
       try {
-        return Type.convert(iContext.getDatabase(), iThis, Class.forName(destType));
+        return Type.convert(iContext.getDatabase(), value, Class.forName(destType));
       } catch (final ClassNotFoundException e) {
         LogManager.instance().log(this, Level.SEVERE, "Type for destination type was not found", e);
       }
     } else {
       final Type arcadeType = Type.valueOf(destType.toUpperCase(Locale.ENGLISH));
       if (arcadeType != null) {
-        return Type.convert(iContext.getDatabase(), iThis, arcadeType.getDefaultJavaType());
+        return Type.convert(iContext.getDatabase(), value, arcadeType.getDefaultJavaType());
       }
     }
 

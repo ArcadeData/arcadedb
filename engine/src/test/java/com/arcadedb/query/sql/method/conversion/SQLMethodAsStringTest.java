@@ -35,22 +35,22 @@ class SQLMethodAsStringTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testStringIsReturnedAsString() {
-    final Object result = method.execute(null, null, null, "a string", null);
+    final Object result = method.execute("a string", null, null, null);
     assertThat(result).isEqualTo("a string");
   }
 
   @Test
   void testNumberIsReturnedAsString() {
-    Object result = method.execute(null, null, null, 100, null);
+    Object result = method.execute(100, null, null, null);
     assertThat(result).isEqualTo("100");
 
-    result = method.execute(null, null, null, 100.0, null);
+    result = method.execute(100.0, null, null, null);
     assertThat(result).isEqualTo("100.0");
   }
 }

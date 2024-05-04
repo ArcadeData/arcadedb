@@ -43,47 +43,46 @@ public class ScriptLineStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (!executed) {
-      if (plan instanceof InsertExecutionPlan) {
+      if (plan instanceof InsertExecutionPlan)
         ((InsertExecutionPlan) plan).executeInternal();
-      } else if (plan instanceof DeleteExecutionPlan) {
+      else if (plan instanceof DeleteExecutionPlan)
         ((DeleteExecutionPlan) plan).executeInternal();
-      } else if (plan instanceof UpdateExecutionPlan) {
+      else if (plan instanceof UpdateExecutionPlan)
         ((UpdateExecutionPlan) plan).executeInternal();
-      } else if (plan instanceof DDLExecutionPlan) {
+      else if (plan instanceof DDLExecutionPlan)
         ((DDLExecutionPlan) plan).executeInternal();
-      } else if (plan instanceof SingleOpExecutionPlan) {
+      else if (plan instanceof SingleOpExecutionPlan)
         ((SingleOpExecutionPlan) plan).executeInternal();
-      }
+
       executed = true;
     }
     return plan.fetchNext(nRecords);
   }
 
   public boolean containsReturn() {
-    if (plan instanceof ScriptExecutionPlan) {
+    if (plan instanceof ScriptExecutionPlan)
       return ((ScriptExecutionPlan) plan).containsReturn();
-    }
+
     if (plan instanceof SingleOpExecutionPlan) {
-      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement) {
+      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement)
         return true;
-      }
     }
+
     if (plan instanceof IfExecutionPlan) {
       final IfStep step = (IfStep) plan.getSteps().get(0);
-      if (step.positivePlan != null && step.positivePlan.containsReturn()) {
+      if (step.positivePlan != null && step.positivePlan.containsReturn())
         return true;
-      } else if (step.positiveStatements != null) {
+      else if (step.positiveStatements != null) {
         for (final Statement stm : step.positiveStatements) {
-          if (containsReturn(stm)) {
+          if (containsReturn(stm))
             return true;
-          }
         }
       }
     }
 
-    if (plan instanceof ForEachExecutionPlan) {
+    if (plan instanceof ForEachExecutionPlan)
       return ((ForEachExecutionPlan) plan).containsReturn();
-    }
+
     return false;
   }
 
@@ -93,9 +92,8 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
     if (stm instanceof IfStatement) {
       for (final Statement o : ((IfStatement) stm).getStatements()) {
-        if (containsReturn(o)) {
+        if (containsReturn(o))
           return true;
-        }
       }
     }
     return false;
@@ -106,10 +104,10 @@ public class ScriptLineStep extends AbstractExecutionStep {
       return ((ScriptExecutionPlan) plan).executeUntilReturn();
 
     if (plan instanceof SingleOpExecutionPlan) {
-      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement) {
+      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement)
         return new ReturnStep(((SingleOpExecutionPlan) plan).statement, context);
-      }
     }
+
     if (plan instanceof IfExecutionPlan)
       return ((IfExecutionPlan) plan).executeUntilReturn();
 
@@ -117,10 +115,9 @@ public class ScriptLineStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     if (plan == null)
       return "Script Line";
-
     return plan.prettyPrint(depth, indent);
   }
 }

@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>24.2.1</version>
+        <version>24.5.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -37,7 +37,7 @@
         <disruptor.version>1.2.21</disruptor.version>
         <gson.version>2.10.1</gson.version>
         <lz4-java.version>1.8.0</lz4-java.version>
-        <lucene.version>8.11.3</lucene.version>
+        <lucene.version>9.10.0</lucene.version>
         <graalvm.version>22.3.5</graalvm.version>
         <hnswlib.version>1.1.0</hnswlib.version>
         <spatial4j.version>0.8</spatial4j.version>
@@ -106,7 +106,7 @@
         </dependency>
         <dependency>
             <groupId>org.apache.lucene</groupId>
-            <artifactId>lucene-analyzers-common</artifactId>
+            <artifactId>lucene-analysis-common</artifactId>
             <version>${lucene.version}</version>
         </dependency>
         <dependency>

@@ -18,11 +18,10 @@
  */
 package com.arcadedb.query.sql.method.collection;
 
-import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.*;
 
@@ -39,17 +38,18 @@ public class SQLMethodSort extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
 
-    if (ioResult != null && ioResult instanceof List) {
-      List<Object> result = new ArrayList((List) ioResult);
+    if (value != null && value instanceof List) {
+      List<Object> result = new ArrayList((List) value);
       if (iParams != null && iParams.length > 0 && iParams[0] != null && iParams[0] instanceof Boolean && !((Boolean) iParams[0]))
         result.sort((left, right) -> BinaryComparator.compareTo(right, left));
       else
-        result.sort((left,right) -> BinaryComparator.compareTo(left, right));
+        result.sort((left, right) -> BinaryComparator.compareTo(left, right));
       return result;
     } else {
-      return ioResult;
+      return value;
     }
   }
 

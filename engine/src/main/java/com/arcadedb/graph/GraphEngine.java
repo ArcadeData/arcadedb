@@ -591,7 +591,7 @@ public class GraphEngine {
     throw new IllegalArgumentException("Invalid direction");
   }
 
-  public static void setProperties(final MutableDocument edge, final Object[] properties) {
+  public static void setProperties(final MutableEdge edge, final Object[] properties) {
     if (properties != null)
       if (properties.length == 1 && properties[0] instanceof Map) {
         // GET PROPERTIES FROM THE MAP

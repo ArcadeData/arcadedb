@@ -64,25 +64,25 @@ public class SQLScriptTest extends TestHelper {
     database.transaction(() -> {
       StringBuilder script = new StringBuilder();
       script.append("let $a = insert into V set test = 'sql script test';\n");
-      script.append("return $a.toJSON();\n");
+      script.append("return $a.asJSON();\n");
       String qResult = database.command("SQLScript", script.toString()).next().getProperty("value");
       Assertions.assertNotNull(qResult);
 
       // VALIDATE JSON
-      new JSONArray(qResult);
+      new JSONObject(qResult);
 
       script = new StringBuilder();
       script.append("let $a = select from V limit 2;\n");
-      script.append("return $a.toJSON();\n");
+      script.append("return $a.asJSON();\n");
       String result = database.command("SQLScript", script.toString()).next().getProperty("value");
 
       Assertions.assertNotNull(result);
       result = result.trim();
-      Assertions.assertTrue(result.startsWith("["));
-      Assertions.assertTrue(result.endsWith("]"));
+      Assertions.assertTrue(result.startsWith("{"));
+      Assertions.assertTrue(result.endsWith("}"));
 
       // VALIDATE JSON
-      new JSONObject(result.substring(1, result.length() - 1));
+      new JSONObject(result);
     });
 
   }
@@ -286,7 +286,8 @@ public class SQLScriptTest extends TestHelper {
     String className = "testParameters1";
     database.getSchema().createVertexType(className);
     database.getSchema().createEdgeType("E");
-    String script = "BEGIN;" + "LET $a = CREATE VERTEX " + className + " SET name = :name;" + "LET $b = CREATE VERTEX " + className + " SET name = :_name2;"
+    String script = "BEGIN;" + "LET $a = CREATE VERTEX " + className + " SET name = :name;" + "LET $b = CREATE VERTEX " + className
+        + " SET name = :_name2;"
         + "LET $edge = CREATE EDGE E from $a to $b;" + "COMMIT;" + "RETURN $edge;";
 
     HashMap<String, Object> map = new HashMap<>();
@@ -308,7 +309,8 @@ public class SQLScriptTest extends TestHelper {
     String className = "testPositionalParameters";
     database.getSchema().createVertexType(className);
     database.getSchema().createEdgeType("E");
-    String script = "BEGIN;" + "LET $a = CREATE VERTEX " + className + " SET name = ?;" + "LET $b = CREATE VERTEX " + className + " SET name = ?;"
+    String script = "BEGIN;" + "LET $a = CREATE VERTEX " + className + " SET name = ?;" + "LET $b = CREATE VERTEX " + className
+        + " SET name = ?;"
         + "LET $edge = CREATE EDGE E from $a to $b;" + "COMMIT;" + "RETURN $edge;";
 
     ResultSet rs = database.command("SQLScript", script, "bozo", "bozi");

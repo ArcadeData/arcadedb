@@ -35,10 +35,10 @@ public class SQLMethodJavaType extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult == null)
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value == null)
       return null;
 
-    return ioResult.getClass().getName();
+    return value.getClass().getName();
   }
 }
