@@ -85,7 +85,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertNotNull(result);
         Assertions.assertTrue(result.hasNext());
         final Result rec = result.next();
-        Assertions.assertTrue(rec.toJSON().contains("Elon"));
+        Assertions.assertTrue(rec.toJSON().toString().contains("Elon"));
         Assertions.assertEquals("Elon", rec.toElement().toMap().get("name"));
         final RID rid = rec.toElement().getIdentity();
 
@@ -96,7 +96,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         // UPDATE DOCUMENT WITH COMMAND
         result = database.command("SQL", "update Person set lastName = 'Musk' where name = 'Elon'");
         Assertions.assertTrue(result.hasNext());
-        Assertions.assertEquals(1, new JSONObject(result.next().toJSON()).getInt("count"));
+        Assertions.assertEquals(1, result.next().toJSON().getInt("count"));
 
         final Document record = (Document) database.lookupByRID(rid);
         Assertions.assertNotNull(result);
@@ -159,7 +159,6 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertNotNull(jay.getIdentity());
         jay.save();
 
-
         // CREATE DOCUMENT VIA API
         final Map<String, Object> map = Map.of("on", "today", "for", "5 days");
         Edge edge = jay.newEdge(EDGE1_TYPE_NAME, jay, true, map).save();
@@ -181,7 +180,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertNotNull(result);
         Assertions.assertTrue(result.hasNext());
         Result rec = result.next();
-        Assertions.assertTrue(rec.toJSON().contains("Elon"));
+        Assertions.assertTrue(rec.toJSON().toString().contains("Elon"));
         Assertions.assertEquals("Elon", rec.toElement().toMap().get("name"));
         final RID rid1 = rec.getIdentity().get();
 
@@ -190,7 +189,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertNotNull(result);
         Assertions.assertTrue(result.hasNext());
         rec = result.next();
-        Assertions.assertTrue(rec.toJSON().contains("Kimbal"));
+        Assertions.assertTrue(rec.toJSON().toString().contains("Kimbal"));
         Assertions.assertEquals("Kimbal", rec.toElement().toMap().get("name"));
         final RID rid2 = rec.getIdentity().get();
 
@@ -202,7 +201,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         // UPDATE VERTEX WITH COMMAND
         result = database.command("SQL", "update Character set lastName = 'Musk' where name = 'Elon' or name = 'Kimbal'");
         Assertions.assertTrue(result.hasNext());
-        Assertions.assertEquals(2, new JSONObject(result.next().toJSON()).getInt("count"));
+        Assertions.assertEquals(2, result.next().toJSON().getInt("count"));
 
         // CREATE EDGE WITH COMMAND
         result = database.command("SQL", "create edge " + EDGE1_TYPE_NAME + " from " + rid1 + " to " + rid2);

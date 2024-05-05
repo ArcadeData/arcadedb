@@ -65,7 +65,7 @@ public class SQLScriptTest extends TestHelper {
       StringBuilder script = new StringBuilder();
       script.append("let $a = insert into V set test = 'sql script test';\n");
       script.append("return $a.asJSON();\n");
-      String qResult = database.command("SQLScript", script.toString()).next().getProperty("value");
+      String qResult = database.command("SQLScript", script.toString()).next().getProperty("value").toString();
       Assertions.assertNotNull(qResult);
 
       // VALIDATE JSON
@@ -74,7 +74,7 @@ public class SQLScriptTest extends TestHelper {
       script = new StringBuilder();
       script.append("let $a = select from V limit 2;\n");
       script.append("return $a.asJSON();\n");
-      String result = database.command("SQLScript", script.toString()).next().getProperty("value");
+      String result = database.command("SQLScript", script.toString()).next().getProperty("value").toString();
 
       Assertions.assertNotNull(result);
       result = result.trim();
