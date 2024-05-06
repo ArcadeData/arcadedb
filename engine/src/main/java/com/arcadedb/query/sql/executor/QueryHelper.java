@@ -35,7 +35,7 @@ public class QueryHelper {
 
   public static String convertForRegExp(String value) {
 
-    final StringBuilder sb = new StringBuilder("");
+    final StringBuilder sb = new StringBuilder("(?s)");
 
     for (int i = 0; i < value.length();++i) {
 

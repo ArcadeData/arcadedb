@@ -41,10 +41,11 @@ public class ILikeOperatorTest {
     Assertions.assertTrue(op.execute(null, "", ""));
     Assertions.assertTrue(op.execute(null, "100?", "100\\?"));
     Assertions.assertTrue(op.execute(null, "100?", "100?"));
+    Assertions.assertTrue(op.execute(null, "abc\ndef", "%E%"));
   }
 
   @Test
   public void replaceSpecialCharacters() {
-    Assertions.assertEquals("\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*", QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%"));
+    Assertions.assertEquals("(?s)\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*", QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%"));
   }
 }
