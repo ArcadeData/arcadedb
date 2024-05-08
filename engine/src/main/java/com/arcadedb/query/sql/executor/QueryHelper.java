@@ -23,82 +23,62 @@ public class QueryHelper {
   protected static final char WILDCARD_ANY     = '%';
 
   public static boolean like(String currentValue, String value) {
-    if (currentValue == null || currentValue.isEmpty() || value == null || value.isEmpty())
+    if (currentValue == null || value == null || (currentValue.isEmpty() ^ value.isEmpty()))
       // EMPTY/NULL PARAMETERS
       return false;
+    else if (currentValue.isEmpty() && value.isEmpty())
+      return true;
 
     value = convertForRegExp(value);
     return currentValue.matches(value);
   }
 
   public static String convertForRegExp(String value) {
-    // TODO: NOT EFFICIENT, IT SHOULD BROWSE ONCE AND BUILD THE FINAL RESULT
-    for (int i = 0; i < value.length(); ) {
-      final char c = value.charAt(i);
 
-      final String replaceWith;
+    final StringBuilder sb = new StringBuilder("(?s)");
+
+    for (int i = 0; i < value.length();++i) {
+
+      final char c = value.charAt(i);
       switch (c) {
       case '\\':
         if (i + 1 < value.length()) {
           final char next = value.charAt(i + 1);
-          if (next == '%')
-            replaceWith = "" + next;
-          else
-            replaceWith = "\\\\";
-        } else
-          replaceWith = "\\\\";
-        break;
+          if (next == WILDCARD_ANY) {
+            sb.append(next);
+            ++i;
+            break;
+          } else if (next == WILDCARD_ANYCHAR) {
+            sb.append("\\" + next);
+            ++i;
+            break;
+          }
+        }
       case '[':
-        replaceWith = "\\[";
-        break;
       case ']':
-        replaceWith = "\\]";
-        break;
       case '{':
-        replaceWith = "\\{";
-        break;
       case '}':
-        replaceWith = "\\}";
-        break;
       case '(':
-        replaceWith = "\\(";
-        break;
       case ')':
-        replaceWith = "\\)";
-        break;
       case '|':
-        replaceWith = "\\|";
-        break;
       case '*':
-        replaceWith = "\\*";
-        break;
       case '+':
-        replaceWith = "\\+";
-        break;
       case '$':
-        replaceWith = "\\$";
-        break;
       case '^':
-        replaceWith = "\\^";
-        break;
       case '.':
-        replaceWith = "\\.";
+        sb.append("\\" + c);
         break;
       case WILDCARD_ANYCHAR:
-        replaceWith = ".";
+        sb.append(".");
         break;
       case WILDCARD_ANY:
-        replaceWith = ".*";
+        sb.append(".*");
         break;
-
       default:
-        ++i;
-        continue;
+        sb.append(c);
+        break;
       }
-
-      value = value.substring(0, i) + replaceWith + value.substring(i + 1);
-      i += replaceWith.length();
     }
-    return value;
+    return sb.toString();
   }
 }
