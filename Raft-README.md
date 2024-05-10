@@ -1,3 +1,12 @@
+### Remote debug
+
+To halt and be able to attach IDE as remote debug session add/update JAVA_OPTS ENV variable to contain below value. When configuring IDE make sure to use port 8000 after port forwarding on port 8000.
+
+```yaml
+- name: JAVA_OPTS
+  value: -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=0.0.0.0:8000 -Darcadedb.server.rootPassword=playwithdata
+```
+
 ### Info on Raft's modifications to ArcadeDb for the the SOCOM DF usecase.
 - Keycloak authentication
 - Basic classification/ACCM handling

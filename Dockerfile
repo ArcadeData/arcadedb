@@ -72,4 +72,7 @@ EXPOSE 27017
 EXPOSE 9999
 EXPOSE 9998
 
+# Remote debug port
+EXPOSE 8000
+
 CMD ["./bin/server.sh"]
