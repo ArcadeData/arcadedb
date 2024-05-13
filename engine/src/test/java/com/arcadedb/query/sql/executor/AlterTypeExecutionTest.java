@@ -108,5 +108,8 @@ public class AlterTypeExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE Mpv");
     database.command("sql", "ALTER TYPE Mpv NAME Sedan");
     Assertions.assertNotNull(database.getSchema().getType("Sedan"));
+    // Assertions.assertNull fails, hence the use of database.command()
+    ResultSet result = database.command("sql", "SELECT FROM schema:types");
+    Assertions.assertFalse(result.stream().anyMatch(x -> x.getProperty("name").equals("Mpv")));
   }
 }
