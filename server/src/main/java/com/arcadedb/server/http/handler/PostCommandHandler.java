@@ -65,6 +65,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if (command == null || command.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
+    if (language == null || language.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Language is null\"}");
+
     command = command.trim();
 
     Map<String, Object> paramMap = (Map<String, Object>) requestMap.get("params");
