@@ -20,6 +20,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
@@ -27,6 +28,8 @@ import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
 import java.sql.*;
+import java.time.*;
+import java.time.temporal.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,6 +94,8 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   @Test
   public void queryVertices() throws Exception {
     final int TOTAL = 1000;
+    final long now = System.currentTimeMillis();
+
     try (final Connection conn = getConnection()) {
       try (final Statement st = conn.createStatement()) {
         st.execute("create vertex type V");
@@ -99,7 +104,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         }
 
         final PreparedStatement pst = conn.prepareStatement(
-            "create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?");
+            "create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?, date = ?, timestamp = ?");
         pst.setString(1, "Rocky");
         pst.setString(2, "Balboa");
         pst.setShort(3, (short) 3);
@@ -108,10 +113,13 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         pst.setFloat(6, 6F);
         pst.setDouble(7, 7D);
         pst.setBoolean(8, false);
+        pst.setDate(9, new java.sql.Date(now));
+        pst.setTimestamp(10, new java.sql.Timestamp(now));
         pst.execute();
         pst.close();
 
-        ResultSet rs = st.executeQuery("SELECT name, lastName, short, int, long, float, double, boolean FROM V order by id");
+        ResultSet rs = st.executeQuery(
+            "SELECT name, lastName, short, int, long, float, double, boolean, date, timestamp FROM V order by id");
 
         Assertions.assertTrue(!rs.isAfterLast());
 
@@ -129,6 +137,8 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
             Assertions.assertEquals(6F, rs.getFloat(6));
             Assertions.assertEquals(7D, rs.getDouble(7));
             Assertions.assertEquals(false, rs.getBoolean(8));
+            Assertions.assertEquals(LocalDate.now(), rs.getDate(9).toLocalDate());
+            Assertions.assertEquals(now, rs.getTimestamp(10).getTime());
             ++i;
           } else
             Assertions.fail("Unknown value");
