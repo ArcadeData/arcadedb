@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.schema.DocumentType;
 
 /**
  * <p>Reads an upstream result set and returns a new result set that contains copies of the original OResult instances
@@ -56,7 +57,6 @@ public class CopyDocumentStep extends AbstractExecutionStep {
         try {
           Record resultDoc = null;
           if (toCopy.isElement()) {
-
             final Record docToCopy = toCopy.getElement().get().getRecord();
 
             if (docToCopy instanceof Document) {
@@ -68,7 +68,8 @@ public class CopyDocumentStep extends AbstractExecutionStep {
               ((MutableDocument) resultDoc).set(((Document) docToCopy).toMap(false));
             }
           } else {
-            resultDoc = toCopy.toElement().getRecord();
+            final DocumentType type = context.getDatabase().getSchema().getType(targetType);
+            resultDoc = type.newRecord().set(toCopy.toMap()).save();
           }
           return new UpdatableResult((MutableDocument) resultDoc);
         } finally {
