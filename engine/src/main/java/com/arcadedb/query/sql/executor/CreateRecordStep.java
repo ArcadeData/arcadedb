@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -36,6 +37,10 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
   public CreateRecordStep(final String typeName, final CommandContext context, final int total) {
     super(context);
+
+    if (typeName == null || typeName.isEmpty())
+      throw new CommandSQLParsingException("Record type is not specified");
+
     this.typeName = typeName;
     this.total = total;
   }
@@ -77,7 +82,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
           return new UpdatableResult(instance);
         } finally {
-          if( context.isProfiling() ) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -92,7 +97,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CREATE EMPTY RECORDS");
-    if( context.isProfiling() ) {
+    if (context.isProfiling()) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     result.append("\n");
