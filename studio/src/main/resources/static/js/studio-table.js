@@ -119,7 +119,7 @@ function renderTable() {
             "  </a>" +
             "  <ul class='dropdown-menu dropdown-menu-right' aria-labelledby='navbarDropdown' style='width: 300px'>" +
             "    <li class='dropdown-item'>" +
-            "      <div class='form-check'>" +
+            "      <div class='form-check-input'>" +
             "        <input id='tableTruncateColumns' class='form-check-input' type='checkbox' " +
             tableTruncateColumnsChecked +
             ' onclick=\'globalCheckboxAndSave("#tableTruncateColumns", "table.truncateColumns");renderTable()\'>' +
@@ -127,7 +127,7 @@ function renderTable() {
             "      </div>" +
             "    </li>" +
             "    <li class='dropdown-item'>" +
-            "      <div class='form-check'>" +
+            "      <div class='form-check-input'>" +
             "        <input id='tableFitInPage' class='form-check-input' type='checkbox' " +
             tableFitInPageChecked +
             ' onclick=\'globalCheckboxAndSave("#tableFitInPage", "table.fitInPage");renderTable()\'>' +

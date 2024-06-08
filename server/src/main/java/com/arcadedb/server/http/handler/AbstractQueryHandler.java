@@ -22,8 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -36,6 +38,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 
 import java.util.*;
+import java.util.logging.*;
 import java.util.stream.*;
 
 public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
@@ -116,15 +119,17 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
             final Edge e = row.getEdge().get();
             if (recordIncluded)
               edges.put(serializerImpl.serializeGraphElement(e));
-            if (includedVertices.add(e.getIn())) {
-              includedRecords.add(e.getIn());
-
-              vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
-            }
-            if (includedVertices.add(e.getOut())) {
-              includedRecords.add(e.getOut());
-
-              vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+            try {
+              if (includedVertices.add(e.getIn())) {
+                includedRecords.add(e.getIn());
+                vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
+              }
+              if (includedVertices.add(e.getOut())) {
+                includedRecords.add(e.getOut());
+                vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+              }
+            } catch (RecordNotFoundException ex) {
+              LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
             }
           } else {
             analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
@@ -137,18 +142,22 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
       // FILTER OUT NOT CONNECTED EDGES
       for (final Identifiable entry : includedVertices) {
-        final Vertex vertex = entry.asVertex(true);
+        try {
+          final Vertex vertex = entry.asVertex(true);
 
-        final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
-        for (final Edge e : vEdgesOut) {
-          if (includedVertices.contains(e.getIn()) && !includedRecords.contains(e.getIdentity()))
-            edges.put(serializerImpl.serializeGraphElement(e));
-        }
+          final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
+          for (final Edge e : vEdgesOut) {
+            if (includedVertices.contains(e.getIn()) && !includedRecords.contains(e.getIdentity()))
+              edges.put(serializerImpl.serializeGraphElement(e));
+          }
 
-        final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
-        for (final Edge e : vEdgesIn) {
-          if (includedVertices.contains(e.getOut()) && !includedRecords.contains(e.getIdentity()))
-            edges.put(serializerImpl.serializeGraphElement(e));
+          final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
+          for (final Edge e : vEdgesIn) {
+            if (includedVertices.contains(e.getOut()) && !includedRecords.contains(e.getIdentity()))
+              edges.put(serializerImpl.serializeGraphElement(e));
+          }
+        } catch (RecordNotFoundException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Vertex %s not found during serialization", e.getRID());
         }
       }
 
@@ -215,10 +224,20 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
         edges.put(serializerImpl.serializeGraphElement(edge));
 
-        if (includedVertices.add(edge.getIn()))
-          vertices.put(serializerImpl.serializeGraphElement(edge.getInVertex()));
-        if (includedVertices.add(edge.getOut()))
-          vertices.put(serializerImpl.serializeGraphElement(edge.getOutVertex()));
+        try {
+          if (includedVertices.add(edge.getIn())) {
+            final Vertex inV = edge.getInVertex();
+            vertices.put(serializerImpl.serializeGraphElement(inV));
+          }
+          if (includedVertices.add(edge.getOut())) {
+            final Vertex outV = edge.getOutVertex();
+            vertices.put(serializerImpl.serializeGraphElement(outV));
+          }
+        } catch (RecordNotFoundException e) {
+          LogManager.instance()
+              .log(this, Level.SEVERE, "Error on loading connecting vertices for edge %s: vertex %s not found", edge.getIdentity(),
+                  e.getRID());
+        }
       }
     } else if (value instanceof Result) {
       analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, (Result) value);
