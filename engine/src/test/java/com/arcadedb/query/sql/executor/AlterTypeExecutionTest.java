@@ -102,4 +102,27 @@ public class AlterTypeExecutionTest extends TestHelper {
     Assertions.assertNull(database.getSchema().getType("Suv").getCustomValue("age"));
     Assertions.assertFalse(database.getSchema().getType("Suv").getCustomKeys().contains("age"));
   }
+
+  @Test
+  public void sqlAlterTypeName() {
+    database.command("sql", "CREATE VERTEX TYPE Mpv");
+    database.command("sql", "ALTER TYPE Mpv NAME Sedan");
+    Assertions.assertNotNull(database.getSchema().getType("Sedan"));
+
+    // Assertions.assertNull fails, hence the use of database.command()
+    ResultSet result = database.command("sql", "SELECT FROM schema:types");
+    Assertions.assertFalse(result.stream().anyMatch(x -> x.getProperty("name").equals("Mpv")));
+
+    database.command("sql", "CREATE PROPERTY Sedan.engine_number string");
+    database.command("sql", "CREATE INDEX ON Sedan(engine_number) UNIQUE");
+    database.begin();
+    // insert a random record
+    database.getSchema().getType("Sedan").newRecord().set("engine_number", "123").save();
+    database.commit();
+    Assertions.assertThrows(Exception.class, () -> {
+      // insert a record with the same engine_number
+      database.getSchema().getType("Sedan").newRecord().set("engine_number", "123").save();
+      database.commit();
+    });
+  }
 }
