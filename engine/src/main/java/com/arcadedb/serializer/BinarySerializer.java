@@ -452,9 +452,16 @@ public class BinarySerializer {
         content.putUnsignedNumber(length);
         for (int i = 0; i < length; ++i) {
           final Object entryValue = Array.get(value, i);
-          final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
-          content.putByte(entryType);
-          serializeValue(database, content, entryType, entryValue);
+          try {
+            final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
+            content.putByte(entryType);
+            serializeValue(database, content, entryType, entryValue);
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on serializing array value for element %d = '%s'",
+                i, entryValue);
+            throw new SerializationException(
+                "Error on serializing array value for element " + i + " = '" + entryValue + "'");
+          }
         }
       }
       break;
@@ -462,33 +469,40 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_MAP: {
       final Dictionary dictionary = database.getSchema().getDictionary();
 
-      if( value instanceof JSONObject)
+      if (value instanceof JSONObject)
         value = ((JSONObject) value).toMap();
 
       final Map<Object, Object> map = (Map<Object, Object>) value;
       content.putUnsignedNumber(map.size());
       for (final Map.Entry<Object, Object> entry : map.entrySet()) {
-        // WRITE THE KEY
-        Object entryKey = entry.getKey();
-        byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey);
+        try {
+          // WRITE THE KEY
+          Object entryKey = entry.getKey();
+          byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey);
 
-        if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
-          final int id = dictionary.getIdByName((String) entryKey, false);
-          if (id > -1) {
-            // WRITE THE COMPRESSED STRING AS MAP KEY
-            entryKeyType = BinaryTypes.TYPE_COMPRESSED_STRING;
-            entryKey = id;
+          if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
+            final int id = dictionary.getIdByName((String) entryKey, false);
+            if (id > -1) {
+              // WRITE THE COMPRESSED STRING AS MAP KEY
+              entryKeyType = BinaryTypes.TYPE_COMPRESSED_STRING;
+              entryKey = id;
+            }
           }
+
+          content.putByte(entryKeyType);
+          serializeValue(database, content, entryKeyType, entryKey);
+
+          // WRITE THE VALUE
+          final Object entryValue = entry.getValue();
+          final byte entryValueType = BinaryTypes.getTypeFromValue(entryValue);
+          content.putByte(entryValueType);
+          serializeValue(database, content, entryValueType, entryValue);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on serializing map value for key '%s' = '%s'",
+              entry.getKey(), entry.getValue());
+          throw new SerializationException(
+              "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'");
         }
-
-        content.putByte(entryKeyType);
-        serializeValue(database, content, entryKeyType, entryKey);
-
-        // WRITE THE VALUE
-        final Object entryValue = entry.getValue();
-        final byte entryValueType = BinaryTypes.getTypeFromValue(entryValue);
-        content.putByte(entryValueType);
-        serializeValue(database, content, entryValueType, entryValue);
       }
       break;
     }
