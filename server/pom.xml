@@ -36,6 +36,8 @@
         <metrics.version>4.2.19</metrics.version>
         <slf4j.version>2.0.13</slf4j.version>
         <undertow-core.version>2.3.13.Final</undertow-core.version>
+        <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
+        <exec-maven-plugin.version>3.0.0</exec-maven-plugin.version>
     </properties>
 
     <profiles>
@@ -59,6 +61,11 @@
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <groupId>org.graalvm.buildtools</groupId>
+                <artifactId>native-maven-plugin</artifactId>
+            </plugin>
+
         </plugins>
     </build>
     <dependencies>

@@ -1,0 +1,38 @@
+name: Native Image
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: xembly/workflow-manager@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          run: clean, cancel
+          verbose: false
+      - uses: actions/checkout@v3.3.0
+      - uses: actions/setup-python@v4
+
+      - name: Set up GraalVM 21
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: "21"
+          distribution: "graalvm-community"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          components: "js"
+          native-image-job-reports: "true"
+
+      - name: Native image
+        continue-on-error: ${{ matrix.continue-on-error }}
+        run: mvn clean package -DskipTests -Pnative
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          path: ./native/target/arcadedb-*

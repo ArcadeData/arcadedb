@@ -29,14 +29,24 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
+      - name: Set up GraalVM 21
+        uses: graalvm/setup-graalvm@v1
         with:
-          distribution: "temurin"
-          java-version: 11
-          cache: "maven"
+          java-version: "21"
+          distribution: "graalvm-community"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+#        uses: graalvm/setup-graalvm@v1
+#        with:
+#          version: '22.3.2'
+#          gds-token: ${{ secrets.GDS_TOKEN }}
+#          java-version: '21'
+#          cache: 'maven'
+#          components: 'native-image,js'
+#          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install jars
+        continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn --show-version clean install -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

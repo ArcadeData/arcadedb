@@ -37,6 +37,10 @@
         <docker.buildArg.platform>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.platform>
         <docker-maven-plugin.version>0.44.0</docker-maven-plugin.version>
         <docker-maven-plugin.platform>linux/amd64</docker-maven-plugin.platform>
+
+        <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
+        <exec-maven-plugin.version>3.0.0</exec-maven-plugin.version>
+
     </properties>
 
     <build>
@@ -96,6 +100,50 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>${exec-maven-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>java-agent</id>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>java</executable>
+                            <workingDirectory>${project.build.directory}</workingDirectory>
+                            <arguments>
+                                <argument>
+                                    -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
+                                </argument>
+<!--                                <argument>-->
+<!--                                    -Darcadedb.server.plugins=Redis:com.arcadedb.redis.RedisProtocolPlugin,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin,Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin-->
+<!--                                </argument>-->
+                                <argument>
+                                    -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin
+                                </argument>
+                                <argument>-classpath</argument>
+                                <classpath/>
+                                <argument>${mainClass}</argument>
+                            </arguments>
+                        </configuration>
+
+                    </execution>
+                    <!--                    <execution>-->
+                    <!--                        <id>native</id>-->
+                    <!--                        <goals>-->
+                    <!--                            <goal>exec</goal>-->
+                    <!--                        </goals>-->
+                    <!--                        <configuration>-->
+                    <!--                            <executable>${project.build.directory}/${imageName}</executable>-->
+                    <!--                            <workingDirectory>${project.build.directory}</workingDirectory>-->
+                    <!--                        </configuration>-->
+                    <!--                    </execution>-->
+                </executions>
+            </plugin>
+
         </plugins>
     </build>
     <dependencies>
@@ -119,30 +167,28 @@
             <artifactId>arcadedb-studio</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-gremlin</artifactId>
-            <version>${project.parent.version}</version>
-            <classifier>shaded</classifier>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-redisw</artifactId>
-            <version>${project.parent.version}</version>
-            <classifier>shaded</classifier>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
+<!--        <dependency>-->
+<!--            <groupId>com.arcadedb</groupId>-->
+<!--            <artifactId>arcadedb-gremlin</artifactId>-->
+<!--            <version>${project.parent.version}</version>-->
+<!--            <exclusions>-->
+<!--                <exclusion>-->
+<!--                    <groupId>*</groupId>-->
+<!--                    <artifactId>*</artifactId>-->
+<!--                </exclusion>-->
+<!--            </exclusions>-->
+<!--        </dependency>-->
+<!--        <dependency>-->
+<!--            <groupId>com.arcadedb</groupId>-->
+<!--            <artifactId>arcadedb-redisw</artifactId>-->
+<!--            <version>${project.parent.version}</version>-->
+<!--            <exclusions>-->
+<!--                <exclusion>-->
+<!--                    <groupId>*</groupId>-->
+<!--                    <artifactId>*</artifactId>-->
+<!--                </exclusion>-->
+<!--            </exclusions>-->
+<!--        </dependency>-->
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-postgresw</artifactId>
@@ -159,7 +205,6 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-mongodbw</artifactId>
             <version>${project.parent.version}</version>
-            <classifier>shaded</classifier>
             <exclusions>
                 <exclusion>
                     <groupId>*</groupId>
@@ -339,5 +384,57 @@
                 </plugins>
             </build>
         </profile>
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                            <execution>
+                                <id>test-native</id>
+                                <goals>
+                                    <goal>test</goal>
+                                </goals>
+                                <phase>test</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
+                            <imageName>arcadedb</imageName>
+                            <buildArgs>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <!-- <buildArg>-H:+StaticExecutableWithDynamicLibC</buildArg> -->
+<!--                                <buildArg>-->
+<!--                                    &#45;&#45;trace-class-initialization=org.slf4j.jul.JDK14LoggerAdapter,org.slf4j.LoggerFactory-->
+<!--                                </buildArg>-->
+                                <buildArg>--initialize-at-build-time=org.slf4j.jul.JDK14LoggerAdapter</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j.LoggerFactory</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j.simple.SimpleLogger</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j.impl.StaticLoggerBinder</buildArg>
+                                <buildArg>--initialize-at-run-time=io.netty.util.internal.logging.Log4JLogger</buildArg>
+                                <buildArg>--initialize-at-run-time=io.netty.util.AbstractReferenceCounted</buildArg>
+                                  <buildArg>--initialize-at-run-time=io.netty.channel.epoll</buildArg>
+                                <buildArg>--initialize-at-run-time=io.netty.handler.ssl</buildArg>
+                                <buildArg>--initialize-at-run-time=io.netty.channel.unix"</buildArg>
+                                <buildArg>--verbose</buildArg>
+                                <buildArg>--enable-url-protocols=https</buildArg>
+                                <buildArg>-H:IncludeResources=.*.*$</buildArg>
+                                <buildArg>-H:Log=registerResource:1</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
     </profiles>
 </project>
