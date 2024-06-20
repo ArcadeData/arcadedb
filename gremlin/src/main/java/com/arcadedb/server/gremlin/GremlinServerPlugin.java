@@ -93,6 +93,6 @@ public class GremlinServerPlugin implements ServerPlugin {
   @Override
   public void stopService() {
     if (gremlinServer != null)
-      gremlinServer.stop();
+      gremlinServer.stop().join();
   }
 }
