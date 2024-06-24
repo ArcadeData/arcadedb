@@ -25,12 +25,12 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>24.5.1-SNAPSHOT</version>
+        <version>24.6.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <properties>
-        <testcontainers.version>1.19.7</testcontainers.version>
+        <testcontainers.version>1.19.8</testcontainers.version>
         <postgresql.version>42.7.3</postgresql.version>
         <logback-classic.version>1.5.6</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>

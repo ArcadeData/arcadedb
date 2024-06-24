@@ -135,6 +135,19 @@ public class DateUtils {
       else
         // NOT SUPPORTED
         timestamp = 0;
+    } else if (value instanceof LocalDate) {
+      final LocalDate localDate = (LocalDate) value;
+      if (precisionToUse.equals(ChronoUnit.SECONDS))
+        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() / 1_000L;
+      else if (precisionToUse.equals(ChronoUnit.MILLIS))
+        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
+        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() * 1_000_000L;
+      else if (precisionToUse.equals(ChronoUnit.NANOS))
+        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() * 1_000_000_000L;
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
     } else if (value instanceof ZonedDateTime) {
       final ZonedDateTime zonedDateTime = (ZonedDateTime) value;
       if (precisionToUse.equals(ChronoUnit.SECONDS))

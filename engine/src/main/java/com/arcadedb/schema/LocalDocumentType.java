@@ -383,7 +383,7 @@ public class LocalDocumentType implements DocumentType {
   public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
     final Property p = getPolymorphicPropertyIfExists(propertyName);
     if (p != null) {
-      if (p.getType().equals(propertyType))
+      if (p.getType().equals(propertyType) && Objects.equals(p.getOfType(), ofType))
         return p;
 
       // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE

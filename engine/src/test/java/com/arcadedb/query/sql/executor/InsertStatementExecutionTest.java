@@ -589,4 +589,24 @@ public class InsertStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals("(Pn/m)*1000kg/kW, with \"Pn\" being the\n\np  and \"m\" (kg)", result.next().getProperty("payload"));
   }
+
+  @Test
+  public void testInsertFromSelect() {
+    database.command("sqlscript",
+        "CREATE DOCUMENT TYPE src;\n"
+            + "CREATE DOCUMENT TYPE dst;\n"
+    );
+
+    final ResultSet result = database.command("sqlscript",
+        "INSERT INTO src SET a = 1;\n"
+            + "INSERT INTO src SET a = 2;\n"
+            + "INSERT INTO src SET a = 3;\n"
+            + "INSERT INTO dst FROM SELECT a FROM src;"
+    );
+    int i = 0;
+    for (; result.hasNext(); i++)
+      result.next();
+
+    Assertions.assertEquals(3, i);
+  }
 }

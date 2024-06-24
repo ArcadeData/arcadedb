@@ -29,6 +29,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
+import java.lang.reflect.*;
 import java.text.*;
 import java.time.*;
 import java.util.*;
@@ -102,123 +103,73 @@ public interface Result {
    */
   Set<String> getMetadataKeys();
 
-  default String toJSON() {
+  default JSONObject toJSON() {
     if (isElement())
-      return getElement().get().toJSON().toString();
+      return getElement().get().toJSON();
 
-    final StringBuilder result = new StringBuilder();
-    result.append("{");
-    boolean first = true;
-    for (final String prop : getPropertyNames()) {
-      if (!first) {
-        result.append(", ");
-      }
-      result.append(toJson(prop));
-      result.append(": ");
-      result.append(toJson(getProperty(prop)));
-      first = false;
-    }
-    result.append("}");
-    return result.toString();
+    final JSONObject result = new JSONObject();
+    for (final String prop : getPropertyNames())
+      result.put(prop, toJson(getProperty(prop)));
+
+    return result;
   }
 
-  default String toJson(final Object val) {
-    String jsonVal = null;
+  default Object toJson(final Object val) {
     if (val == null) {
-      jsonVal = "null";
+      return "null";
     } else if (val instanceof String) {
-      jsonVal = "\"" + encode(val.toString()) + "\"";
+      return "\"" + encode(val.toString()) + "\"";
     } else if (val instanceof Number || val instanceof Boolean) {
-      jsonVal = val.toString();
+      return val;
     } else if (val instanceof Result) {
-      jsonVal = ((Result) val).toJSON();
+      return ((Result) val).toJSON();
     } else if (val instanceof Record) {
-      jsonVal = "\"" + ((Record) val).getIdentity() + "\"";
+      return "\"" + ((Record) val).getIdentity() + "\"";
     } else if (val instanceof RID) {
-      jsonVal = "\"" + val + "\"";
+      return "\"" + val + "\"";
     } else if (val instanceof JSONObject) {
-      jsonVal = val.toString();
+      return val;
     } else if (val instanceof JSONArray) {
-      jsonVal = val.toString();
+      return val;
     } else if (val instanceof Iterable) {
-      final StringBuilder builder = new StringBuilder();
-      builder.append("[");
-      boolean first = true;
-      for (final Object o : (Iterable<?>) val) {
-        if (!first)
-          builder.append(", ");
-
-        builder.append(toJson(o));
-        first = false;
-      }
-      builder.append("]");
-      jsonVal = builder.toString();
+      final JSONArray array = new JSONArray();
+      for (final Object o : (Iterable<?>) val)
+        array.put(toJson(o));
+      return array;
     } else if (val instanceof Iterator) {
-      final StringBuilder builder = new StringBuilder();
-      builder.append("[");
-      boolean first = true;
+      final JSONArray array = new JSONArray();
       final Iterator<?> iterator = (Iterator<?>) val;
-      while (iterator.hasNext()) {
-        if (!first)
-          builder.append(", ");
-
-        builder.append(toJson(iterator.next()));
-        first = false;
-      }
-      builder.append("]");
-      jsonVal = builder.toString();
+      while (iterator.hasNext())
+        array.put(toJson(iterator.next()));
+      return array;
     } else if (val instanceof Map) {
-      final StringBuilder builder = new StringBuilder();
-      builder.append("{");
-      boolean first = true;
-      final Map<String, Object> map = (Map<String, Object>) val;
-      for (final Map.Entry<String, Object> entry : map.entrySet()) {
-        if (!first)
-          builder.append(", ");
-
-        builder.append(toJson(entry.getKey()));
-        builder.append(": ");
-        builder.append(toJson(entry.getValue()));
-        first = false;
-      }
-      builder.append("}");
-      jsonVal = builder.toString();
+      return new JSONObject((Map<String, Object>) val);
     } else if (val instanceof byte[]) {
-      jsonVal = "\"" + Base64.getEncoder().encodeToString((byte[]) val) + "\"";
+      return "\"" + Base64.getEncoder().encodeToString((byte[]) val) + "\"";
     } else if (val.getClass().isArray()) {
-      if (val instanceof int[])
-        jsonVal = Arrays.toString((int[]) val);
-      else if (val instanceof long[])
-        jsonVal = Arrays.toString((long[]) val);
-      else if (val instanceof short[])
-        jsonVal = Arrays.toString((short[]) val);
-      else if (val instanceof float[])
-        jsonVal = Arrays.toString((float[]) val);
-      else if (val instanceof double[])
-        jsonVal = Arrays.toString((double[]) val);
-      else
-        jsonVal = Arrays.toString((Object[]) val);
+      final JSONArray array = new JSONArray();
+
+      final int length = Array.getLength(val);
+      for (int i = 0; i < length; i++)
+        array.put(Array.get(val, i));
     } else if (val instanceof Date) {
       final Database database = getDatabase();
       if (database != null)
-        jsonVal = "\"" + DateUtils.format(val, database.getSchema().getDateTimeFormat()) + "\"";
+        return "\"" + DateUtils.format(val, database.getSchema().getDateTimeFormat()) + "\"";
       else
-        jsonVal = "\"" + new SimpleDateFormat().format(val) + "\"";
+        return "\"" + new SimpleDateFormat().format(val) + "\"";
 
     } else if (val instanceof LocalDateTime) {
       final Database database = getDatabase();
       if (database != null)
-        jsonVal = "\"" + DateUtils.format(val, getDatabase().getSchema().getDateTimeFormat()) + "\"";
+        return "\"" + DateUtils.format(val, getDatabase().getSchema().getDateTimeFormat()) + "\"";
       else
-        jsonVal = "\"" + val + "\"";
+        return "\"" + val + "\"";
     } else if (val instanceof Type) {
-      jsonVal = "\"" + ((Type) val).name() + "\"";
-    } else {
-      // ANYTHING ELSE: RETURN A STRING
-      jsonVal = "\"" + encode(val.toString()) + "\"";
+      return "\"" + ((Type) val).name() + "\"";
     }
-
-    return jsonVal;
+    // ANYTHING ELSE: RETURN A STRING
+    return "\"" + encode(val.toString()) + "\"";
   }
 
   Database getDatabase();

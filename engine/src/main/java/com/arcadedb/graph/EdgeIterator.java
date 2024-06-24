@@ -45,14 +45,17 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
     if (currentContainer == null)
       return false;
 
-    if (currentPosition.get() < currentContainer.getUsed())
-      return true;
+    while (true) {
+      if (currentPosition.get() < currentContainer.getUsed())
+        return true;
 
-    currentContainer = currentContainer.getPrevious();
-    if (currentContainer != null) {
+      currentContainer = currentContainer.getPrevious();
+      if (currentContainer == null)
+        break;
+
       currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
-      return currentPosition.get() < currentContainer.getUsed();
     }
+
     return false;
   }
 

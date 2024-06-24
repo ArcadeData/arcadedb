@@ -78,7 +78,7 @@ public class RemoteDateIT {
       sqlString = "INSERT INTO Order SET vstart = ?";
       try (ResultSet resultSet = database.command("sql", sqlString, vstart)) {
         Assertions.assertEquals(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.MICROS),
-            new JSONObject(resultSet.next().toJSON()).getLong("vstart"));
+            resultSet.next().toJSON().getLong("vstart"));
       }
       sqlString = "select from Order";
       System.out.println(sqlString);

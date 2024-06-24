@@ -34,10 +34,10 @@ public class BatchTest extends TestHelper {
       Assertions.assertTrue(rs.hasNext());
       Result record = rs.next();
       Assertions.assertNotNull(record);
-      Assertions.assertEquals("{\"value\": [{\"result\": 1}]}", record.toJSON());
+      Assertions.assertEquals("{\"value\":[{\"result\":1}]}", record.toJSON().toString());
 
       record = rs.next();
-      Assertions.assertEquals("{\"value\": [{\"result\": 2}]}", record.toJSON());
+      Assertions.assertEquals("{\"value\":[{\"result\":2}]}", record.toJSON().toString());
       Assertions.assertNotNull(record);
 
       Assertions.assertFalse(rs.hasNext());
@@ -52,10 +52,10 @@ public class BatchTest extends TestHelper {
       Assertions.assertTrue(rs.hasNext());
       Result record = rs.next();
       Assertions.assertNotNull(record);
-      Assertions.assertEquals("{\"value\": [{\"result\": 1}]}", record.toJSON());
+      Assertions.assertEquals("{\"value\":[{\"result\":1}]}", record.toJSON().toString());
 
       record = rs.next();
-      Assertions.assertEquals("{\"value\": [{\"result\": 2}]}", record.toJSON());
+      Assertions.assertEquals("{\"value\":[{\"result\":2}]}", record.toJSON().toString());
       Assertions.assertNotNull(record);
 
       Assertions.assertFalse(rs.hasNext());

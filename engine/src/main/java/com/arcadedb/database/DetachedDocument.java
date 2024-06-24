@@ -22,6 +22,11 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
+/**
+ * Detached document instances are generated from a document and can be accessed outside a transaction.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class DetachedDocument extends ImmutableDocument {
   private Map<String, Object> map;
 

@@ -134,6 +134,21 @@ public class GremlinTest {
   }
 
   @Test
+  public void testGremlinCountNotDefinedTypes() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+      Assertions.assertEquals(0,
+          (Long) graph.gremlin("g.V().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable().getProperty("result"));
+
+      Assertions.assertEquals(0,
+          (Long) graph.gremlin("g.E().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable().getProperty("result"));
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
   public void testGremlinEmbeddedDocument() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
