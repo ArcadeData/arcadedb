@@ -150,6 +150,31 @@ public class BatchTest extends TestHelper {
     Assertions.assertFalse(result.hasNext());
   }
 
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1646
+   */
+  @Test
+  public void testLetUSeRightScope() {
+    String script = "LET $list = [];\n"
+        + "\n"
+        + "FOREACH ($i IN [1, 2, 3]) {\n"
+        + "    IF ($i = 3) {\n"
+        + "        LET $list = ['HELLO'];\n"
+        + "    }\n"
+        + "    \n"
+        + "}\n"
+        + "\n"
+        + "IF ($list.size() > 0) {\n"
+        + "  RETURN \"List element detected\";\n"
+        + "}\n"
+        + "\n"
+        + "RETURN \"List is empty\";";
+
+    final ResultSet result = database.command("sqlscript", script);
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertEquals("List element detected", result.next().getProperty("value"));
+  }
+
   @Test
   public void testUsingReservedVariableNames() {
     try {

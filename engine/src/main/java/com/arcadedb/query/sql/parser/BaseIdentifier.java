@@ -169,7 +169,7 @@ public class BaseIdentifier extends SimpleNode {
   public boolean isEarlyCalculated(final CommandContext context) {
     if (levelZero != null && levelZero.isEarlyCalculated(context))
       return true;
-    return suffix != null && suffix.isEarlyCalculated();
+    return suffix != null && suffix.isEarlyCalculated(context);
   }
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {

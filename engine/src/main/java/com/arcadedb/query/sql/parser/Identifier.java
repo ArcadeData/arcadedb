@@ -20,6 +20,8 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.sql.executor.CommandContext;
+
 import java.util.*;
 
 /**
@@ -115,6 +117,17 @@ public class Identifier extends SimpleNode {
   @Override
   public boolean refersToParent() {
     return "$parent".equals(value);
+  }
+
+  public boolean isEarlyCalculated(CommandContext ctx) {
+    if (internalAlias)
+      return true;
+
+    String stringVal = getStringValue();
+    if (ctx.isScriptVariableDeclared(stringVal))
+      return true; // context variable, for batch scripts
+
+    return false;
   }
 
   @Override
