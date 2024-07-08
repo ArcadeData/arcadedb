@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 08/08/16.
  */
 
+import com.arcadedb.query.sql.parser.BreakStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.*;
@@ -59,6 +60,10 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   @Override
   public ResultSet fetchNext(final int n) {
     doExecute(n);
+
+    if (lastStep instanceof BreakStep)
+      return BreakStatement.BREAK_RESULTSET;
+
     return new ResultSet() {
 
       @Override
@@ -94,6 +99,12 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       finalResult = new InternalResultSet();
       if (lastStep != null) {
         ResultSet partial = lastStep.syncPull(context, n);
+
+        if (partial == BreakStatement.BREAK_RESULTSET) {
+          lastStep = new BreakStep(context);
+          return;
+        }
+
         while (partial.hasNext()) {
           while (partial.hasNext()) {
             ((InternalResultSet) finalResult).add(partial.next());
@@ -174,7 +185,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    * @return
    */
   public ExecutionStepInternal executeUntilReturn() {
-    if (steps.size() > 0) {
+    if (!steps.isEmpty()) {
       lastStep = steps.get(steps.size() - 1);
       for (int i = 0; i < steps.size() - 1; i++) {
         final ScriptLineStep step = steps.get(i);
@@ -214,6 +225,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       }
 
       ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
+
+      if (lastResult == BreakStatement.BREAK_RESULTSET)
+        return new BreakStep(context);
 
       while (lastResult.hasNext()) {
         while (lastResult.hasNext())

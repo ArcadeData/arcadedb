@@ -175,6 +175,26 @@ public class BatchTest extends TestHelper {
     Assertions.assertEquals("List element detected", result.next().getProperty("value"));
   }
 
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1647
+   */
+  @Test
+  public void testBreakInsideForeach() {
+    String script = "LET result = \"Return statement 0\";\n"
+        + "FOREACH ($i IN [1, 2, 3]) {\n"
+        + "\tLET result = \"Return statement \" + $i;\n"
+        + "\tIF( $i = 2 ) {\n"
+        + "\t\tBREAK;\n"
+        + "\t}\n"
+        + "}\n"
+        + "\n"
+        + "RETURN $result;";
+
+    final ResultSet result = database.command("sqlscript", script);
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertEquals("Return statement 2", result.next().getProperty("value"));
+  }
+
   @Test
   public void testUsingReservedVariableNames() {
     try {

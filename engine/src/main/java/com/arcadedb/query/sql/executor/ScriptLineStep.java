@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.BreakStatement;
 import com.arcadedb.query.sql.parser.IfStatement;
 import com.arcadedb.query.sql.parser.ReturnStatement;
 import com.arcadedb.query.sql.parser.Statement;
@@ -51,8 +52,11 @@ public class ScriptLineStep extends AbstractExecutionStep {
         ((UpdateExecutionPlan) plan).executeInternal();
       else if (plan instanceof DDLExecutionPlan)
         ((DDLExecutionPlan) plan).executeInternal();
-      else if (plan instanceof SingleOpExecutionPlan)
-        ((SingleOpExecutionPlan) plan).executeInternal();
+      else if (plan instanceof SingleOpExecutionPlan) {
+        final ResultSet res = ((SingleOpExecutionPlan) plan).executeInternal();
+        if (res == BreakStatement.BREAK_RESULTSET)
+          return res;
+      }
 
       executed = true;
     }
@@ -63,12 +67,11 @@ public class ScriptLineStep extends AbstractExecutionStep {
     if (plan instanceof ScriptExecutionPlan)
       return ((ScriptExecutionPlan) plan).containsReturn();
 
-    if (plan instanceof SingleOpExecutionPlan) {
+    else if (plan instanceof SingleOpExecutionPlan) {
       if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement)
         return true;
-    }
 
-    if (plan instanceof IfExecutionPlan) {
+    } else if (plan instanceof IfExecutionPlan) {
       final IfStep step = (IfStep) plan.getSteps().get(0);
       if (step.positivePlan != null && step.positivePlan.containsReturn())
         return true;
@@ -78,9 +81,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
             return true;
         }
       }
-    }
-
-    if (plan instanceof ForEachExecutionPlan)
+    } else if (plan instanceof ForEachExecutionPlan)
       return ((ForEachExecutionPlan) plan).containsReturn();
 
     return false;
@@ -102,14 +103,13 @@ public class ScriptLineStep extends AbstractExecutionStep {
   public ExecutionStepInternal executeUntilReturn(final CommandContext context) {
     if (plan instanceof ScriptExecutionPlan)
       return ((ScriptExecutionPlan) plan).executeUntilReturn();
-
-    if (plan instanceof SingleOpExecutionPlan) {
+    else if (plan instanceof SingleOpExecutionPlan) {
       if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement)
         return new ReturnStep(((SingleOpExecutionPlan) plan).statement, context);
-    }
-
-    if (plan instanceof IfExecutionPlan)
+    } else if (plan instanceof IfExecutionPlan)
       return ((IfExecutionPlan) plan).executeUntilReturn();
+    else if (plan instanceof BreakStatement)
+      return new BreakStep(context);
 
     throw new NoSuchElementException();
   }
