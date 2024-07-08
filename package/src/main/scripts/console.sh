@@ -57,7 +57,7 @@ if [ $# -gt 0 ] ; then
         $JAVA_OPTS_SCRIPT \
         $ARCADEDB_SETTINGS \
         -cp "$ARCADEDB_HOME/lib/*" \
-        $ARGS com.arcadedb.console.Console "$*"
+        $ARGS com.arcadedb.console.Console "$@"
 else
     exec "$JAVA" $JAVA_OPTS \
         $ARCADEDB_OPTS_MEMORY \
