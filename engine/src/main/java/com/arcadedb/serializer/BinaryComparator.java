@@ -447,6 +447,8 @@ public class BinaryComparator {
       return compareBytes((byte[]) a, (byte[]) b);
     else if (a instanceof Map && b instanceof Map)
       return CollectionUtils.compare((Map) a, (Map) b);
+    else if (DateUtils.isDate(a) || DateUtils.isDate(b))
+      return DateUtils.dateTimeToTimestamp(a, ChronoUnit.NANOS).compareTo(DateUtils.dateTimeToTimestamp(b, ChronoUnit.NANOS));
     return ((Comparable<Object>) a).compareTo(b);
   }
 
