@@ -115,61 +115,47 @@ public interface Result {
   }
 
   default Object toJson(final Object val) {
-    if (val == null) {
-      return "null";
-    } else if (val instanceof String) {
-      return "\"" + encode(val.toString()) + "\"";
-    } else if (val instanceof Number || val instanceof Boolean) {
-      return val;
-    } else if (val instanceof Result) {
-      return ((Result) val).toJSON();
-    } else if (val instanceof Record) {
-      return "\"" + ((Record) val).getIdentity() + "\"";
-    } else if (val instanceof RID) {
-      return "\"" + val + "\"";
-    } else if (val instanceof JSONObject) {
-      return val;
-    } else if (val instanceof JSONArray) {
-      return val;
-    } else if (val instanceof Iterable) {
-      final JSONArray array = new JSONArray();
-      for (final Object o : (Iterable<?>) val)
-        array.put(toJson(o));
-      return array;
-    } else if (val instanceof Iterator) {
-      final JSONArray array = new JSONArray();
-      final Iterator<?> iterator = (Iterator<?>) val;
-      while (iterator.hasNext())
-        array.put(toJson(iterator.next()));
-      return array;
-    } else if (val instanceof Map) {
-      return new JSONObject((Map<String, Object>) val);
-    } else if (val instanceof byte[]) {
-      return "\"" + Base64.getEncoder().encodeToString((byte[]) val) + "\"";
-    } else if (val.getClass().isArray()) {
-      final JSONArray array = new JSONArray();
+    if (val != null) {
+      if (val instanceof Result) {
+        return ((Result) val).toJSON();
+      } else if (val instanceof Record) {
+        return ((Record) val).getIdentity().toString();
+      } else if (val instanceof Iterable) {
+        final JSONArray array = new JSONArray();
+        for (final Object o : (Iterable<?>) val)
+          array.put(toJson(o));
+        return array;
+      } else if (val instanceof Iterator) {
+        final JSONArray array = new JSONArray();
+        final Iterator<?> iterator = (Iterator<?>) val;
+        while (iterator.hasNext())
+          array.put(toJson(iterator.next()));
+        return array;
+      } else if (val instanceof Map) {
+        return new JSONObject((Map<String, Object>) val);
+      } else if (val instanceof byte[]) {
+        return Base64.getEncoder().encodeToString((byte[]) val);
+      } else if (val.getClass().isArray()) {
+        final JSONArray array = new JSONArray();
+        final int length = Array.getLength(val);
+        for (int i = 0; i < length; i++)
+          array.put(Array.get(val, i));
+      } else if (val instanceof Date) {
+        final Database database = getDatabase();
+        if (database != null)
+          return DateUtils.format(val, database.getSchema().getDateTimeFormat());
+        else
+          return new SimpleDateFormat().format(val);
 
-      final int length = Array.getLength(val);
-      for (int i = 0; i < length; i++)
-        array.put(Array.get(val, i));
-    } else if (val instanceof Date) {
-      final Database database = getDatabase();
-      if (database != null)
-        return "\"" + DateUtils.format(val, database.getSchema().getDateTimeFormat()) + "\"";
-      else
-        return "\"" + new SimpleDateFormat().format(val) + "\"";
-
-    } else if (val instanceof LocalDateTime) {
-      final Database database = getDatabase();
-      if (database != null)
-        return "\"" + DateUtils.format(val, getDatabase().getSchema().getDateTimeFormat()) + "\"";
-      else
-        return "\"" + val + "\"";
-    } else if (val instanceof Type) {
-      return "\"" + ((Type) val).name() + "\"";
+      } else if (val instanceof LocalDateTime) {
+        final Database database = getDatabase();
+        if (database != null)
+          return DateUtils.format(val, database.getSchema().getDateTimeFormat());
+      } else if (val instanceof Type)
+        return ((Type) val).name();
     }
-    // ANYTHING ELSE: RETURN A STRING
-    return "\"" + encode(val.toString()) + "\"";
+
+    return val;
   }
 
   Database getDatabase();
