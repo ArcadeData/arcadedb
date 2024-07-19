@@ -79,6 +79,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         } else {
           analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row);
         }
+
+        if (limit > -1 && vertices.length() + edges.length() >= limit)
+          break;
       }
 
       response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges));
