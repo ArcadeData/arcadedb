@@ -262,7 +262,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
   }
 
-  protected Object mapParams(final Map<String, Object> paramMap) {
+  protected Object mapParams(Map<String, Object> paramMap) {
     if (paramMap != null) {
       if (!paramMap.isEmpty() && paramMap.containsKey("0")) {
         // ORDINAL
