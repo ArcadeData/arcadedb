@@ -181,7 +181,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       while (qResult.hasNext()) {
         final Result r = qResult.next();
         result.put(serializerImpl.serializeResult(database, r));
-        if (limit > 0 && response.length() >= limit)
+        if (limit > 0 && result.length() >= limit)
           break;
       }
       response.put("result", result);
