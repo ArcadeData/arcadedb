@@ -397,7 +397,7 @@ function loadNodeNeighbors(direction, rid) {
   jQuery
     .ajax({
       type: "POST",
-      url: "/api/v1/command/" + database,
+      url: "api/v1/command/" + database,
       data: JSON.stringify({
         language: "sql",
         command: "select expand( " + direction + "E() ) from " + rid,
@@ -502,7 +502,7 @@ function addNodeFromRecord(rid) {
     jQuery
       .ajax({
         type: "POST",
-        url: "/api/v1/command/" + escapeHtml($("#schemaInputDatabase").val()),
+        url: "api/v1/command/" + escapeHtml($("#schemaInputDatabase").val()),
         async: false,
         data: JSON.stringify({
           language: "sql",
