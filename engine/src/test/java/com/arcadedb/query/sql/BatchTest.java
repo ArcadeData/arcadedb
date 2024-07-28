@@ -180,7 +180,7 @@ public class BatchTest extends TestHelper {
    */
   @Test
   public void testBreakInsideForeach() {
-    String script = "LET result = \"Return statement 0\";\n"
+    final String script = "LET result = \"Return statement 0\";\n"
         + "FOREACH ($i IN [1, 2, 3]) {\n"
         + "\tLET result = \"Return statement \" + $i;\n"
         + "\tIF( $i = 2 ) {\n"
@@ -193,6 +193,37 @@ public class BatchTest extends TestHelper {
     final ResultSet result = database.command("sqlscript", script);
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals("Return statement 2", result.next().getProperty("value"));
+  }
+
+  // Isue https://github.com/ArcadeData/arcadedb/issues/1673
+  @Test
+  public void testNestedBreak() {
+    final String script = "LET $numbers = [1, 2, 3];\n"
+        + "LET $letters = ['A', 'B', 'C'];\n"
+        + "\n"
+        + "LET $counter = 0;\n"
+        + "\n"
+        + "FOREACH ($number IN $numbers) {\n"
+        + "  FOREACH ($letter IN $letters) {\n"
+        + "    IF ($number = 2) {\n"
+        + "      IF ($letter = 'B') {\n"
+        + "        BREAK;\n"
+        + "      }\n"
+        + "      \n"
+        + "      IF ($letter = 'B') {\n"
+        + "        CONSOLE.`error` map('ERROR', 'THIS SHOULD NEVER HAPPEN!!!');\n"
+        + "      }\n"
+        + "    }\n"
+        + "    \n"
+        + "    LET counter = $counter + 1;"
+        + "  }\n"
+        + "}\n"
+        + "\n"
+        + "RETURN $counter;";
+
+    final ResultSet result = database.command("sqlscript", script);
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertEquals(7, (Integer) result.next().getProperty("value"));
   }
 
   @Test

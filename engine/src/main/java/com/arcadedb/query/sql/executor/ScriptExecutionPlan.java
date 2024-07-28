@@ -198,6 +198,11 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
         }
         ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
 
+        if (lastResult == BreakStatement.BREAK_RESULTSET) {
+          lastStep = new BreakStep(context);
+          return lastStep;
+        }
+
         while (lastResult.hasNext()) {
           while (lastResult.hasNext())
             lastResult.next();
