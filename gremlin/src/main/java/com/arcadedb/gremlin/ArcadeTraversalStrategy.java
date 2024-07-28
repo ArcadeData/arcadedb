@@ -90,7 +90,6 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             ((HasStep<?>) step).removeHasContainer(c);
 
           if (totalLabels == 1 && typeNameToMatch != null) {
-
             // LOOKING FOR INDEX LOOKUP
             final ArcadeGraph graph = (ArcadeGraph) traversal.getGraph().get();
 
@@ -124,7 +123,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
             final Step replaceWith;
             if (indexCursors.isEmpty()) {
-              if (i + 1 < steps.size() && steps.get(i + 1) instanceof CountGlobalStep) {
+              if (((HasStep<?>) step).getHasContainers().isEmpty() &&
+                  i + 1 < steps.size() && steps.get(i + 1) instanceof CountGlobalStep) {
                 traversal.removeStep(i - 1);
                 traversal.removeStep(i - 1);
                 replaceWith = new ArcadeCountGlobalStep(step.getTraversal(), prevStepGraph.getReturnClass(), typeNameToMatch);
@@ -136,9 +136,11 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
               replaceWith = new ArcadeFilterByIndexStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(),
                   prevStepGraph.isStartStep(), indexCursors);
 
-            //traversal.removeStep(i); // IF THE HAS-LABEL STEP IS REMOVED, FOR SOME REASON DOES NOT WORK
-            traversal.removeStep(i - 1);
-            traversal.addStep(i - 1, replaceWith);
+            if (replaceWith != null) {
+              //traversal.removeStep(i); // IF THE HAS-LABEL STEP IS REMOVED, FOR SOME REASON DOES NOT WORK
+              traversal.removeStep(i - 1);
+              traversal.addStep(i - 1, replaceWith);
+            }
 
             if (replacedWithFilterByType)
               break;
