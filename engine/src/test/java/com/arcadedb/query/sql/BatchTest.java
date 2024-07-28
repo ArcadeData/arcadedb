@@ -227,6 +227,27 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
+  public void testForeachResultSet() {
+    database.command("sql", "CREATE DOCUMENT TYPE DocumentType");
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.command("sql", "INSERT INTO DocumentType set a = " + i);
+    });
+
+    final String script = "LET counter = 0;\n "
+        + "\n"
+        + "FOREACH( $row IN (select from DocumentType) ) {\n"
+        + "  LET counter = $counter + 1;\n"
+        + "}\n"
+        + "\n"
+        + "RETURN $counter;";
+
+    final ResultSet result = database.command("sqlscript", script);
+    Assertions.assertTrue(result.hasNext());
+    Assertions.assertEquals(100, (Integer) result.next().getProperty("value"));
+  }
+
+  @Test
   public void testUsingReservedVariableNames() {
     try {
       database.command("sqlscript", "FOREACH ($parent IN [1, 2, 3]){\nRETURN;\n}");
