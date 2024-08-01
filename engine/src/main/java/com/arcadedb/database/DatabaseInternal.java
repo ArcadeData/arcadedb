@@ -128,4 +128,9 @@ public interface DatabaseInternal extends Database {
    * Executes an operation after having locked files.
    */
   <RET> RET executeLockingFiles(Collection<Integer> fileIds, Callable<RET> callable);
+
+  @Override
+  default void setDataEncryption(DataEncryption encryption) {
+    getSerializer().setDataEncryption(encryption);
+  }
 }

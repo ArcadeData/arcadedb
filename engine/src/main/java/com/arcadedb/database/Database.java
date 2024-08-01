@@ -331,4 +331,14 @@ public interface Database extends BasicDatabase {
    * @see #isAsyncFlush()
    */
   Database setAsyncFlush(boolean value);
+
+  /**
+   * Sets data encryption to be used by the database.<br>
+   * THIS MUST BE DONE BEFORE WRITING ANY DATA TO THE DATABASE.
+   *
+   * @param encryption implementation of DataEncryption
+   *
+   * @see DefaultDataEncryption
+   */
+  void setDataEncryption(DataEncryption encryption);
 }
