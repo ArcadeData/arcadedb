@@ -128,7 +128,7 @@ public class Console {
         }
 
         try {
-          if (!parse(line, false))
+          if (!parse(line, false, false))
             return;
         } catch (final Exception e) {
           // IGNORE (ALREADY PRINTED)
@@ -175,16 +175,13 @@ public class Console {
     final Console console = new Console();
 
     try {
-      if (batchMode) {
-        // BATCH MODE
-        console.parse(commands.toString(), true);
-        console.parse("exit", true);
-      } else {
-        // INTERACTIVE MODE
-        if (console.parse(commands.toString(), true))
+      if (console.parse(commands.toString(), true, batchMode)) { // COMMANDLINE ARGUMENT COMMANDS
+        if (batchMode) { // BATCH MODE
+          console.executeClose();
+        } else { // INTERACTIVE MODE
           console.interactiveMode();
+        }
       }
-
     } finally {
       // FORCE THE CLOSING
       console.close();
@@ -223,7 +220,7 @@ public class Console {
     return databaseProxy;
   }
 
-  private boolean execute(final String line) throws IOException {
+  private boolean execute(final String line) throws IOException, RuntimeException {
     try {
 
       if (line == null)
@@ -601,8 +598,7 @@ public class Console {
       try {
         resultSet = databaseProxy.command(language, line);
       } catch (Exception e) {
-        outputError(e);
-        return;
+        throw e;
       }
 
     if (transactionBatchSize > 0) {
@@ -696,7 +692,7 @@ public class Console {
       while (bufferedReader.ready()) {
         final String line = FileUtils.decodeFromFile(bufferedReader.readLine());
 
-        parse(line, true);
+        parse(line, true, false);
 
         ++executedLines;
         byteReadFromFile += line.length() + 1;
@@ -724,11 +720,15 @@ public class Console {
     flushOutput();
   }
 
-  public boolean parse(final String line) throws IOException {
-    return parse(line, false);
+  public boolean parse(final String line) throws IOException, RuntimeException {
+    return parse(line, false, true);
   }
 
-  public boolean parse(final String line, final boolean printCommand) throws IOException {
+  public boolean parse(final String line, final boolean printCommand) throws IOException, RuntimeException {
+    return parse(line, printCommand, true);
+  }
+
+  public boolean parse(final String line, final boolean printCommand, final boolean batchMode) throws IOException, RuntimeException {
 
     final ParsedLine parsedLine = parser.parse(line, 0);
 
@@ -739,8 +739,13 @@ public class Console {
       if (printCommand)
         output(3, getPrompt() + w);
 
-      if (!execute(w))
-        return false;
+      try {
+        if (!execute(w))
+          return false;
+      } catch (final IOException | RuntimeException e) {
+        if (batchMode)
+          throw e;
+      }
     }
     return true;
   }
