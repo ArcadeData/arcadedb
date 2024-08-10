@@ -63,6 +63,12 @@ class SQLMethodTrimSuffixTest {
   }
 
   @Test
+  void testFull() {
+    final Object result = method.execute("Hello World", null, null, new Object[] {"Hello World"});
+    assertThat(result).isEqualTo("");
+  }
+
+  @Test
   void testEmptyArg() {
     final Object result = method.execute("Hello World", null, null, new Object[] {""});
     assertThat(result).isEqualTo("Hello World");
@@ -72,5 +78,11 @@ class SQLMethodTrimSuffixTest {
   void testEmptyBase() {
     final Object result = method.execute("", null, null, new Object[] {"Bye"});
     assertThat(result).isEqualTo("");
+  }
+
+  @Test
+  void testNonString() {
+    final Object result = method.execute(123, null, null, new Object[] {"Bye"});
+    assertThat(result).isEqualTo("123");
   }
 }
