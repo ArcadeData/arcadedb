@@ -68,6 +68,8 @@ import com.arcadedb.query.sql.method.string.SQLMethodLeft;
 import com.arcadedb.query.sql.method.string.SQLMethodLength;
 import com.arcadedb.query.sql.method.string.SQLMethodNormalize;
 import com.arcadedb.query.sql.method.string.SQLMethodPrefix;
+import com.arcadedb.query.sql.method.string.SQLMethodTrimPrefix;
+import com.arcadedb.query.sql.method.string.SQLMethodTrimSuffix;
 import com.arcadedb.query.sql.method.string.SQLMethodReplace;
 import com.arcadedb.query.sql.method.string.SQLMethodRight;
 import com.arcadedb.query.sql.method.string.SQLMethodSplit;
@@ -144,6 +146,8 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodLength.NAME, new SQLMethodLength());
     register(SQLMethodNormalize.NAME, new SQLMethodNormalize());
     register(SQLMethodPrefix.NAME, new SQLMethodPrefix());
+    register(SQLMethodTrimPrefix.NAME, new SQLMethodTrimPrefix());
+    register(SQLMethodTrimSuffix.NAME, new SQLMethodTrimSuffix());
     register(SQLMethodReplace.NAME, new SQLMethodReplace());
     register(SQLMethodRight.NAME, new SQLMethodRight());
     register(SQLMethodSplit.NAME, new SQLMethodSplit());
