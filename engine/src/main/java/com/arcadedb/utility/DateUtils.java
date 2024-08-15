@@ -323,8 +323,8 @@ public class DateUtils {
   public static boolean isDate(final Object obj) {
     if (obj == null)
       return false;
-    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDateTime || obj instanceof ZonedDateTime
-        || obj instanceof Instant;
+    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDate || obj instanceof LocalDateTime
+        || obj instanceof ZonedDateTime || obj instanceof Instant;
   }
 
   public static ChronoUnit getHigherPrecision(final Object... objs) {
