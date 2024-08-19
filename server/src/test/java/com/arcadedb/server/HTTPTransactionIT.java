@@ -255,4 +255,30 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       connection.disconnect();
     }
   }
+
+  @Test
+  public void errorMissingIsolationLevel() throws Exception {
+    testEachServer((serverIndex) -> {
+      // BEGIN
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "select from V1 limit 1", null, new HashMap<>());
+      connection.connect();
+
+      try {
+        readResponse(connection);
+
+        Assertions.fail();
+
+      } catch (Exception e) {
+        Assertions.assertTrue(e.getMessage().contains("400"));
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
 }
