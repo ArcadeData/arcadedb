@@ -108,7 +108,8 @@ public class CypherTest {
           database.newVertex("Person").set("name", "Jay").set("age", i).save();
       });
 
-      final ResultSet result = database.query("cypher", "MATCH (p:Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age", "p1", 25);
+      final ResultSet result = database.query("cypher", "MATCH (p:Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age",
+          "p1", 25);
 
       int i = 0;
       int lastAge = 0;
