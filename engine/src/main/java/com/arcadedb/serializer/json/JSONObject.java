@@ -75,6 +75,10 @@ public class JSONObject {
       put(entry.getKey(), entry.getValue());
   }
 
+  public JSONObject copy() {
+    return new JSONObject(object.deepCopy());
+  }
+
   public JSONObject put(final String name, final String value) {
     object.addProperty(name, value);
     return this;

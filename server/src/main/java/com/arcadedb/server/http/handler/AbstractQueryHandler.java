@@ -77,8 +77,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           if (includedEdges.add(e.getIdentity()))
             edges.put(serializerImpl.serializeGraphElement(e));
         } else {
-          analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row);
+          analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
         }
+
+        if (limit > 0 && vertices.length() + edges.length() >= limit)
+          break;
       }
 
       response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges));
@@ -135,16 +138,19 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
                 }
               }
           } else {
-            analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row);
+            analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
           }
 
-          if (limit > -1 && records.length() >= limit)
+          if (limit > 0 && records.length() >= limit)
             break;
         }
       }
 
       // FILTER OUT NOT CONNECTED EDGES
       for (final Identifiable entry : includedVertices) {
+        if (limit > 0 && vertices.length() + edges.length() >= limit)
+          break;
+
         try {
           final Vertex vertex = entry.asVertex(true);
 
@@ -175,7 +181,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       while (qResult.hasNext()) {
         final Result r = qResult.next();
         result.put(serializerImpl.serializeResult(database, r));
-        if (limit > 0 && response.length() >= limit)
+        if (limit > 0 && result.length() >= limit)
           break;
       }
       response.put("result", result);
@@ -185,7 +191,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     default: {
       final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false)
           .setUseCollectionSizeForEdges(false);
-      final JSONArray result = new JSONArray(limit > -1 ?
+      final JSONArray result = new JSONArray(limit > 0 ?
           qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()) :
           qResult.stream().map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
       response.put("result", result);
@@ -194,24 +200,27 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   protected void analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl,
-      final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices,
-      final JSONArray edges, final Result row) {
+      final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices, final JSONArray edges,
+      final Result row, final int limit) {
     for (final String prop : row.getPropertyNames()) {
       final Object value = row.getProperty(prop);
       if (value == null)
         continue;
 
+      if (limit > 0 && vertices.length() + edges.length() >= limit)
+        break;
+
       if (prop.equals("@rid") && RID.is(value)) {
         analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
-            new RID(database, value.toString()));
+            new RID(database, value.toString()), limit);
       } else
-        analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, value);
+        analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, value, limit);
     }
   }
 
   protected void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl,
-      final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices,
-      final JSONArray edges, final Object value) {
+      final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices, final JSONArray edges,
+      final Object value, final int limit) {
     if (value instanceof Identifiable) {
 
       final DocumentType type;
@@ -239,18 +248,16 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
               vertices.put(serializerImpl.serializeGraphElement(outV));
             }
           } catch (RecordNotFoundException e) {
-            LogManager.instance()
-                .log(this, Level.SEVERE, "Error on loading connecting vertices for edge %s: vertex %s not found",
-                    edge.getIdentity(),
-                    e.getRID());
+            LogManager.instance().log(this, Level.SEVERE, "Error on loading connecting vertices for edge %s: vertex %s not found",
+                edge.getIdentity(), e.getRID());
           }
         }
       }
     } else if (value instanceof Result) {
-      analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, (Result) value);
+      analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, (Result) value, limit);
     } else if (value instanceof Collection) {
       for (final Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
-        analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next());
+        analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next(), limit);
       }
     }
   }

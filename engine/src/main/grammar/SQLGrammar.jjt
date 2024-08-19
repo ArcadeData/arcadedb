@@ -181,6 +181,8 @@ TOKEN:
   |
   <BY: ("b"|"B")("y"|"Y")>
   |
+  <BREAK: ("b"|"B")("r"|"R")("e"|"E")("a"|"A")("k"|"K")>
+  |
   <LIMIT: ("l"|"L")("i"|"I")("m"|"M")("i"|"I")("t"|"T")>
   |
   <SKIP2: ("s"|"S")("k"|"K")("i"|"I")("p"|"P")>
@@ -4139,6 +4141,13 @@ RollbackStatement RollbackStatement():
   {return jjtThis;}
 }
 
+BreakStatement BreakStatement():
+{ }
+{
+  <BREAK>
+  {return jjtThis;}
+}
+
 ReturnStatement ReturnStatement():
 { }
 {
@@ -4164,6 +4173,8 @@ IfStatement IfStatement():
     last = WhileBlock() {jjtThis.statements.add(last); }
     |
     last = ForEachBlock() {jjtThis.statements.add(last); }
+    |
+    last = BreakStatement() {jjtThis.statements.add(last); }
     |
     <SEMICOLON>
   )*
@@ -4210,6 +4221,8 @@ ForEachBlock ForEachBlock():
     |
     last = WhileBlock() {jjtThis.statements.add(last); }
     |
+    last = BreakStatement() {jjtThis.statements.add(last); }
+    |
     <SEMICOLON>
   )*
   <RBRACE>
@@ -4234,6 +4247,8 @@ WhileBlock WhileBlock():
     last = ForEachBlock() {jjtThis.statements.add(last); }
     |
     last = WhileBlock() {jjtThis.statements.add(last); }
+    |
+    last = BreakStatement() {jjtThis.statements.add(last); }
     |
     <SEMICOLON>
   )*

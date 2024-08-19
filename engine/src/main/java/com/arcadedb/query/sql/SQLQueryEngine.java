@@ -216,11 +216,13 @@ public class SQLQueryEngine implements QueryEngine {
     return database.getStatementCache().get(query);
   }
 
-  public static void validateVariableName(String varName) {
+  public static String validateVariableName(String varName) {
     if (varName.startsWith("$"))
       varName = varName.substring(1);
 
     if (SQLQueryEngine.RESERVED_VARIABLE_NAMES.contains(varName))
       throw new CommandSQLParsingException(varName + " is a reserved variable");
+
+    return varName;
   }
 }

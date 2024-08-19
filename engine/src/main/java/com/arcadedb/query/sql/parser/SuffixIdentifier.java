@@ -247,8 +247,8 @@ public class SuffixIdentifier extends SimpleNode {
     return this;
   }
 
-  public boolean isEarlyCalculated() {
-    return identifier != null && identifier.internalAlias;
+  public boolean isEarlyCalculated(final CommandContext ctx) {
+    return (identifier != null && identifier.isEarlyCalculated(ctx));
   }
 
   public void aggregate(final Object value, final CommandContext context) {

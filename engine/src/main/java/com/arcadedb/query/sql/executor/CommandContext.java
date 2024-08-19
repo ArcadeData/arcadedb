@@ -71,4 +71,6 @@ public interface CommandContext {
   ContextConfiguration getConfiguration();
 
   void setConfiguration(ContextConfiguration configuration);
+
+  CommandContext getContextDeclaredVariable(String varName);
 }

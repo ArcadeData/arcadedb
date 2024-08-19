@@ -168,11 +168,8 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
   @Override
   public int hashCode() {
-    if (cachedHashCode == 0) {
-      cachedHashCode = database != null ? database.hashCode() : 0;
-      cachedHashCode = 31 * cachedHashCode + bucketId;
-      cachedHashCode = 31 * cachedHashCode + (int) offset;
-    }
+    if (cachedHashCode == 0)
+      cachedHashCode = Objects.hash(database, bucketId, offset);
     return cachedHashCode;
   }
 

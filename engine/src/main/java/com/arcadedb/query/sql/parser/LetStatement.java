@@ -39,7 +39,7 @@ public class LetStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
-    SQLQueryEngine.validateVariableName(variableName.getStringValue());
+    final String varName = SQLQueryEngine.validateVariableName(variableName.getStringValue());
 
     Object result;
     if (expression != null) {
@@ -57,10 +57,12 @@ public class LetStatement extends SimpleExecStatement {
     }
 
     if (context != null) {
-      if (context.getParent() != null)
-        context.getParent().setVariable(variableName.getStringValue(), result);
+      final CommandContext varContext = context.getContextDeclaredVariable(varName);
+      if (varContext != null)
+        varContext.setVariable(varName, result);
       else
-        context.setVariable(variableName.getStringValue(), result);
+        // SET IN THE CURRENT CONTEXT
+        context.setVariable(varName, result);
     }
     return new InternalResultSet();
   }

@@ -60,6 +60,7 @@ public class ForEachStep extends AbstractExecutionStep {
       context.setVariable(loopVariable.getStringValue(), iterator.next());
       final ScriptExecutionPlan plan = initPlan(context);
       final ExecutionStepInternal result = plan.executeFull();
+
       if (result != null) {
         this.finalResult = result;
         return result.syncPull(context, nRecords);

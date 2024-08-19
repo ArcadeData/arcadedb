@@ -171,20 +171,21 @@ public interface SqlParserTreeConstants
   public int JJTBEGINSTATEMENT = 165;
   public int JJTCOMMITSTATEMENT = 166;
   public int JJTROLLBACKSTATEMENT = 167;
-  public int JJTRETURNSTATEMENT = 168;
-  public int JJTIFSTATEMENT = 169;
-  public int JJTSLEEPSTATEMENT = 170;
-  public int JJTCONSOLESTATEMENT = 171;
-  public int JJTFOREACHBLOCK = 172;
-  public int JJTWHILEBLOCK = 173;
-  public int JJTIMPORTDATABASESTATEMENT = 174;
-  public int JJTEXPORTDATABASESTATEMENT = 175;
-  public int JJTURL = 176;
-  public int JJTBACKUPDATABASESTATEMENT = 177;
-  public int JJTCHECKDATABASESTATEMENT = 178;
-  public int JJTALIGNDATABASESTATEMENT = 179;
-  public int JJTDEFINEFUNCTIONSTATEMENT = 180;
-  public int JJTDELETEFUNCTIONSTATEMENT = 181;
+  public int JJTBREAKSTATEMENT = 168;
+  public int JJTRETURNSTATEMENT = 169;
+  public int JJTIFSTATEMENT = 170;
+  public int JJTSLEEPSTATEMENT = 171;
+  public int JJTCONSOLESTATEMENT = 172;
+  public int JJTFOREACHBLOCK = 173;
+  public int JJTWHILEBLOCK = 174;
+  public int JJTIMPORTDATABASESTATEMENT = 175;
+  public int JJTEXPORTDATABASESTATEMENT = 176;
+  public int JJTURL = 177;
+  public int JJTBACKUPDATABASESTATEMENT = 178;
+  public int JJTCHECKDATABASESTATEMENT = 179;
+  public int JJTALIGNDATABASESTATEMENT = 180;
+  public int JJTDEFINEFUNCTIONSTATEMENT = 181;
+  public int JJTDELETEFUNCTIONSTATEMENT = 182;
 
 
   public String[] jjtNodeName = {
@@ -356,6 +357,7 @@ public interface SqlParserTreeConstants
     "BeginStatement",
     "CommitStatement",
     "RollbackStatement",
+    "BreakStatement",
     "ReturnStatement",
     "IfStatement",
     "SleepStatement",
@@ -372,4 +374,4 @@ public interface SqlParserTreeConstants
     "DeleteFunctionStatement",
   };
 }
-/* JavaCC - OriginalChecksum=364422a12581ec840eec920e3c5137ff (do not edit this line) */
+/* JavaCC - OriginalChecksum=9ccf2cd32ff2296900a9e4757c852037 (do not edit this line) */

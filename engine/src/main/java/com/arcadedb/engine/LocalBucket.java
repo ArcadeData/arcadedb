@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ImmutableDocument;
@@ -909,6 +910,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           if (!deletePlaceholderContent)
             // CANNOT DELETE A PLACEHOLDER DIRECTLY
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
+        } else if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE)) {
+          // WIPE OUT RECORD CONTENT
+          page.writeZeros(recordPositionInPage + 1, (int) (recordSize[0] + recordSize[1] - 1));
         }
 
         // POINTER = 0 MEANS DELETED

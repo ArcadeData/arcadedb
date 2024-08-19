@@ -147,6 +147,13 @@ public class MutablePage extends BasePage implements TrackableContent {
     this.content.putByteArray(index, content, contentOffset, contentSize);
   }
 
+  public void writeZeros(int index, final int contentLength) {
+    index += PAGE_HEADER_SIZE;
+    checkBoundariesOnWrite(index, contentLength);
+    for (int i = 0; i < contentLength; i++)
+      this.content.putByte(index + i, (byte) 0);
+  }
+
   public int writeString(final int index, final String content) {
     return writeBytes(index, content.getBytes(DatabaseFactory.getDefaultCharset()));
   }

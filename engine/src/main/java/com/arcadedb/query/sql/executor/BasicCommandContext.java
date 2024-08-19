@@ -304,7 +304,7 @@ public class BasicCommandContext implements CommandContext {
     if (configuration != null)
       dumpDepth(buffer, depth).append("CONFIGURATION: ").append(configuration.toJSON());
 
-    if (declaredScriptVariables != null)
+    if (!declaredScriptVariables.isEmpty())
       dumpDepth(buffer, depth).append("SCRIPT VARIABLES: ").append(declaredScriptVariables);
 
     if (child != null) {
@@ -380,7 +380,7 @@ public class BasicCommandContext implements CommandContext {
 
   @Override
   public boolean isScriptVariableDeclared(String varName) {
-    if (varName == null || varName.length() == 0)
+    if (varName == null || varName.isEmpty())
       return false;
 
     String dollarVar = varName;
@@ -404,6 +404,18 @@ public class BasicCommandContext implements CommandContext {
   @Override
   public void setConfiguration(final ContextConfiguration configuration) {
     this.configuration = configuration;
+  }
+
+  @Override
+  public CommandContext getContextDeclaredVariable(final String varName) {
+    if (variables != null && variables.containsKey(varName))
+      return this;
+
+    if (parent != null)
+      // SEARCH RECURSIVELY IN THE PARENT
+      return parent.getContextDeclaredVariable(varName);
+
+    return null;
   }
 
   private StringBuilder dumpDepth(final StringBuilder buffer, final int depth) {
