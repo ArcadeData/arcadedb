@@ -31,6 +31,8 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import com.arcadedb.exception.EncryptionException;
+
 /**
  * Provides configurable default with implementation for data encryption and decryption.
  *
@@ -72,7 +74,7 @@ public class DefaultDataEncryption implements DataEncryption {
       System.arraycopy(encryptedData, 0, ivAndEncryptedData, ivBytes.length, encryptedData.length);
       return ivAndEncryptedData;
     } catch (Exception e) {
-      throw new RuntimeException("Error while encrypting data", e);
+      throw new EncryptionException("Error while encrypting data", e);
     }
   }
 
@@ -87,7 +89,7 @@ public class DefaultDataEncryption implements DataEncryption {
       decipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(tagSize, ivBytes));
       return decipher.doFinal(encryptedData);
     } catch (Exception e) {
-      throw new RuntimeException("Error while decrypting data", e);
+      throw new EncryptionException("Error while decrypting data", e);
     }
   }
 
