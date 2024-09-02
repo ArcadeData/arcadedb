@@ -41,7 +41,7 @@
         <graalvm.version>22.3.5</graalvm.version>
         <hnswlib.version>1.1.0</hnswlib.version>
         <spatial4j.version>0.8</spatial4j.version>
-        <jts-core.version>1.19.0</jts-core.version>
+        <jts-core.version>1.20.0</jts-core.version>
     </properties>
 
     <build>
