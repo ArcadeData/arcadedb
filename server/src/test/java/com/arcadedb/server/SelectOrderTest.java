@@ -68,6 +68,7 @@ public class SelectOrderTest {
           dtOrders.createProperty("status", Type.STRING);
           dtOrders.createProperty("node", Type.STRING);
           dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status");
+          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
         });
       }
 
