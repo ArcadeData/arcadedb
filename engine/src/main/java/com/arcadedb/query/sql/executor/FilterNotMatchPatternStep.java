@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Vertex;
 
 import java.util.*;
 
@@ -41,7 +42,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
       public boolean finished = false;
 
       private Result nextItem = null;
-      private int fetched = 0;
+      private int    fetched  = 0;
 
       private void fetchNextItem() {
         nextItem = null;

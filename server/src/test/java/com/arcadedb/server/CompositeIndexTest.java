@@ -67,6 +67,7 @@ public class CompositeIndexTest {
           dtOrders.createProperty("node", Type.STRING);
           dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
           dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
           dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
         });
       }

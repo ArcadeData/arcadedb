@@ -35,7 +35,7 @@
     <properties>
         <gremlin.version>3.7.2</gremlin.version>
         <translation.version>1.0.4</translation.version>
-        <snakeyaml.version>2.2</snakeyaml.version>
+        <snakeyaml.version>2.3</snakeyaml.version>
     </properties>
 
     <dependencies>
