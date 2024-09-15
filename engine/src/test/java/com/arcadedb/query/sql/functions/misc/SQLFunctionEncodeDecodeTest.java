@@ -19,15 +19,18 @@
 package com.arcadedb.query.sql.functions.misc;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.misc.SQLFunctionDecode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionEncode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class SQLFunctionEncodeDecodeTest {
 
@@ -43,22 +46,22 @@ public class SQLFunctionEncodeDecodeTest {
   @Test
   public void testEmpty() {
     final Object result = encode.getResult();
-    assertNull(result);
+    assertThat(result).isNull();
   }
 
   @Test
   public void testResult() {
     final String result = (String) encode.execute(null, null, null, new Object[] { "abc123", "base64" }, null);
-    assertNotNull(result);
+    assertThat(result).isNotNull();
   }
 
   @Test
   public void testQuery() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionEncodeTest", (db) -> {
       final ResultSet result = db.query("sql", "select decode( encode('abc123', 'base64'), 'base64' ).asString() as encode");
-      assertNotNull(result);
+      assertThat((Iterator<? extends Result>) result).isNotNull();
       final Object prop = result.next().getProperty("encode");
-      assertEquals("abc123", prop);
+      assertThat(prop).isEqualTo("abc123");
     });
   }
 }

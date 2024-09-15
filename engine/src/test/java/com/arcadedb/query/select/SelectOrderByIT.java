@@ -23,8 +23,9 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -61,11 +62,11 @@ public class SelectOrderByIT extends TestHelper {
 
       while (result.hasNext()) {
         final Integer id = result.next().getInteger("notIndexedId");
-        Assertions.assertTrue(id > lastId);
+        assertThat(id > lastId).isTrue();
         lastId = id;
       }
 
-      Assertions.assertEquals(0, result.getMetrics().get("usedIndexes"));
+      assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
     }
 
     // DESCENDING
@@ -76,11 +77,11 @@ public class SelectOrderByIT extends TestHelper {
 
       while (result.hasNext()) {
         final Integer id = result.next().getInteger("notIndexedId");
-        Assertions.assertTrue(id < lastId);
+        assertThat(id < lastId).isTrue();
         lastId = id;
       }
 
-      Assertions.assertEquals(0, result.getMetrics().get("usedIndexes"));
+      assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
 
     }
   }
@@ -95,11 +96,11 @@ public class SelectOrderByIT extends TestHelper {
 
       while (result.hasNext()) {
         final Integer id = result.next().getInteger("id");
-        Assertions.assertTrue(id > lastId);
+        assertThat(id > lastId).isTrue();
         lastId = id;
       }
 
-      Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+      assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
     }
 
     // DESCENDING
@@ -110,11 +111,11 @@ public class SelectOrderByIT extends TestHelper {
 
       while (result.hasNext()) {
         final Integer id = result.next().getInteger("id");
-        Assertions.assertTrue(id < lastId);
+        assertThat(id < lastId).isTrue();
         lastId = id;
       }
 
-      Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+      assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
 
     }
   }

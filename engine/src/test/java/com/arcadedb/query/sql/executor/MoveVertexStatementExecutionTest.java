@@ -1,8 +1,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * original @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
@@ -37,27 +38,27 @@ public class MoveVertexStatementExecutionTest extends TestHelper {
             + vertexClassName1
             + " where name = 'a') to type:" + vertexClassName2);
     ResultSet rs = database.query("sql", "select from " + vertexClassName1);
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
-    Assertions.assertFalse(rs.hasNext());
+    assertThat(rs.hasNext()).isFalse();
     rs.close();
 
     rs = database.query("sql", "select from " + vertexClassName2);
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
-    Assertions.assertFalse(rs.hasNext());
+    assertThat(rs.hasNext()).isFalse();
     rs.close();
 
     rs = database.query("sql", "select expand(out()) from " + vertexClassName2);
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
-    Assertions.assertFalse(rs.hasNext());
+    assertThat(rs.hasNext()).isFalse();
     rs.close();
 
     rs = database.query("sql", "select expand(in()) from " + vertexClassName1);
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
-    Assertions.assertFalse(rs.hasNext());
+    assertThat(rs.hasNext()).isFalse();
     rs.close();
   }
 
@@ -88,27 +89,27 @@ public class MoveVertexStatementExecutionTest extends TestHelper {
             + vertexClassName1
             + " where name = 'a') to type:" + vertexClassName2 + " BATCH 2");
     ResultSet rs = database.query("sql", "select from " + vertexClassName1);
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
-    Assertions.assertFalse(rs.hasNext());
+    assertThat(rs.hasNext()).isFalse();
     rs.close();
 
     rs = database.query("sql", "select from " + vertexClassName2);
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
-    Assertions.assertFalse(rs.hasNext());
+    assertThat(rs.hasNext()).isFalse();
     rs.close();
 
     rs = database.query("sql", "select expand(out()) from " + vertexClassName2);
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
-    Assertions.assertFalse(rs.hasNext());
+    assertThat(rs.hasNext()).isFalse();
     rs.close();
 
     rs = database.query("sql", "select expand(in()) from " + vertexClassName1);
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
-    Assertions.assertFalse(rs.hasNext());
+    assertThat(rs.hasNext()).isFalse();
     rs.close();
   }
 }

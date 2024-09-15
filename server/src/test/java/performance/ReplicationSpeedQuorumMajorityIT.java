@@ -26,10 +26,11 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
 
 import java.util.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
   public static void main(final String[] args) {
@@ -158,7 +159,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
   }
 
   protected void populateDatabase(final int parallel, final Database database) {
-    Assertions.assertFalse(database.getSchema().existsType("Device"));
+    assertThat(database.getSchema().existsType("Device")).isFalse();
 
     final VertexType v = database.getSchema().buildVertexType().withName("Device").withTotalBuckets(parallel).create();
 

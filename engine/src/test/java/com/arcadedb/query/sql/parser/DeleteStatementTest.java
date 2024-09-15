@@ -23,13 +23,13 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class DeleteStatementTest extends TestHelper {
 
@@ -59,11 +59,11 @@ public class DeleteStatementTest extends TestHelper {
     database.command("sql", "delete from (select expand(arr) from Bar) where k = 'key2'");
 
     final ResultSet result = database.query("sql", "select from Foo");
-    Assertions.assertNotNull(result);
-    Assertions.assertEquals(CollectionUtils.countEntries(result), 2);
+    assertThat(Optional.ofNullable(result)).isNotNull();
+    assertThat(CollectionUtils.countEntries(result)).isEqualTo(2);
     for (final ResultSet it = result; it.hasNext(); ) {
       final Document doc = it.next().toElement();
-      Assertions.assertNotEquals(doc.getString("k"), "key2");
+      assertThat(doc.getString("k")).isNotEqualTo("key2");
     }
     database.commit();
   }
@@ -87,13 +87,13 @@ public class DeleteStatementTest extends TestHelper {
     try {
       final SimpleNode result = osql.Parse();
       if (!isCorrect) {
-        fail();
+        fail("");
       }
       return result;
     } catch (final Exception e) {
       if (isCorrect) {
         e.printStackTrace();
-        fail();
+        fail("");
       }
     }
     return null;

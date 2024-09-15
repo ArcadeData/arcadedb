@@ -32,11 +32,14 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public abstract class ReplicationServerIT extends BaseGraphServerTest {
   private static final int DEFAULT_MAX_RETRIES = 30;
@@ -66,7 +69,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     db.begin();
 
-    Assertions.assertEquals(1, db.countType(VERTEX1_TYPE_NAME, true), "TEST: Check for vertex count for server" + 0);
+    assertThat(db.countType(VERTEX1_TYPE_NAME, true)).as("TEST: Check for vertex count for server" + 0).isEqualTo(1);
 
     LogManager.instance()
         .log(this, Level.FINE, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
@@ -115,8 +118,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
-    Assertions.assertEquals(1 + (long) getTxs() * getVerticesPerTx(), db.countType(VERTEX1_TYPE_NAME, true),
-        "Check for vertex count for server" + 0);
+    assertThat(db.countType(VERTEX1_TYPE_NAME, true)).as("Check for vertex count for server" + 0)
+        .isEqualTo(1 + (long) getTxs() * getVerticesPerTx());
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck())
@@ -134,15 +137,15 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
       final Database db = getServerDatabase(s, getDatabaseName());
       db.begin();
       try {
-        Assertions.assertEquals(1, db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + s);
-        Assertions.assertEquals(2, db.countType(VERTEX2_TYPE_NAME, true), "Check for vertex count for server" + s);
+        assertThat(db.countType(VERTEX1_TYPE_NAME, true)).as("Check for vertex count for server" + s).isEqualTo(1);
+        assertThat(db.countType(VERTEX2_TYPE_NAME, true)).as("Check for vertex count for server" + s).isEqualTo(2);
 
-        Assertions.assertEquals(1, db.countType(EDGE1_TYPE_NAME, true), "Check for edge count for server" + s);
-        Assertions.assertEquals(2, db.countType(EDGE2_TYPE_NAME, true), "Check for edge count for server" + s);
+        assertThat(db.countType(EDGE1_TYPE_NAME, true)).as("Check for edge count for server" + s).isEqualTo(1);
+        assertThat(db.countType(EDGE2_TYPE_NAME, true)).as("Check for edge count for server" + s).isEqualTo(2);
 
       } catch (final Exception e) {
         e.printStackTrace();
-        Assertions.fail("Error on checking on server" + s);
+        fail("Error on checking on server" + s);
       }
     }
   }
@@ -163,9 +166,11 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     db.transaction(() -> {
       try {
         final long recordInDb = db.countType(VERTEX1_TYPE_NAME, true);
-        Assertions.assertTrue(recordInDb <= 1 + getTxs() * getVerticesPerTx(),
-            "TEST: Check for vertex count for server" + serverIndex + " found " + recordInDb + " not less than " + (1
-                + getTxs() * getVerticesPerTx()));
+        assertThat(recordInDb).isLessThanOrEqualTo(1 + getTxs() * getVerticesPerTx())
+            .withFailMessage(
+                "TEST: Check for vertex count for server" + serverIndex + " found " + recordInDb + " not less than " + (1
+                    + getTxs() * getVerticesPerTx()));
+
 
         final TypeIndex index = db.getSchema().getType(VERTEX1_TYPE_NAME).getPolymorphicIndexByProperties("id");
         long total = 0;
@@ -209,14 +214,15 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           }
         }
 
-        Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(),
-            "TEST: Found " + missingsCount + " missing records on server " + serverIndex);
-        Assertions.assertEquals(0, missingsCount);
-        Assertions.assertEquals(total, total2);
+        assertThat(ridsFoundInIndex.size())
+            .withFailMessage("TEST: Found " + missingsCount + " missing records on server " + serverIndex)
+            .isEqualTo(recordInDb);
+        assertThat(missingsCount).isZero();
+        assertThat(total).isEqualTo(total2);
 
       } catch (final Exception e) {
         e.printStackTrace();
-        Assertions.fail("TEST: Error on checking on server" + serverIndex + ": " + e.getMessage());
+        fail("TEST: Error on checking on server" + serverIndex + ": " + e.getMessage());
       }
     });
   }

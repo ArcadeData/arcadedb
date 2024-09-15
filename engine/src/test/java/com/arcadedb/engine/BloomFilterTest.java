@@ -19,8 +19,9 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class BloomFilterTest {
   @Test
@@ -36,12 +37,12 @@ public class BloomFilterTest {
       if (bf.mightContain(i))
         ++might;
 
-    Assertions.assertTrue(might < count);
+    assertThat(might < count).isTrue();
 
     for (int i = 0; i < count; i++)
       bf.add(i);
 
     for (int i = 0; i < count; i++)
-      Assertions.assertTrue(bf.mightContain(i));
+      assertThat(bf.mightContain(i)).isTrue();
   }
 }

@@ -30,12 +30,15 @@ import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
 import java.util.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public abstract class TestHelper {
   protected static final int             PARALLEL_LEVEL = 4;
@@ -60,7 +63,7 @@ public abstract class TestHelper {
       FileUtils.deleteRecursively(new File(getDatabasePath()));
     factory = new DatabaseFactory(getDatabasePath());
     database = factory.exists() ? factory.open() : factory.create();
-    Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isEqualTo(database);
 
     if (autoStartTx)
       database.begin();
@@ -74,11 +77,11 @@ public abstract class TestHelper {
     try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + UUID.randomUUID())) {
       if (factory.exists()) {
         factory.open().drop();
-        Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath()));
+        assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isNull();
       }
 
       final Database database = factory.create();
-      Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath()));
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isEqualTo(database);
       try {
         database.begin();
         callback.call(database);
@@ -101,12 +104,12 @@ public abstract class TestHelper {
         factory.open().drop();
 
       final DatabaseInternal database = (DatabaseInternal) factory.create();
-      Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath()));
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isEqualTo(database);
       try {
         callback.call(database);
       } finally {
         database.drop();
-        Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+        assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isNull();
       }
     }
   }
@@ -119,27 +122,27 @@ public abstract class TestHelper {
     final DatabaseFactory factory = new DatabaseFactory(databaseName);
     if (factory.exists())
       factory.open().drop();
-    Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath()));
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isNull();
     return factory;
   }
 
   protected void reopenDatabase() {
     if (database != null) {
       database.close();
-      Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isNull();
     }
     database = factory.open();
-    Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isEqualTo(database);
   }
 
   protected void reopenDatabaseInReadOnlyMode() {
     if (database != null) {
       database.close();
-      Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isNull();
     }
 
     database = factory.open(ComponentFile.MODE.READ_ONLY);
-    Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isEqualTo(database);
   }
 
   protected String getDatabasePath() {
@@ -196,7 +199,7 @@ public abstract class TestHelper {
       throws Exception {
     try {
       callback.call();
-      Assertions.fail();
+      fail("");
     } catch (final Throwable e) {
       if (e.getClass().equals(expectedException))
         // EXPECTED
@@ -214,11 +217,11 @@ public abstract class TestHelper {
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
-      Assertions.assertEquals(0, ((Collection) row.getProperty("corruptedRecords")).size());
-      Assertions.assertEquals(0, (Long) row.getProperty("invalidLinks"));
-      Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size(), "Warnings" + row.getProperty("warnings"));
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(0);
+      assertThat(((Collection<?>) row.getProperty("corruptedRecords")).size()).isEqualTo(0);
+      assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(0);
+      assertThat(((Collection<?>) row.getProperty("warnings")).size()).as("Warnings" + row.getProperty("warnings")).isEqualTo(0);
     }
   }
 
@@ -232,6 +235,6 @@ public abstract class TestHelper {
     for (final Database db : activeDatabases)
       db.close();
 
-    Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
+    assertThat(activeDatabases.isEmpty()).as("Found active databases: " + activeDatabases).isTrue();
   }
 }

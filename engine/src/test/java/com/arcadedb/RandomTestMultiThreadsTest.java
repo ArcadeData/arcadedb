@@ -32,13 +32,14 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
@@ -106,7 +107,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   while (result.hasNext()) {
                     final Result record = result.next();
                     record.toJSON();
-                    Assertions.assertEquals(randomId, (Long) record.getProperty("id"));
+                    assertThat((Long) record.getProperty("id")).isEqualTo(randomId);
                   }
 
                 } else if (op >= 40 && op <= 59) {
@@ -123,7 +124,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                     if (randomUUID != (Long) record.getProperty("uuid")) {
                       System.out.printf("Looking for %d but found %d%n", randomUUID, (Long) record.getProperty("uuid"));
                     }
-                    Assertions.assertEquals(randomUUID, (Long) record.getProperty("uuid"));
+                    assertThat((Long) record.getProperty("uuid")).isEqualTo(randomUUID);
                   }
                 } else if (op >= 60 && op <= 64) {
                   LogManager.instance().log(this, Level.FINE, "Scanning Account records (thread=%d)...", threadId);

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.fail;
 
 public abstract class AbstractParserTest {
 
@@ -54,14 +54,14 @@ public abstract class AbstractParserTest {
       result.validate();
 
       if (!isCorrect)
-        fail();
+        fail("");
 
       return result;
     } catch (final Exception e) {
       if (isCorrect) {
         System.out.println(query);
         e.printStackTrace();
-        fail();
+        fail("");
       }
     }
     return null;
@@ -72,14 +72,14 @@ public abstract class AbstractParserTest {
     try {
       final SimpleNode result = osql.Parse();
       if (!isCorrect)
-        fail();
+        fail("");
 
       return result;
     } catch (final Exception e) {
       if (isCorrect) {
         System.out.println(query);
         e.printStackTrace();
-        fail();
+        fail("");
       }
     }
     return null;

@@ -23,11 +23,15 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class FunctionTest extends TestHelper {
   private static final int TOT = 10000;
@@ -59,12 +63,12 @@ public class FunctionTest extends TestHelper {
       final AtomicInteger counter = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertFalse(record.getIdentity().isPresent());
-        Assertions.assertEquals(10, ((Number) record.getProperty("count")).intValue());
+        assertThat(record).isNotNull();
+        assertThat(record.getIdentity().isPresent()).isFalse();
+        assertThat(((Number) record.getProperty("count")).intValue()).isEqualTo(10);
         counter.incrementAndGet();
       }
-      Assertions.assertEquals(1, counter.get());
+      assertThat(counter.get()).isEqualTo(1);
     });
   }
 
@@ -73,17 +77,17 @@ public class FunctionTest extends TestHelper {
     database.transaction(() -> {
       final ResultSet rs = database.command("SQL", "SELECT id, if( eval( 'id > 3' ), 'high', 'low') as value FROM V");
 
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertFalse(record.getIdentity().isPresent());
+        assertThat(record).isNotNull();
+        assertThat(record.getIdentity().isPresent()).isFalse();
 
         final Object value = record.getProperty("value");
         if ((Integer) record.getProperty("id") > 3)
-          Assertions.assertEquals("high", value);
+          assertThat(value).isEqualTo("high");
         else
-          Assertions.assertEquals("low", value);
+          assertThat(value).isEqualTo("low");
       }
     });
   }
@@ -93,17 +97,17 @@ public class FunctionTest extends TestHelper {
     database.transaction(() -> {
       final ResultSet rs = database.command("SQL", "SELECT id, if( ( id > 3 ), 'high', 'low') as value FROM V");
 
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertFalse(record.getIdentity().isPresent());
+        assertThat(record).isNotNull();
+        assertThat(record.getIdentity().isPresent()).isFalse();
 
         final Object value = record.getProperty("value");
         if ((Integer) record.getProperty("id") > 3)
-          Assertions.assertEquals("high", value);
+          assertThat(value).isEqualTo("high");
         else
-          Assertions.assertEquals("low", value);
+          assertThat(value).isEqualTo("low");
       }
     });
   }
@@ -118,12 +122,12 @@ public class FunctionTest extends TestHelper {
       final AtomicInteger counter = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertFalse(record.getIdentity().isPresent());
-        Assertions.assertEquals(4, ((Number) record.getProperty("avg")).intValue());
+        assertThat(record).isNotNull();
+        assertThat(record.getIdentity().isPresent()).isFalse();
+        assertThat(((Number) record.getProperty("avg")).intValue()).isEqualTo(4);
         counter.incrementAndGet();
       }
-      Assertions.assertEquals(1, counter.get());
+      assertThat(counter.get()).isEqualTo(1);
     });
   }
 
@@ -136,12 +140,12 @@ public class FunctionTest extends TestHelper {
       final AtomicInteger counter = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertFalse(record.getIdentity().isPresent());
-        Assertions.assertEquals(TOT - 1, ((Number) record.getProperty("max")).intValue());
+        assertThat(record).isNotNull();
+        assertThat(record.getIdentity().isPresent()).isFalse();
+        assertThat(((Number) record.getProperty("max")).intValue()).isEqualTo(TOT - 1);
         counter.incrementAndGet();
       }
-      Assertions.assertEquals(1, counter.get());
+      assertThat(counter.get()).isEqualTo(1);
     });
   }
 
@@ -154,12 +158,12 @@ public class FunctionTest extends TestHelper {
       final AtomicInteger counter = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertFalse(record.getIdentity().isPresent());
-        Assertions.assertEquals(0, ((Number) record.getProperty("min")).intValue());
+        assertThat(record).isNotNull();
+        assertThat(record.getIdentity().isPresent()).isFalse();
+        assertThat(((Number) record.getProperty("min")).intValue()).isEqualTo(0);
         counter.incrementAndGet();
       }
-      Assertions.assertEquals(1, counter.get());
+      assertThat(counter.get()).isEqualTo(1);
     });
   }
 
@@ -167,8 +171,8 @@ public class FunctionTest extends TestHelper {
   public void testAllFunctionsHaveSyntax() {
     final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
     for (final String name : sqlEngine.getFunctionFactory().getFunctionNames()) {
-      Assertions.assertNotNull(sqlEngine.getFunction(name).getName());
-      Assertions.assertNotNull(sqlEngine.getFunction(name).getSyntax());
+      assertThat(sqlEngine.getFunction(name).getName()).isNotNull();
+      assertThat(sqlEngine.getFunction(name).getSyntax()).isNotNull();
     }
   }
 }

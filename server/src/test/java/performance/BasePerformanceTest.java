@@ -28,12 +28,12 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
 
 import java.io.*;
 import java.util.logging.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class BasePerformanceTest {
   protected static RID              root;
@@ -82,7 +82,7 @@ public abstract class BasePerformanceTest {
     new Exception().printStackTrace(output);
     output.flush();
     final String out = os.toString();
-    Assertions.assertFalse(out.contains("ArcadeDB"), "Some thread is still up & running: \n" + out);
+    assertThat(out.contains("ArcadeDB")).as("Some thread is still up & running: \n" + out).isFalse();
   }
 
   protected void startServers() {

@@ -22,10 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class DropTypeTest extends TestHelper {
   private static final int    TOT        = 10;
@@ -36,7 +39,7 @@ public class DropTypeTest extends TestHelper {
   @Test
   public void testDropAndRecreateType() {
     database.transaction(() -> {
-      Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+      assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
 
@@ -71,57 +74,57 @@ public class DropTypeTest extends TestHelper {
       for (final Bucket b : buckets) {
         try {
           database.getSchema().getBucketById(b.getFileId());
-          Assertions.fail();
+          fail();
         } catch (final SchemaException e) {
         }
 
         try {
           database.getSchema().getBucketByName(b.getName());
-          Assertions.fail();
+          fail();
         } catch (final SchemaException e) {
         }
 
         try {
           database.getSchema().getFileById(b.getFileId());
-          Assertions.fail();
+          fail();
         } catch (final SchemaException e) {
         }
       }
 
       // CHECK TYPE HAS BEEN REMOVED FROM INHERITANCE
       for (final DocumentType parent : type2.getSuperTypes())
-        Assertions.assertFalse(parent.getSubTypes().contains(type2));
+        assertThat(parent.getSubTypes().contains(type2)).isFalse();
 
       for (final DocumentType sub : type2.getSubTypes()) {
-        Assertions.assertFalse(sub.getSuperTypes().contains(type2));
-        Assertions.assertTrue(sub.getSuperTypes().contains(type));
+        assertThat(sub.getSuperTypes().contains(type2)).isFalse();
+        assertThat(sub.getSuperTypes().contains(type)).isTrue();
       }
 
       // CHECK INHERITANCE CHAIN IS CONSISTENT
-      Assertions.assertTrue(type.getSuperTypes().isEmpty());
+      assertThat(type.getSuperTypes().isEmpty()).isTrue();
 
       for (final DocumentType sub : type.getSubTypes())
-        Assertions.assertTrue(sub.getSuperTypes().contains(type));
+        assertThat(sub.getSuperTypes().contains(type)).isTrue();
 
-      Assertions.assertEquals(1, database.countType(TYPE_NAME, true));
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
 
       final DocumentType newType = database.getSchema().getOrCreateDocumentType(TYPE_NAME2);
-      Assertions.assertEquals(1, database.countType(TYPE_NAME, true));
-      Assertions.assertEquals(0, database.countType(TYPE_NAME2, true));
-      Assertions.assertEquals(0, database.countType(TYPE_NAME2, false));
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
+      assertThat(database.countType(TYPE_NAME2, true)).isEqualTo(0);
+      assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(0);
 
       newType.addSuperType(TYPE_NAME);
 
       // CHECK INHERITANCE CHAIN IS CONSISTENT AGAIN
       for (final DocumentType parent : newType.getSuperTypes())
-        Assertions.assertTrue(parent.getSubTypes().contains(newType));
+        assertThat(parent.getSubTypes().contains(newType)).isTrue();
 
       for (final DocumentType sub : newType.getSubTypes())
-        Assertions.assertTrue(sub.getSuperTypes().contains(newType));
+        assertThat(sub.getSuperTypes().contains(newType)).isTrue();
 
-      Assertions.assertEquals(1, database.countType(TYPE_NAME, true));
-      Assertions.assertEquals(0, database.countType(TYPE_NAME2, true));
-      Assertions.assertEquals(0, database.countType(TYPE_NAME2, false));
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
+      assertThat(database.countType(TYPE_NAME2, true)).isEqualTo(0);
+      assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(0);
 
       database.begin();
 
@@ -137,9 +140,9 @@ public class DropTypeTest extends TestHelper {
       v3.set("id", TOT);
       v3.save();
 
-      Assertions.assertEquals(TOT + 2, database.countType(TYPE_NAME, true));
-      Assertions.assertEquals(TOT, database.countType(TYPE_NAME2, false));
-      Assertions.assertEquals(2, database.countType(TYPE_NAME, false));
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 2);
+      assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(TOT);
+      assertThat(database.countType(TYPE_NAME, false)).isEqualTo(2);
     });
   }
 }

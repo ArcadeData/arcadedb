@@ -21,7 +21,8 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -76,8 +77,8 @@ public class HTTPSSLIT extends BaseGraphServerTest {
         connection.connect();
         final String response = readResponse(connection);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertThat(connection.getResponseCode()).isEqualTo(200);
+        Assertions.assertThat(connection.getResponseMessage()).isEqualTo("OK");
       } finally {
         connection.disconnect();
       }

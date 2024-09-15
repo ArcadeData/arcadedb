@@ -19,10 +19,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -31,14 +32,14 @@ public class ExplainStatementExecutionTest extends TestHelper {
   @Test
   public void testExplainSelectNoTarget() {
     final ResultSet result = database.query("sql", "explain select 1 as one, 2 as two, 2+3");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result next = result.next();
-    Assertions.assertNotNull(next.getProperty("executionPlan"));
-    Assertions.assertNotNull(next.getProperty("executionPlanAsString"));
+    assertThat(next.<ResultInternal>getProperty("executionPlan")).isNotNull();
+    assertThat(next.<String>getProperty("executionPlanAsString")).isNotNull();
 
     final Optional<ExecutionPlan> plan = result.getExecutionPlan();
-    Assertions.assertTrue(plan.isPresent());
-    Assertions.assertTrue(plan.get() instanceof SelectExecutionPlan);
+    assertThat(plan.isPresent()).isTrue();
+    assertThat(plan.get() instanceof SelectExecutionPlan).isTrue();
 
     result.close();
   }

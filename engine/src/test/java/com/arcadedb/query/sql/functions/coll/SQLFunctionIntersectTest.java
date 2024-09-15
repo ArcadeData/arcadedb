@@ -20,10 +20,11 @@ package com.arcadedb.query.sql.functions.coll;
 
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.function.coll.SQLFunctionIntersect;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -39,7 +40,7 @@ public class SQLFunctionIntersectTest {
 
     final ArrayList<Object> result = (ArrayList<Object>) function.execute(null, null, null, new Object[] { coll1, coll2 }, new BasicCommandContext());
 
-    Assertions.assertEquals(new HashSet<>(result), new HashSet<>(Arrays.asList(1, 3, 0)));
+    assertThat(new HashSet<>(Arrays.asList(1, 3, 0))).isEqualTo(new HashSet<>(result));
   }
 
   @Test
@@ -52,6 +53,6 @@ public class SQLFunctionIntersectTest {
     function.execute(null, null, null, new Object[] { coll1 }, new BasicCommandContext());
     function.execute(null, null, null, new Object[] { coll2 }, new BasicCommandContext());
 
-    Assertions.assertEquals(function.getResult(), new HashSet<>(Arrays.asList(1, 3, 0)));
+    assertThat(new HashSet<>(Arrays.asList(1, 3, 0))).isEqualTo(function.getResult());
   }
 }

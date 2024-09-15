@@ -19,13 +19,16 @@
 package com.arcadedb.query.sql.functions.math;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.math.SQLFunctionRandomInt;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -41,27 +44,27 @@ public class SQLFunctionRandomIntTest {
   @Test
   public void testEmpty() {
     final Object result = random.getResult();
-    assertNull(result);
+    assertThat(result).isNull();
   }
 
   @Test
   public void testResultWithIntParameter() {
     final Integer result = (Integer) random.execute(null, null, null, new Integer[] { 1000 }, null);
-    assertNotNull(result);
+    assertThat(result).isNotNull();
   }
 
   @Test
   public void testResultWithStringParameter() {
     final Integer result = (Integer) random.execute(null, null, null, new Object[] { "1000" }, null);
-    assertNotNull(result);
+    assertThat(result).isNotNull();
   }
 
   @Test
   public void testQuery() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionRandomInt", (db) -> {
       final ResultSet result = db.query("sql", "select randomInt(1000) as random");
-      assertNotNull(result);
-      assertNotNull(result.next().getProperty("random"));
+      assertThat((Iterator<? extends Result>) result).isNotNull();
+      assertThat(result.next().<Integer>getProperty("random")).isNotNull();
     });
   }
 }

@@ -18,8 +18,9 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class StatementCacheTest {
 
@@ -30,15 +31,15 @@ public class StatementCacheTest {
     cache.get("select from bar");
     cache.get("select from baz");
 
-    Assertions.assertTrue(cache.contains("select from bar"));
-    Assertions.assertTrue(cache.contains("select from baz"));
-    Assertions.assertFalse(cache.contains("select from foo"));
+    assertThat(cache.contains("select from bar")).isTrue();
+    assertThat(cache.contains("select from baz")).isTrue();
+    assertThat(cache.contains("select from foo")).isFalse();
 
     cache.get("select from bar");
     cache.get("select from foo");
 
-    Assertions.assertTrue(cache.contains("select from bar"));
-    Assertions.assertTrue(cache.contains("select from foo"));
-    Assertions.assertFalse(cache.contains("select from baz"));
+    assertThat(cache.contains("select from bar")).isTrue();
+    assertThat(cache.contains("select from foo")).isTrue();
+    assertThat(cache.contains("select from baz")).isFalse();
   }
 }

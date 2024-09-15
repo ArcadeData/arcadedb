@@ -18,10 +18,11 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Created by luigidellaquila on 04/11/16.
@@ -36,8 +37,8 @@ public class ResultSetTest {
       rs.add(item);
     }
     final Optional<Integer> result = rs.stream().map(x -> (int) x.getProperty("i")).reduce((a, b) -> a + b);
-    Assertions.assertTrue(result.isPresent());
-    Assertions.assertEquals(45, result.get().intValue());
+    assertThat(result.isPresent()).isTrue();
+    assertThat(result.get().intValue()).isEqualTo(45);
   }
 
   @Test
@@ -49,7 +50,7 @@ public class ResultSetTest {
       rs.add(item);
     }
     final Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
-    Assertions.assertFalse(result.isPresent());
+    assertThat(result.isPresent()).isFalse();
   }
 
   @Test
@@ -61,7 +62,7 @@ public class ResultSetTest {
       rs.add(item);
     }
     final Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
-    Assertions.assertFalse(result.isPresent());
+    assertThat(result.isPresent()).isFalse();
   }
 
   @Test
@@ -71,13 +72,13 @@ public class ResultSetTest {
     item.setProperty("long", 10L);
     item.setProperty("short", (short) 10);
 
-    Assertions.assertEquals(10, (int) item.getProperty("int", 10));
-    Assertions.assertEquals(10L, (int) item.getProperty("int", 10L));
+    assertThat((int) item.getProperty("int", 10)).isEqualTo(10);
+    assertThat((int) item.getProperty("int", 10L)).isEqualTo(10L);
 
-    Assertions.assertEquals(10L, (long) item.getProperty("long", 10));
-    Assertions.assertEquals(10L, (long) item.getProperty("long", 10L));
+    assertThat((long) item.getProperty("long", 10)).isEqualTo(10L);
+    assertThat((long) item.getProperty("long", 10L)).isEqualTo(10L);
 
-    Assertions.assertEquals(10, (int) item.getProperty("absent", 10));
-    Assertions.assertEquals(10L, (long) item.getProperty("absent", 10L));
+    assertThat((int) item.getProperty("absent", 10)).isEqualTo(10);
+    assertThat((long) item.getProperty("absent", 10L)).isEqualTo(10L);
   }
 }

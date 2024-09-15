@@ -21,11 +21,14 @@ package com.arcadedb.server.ha;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
   @Override
@@ -70,10 +73,10 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
                 continue;
               }
 
-              Assertions.assertNotNull(responseAsJson.getJSONObject("result").getJSONArray("records"));
+              assertThat(responseAsJson.getJSONObject("result").getJSONArray("records")).isNotNull();
 
             } catch (Exception e) {
-              Assertions.fail(e);
+              fail(e);
             }
           }
         });
@@ -83,14 +86,15 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
       for (int i = 0; i < THREADS; i++)
         threads[i].join(60 * 1_000);
 
-      Assertions.assertEquals(THREADS * SCRIPTS, atomic.get());
+      assertThat(atomic.get()).isEqualTo(THREADS * SCRIPTS);
 
       final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql", //
           "SELECT id FROM ( SELECT expand( outE('HasUploaded" + serverIndex + "') ) FROM Users" + serverIndex
               + " WHERE id = \"u1111\" )");
 
-      Assertions.assertEquals(THREADS * SCRIPTS, responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length(),
-          "Some edges was missing when executing from server " + serverIndex);
+      assertThat(responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length())
+          .isEqualTo(THREADS * SCRIPTS)
+          .withFailMessage("Some edges was missing when executing from server " + serverIndex);
     });
   }
 }

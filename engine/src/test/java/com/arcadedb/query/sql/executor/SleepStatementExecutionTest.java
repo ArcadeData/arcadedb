@@ -19,8 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -30,12 +31,12 @@ public class SleepStatementExecutionTest extends TestHelper {
   public void testBasic() {
     final long begin = System.currentTimeMillis();
     final ResultSet result = database.command("sql", "sleep 1000");
-    Assertions.assertTrue(System.currentTimeMillis() - begin >= 1000);
+    assertThat(System.currentTimeMillis() - begin >= 1000).isTrue();
     //printExecutionPlan(null, result);
-    Assertions.assertNotNull(result);
-    Assertions.assertTrue(result.hasNext());
+//    assertThat(result).isNotNull();
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertEquals("sleep", item.getProperty("operation"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item.<String>getProperty("operation")).isEqualTo("sleep");
+    assertThat(result.hasNext()).isFalse();
   }
 }

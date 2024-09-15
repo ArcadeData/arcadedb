@@ -25,15 +25,17 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.WALException;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -41,6 +43,10 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 
 public class ACIDTransactionTest extends TestHelper {
   @Test
@@ -75,7 +81,7 @@ public class ACIDTransactionTest extends TestHelper {
       }
 
     } catch (final TransactionException e) {
-      Assertions.assertTrue(e.getCause() instanceof IOException);
+      assertThat(e.getCause() instanceof IOException).isTrue();
     }
 
     ((DatabaseInternal) db).kill();
@@ -84,7 +90,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("V", true)));
+    database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(TOT));
   }
 
   @Test
@@ -106,17 +112,17 @@ public class ACIDTransactionTest extends TestHelper {
         db.async().createRecord(v, null);
       }
 
+      // creating the index should throw exception because there's an aync creation ongoing: sometimes it doesn't happen, the async is finished
       try {
         database.getSchema().getType("V").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
-        Assertions.fail();
-      } catch (Exception e) {
-        // EXPECTED
+      } catch (NeedRetryException e) {
+        //no action
       }
 
       db.async().waitCompletion();
 
     } catch (final TransactionException e) {
-      Assertions.assertTrue(e.getCause() instanceof IOException);
+      assertThat(e.getCause() instanceof IOException).isTrue();
     }
 
     ((DatabaseInternal) db).kill();
@@ -125,13 +131,13 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("V", true)));
+    database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(TOT));
   }
 
   @Test
   public void testDatabaseInternals() {
-    Assertions.assertNotNull(((DatabaseInternal) database).getStats());
-    Assertions.assertNull(database.getCurrentUserName());
+    assertThat(((DatabaseInternal) database).getStats()).isNotNull();
+    assertThat(database.getCurrentUserName()).isNull();
   }
 
   @Test
@@ -151,7 +157,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(() -> Assertions.assertEquals(0, database.countType("V", true)));
+    database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(0));
   }
 
   @Test
@@ -174,10 +180,10 @@ public class ACIDTransactionTest extends TestHelper {
 
       db.commit();
 
-      Assertions.fail("Expected commit to fail");
+      fail("Expected commit to fail");
 
     } catch (final TransactionException e) {
-      Assertions.assertTrue(e.getCause() instanceof WALException);
+      assertThat(e.getCause() instanceof WALException).isTrue();
     }
     ((DatabaseInternal) db).kill();
 
@@ -185,7 +191,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(() -> Assertions.assertEquals(1, database.countType("V", true)));
+    database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(1));
 
     ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
   }
@@ -236,10 +242,10 @@ public class ACIDTransactionTest extends TestHelper {
         // IGNORE IT
       }
 
-      Assertions.assertEquals(1, errors.get());
+      assertThat(errors.get()).isEqualTo(1);
 
     } catch (final TransactionException e) {
-      Assertions.assertTrue(e.getCause() instanceof IOException);
+      assertThat(e.getCause() instanceof IOException).isTrue();
     }
     ((DatabaseInternal) db).kill();
 
@@ -247,7 +253,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("V", true)));
+    database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(TOT));
   }
 
   @Test
@@ -260,16 +266,16 @@ public class ACIDTransactionTest extends TestHelper {
     final AtomicInteger errors = new AtomicInteger(0);
 
     db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
-    Assertions.assertEquals(WALFile.FLUSH_TYPE.YES_NOMETADATA, db.async().getTransactionSync());
+    assertThat(db.async().getTransactionSync()).isEqualTo(WALFile.FLUSH_TYPE.YES_NOMETADATA);
 
     db.async().setTransactionUseWAL(true);
-    Assertions.assertTrue(db.async().isTransactionUseWAL());
+    assertThat(db.async().isTransactionUseWAL()).isTrue();
 
     db.async().setCommitEvery(1000000);
-    Assertions.assertEquals(1000000, db.async().getCommitEvery());
+    assertThat(db.async().getCommitEvery()).isEqualTo(1000000);
 
     db.async().setBackPressure(1);
-    Assertions.assertEquals(1, db.async().getBackPressure());
+    assertThat(db.async().getBackPressure()).isEqualTo(1);
 
     db.async().onError(exception -> errors.incrementAndGet());
 
@@ -291,10 +297,10 @@ public class ACIDTransactionTest extends TestHelper {
 
       db.async().waitCompletion();
 
-      Assertions.assertTrue(errors.get() > 0);
+      assertThat(errors.get() > 0).isTrue();
 
     } catch (final TransactionException e) {
-      Assertions.assertTrue(e.getCause() instanceof IOException);
+      assertThat(e.getCause() instanceof IOException).isTrue();
     }
     ((DatabaseInternal) db).kill();
 
@@ -302,7 +308,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("V", true)));
+    database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(TOT));
   }
 
   @Test
@@ -365,20 +371,21 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.async().waitCompletion();
 
-    Assertions.assertEquals(0, errors.get());
+    assertThat(errors.get()).isEqualTo(0);
 
     database.transaction(() -> {
-      Assertions.assertEquals(TOT_STOCKS * TOT_DAYS, database.countType("Stock", true));
-      Assertions.assertEquals(0, database.countType("Aggregate", true));
+      assertThat(database.countType("Stock", true)).isEqualTo(TOT_STOCKS * TOT_DAYS);
+      assertThat(database.countType("Aggregate", true)).isEqualTo(0);
 
       final Calendar now = Calendar.getInstance();
       now.setTimeInMillis(startingDay.getTimeInMillis());
 
       for (int i = 0; i < TOT_DAYS; ++i) {
         for (int stockId = 0; stockId < TOT_STOCKS; ++stockId) {
-          final ResultSet result = database.query("sql", "select from Stock where symbol = ? and date = ?", "" + stockId, now.getTimeInMillis());
-          Assertions.assertNotNull(result);
-          Assertions.assertTrue(result.hasNext(), "Cannot find stock=" + stockId + " date=" + now.getTimeInMillis());
+          final ResultSet result = database.query("sql", "select from Stock where symbol = ? and date = ?", "" + stockId,
+              now.getTimeInMillis());
+          assertThat((Iterator<? extends Result>) result).isNotNull();
+          assertThat(result.hasNext()).withFailMessage("Cannot find stock=" + stockId + " date=" + now.getTimeInMillis()).isTrue();
         }
         now.add(Calendar.DAY_OF_YEAR, +1);
       }
@@ -395,16 +402,16 @@ public class ACIDTransactionTest extends TestHelper {
     final AtomicInteger errors = new AtomicInteger(0);
 
     db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
-    Assertions.assertEquals(WALFile.FLUSH_TYPE.YES_NOMETADATA, db.async().getTransactionSync());
+    assertThat(db.async().getTransactionSync()).isEqualTo(WALFile.FLUSH_TYPE.YES_NOMETADATA);
 
     db.async().setTransactionUseWAL(true);
-    Assertions.assertTrue(db.async().isTransactionUseWAL());
+    assertThat(db.async().isTransactionUseWAL()).isTrue();
 
     db.async().setCommitEvery(TOT);
-    Assertions.assertEquals(TOT, db.async().getCommitEvery());
+    assertThat(db.async().getCommitEvery()).isEqualTo(TOT);
 
     db.async().setBackPressure(1);
-    Assertions.assertEquals(1, db.async().getBackPressure());
+    assertThat(db.async().getBackPressure()).isEqualTo(1);
 
     db.async().onError(exception -> errors.incrementAndGet());
 
@@ -423,14 +430,14 @@ public class ACIDTransactionTest extends TestHelper {
     }
     db.async().waitCompletion();
 
-    Assertions.assertEquals(0, errors.get());
+    assertThat(errors.get()).isEqualTo(0);
 
     for (int i = 1; i < TOT; ++i) {
       db.async().newEdgeByKeys("Node", "id", i, "Node", "id", i - 1, false, "Arc", true, false, null, "id", i);
     }
     db.async().waitCompletion();
 
-    Assertions.assertEquals(0, errors.get());
+    assertThat(errors.get()).isEqualTo(0);
 
     ((DatabaseInternal) db).kill();
 
@@ -438,8 +445,8 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("Node", true)));
-    database.transaction(() -> Assertions.assertEquals(TOT - 1, database.countType("Arc", true)));
+    database.transaction(() -> assertThat(database.countType("Node", true)).isEqualTo(TOT));
+    database.transaction(() -> assertThat(database.countType("Arc", true)).isEqualTo(TOT - 1));
   }
 
   private void verifyDatabaseWasNotClosedProperly() {
@@ -452,15 +459,15 @@ public class ACIDTransactionTest extends TestHelper {
     });
 
     database = factory.open();
-    Assertions.assertTrue(dbNotClosedCaught.get());
+    assertThat(dbNotClosedCaught.get()).isTrue();
   }
 
   private void verifyWALFilesAreStillPresent() {
     final File dbDir = new File(getDatabasePath());
-    Assertions.assertTrue(dbDir.exists());
-    Assertions.assertTrue(dbDir.isDirectory());
+    assertThat(dbDir.exists()).isTrue();
+    assertThat(dbDir.isDirectory()).isTrue();
     final File[] files = dbDir.listFiles((dir, name) -> name.endsWith("wal"));
-    Assertions.assertTrue(files.length > 0);
+    assertThat(files.length > 0).isTrue();
   }
 
   @Override

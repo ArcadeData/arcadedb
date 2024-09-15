@@ -24,9 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLFunctionModeTest {
 
@@ -40,7 +38,7 @@ public class SQLFunctionModeTest {
     @Test
     public void testEmpty() {
         final Object result = mode.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
@@ -52,7 +50,7 @@ public class SQLFunctionModeTest {
         }
 
         final Object result = mode.getResult();
-        assertEquals(3, (int) ((List<Integer>) result).get(0));
+      assertThat((int) ((List<Integer>) result).get(0)).isEqualTo(3);
     }
 
     @Test
@@ -65,9 +63,9 @@ public class SQLFunctionModeTest {
 
         final Object result = mode.getResult();
         final List<Integer> modes = (List<Integer>) result;
-        assertEquals(2, modes.size());
-        assertTrue(modes.contains(2));
-        assertTrue(modes.contains(3));
+      assertThat(modes.size()).isEqualTo(2);
+      assertThat(modes.contains(2)).isTrue();
+      assertThat(modes.contains(3)).isTrue();
     }
 
     @Test
@@ -81,6 +79,6 @@ public class SQLFunctionModeTest {
         }
 
         final Object result = mode.getResult();
-        assertEquals(1, (int) ((List<Integer>) result).get(0));
+      assertThat((int) ((List<Integer>) result).get(0)).isEqualTo(1);
     }
 }

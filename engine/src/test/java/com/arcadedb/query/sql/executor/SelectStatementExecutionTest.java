@@ -34,23 +34,26 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testSelectNoTarget() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals(1, item.<Object>getProperty("one"));
-    Assertions.assertEquals(2, item.<Object>getProperty("two"));
-    Assertions.assertEquals(5, item.<Object>getProperty("2 + 3"));
+    assertThat(item).isNotNull();
+    assertThat(item.<Object>getProperty("one")).isEqualTo(1);
+    assertThat(item.<Object>getProperty("two")).isEqualTo(2);
+    assertThat(item.<Object>getProperty("2 + 3")).isEqualTo(5);
 
     result.close();
   }
@@ -76,8 +79,8 @@ public class SelectStatementExecutionTest extends TestHelper {
         "select address, count(*) as occurrences from InputTx where address is not null group by address limit 10");
     while (result.hasNext()) {
       final Result row = result.next();
-      Assertions.assertNotNull(row.getProperty("address")); // <== FALSE!
-      Assertions.assertNotNull(row.getProperty("occurrences"));
+      assertThat(row.<String>getProperty("address")).isNotNull(); // <== FALSE!
+      assertThat(row.<Long>getProperty("occurrences")).isNotNull();
     }
     result.close();
   }
@@ -85,7 +88,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   @Test
   public void testSelectNoTargetSkip() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 1");
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -93,12 +96,12 @@ public class SelectStatementExecutionTest extends TestHelper {
   @Test
   public void testSelectNoTargetSkipZero() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 0");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals(1, item.<Object>getProperty("one"));
-    Assertions.assertEquals(2, item.<Object>getProperty("two"));
-    Assertions.assertEquals(5, item.<Object>getProperty("2 + 3"));
+    assertThat(item).isNotNull();
+    assertThat(item.<Integer>getProperty("one")).isEqualTo(1);
+    assertThat(item.<Integer>getProperty("two")).isEqualTo(2);
+    assertThat(item.<Integer>getProperty("2 + 3")).isEqualTo(5);
 
     result.close();
   }
@@ -106,7 +109,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   @Test
   public void testSelectNoTargetLimit0() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 limit 0");
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -114,12 +117,12 @@ public class SelectStatementExecutionTest extends TestHelper {
   @Test
   public void testSelectNoTargetLimit1() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 limit 1");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals(1, item.<Object>getProperty("one"));
-    Assertions.assertEquals(2, item.<Object>getProperty("two"));
-    Assertions.assertEquals(5, item.<Object>getProperty("2 + 3"));
+    assertThat(item).isNotNull();
+    assertThat(item.<Object>getProperty("one")).isEqualTo(1);
+    assertThat(item.<Object>getProperty("two")).isEqualTo(2);
+    assertThat(item.<Object>getProperty("2 + 3")).isEqualTo(5);
 
     result.close();
   }
@@ -144,12 +147,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
     final ResultSet result = database.query("sql", "select from " + className);
     for (int i = 0; i < 100000; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+      assertThat(item).isNotNull();
+      assertThat(("" + item.getProperty("name")).startsWith("name")).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -168,16 +171,16 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid ASC");
     Document lastItem = null;
     for (int i = 0; i < 100000; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+      assertThat(item).isNotNull();
+      assertThat(("" + item.getProperty("name")).startsWith("name")).isTrue();
       if (lastItem != null) {
-        Assertions.assertTrue(lastItem.getIdentity().compareTo(item.getElement().get().getIdentity()) < 0);
+        assertThat(lastItem.getIdentity().compareTo(item.getElement().get().getIdentity()) < 0).isTrue();
       }
       lastItem = item.getElement().get();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -197,16 +200,16 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid DESC");
     Document lastItem = null;
     for (int i = 0; i < 100000; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+      assertThat(item).isNotNull();
+      assertThat(("" + item.getProperty("name")).startsWith("name")).isTrue();
       if (lastItem != null) {
-        Assertions.assertTrue(lastItem.getIdentity().compareTo(item.getElement().get().getIdentity()) > 0);
+        assertThat(lastItem.getIdentity().compareTo(item.getElement().get().getIdentity()) > 0).isTrue();
       }
       lastItem = item.getElement().get();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -227,12 +230,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " limit 10");
 
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+      assertThat(item).isNotNull();
+      assertThat(("" + item.getProperty("name")).startsWith("name")).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -252,12 +255,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " skip 100 limit 10");
 
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+      assertThat(item).isNotNull();
+      assertThat(("" + item.getProperty("name")).startsWith("name")).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -278,16 +281,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     String lastSurname = null;
     for (int i = 0; i < 30; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      final String thisSurname = item.getProperty("surname");
+      assertThat(item).isNotNull();
+      final String thisSurname = item.<String>getProperty("surname");
       if (lastSurname != null) {
-        Assertions.assertTrue(lastSurname.compareTo(thisSurname) >= 0);
+        assertThat(lastSurname.compareTo(thisSurname) >= 0).isTrue();
       }
       lastSurname = thisSurname;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -307,16 +310,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     String lastSurname = null;
     for (int i = 0; i < 30; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      final String thisSurname = item.getProperty("surname");
+      assertThat(item).isNotNull();
+      final String thisSurname = item.<String>getProperty("surname");
       if (lastSurname != null) {
-        Assertions.assertTrue(lastSurname.compareTo(thisSurname) <= 0);
+        assertThat(lastSurname.compareTo(thisSurname) <= 0).isTrue();
       }
       lastSurname = thisSurname;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -337,12 +340,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     //    System.out.println("elapsed: " + (System.nanoTime() - begin));
 
     for (int i = 0; i < 100; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("surname0", item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname0");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -364,17 +367,17 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     String lastName = null;
     for (int i = 0; i < 100; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final String name = item.getProperty("name");
-      Assertions.assertNotNull(name);
+      assertThat(name).isNotNull();
       if (i > 0) {
-        Assertions.assertTrue(name.compareTo(lastName) >= 0);
+        assertThat(name.compareTo(lastName) >= 0).isTrue();
       }
       lastName = name;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -396,17 +399,17 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     String lastName = null;
     for (int i = 0; i < 100; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final String name = item.getProperty("name");
-      Assertions.assertNotNull(name);
+      assertThat(name).isNotNull();
       if (i > 0) {
-        Assertions.assertTrue(name.compareTo(lastName) >= 0);
+        assertThat(name.compareTo(lastName) >= 0).isTrue();
       }
       lastName = name;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -425,13 +428,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' or name = 'name7' ");
 
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final Object name = item.getProperty("name");
-      Assertions.assertTrue("name1".equals(name) || "name7".equals(name));
+      assertThat("name1".equals(name) || "name7".equals(name)).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -450,13 +453,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name <> 'name1' ");
 
     for (int i = 0; i < 299; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final Object name = item.getProperty("name");
-      Assertions.assertFalse("name1".equals(name));
+      assertThat(name).isNotEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -475,17 +478,17 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select name from " + className);
 
     for (int i = 0; i < 300; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final String name = item.getProperty("name");
-      final String surname = item.getProperty("surname");
-      Assertions.assertNotNull(name);
-      Assertions.assertTrue(name.startsWith("name"));
-      Assertions.assertNull(surname);
-      Assertions.assertFalse(item.getElement().isPresent());
+      final String surname = item.<String>getProperty("surname");
+      assertThat(name).isNotNull();
+      assertThat(name.startsWith("name")).isTrue();
+      assertThat(surname).isNull();
+      assertThat(item.getElement().isPresent()).isFalse();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -503,16 +506,16 @@ public class SelectStatementExecutionTest extends TestHelper {
     try {
       final ResultSet result = database.query("sql", "select count(*) from " + className);
 
-      Assertions.assertNotNull(result);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(Optional.ofNullable(result)).isNotNull();
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertEquals(7L, (Object) next.getProperty("count(*)"));
-      Assertions.assertFalse(result.hasNext());
+      assertThat(next).isNotNull();
+      assertThat((Object) next.getProperty("count(*)")).isEqualTo(7L);
+      assertThat(result.hasNext()).isFalse();
       result.close();
     } catch (final Exception e) {
       e.printStackTrace();
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -531,18 +534,18 @@ public class SelectStatementExecutionTest extends TestHelper {
     try {
       final ResultSet result = database.query("sql", "select count(*), name from " + className + " group by name");
 
-      Assertions.assertNotNull(result);
+      assertThat(Optional.ofNullable(result)).isNotNull();
       for (int i = 0; i < 5; i++) {
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         final Result next = result.next();
-        Assertions.assertNotNull(next);
-        Assertions.assertEquals(2L, (Object) next.getProperty("count(*)"));
+        assertThat(next).isNotNull();
+        assertThat((Object) next.getProperty("count(*)")).isEqualTo(2L);
       }
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
     } catch (final Exception e) {
       e.printStackTrace();
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -560,16 +563,16 @@ public class SelectStatementExecutionTest extends TestHelper {
     try {
       final ResultSet result = database.query("sql", "select count(*) from " + className + " where name = 'foo'");
 
-      Assertions.assertNotNull(result);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(Optional.ofNullable(result)).isNotNull();
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertEquals(0L, (Object) next.getProperty("count(*)"));
-      Assertions.assertFalse(result.hasNext());
+      assertThat(next).isNotNull();
+      assertThat((Object) next.getProperty("count(*)")).isEqualTo(0L);
+      assertThat(result.hasNext()).isFalse();
       result.close();
     } catch (final Exception e) {
       e.printStackTrace();
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -587,16 +590,16 @@ public class SelectStatementExecutionTest extends TestHelper {
     try {
       final ResultSet result = database.query("sql", "select count(*) as a from " + className + " where name = 'foo'");
 
-      Assertions.assertNotNull(result);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(Optional.ofNullable(result)).isNotNull();
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertEquals(0L, (Object) next.getProperty("a"));
-      Assertions.assertFalse(result.hasNext());
+      assertThat(next).isNotNull();
+      assertThat((Object) next.getProperty("a")).isEqualTo(0L);
+      assertThat(result.hasNext()).isFalse();
       result.close();
     } catch (final Exception e) {
       e.printStackTrace();
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -607,11 +610,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     try {
       database.query("sql", "select max(a) + max(b) + pippo + pluto as foo, max(d) + max(e), f from " + className).close();
-      Assertions.fail();
+      fail("");
     } catch (final CommandExecutionException x) {
 
     } catch (final Exception e) {
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -622,11 +625,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     try {
       database.query("sql", "select [max(a), max(b), foo] from " + className).close();
-      Assertions.fail();
+      fail("");
     } catch (final CommandExecutionException x) {
 
     } catch (final Exception e) {
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -640,7 +643,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       final ResultSet result = database.query("sql", query);
       result.close();
     } catch (final Exception x) {
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -656,7 +659,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       result.close();
     } catch (final Exception e) {
       e.printStackTrace();
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -673,10 +676,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     database.commit();
     final ResultSet result = database.query("sql", "select sum(val) from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals(45, (Object) item.getProperty("sum(val)"));
+    assertThat(item).isNotNull();
+    assertThat((Object) item.getProperty("sum(val)")).isEqualTo(45);
 
     result.close();
   }
@@ -697,20 +700,20 @@ public class SelectStatementExecutionTest extends TestHelper {
     boolean evenFound = false;
     boolean oddFound = false;
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       if ("even".equals(item.getProperty("type"))) {
-        Assertions.assertEquals(20, item.<Object>getProperty("sum(val)"));
+        assertThat(item.<Object>getProperty("sum(val)")).isEqualTo(20);
         evenFound = true;
       } else if ("odd".equals(item.getProperty("type"))) {
-        Assertions.assertEquals(25, item.<Object>getProperty("sum(val)"));
+        assertThat(item.<Object>getProperty("sum(val)")).isEqualTo(25);
         oddFound = true;
       }
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertTrue(evenFound);
-    Assertions.assertTrue(oddFound);
+    assertThat(result.hasNext()).isFalse();
+    assertThat(evenFound).isTrue();
+    assertThat(oddFound).isTrue();
     result.close();
   }
 
@@ -731,24 +734,24 @@ public class SelectStatementExecutionTest extends TestHelper {
     boolean evenFound = false;
     boolean oddFound = false;
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       if ("even".equals(item.getProperty("type"))) {
-        Assertions.assertEquals(20, item.<Object>getProperty("sum(val)"));
-        Assertions.assertEquals(8, item.<Object>getProperty("max(val)"));
-        Assertions.assertEquals(0, item.<Object>getProperty("min(val)"));
+        assertThat(item.<Object>getProperty("sum(val)")).isEqualTo(20);
+        assertThat(item.<Object>getProperty("max(val)")).isEqualTo(8);
+        assertThat(item.<Object>getProperty("min(val)")).isEqualTo(0);
         evenFound = true;
       } else if ("odd".equals(item.getProperty("type"))) {
-        Assertions.assertEquals(25, item.<Object>getProperty("sum(val)"));
-        Assertions.assertEquals(9, item.<Object>getProperty("max(val)"));
-        Assertions.assertEquals(1, item.<Object>getProperty("min(val)"));
+        assertThat(item.<Object>getProperty("sum(val)")).isEqualTo(25);
+        assertThat(item.<Object>getProperty("max(val)")).isEqualTo(9);
+        assertThat(item.<Object>getProperty("min(val)")).isEqualTo(1);
         oddFound = true;
       }
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertTrue(evenFound);
-    Assertions.assertTrue(oddFound);
+    assertThat(result.hasNext()).isFalse();
+    assertThat(evenFound).isTrue();
+    assertThat(oddFound).isTrue();
     result.close();
   }
 
@@ -768,9 +771,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     boolean evenFound = false;
     boolean oddFound = false;
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final Object sum = item.getProperty("sum(val)");
       if (sum.equals(20)) {
         evenFound = true;
@@ -778,9 +781,9 @@ public class SelectStatementExecutionTest extends TestHelper {
         oddFound = true;
       }
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertTrue(evenFound);
-    Assertions.assertTrue(oddFound);
+    assertThat(result.hasNext()).isFalse();
+    assertThat(evenFound).isTrue();
+    assertThat(oddFound).isTrue();
     result.close();
   }
 
@@ -798,13 +801,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
     final ResultSet result = database.query("sql", "select sum(val) from " + className + " group by type.substring(0,1)");
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final Object sum = item.getProperty("sum(val)");
-      Assertions.assertEquals(45, sum);
+      assertThat(sum).isEqualTo(45);
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -825,14 +828,14 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from bucket:" + targetClusterName);
     int sum = 0;
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       final Integer val = item.getProperty("val");
-      Assertions.assertNotNull(val);
+      assertThat(val).isNotNull();
       sum += val;
     }
-    Assertions.assertEquals(45, sum);
-    Assertions.assertFalse(result.hasNext());
+    assertThat(sum).isEqualTo(45);
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -854,13 +857,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from bucket:" + targetBucketName + " order by @rid desc");
     final int sum = 0;
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       final Integer val = item.getProperty("val");
-      Assertions.assertEquals(i, 9 - val);
+      assertThat(9 - val).isEqualTo(i);
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -882,13 +885,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from bucket:" + targetClusterName + " order by @rid asc");
     final int sum = 0;
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       final Integer val = item.getProperty("val");
-      Assertions.assertEquals((Object) i, val);
+      assertThat(val).isEqualTo((Object) i);
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -922,13 +925,13 @@ public class SelectStatementExecutionTest extends TestHelper {
         "select from bucket:[" + targetClusterName + ", " + targetClusterName2 + "] order by @rid asc");
 
     for (int i = 0; i < 20; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       final Integer val = item.getProperty("val");
-      Assertions.assertEquals((Object) (i % 10), val);
+      assertThat(val).isEqualTo((Object) (i % 10));
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -948,13 +951,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from (select from " + className + " where val > 2)  where val < 8");
 
     for (int i = 0; i < 5; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       final Integer val = item.getProperty("val");
-      Assertions.assertTrue(val > 2);
-      Assertions.assertTrue(val < 8);
+      assertThat(val > 2).isTrue();
+      assertThat(val < 8).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -965,17 +968,17 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from schema:types");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertEquals("testQuerySchema", item.getProperty("name"));
+    assertThat(item.<String>getProperty("name")).isEqualTo("testQuerySchema");
 
     final Map<String, Object> customType = item.getProperty("custom");
-    Assertions.assertNotNull(customType);
-    Assertions.assertEquals(1, customType.size());
+    assertThat(customType).isNotNull();
+    assertThat(customType.size()).isEqualTo(1);
 
-    Assertions.assertEquals("this is just a test", customType.get("description"));
+    assertThat(customType.get("description")).isEqualTo("this is just a test");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -988,13 +991,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from schema:indexes");
 
     while (result.hasNext()) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item.getProperty("name"));
-      Assertions.assertEquals("STRING", ((List<String>) item.getProperty("keyTypes")).get(0));
-      Assertions.assertFalse((Boolean) item.getProperty("unique"));
+      assertThat(item.<String>getProperty("name")).isNotNull();
+      assertThat( item.<List<String>>getProperty("keyTypes")).first().isEqualTo("STRING");
+      assertThat( item.<Boolean>getProperty("unique")).isFalse();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1002,10 +1005,10 @@ public class SelectStatementExecutionTest extends TestHelper {
   public void testQueryMetadataDatabase() {
     final ResultSet result = database.query("sql", "select from schema:database");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item.getProperty("name"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item.<String>getProperty("name")).isNotNull();
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1013,7 +1016,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   public void testNonExistingRids() {
     final int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).get(0).getFileId();
     final ResultSet result = database.query("sql", "select from #" + bucketId + ":100000000");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
 
     try {
       result.next();
@@ -1031,9 +1034,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.save();
     database.commit();
     final ResultSet result = database.query("sql", "select from #1:0");
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertNotNull(result.next());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next()).isNotNull();
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1045,9 +1048,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.save();
     database.commit();
     final ResultSet result = database.query("sql", "select from [#1:0]");
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertNotNull(result.next());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next()).isNotNull();
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1059,9 +1062,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.save();
     database.commit();
     final ResultSet result = database.query("sql", "select from ?", new RID(database, 1, 0));
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertNotNull(result.next());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next()).isNotNull();
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1076,11 +1079,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     final ResultSet result = database.query("sql", "select from [#1:0, #2:0]");
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertNotNull(result.next());
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertNotNull(result.next());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next()).isNotNull();
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next()).isNotNull();
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1095,12 +1098,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     final ResultSet result = database.query("sql", "select from [#1:0, #2:0, #1:100000]");
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertNotNull(result.next());
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertNotNull(result.next());
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next()).isNotNull();
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next()).isNotNull();
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     try {
       result.next();
     } catch (RecordNotFoundException e) {
@@ -1124,19 +1127,19 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name2'");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result next = result.next();
-    Assertions.assertNotNull(next);
-    Assertions.assertEquals("name2", next.getProperty("name"));
+    assertThat(next).isNotNull();
+    assertThat(next.<String>getProperty("name")).isEqualTo("name2");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Optional<ExecutionPlan> p = result.getExecutionPlan();
-    Assertions.assertTrue(p.isPresent());
+    assertThat(p.isPresent()).isTrue();
     final ExecutionPlan p2 = p.get();
-    Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
+    assertThat(p2 instanceof SelectExecutionPlan).isTrue();
     final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
-    Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
+    assertThat(plan.getSteps().get(0).getClass()).isEqualTo(FetchFromIndexStep.class);
     result.close();
   }
 
@@ -1158,18 +1161,18 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from index:`" + indexName + "` where key = 'name2'");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result next = result.next();
-    Assertions.assertNotNull(next);
+    assertThat(next).isNotNull();
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Optional<ExecutionPlan> p = result.getExecutionPlan();
-    Assertions.assertTrue(p.isPresent());
+    assertThat(p.isPresent()).isTrue();
     final ExecutionPlan p2 = p.get();
-    Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
+    assertThat(p2 instanceof SelectExecutionPlan).isTrue();
     final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
-    Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
+    assertThat(plan.getSteps().get(0).getClass()).isEqualTo(FetchFromIndexStep.class);
     result.close();
   }
 
@@ -1193,23 +1196,23 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name2' or surname = 'surname3'");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     for (int i = 0; i < 2; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertTrue("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname"))));
+      assertThat(next).isNotNull();
+      assertThat("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname")))).isTrue();
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Optional<ExecutionPlan> p = result.getExecutionPlan();
-    Assertions.assertTrue(p.isPresent());
+    assertThat(p.isPresent()).isTrue();
     final ExecutionPlan p2 = p.get();
-    Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
+    assertThat(p2 instanceof SelectExecutionPlan).isTrue();
     final SelectExecutionPlan plan = (SelectExecutionPlan) p2;
-    Assertions.assertEquals(ParallelExecStep.class, plan.getSteps().get(0).getClass());
+    assertThat(plan.getSteps().get(0).getClass()).isEqualTo(ParallelExecStep.class);
     final ParallelExecStep parallel = (ParallelExecStep) plan.getSteps().get(0);
-    Assertions.assertEquals(2, parallel.getSubExecutionPlans().size());
+    assertThat(parallel.getSubExecutionPlans().size()).isEqualTo(2);
     result.close();
   }
 
@@ -1234,7 +1237,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql",
         "select from " + className + " where foo is not null and (name = 'name2' or surname = 'surname3')");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1260,14 +1263,14 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql",
         "select from " + className + " where foo < 100 and (name = 'name2' or surname = 'surname3')");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     for (int i = 0; i < 2; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertTrue("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname"))));
+      assertThat(next).isNotNull();
+      assertThat("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname")))).isTrue();
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1293,14 +1296,14 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className
         + " where foo < 100 and ((name = 'name2' and foo < 20) or surname = 'surname3') and ( 4<5 and foo < 50)");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     for (int i = 0; i < 2; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertTrue("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname"))));
+      assertThat(next).isNotNull();
+      assertThat("name2".equals(next.getProperty("name")) || ("surname3".equals(next.getProperty("surname")))).isTrue();
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1324,14 +1327,14 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname1'");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     for (int i = 0; i < 1; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertEquals("name3", next.getProperty("name"));
+      assertThat(next).isNotNull();
+      assertThat(next.<String>getProperty("name")).isEqualTo("name3");
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1355,7 +1358,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname > 'surname3'");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1380,10 +1383,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname3'");
     for (int i = 0; i < 1; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertEquals("name3", next.getProperty("name"));
+      assertThat(next).isNotNull();
+      assertThat(next.<String>getProperty("name")).isEqualTo("name3");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1407,7 +1410,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname < 'surname3'");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1432,10 +1435,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name3' and surname <= 'surname3'");
     for (int i = 0; i < 1; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
-      Assertions.assertEquals("name3", next.getProperty("name"));
+      assertThat(next).isNotNull();
+      assertThat(next.<String>getProperty("name")).isEqualTo("name3");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1459,11 +1462,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " where name > 'name3' ");
     for (int i = 0; i < 6; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1488,9 +1491,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name >= 'name3' ");
     for (int i = 0; i < 7; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1515,9 +1518,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name < 'name3' ");
     for (int i = 0; i < 3; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1542,9 +1545,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name <= 'name3' ");
     for (int i = 0; i < 4; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1569,11 +1572,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name > 'name3' and name < 'name5'");
     for (int i = 0; i < 1; i++) {
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count()).isEqualTo(1);
     result.close();
   }
 
@@ -1597,9 +1600,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql",
         "select from " + className + " where name > 'name6' and name = 'name3' and surname > 'surname2' and surname < 'surname5' ");
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count()).isEqualTo(1);
     result.close();
   }
 
@@ -1625,11 +1628,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //
 //        for (int i = 0; i < 1; i++) {
-//            Assertions.assertTrue(result.hasNext());
+//            Assertions.assertThat(result.hasNext()).isTrue();
 //            Result next = result.next();
-//            Assertions.assertNotNull(next);
+//            Assertions.assertThat(next).isNotNull();
 //        }
-//        Assertions.assertFalse(result.hasNext());
+//        Assertions.assertThat(result.hasNext()).isFalse();
 //        SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
@@ -1658,11 +1661,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //
 //        for (int i = 0; i < 1; i++) {
-//            Assertions.assertTrue(result.hasNext());
+//            Assertions.assertThat(result.hasNext()).isTrue();
 //            Result next = result.next();
-//            Assertions.assertNotNull(next);
+//            Assertions.assertThat(next).isNotNull();
 //        }
-//        Assertions.assertFalse(result.hasNext());
+//        Assertions.assertThat(result.hasNext()).isFalse();
 //        SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                FetchFromClassExecutionStep.class, plan.getSteps().get(0).getClass()); // index not used
@@ -1693,22 +1696,22 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName);
     for (int i = 0; i < count; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     try {
       result = database.query("sql", "select expand(linked).asString() from " + parentClassName);
-      Assertions.fail();
+      fail("");
     } catch (CommandSQLParsingException e) {
       // EXPECTED
     }
 
     try {
       result = database.query("sql", "SELECT expand([{'name':2},2,3,4]).name from " + parentClassName);
-      Assertions.fail();
+      fail("");
     } catch (CommandSQLParsingException e) {
       // EXPECTED
     }
@@ -1744,11 +1747,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select expand(linked) from " + parentClassName);
 
     for (int i = 0; i < count * collSize; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1781,15 +1784,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     String last = null;
     for (int i = 0; i < count * collSize; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
       if (i > 0) {
-        Assertions.assertTrue(last.compareTo(next.getProperty("name")) <= 0);
+        assertThat(last.compareTo(next.getProperty("name")) <= 0).isTrue();
       }
       last = next.getProperty("name");
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1811,11 +1814,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select distinct name, surname from " + className);
 
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1838,59 +1841,59 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select distinct(name) from " + className);
 
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertNotNull(next);
+      assertThat(next).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
   @Test
   public void testLet1() {
     final ResultSet result = database.query("sql", "select $a as one, $b as two let $a = 1, $b = 1+1");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals(1, item.<Object>getProperty("one"));
-    Assertions.assertEquals(2, item.<Object>getProperty("two"));
+    assertThat(item).isNotNull();
+    assertThat(item.<Object>getProperty("one")).isEqualTo(1);
+    assertThat(item.<Object>getProperty("two")).isEqualTo(2);
     result.close();
   }
 
   @Test
   public void testLet1Long() {
     final ResultSet result = database.query("sql", "select $a as one, $b as two let $a = 1L, $b = 1L+1");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals(1l, item.<Object>getProperty("one"));
-    Assertions.assertEquals(2l, item.<Object>getProperty("two"));
+    assertThat(item).isNotNull();
+    assertThat(item.<Object>getProperty("one")).isEqualTo(1l);
+    assertThat(item.<Object>getProperty("two")).isEqualTo(2l);
     result.close();
   }
 
   @Test
   public void testLet2() {
     final ResultSet result = database.query("sql", "select $a as one let $a = (select 1 as a)");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
+    assertThat(item).isNotNull();
     final Object one = item.getProperty("one");
-    Assertions.assertTrue(one instanceof List);
-    Assertions.assertEquals(1, ((List) one).size());
+    assertThat(one instanceof List).isTrue();
+    assertThat(((List) one).size()).isEqualTo(1);
     final Object x = ((List) one).get(0);
-    Assertions.assertTrue(x instanceof Result);
-    Assertions.assertEquals(1, (Object) ((Result) x).getProperty("a"));
+    assertThat(x instanceof Result).isTrue();
+    assertThat((Object) ((Result) x).getProperty("a")).isEqualTo(1);
     result.close();
   }
 
   @Test
   public void testLet3() {
     final ResultSet result = database.query("sql", "select $a[0].foo as one let $a = (select 1 as foo)");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
+    assertThat(item).isNotNull();
     final Object one = item.getProperty("one");
-    Assertions.assertEquals(1, one);
+    assertThat(one).isEqualTo(1);
     result.close();
   }
 
@@ -1911,12 +1914,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql",
         "select name, surname, $nameAndSurname as fullname from " + className + " let $nameAndSurname = name + ' ' + surname");
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals(item.getProperty("fullname"), item.getProperty("name") + " " + item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.getProperty("name") + " " + item.<String>getProperty("surname")).isEqualTo(item.getProperty("fullname"));
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1937,12 +1940,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql",
         "select from " + className + " where name in (select name from " + className + " where name = 'name1')");
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1964,13 +1967,13 @@ public class SelectStatementExecutionTest extends TestHelper {
         "select $foo as name from " + className + " let $foo = (select name from " + className
             + " where name = $parent.$current.name)");
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
-      Assertions.assertTrue(item.getProperty("name") instanceof Collection);
+      assertThat(item).isNotNull();
+      assertThat(item.<List<String>>getProperty("name")).isNotNull();
+      assertThat(item.getProperty("name") instanceof Collection).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1992,13 +1995,13 @@ public class SelectStatementExecutionTest extends TestHelper {
         "select $bar as name from " + className + " " + "let $foo = (select name from " + className
             + " where name = $parent.$current.name)," + "$bar = $foo[0].name");
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
-      Assertions.assertTrue(item.getProperty("name") instanceof String);
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isNotNull();
+      assertThat(item.getProperty("name") instanceof String).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2038,7 +2041,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         }
       }
     }
-    Assertions.assertEquals(1, counter);
+    assertThat(counter).isEqualTo(1);
     resultSet.close();
   }
 
@@ -2058,16 +2061,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select i, iSeq from " + className + " unwind iSeq");
     for (int i = 0; i < 30; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("i"));
-      Assertions.assertNotNull(item.getProperty("iSeq"));
+      assertThat(item).isNotNull();
+      assertThat(item.<Object>getProperty("i")).isNotNull();
+      assertThat(item.<Object>getProperty("iSeq")).isNotNull();
       final Integer first = item.getProperty("i");
       final Integer second = item.getProperty("iSeq");
-      Assertions.assertTrue(first + second == 0 || second % first == 0);
+      assertThat(first + second == 0 || second % first == 0).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2091,16 +2094,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select i, iSeq from " + className + " unwind iSeq");
     for (int i = 0; i < 30; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("i"));
-      Assertions.assertNotNull(item.getProperty("iSeq"));
+      assertThat(item).isNotNull();
+      assertThat(item.<Object>getProperty("i")).isNotNull();
+      assertThat(item.<Object>getProperty("iSeq")).isNotNull();
       final Integer first = item.getProperty("i");
       final Integer second = item.getProperty("iSeq");
-      Assertions.assertTrue(first + second == 0 || second % first == 0);
+      assertThat(first + second == 0 || second % first == 0).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2141,13 +2144,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
+    assertThat(plan.getSteps().get(0) instanceof ParallelExecStep).isTrue();
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2186,13 +2189,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
+    assertThat(plan.getSteps().get(0) instanceof ParallelExecStep).isTrue();
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2230,13 +2233,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep); // no index used
+    assertThat(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep).isTrue(); // no index used
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2279,14 +2282,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(
-        plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep); // no index, because the superclass is not empty
+    assertThat(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep).isTrue(); // no index, because the superclass is not empty
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2342,13 +2344,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof ParallelExecStep);
+    assertThat(plan.getSteps().get(0) instanceof ParallelExecStep).isTrue();
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2401,13 +2403,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    Assertions.assertTrue(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep);
+    assertThat(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep).isTrue();
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2431,21 +2433,21 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname ASC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
 
-      final String surname = item.getProperty("surname");
+      final String surname = item.<String>getProperty("surname");
       if (i > 0) {
-        Assertions.assertTrue(surname.compareTo(lastSurname) > 0);
+        assertThat(surname.compareTo(lastSurname) > 0).isTrue();
       }
       lastSurname = surname;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final ExecutionPlan plan = result.getExecutionPlan().get();
-    Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
-    Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count()).isEqualTo(1);
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count()).isEqualTo(0);
     result.close();
   }
 
@@ -2471,21 +2473,21 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname DESC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
 
-      final String surname = item.getProperty("surname");
+      final String surname = item.<String>getProperty("surname");
       if (i > 0) {
-        Assertions.assertTrue(surname.compareTo(lastSurname) < 0);
+        assertThat(surname.compareTo(lastSurname) < 0).isTrue();
       }
       lastSurname = surname;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final ExecutionPlan plan = result.getExecutionPlan().get();
-    Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
-    Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count()).isEqualTo(1);
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count()).isEqualTo(0);
     result.close();
   }
 
@@ -2510,21 +2512,21 @@ public class SelectStatementExecutionTest extends TestHelper {
         "select from " + className + " where name = 'name1' order by name DESC, surname DESC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
 
-      final String surname = item.getProperty("surname");
+      final String surname = item.<String>getProperty("surname");
       if (i > 0) {
-        Assertions.assertTrue(((String) item.getProperty("surname")).compareTo(lastSurname) < 0);
+        assertThat(((String) item.<String>getProperty("surname")).compareTo(lastSurname) < 0).isTrue();
       }
       lastSurname = surname;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final ExecutionPlan plan = result.getExecutionPlan().get();
-    Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
-    Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count()).isEqualTo(1);
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count()).isEqualTo(0);
     result.close();
   }
 
@@ -2549,21 +2551,21 @@ public class SelectStatementExecutionTest extends TestHelper {
         "select from " + className + " where name = 'name1' order by name ASC, surname ASC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
 
-      final String surname = item.getProperty("surname");
+      final String surname = item.<String>getProperty("surname");
       if (i > 0) {
-        Assertions.assertTrue(surname.compareTo(lastSurname) > 0);
+        assertThat(surname.compareTo(lastSurname) > 0).isTrue();
       }
       lastSurname = surname;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final ExecutionPlan plan = result.getExecutionPlan().get();
-    Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
-    Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count()).isEqualTo(1);
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count()).isEqualTo(0);
     result.close();
   }
 
@@ -2589,20 +2591,20 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname ASC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
-      final String surname = item.getProperty("surname");
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
+      final String surname = item.<String>getProperty("surname");
       if (i > 0) {
-        Assertions.assertTrue(surname.compareTo(lastSurname) > 0);
+        assertThat(surname.compareTo(lastSurname) > 0).isTrue();
       }
       lastSurname = surname;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final ExecutionPlan plan = result.getExecutionPlan().get();
-    Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
-    Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count()).isEqualTo(1);
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count()).isEqualTo(0);
     result.close();
   }
 
@@ -2628,20 +2630,20 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by surname DESC");
     String lastSurname = null;
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
-      final String surname = item.getProperty("surname");
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
+      final String surname = item.<String>getProperty("surname");
       if (i > 0) {
-        Assertions.assertTrue(surname.compareTo(lastSurname) < 0);
+        assertThat(surname.compareTo(lastSurname) < 0).isTrue();
       }
       lastSurname = surname;
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final ExecutionPlan plan = result.getExecutionPlan().get();
-    Assertions.assertEquals(1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
-    Assertions.assertEquals(0, plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count());
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count()).isEqualTo(1);
+    assertThat(plan.getSteps().stream().filter(step -> step instanceof OrderByStep).count()).isEqualTo(0);
     result.close();
   }
 
@@ -2667,12 +2669,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'name1' order by address DESC");
 
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     boolean orderStepFound = false;
     for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
@@ -2680,7 +2682,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         break;
       }
     }
-    Assertions.assertTrue(orderStepFound);
+    assertThat(orderStepFound).isTrue();
     result.close();
   }
 
@@ -2704,13 +2706,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql",
         "select from " + className + " where name = 'name1' order by name ASC, surname DESC");
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(result.hasNext()).isFalse();
     boolean orderStepFound = false;
     for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
@@ -2718,7 +2720,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         break;
       }
     }
-    Assertions.assertTrue(orderStepFound);
+    assertThat(orderStepFound).isTrue();
     result.close();
   }
 
@@ -2741,13 +2743,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " order by name , surname ASC");
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(result.hasNext()).isFalse();
     boolean orderStepFound = false;
     for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
@@ -2755,7 +2757,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         break;
       }
     }
-    Assertions.assertFalse(orderStepFound);
+    assertThat(orderStepFound).isFalse();
     result.close();
   }
 
@@ -2778,13 +2780,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " order by name desc, surname desc");
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(result.hasNext()).isFalse();
     boolean orderStepFound = false;
     for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
@@ -2792,7 +2794,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         break;
       }
     }
-    Assertions.assertFalse(orderStepFound);
+    assertThat(orderStepFound).isFalse();
     result.close();
   }
 
@@ -2815,13 +2817,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + className + " order by name asc, surname desc");
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(result.hasNext()).isFalse();
     boolean orderStepFound = false;
     for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
@@ -2829,7 +2831,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         break;
       }
     }
-    Assertions.assertTrue(orderStepFound);
+    assertThat(orderStepFound).isTrue();
     result.close();
   }
 
@@ -2853,19 +2855,19 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " order by name");
     String last = null;
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isNotNull();
       final String name = item.getProperty("name");
       //System.out.println(name);
       if (i > 0) {
-        Assertions.assertTrue(name.compareTo(last) >= 0);
+        assertThat(name.compareTo(last) >= 0).isTrue();
       }
       last = name;
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(result.hasNext()).isFalse();
     boolean orderStepFound = false;
     for (final ExecutionStep step : result.getExecutionPlan().get().getSteps()) {
       if (step instanceof OrderByStep) {
@@ -2873,7 +2875,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         break;
       }
     }
-    Assertions.assertFalse(orderStepFound);
+    assertThat(orderStepFound).isFalse();
     result.close();
   }
 
@@ -2891,12 +2893,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from ?", className);
 
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+      assertThat(item).isNotNull();
+      assertThat(("" + item.getProperty("name")).startsWith("name")).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2916,12 +2918,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from :target", params);
 
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+      assertThat(item).isNotNull();
+      assertThat(("" + item.getProperty("name")).startsWith("name")).isTrue();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2939,12 +2941,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " where name matches 'name1'");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals(item.getProperty("name"), "name1");
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2962,26 +2964,26 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select name[0..3] as names from " + className);
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final Object names = item.getProperty("names");
       if (names == null) {
-        Assertions.fail();
+        fail("");
       }
       if (names instanceof Collection) {
-        Assertions.assertEquals(3, ((Collection) names).size());
+        assertThat(((Collection) names).size()).isEqualTo(3);
         final Iterator iter = ((Collection) names).iterator();
-        Assertions.assertEquals("a", iter.next());
-        Assertions.assertEquals("b", iter.next());
-        Assertions.assertEquals("c", iter.next());
+        assertThat(iter.next()).isEqualTo("a");
+        assertThat(iter.next()).isEqualTo("b");
+        assertThat(iter.next()).isEqualTo("c");
       } else if (names.getClass().isArray()) {
-        Assertions.assertEquals(3, Array.getLength(names));
+        assertThat(Array.getLength(names)).isEqualTo(3);
       } else {
-        Assertions.fail();
+        fail("");
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -2999,26 +3001,26 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select name[?..?] as names from " + className, 0, 3);
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final Object names = item.getProperty("names");
       if (names == null) {
-        Assertions.fail();
+        fail("");
       }
       if (names instanceof Collection) {
-        Assertions.assertEquals(3, ((Collection) names).size());
+        assertThat(((Collection) names).size()).isEqualTo(3);
         final Iterator iter = ((Collection) names).iterator();
-        Assertions.assertEquals("a", iter.next());
-        Assertions.assertEquals("b", iter.next());
-        Assertions.assertEquals("c", iter.next());
+        assertThat(iter.next()).isEqualTo("a");
+        assertThat(iter.next()).isEqualTo("b");
+        assertThat(iter.next()).isEqualTo("c");
       } else if (names.getClass().isArray()) {
-        Assertions.assertEquals(3, Array.getLength(names));
+        assertThat(Array.getLength(names)).isEqualTo(3);
       } else {
-        Assertions.fail();
+        fail("");
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3039,26 +3041,26 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select name[:a..:b] as names from " + className, params);
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final Object names = item.getProperty("names");
       if (names == null) {
-        Assertions.fail();
+        fail("");
       }
       if (names instanceof Collection) {
-        Assertions.assertEquals(3, ((Collection) names).size());
+        assertThat(((Collection) names).size()).isEqualTo(3);
         final Iterator iter = ((Collection) names).iterator();
-        Assertions.assertEquals("a", iter.next());
-        Assertions.assertEquals("b", iter.next());
-        Assertions.assertEquals("c", iter.next());
+        assertThat(iter.next()).isEqualTo("a");
+        assertThat(iter.next()).isEqualTo("b");
+        assertThat(iter.next()).isEqualTo("c");
       } else if (names.getClass().isArray()) {
-        Assertions.assertEquals(3, Array.getLength(names));
+        assertThat(Array.getLength(names)).isEqualTo(3);
       } else {
-        Assertions.fail();
+        fail("");
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3076,43 +3078,43 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select name[0...2] as names from " + className);
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final Object names = item.getProperty("names");
       if (names == null) {
-        Assertions.fail();
+        fail("");
       }
       if (names instanceof Collection) {
-        Assertions.assertEquals(3, ((Collection) names).size());
+        assertThat(((Collection) names).size()).isEqualTo(3);
         final Iterator iter = ((Collection) names).iterator();
-        Assertions.assertEquals("a", iter.next());
-        Assertions.assertEquals("b", iter.next());
-        Assertions.assertEquals("c", iter.next());
+        assertThat(iter.next()).isEqualTo("a");
+        assertThat(iter.next()).isEqualTo("b");
+        assertThat(iter.next()).isEqualTo("c");
       } else if (names.getClass().isArray()) {
-        Assertions.assertEquals(3, Array.getLength(names));
-        Assertions.assertEquals("a", Array.get(names, 0));
-        Assertions.assertEquals("b", Array.get(names, 1));
-        Assertions.assertEquals("c", Array.get(names, 2));
+        assertThat(Array.getLength(names)).isEqualTo(3);
+        assertThat(Array.get(names, 0)).isEqualTo("a");
+        assertThat(Array.get(names, 1)).isEqualTo("b");
+        assertThat(Array.get(names, 2)).isEqualTo("c");
       } else {
-        Assertions.fail();
+        fail("");
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
   @Test
   public void testNewRid() {
     final ResultSet result = database.query("sql", "select {\"@rid\":\"#12:0\"} as theRid ");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
     final Object rid = item.getProperty("theRid");
-    Assertions.assertTrue(rid instanceof Identifiable);
+    assertThat(rid instanceof Identifiable).isTrue();
     final Identifiable id = (Identifiable) rid;
-    Assertions.assertEquals(12, id.getIdentity().getBucketId());
-    Assertions.assertEquals(0L, id.getIdentity().getPosition());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(id.getIdentity().getBucketId()).isEqualTo(12);
+    assertThat(id.getIdentity().getPosition()).isEqualTo(0L);
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3144,20 +3146,20 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
     final ResultSet result = database.query("sql",
         "select name, elem1:{*}, elem2:{!surname} from " + className + " where name = 'd'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
+    assertThat(item).isNotNull();
 
     final Result elem1Result = item.getProperty("elem1");
-    Assertions.assertEquals("a", elem1Result.getProperty("name"));
-    Assertions.assertEquals(elem1.getIdentity(), elem1Result.getProperty("@rid"));
-    Assertions.assertEquals(elem1.getTypeName(), elem1Result.getProperty("@type"));
+    assertThat(elem1Result.<String>getProperty("name")).isEqualTo("a");
+    assertThat(elem1Result.<RID>getProperty("@rid")).isEqualTo(elem1.getIdentity());
+    assertThat(elem1Result.<String>getProperty("@type")).isEqualTo(elem1.getTypeName());
 
     final Result elem2Result = item.getProperty("elem2");
-    Assertions.assertEquals("b", elem2Result.getProperty("name"));
-    Assertions.assertNull(elem2Result.getProperty("surname"));
-    Assertions.assertEquals(elem2.getIdentity(), elem2Result.getProperty("@rid"));
-    Assertions.assertEquals(elem2.getTypeName(), elem2Result.getProperty("@type"));
+    assertThat(elem2Result.<String>getProperty("name")).isEqualTo("b");
+    assertThat(elem2Result.<String>getProperty("surname")).isNull();
+    assertThat(elem2Result.<RID>getProperty("@rid")).isEqualTo(elem2.getIdentity());
+    assertThat(elem2Result.<String>getProperty("@type")).isEqualTo(elem2.getTypeName());
 
     result.close();
   }
@@ -3177,33 +3179,33 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     ResultSet result = database.query("sql", "select coll[='foo'] as filtered from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
     List res = item.getProperty("filtered");
-    Assertions.assertEquals(1, res.size());
-    Assertions.assertEquals("foo", res.get(0));
+    assertThat(res.size()).isEqualTo(1);
+    assertThat(res.get(0)).isEqualTo("foo");
     result.close();
 
     result = database.query("sql", "select coll[<'ccc'] as filtered from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
     res = item.getProperty("filtered");
-    Assertions.assertEquals(2, res.size());
+    assertThat(res.size()).isEqualTo(2);
     result.close();
 
     result = database.query("sql", "select coll[LIKE 'ba%'] as filtered from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
     res = item.getProperty("filtered");
-    Assertions.assertEquals(2, res.size());
+    assertThat(res.size()).isEqualTo(2);
     result.close();
 
     result = database.query("sql", "select coll[in ['bar']] as filtered from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
     res = item.getProperty("filtered");
-    Assertions.assertEquals(1, res.size());
-    Assertions.assertEquals("bar", res.get(0));
+    assertThat(res.size()).isEqualTo(1);
+    assertThat(res.get(0)).isEqualTo("bar");
     result.close();
   }
 
@@ -3230,19 +3232,19 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     database.commit();
     ResultSet result = database.query("sql", "select from " + className + " where coll contains 1");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     result = database.query("sql", "select from " + className + " where coll contains 1L");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     result = database.query("sql", "select from " + className + " where coll contains 12L");
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3277,12 +3279,12 @@ public class SelectStatementExecutionTest extends TestHelper {
       for (final EmbeddedDocument d : embeddedList)
         valueMatches.add(d.getInteger("value"));
 
-      Assertions.assertTrue(valueMatches.contains(3));
+      assertThat(valueMatches.contains(3)).isTrue();
 
       ++totalFound;
     }
 
-    Assertions.assertEquals(3, totalFound);
+    assertThat(totalFound).isEqualTo(3);
   }
 
   @Test
@@ -3316,12 +3318,12 @@ public class SelectStatementExecutionTest extends TestHelper {
       for (final EmbeddedDocument d : embeddedList)
         valueMatches.add(d.getString("value"));
 
-      Assertions.assertTrue(valueMatches.contains("3"));
+      assertThat(valueMatches.contains("3")).isTrue();
 
       ++totalFound;
     }
 
-    Assertions.assertEquals(3, totalFound);
+    assertThat(totalFound).isEqualTo(3);
   }
 
   @Test
@@ -3357,12 +3359,12 @@ public class SelectStatementExecutionTest extends TestHelper {
       for (final Map d : embeddedList)
         valueMatches.add((String) d.get("value"));
 
-      Assertions.assertTrue(valueMatches.contains("3"));
+      assertThat(valueMatches.contains("3")).isTrue();
 
       ++totalFound;
     }
 
-    Assertions.assertEquals(3, totalFound);
+    assertThat(totalFound).isEqualTo(3);
   }
 
   @Test
@@ -3378,9 +3380,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     database.commit();
     final ResultSet result = database.query("sql", "select from " + className + " where name = 'Bar'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3397,9 +3399,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     params.put("p1", "Foo");
     params.put("p2", "Fox");
     final ResultSet result = database.query("sql", "select from " + className + " where name = :p1 and surname = :p2", params);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3417,9 +3419,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     final Map<String, Object> params = new HashMap<>();
     params.put("p1", "Foo");
     final ResultSet result = database.query("sql", "select from " + className + " where name = :p1", params);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3434,9 +3436,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     final ResultSet result = database.query("sql", "select from " + className + " where name is defined");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3451,9 +3453,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     final ResultSet result = database.query("sql", "select from " + className + " where name is not defined");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -3480,7 +3482,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ExecutionPlan execPlan = result.getExecutionPlan().get();
     for (final ExecutionStep ExecutionStep : execPlan.getSteps()) {
       if (ExecutionStep instanceof FetchFromTypeExecutionStep) {
-        Assertions.assertEquals(clusterIds.length - 1, ExecutionStep.getSubSteps().size());
+        assertThat(ExecutionStep.getSubSteps().size()).isEqualTo(clusterIds.length - 1);
         // clusters - 1 + fetch from tx...
       }
     }
@@ -3490,7 +3492,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       result.next();
     }
     result.close();
-    Assertions.assertEquals(clusterIds.length - 1, count);
+    assertThat(count).isEqualTo(clusterIds.length - 1);
   }
 
   @Test
@@ -3518,7 +3520,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ExecutionPlan execPlan = result.getExecutionPlan().get();
     for (final ExecutionStep ExecutionStep : execPlan.getSteps()) {
       if (ExecutionStep instanceof FetchFromTypeExecutionStep) {
-        Assertions.assertEquals(clusterIds.length - 1, ExecutionStep.getSubSteps().size());
+        assertThat(ExecutionStep.getSubSteps().size()).isEqualTo(clusterIds.length - 1);
         // clusters - 1 + fetch from tx...
       }
     }
@@ -3528,7 +3530,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       result.next();
     }
     result.close();
-    Assertions.assertEquals(clusterIds.length - 1, count);
+    assertThat(count).isEqualTo(clusterIds.length - 1);
   }
 
   @Test
@@ -3549,11 +3551,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     try (final ResultSet result = database.query("sql",
         "select from " + className + 2 + " where tags contains (select from " + className + 1 + " where name = 'foo')")) {
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3575,11 +3577,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     try (final ResultSet result = database.query("sql",
         "select from " + className + 2 + " where (select from " + className + 1 + " where name = 'foo') in tags")) {
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3596,31 +3598,31 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','baz']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bar']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bbb']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['xx','baz']")) {
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany []")) {
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3638,36 +3640,36 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','baz']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bar']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['foo','bbb']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany ['xx','baz']")) {
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsany []")) {
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
   }
 
@@ -3683,17 +3685,17 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsall ['foo','bar']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tags containsall ['foo']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3710,11 +3712,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where val between 2 and 3")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3731,36 +3733,36 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','baz']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','bar']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in []")) {
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
 
     final List<String> params = new ArrayList<>();
     params.add("foo");
     params.add("bar");
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertTrue(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
   }
 
@@ -3776,36 +3778,36 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','baz']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','bar']")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in []")) {
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isFalse();
     }
 
     final List<String> params = new ArrayList<>();
     params.add("foo");
     params.add("bar");
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+      assertThat(result.hasNext()).isFalse();
+      assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isFalse();
     }
   }
 
@@ -3823,9 +3825,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where thelist CONTAINS ( name = ?)",
         "Jack")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3872,8 +3874,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     try (final ResultSet result = database.query("sql", TEST_QUERY)) {
       final Result row = result.nextIfAvailable();
-      Assertions.assertEquals("21087591856", row.getProperty("cuij"));
-      Assertions.assertEquals(1L, (Long) row.getProperty("count"));
+      assertThat(row.<String>getProperty("cuij")).isEqualTo("21087591856");
+      assertThat((Long) row.getProperty("count")).isEqualTo(1L);
     }
   }
 
@@ -3893,9 +3895,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     database.commit();
     try (final ResultSet result = database.query("sql", "select from " + className + " where test contains []")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3915,9 +3917,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where test contains [1]")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3942,7 +3944,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         try (final ResultSet result = database.query("sql", "select from " + className + " ORDER BY name")) {
           result.forEachRemaining(x -> x.getProperty("name"));
         }
-        Assertions.fail();
+        fail("");
       } catch (final CommandExecutionException ex) {
       }
     } finally {
@@ -3953,10 +3955,10 @@ public class SelectStatementExecutionTest extends TestHelper {
   @Test
   public void testXor() {
     try (final ResultSet result = database.query("sql", "select 15 ^ 4 as foo")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertEquals(11, (int) item.getProperty("foo"));
-      Assertions.assertFalse(result.hasNext());
+      assertThat((int) item.getProperty("foo")).isEqualTo(11);
+      assertThat(result.hasNext()).isFalse();
     }
   }
 
@@ -3973,35 +3975,35 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE 'foo%'")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
     try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%foo%baz%'")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
     try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%bar%'")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE 'bar%'")) {
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
 
     try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%bar'")) {
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
     }
 
     final String specialChars = "[]{}()|*^.";
     for (final char c : specialChars.toCharArray()) {
       try (final ResultSet result = database.query("sql", "select from " + className + " where name LIKE '%" + c + "%'")) {
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         result.next();
-        Assertions.assertFalse(result.hasNext());
+        assertThat(result.hasNext()).isFalse();
       }
     }
   }
@@ -4021,10 +4023,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
     final ResultSet result = database.query("sql", "select count(val) as count from " + className + " limit 3");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertEquals(10L, (long) item.getProperty("count"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat((long) item.getProperty("count")).isEqualTo(10L);
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -4147,10 +4149,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " WHERE name >= 'name5'");
 
     for (int i = 0; i < 5; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -4171,10 +4173,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + className + " WHERE name <= 'name5'");
 
     for (int i = 0; i < 6; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -4205,11 +4207,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     try (final ResultSet rs = database.query("sql",
         "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from "
             + classNamePrefix + "User where id = 'admin');")) {
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
     }
 
     database.command("sql", "create index ON " + classNamePrefix + "Report(id) unique;").close();
@@ -4217,11 +4219,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     try (final ResultSet rs = database.query("sql",
         "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from "
             + classNamePrefix + "User where id = 'admin');")) {
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
     }
   }
 
@@ -4237,11 +4239,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     final ResultSet result = database.query("sql", "select *, !surname from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals("foo", item.getProperty("name"));
-    Assertions.assertNull(item.getProperty("surname"));
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("name")).isEqualTo("foo");
+    assertThat(item.<String>getProperty("surname")).isNull();
 
     result.close();
   }
@@ -4261,17 +4263,17 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     try (final ResultSet result = database.query("sql",
         "select from " + className + " LET $order = name.substring(1) ORDER BY $order ASC LIMIT 1")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("baaa", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("baaa");
     }
     try (final ResultSet result = database.query("sql",
         "select from " + className + " LET $order = name.substring(1) ORDER BY $order DESC LIMIT 1")) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("abbb", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("abbb");
     }
   }
 
@@ -4281,14 +4283,14 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "ALTER TYPE SchemaMap CUSTOM label = 'Document'");
     final ResultSet result = database.query("sql", "SELECT map(name,custom.label) as map FROM schema:types");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
+    assertThat(item).isNotNull();
 
     Object map = item.getProperty("map");
-    Assertions.assertTrue(map instanceof Map);
+    assertThat(map instanceof Map).isTrue();
 
-    Assertions.assertEquals("Document", ((Map<?, ?>) map).get("SchemaMap"));
+    assertThat(((Map<?, ?>) map).get("SchemaMap")).isEqualTo("Document");
 
     result.close();
   }

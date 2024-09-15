@@ -25,10 +25,13 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class MultipleTypesIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -40,38 +43,38 @@ public class MultipleTypesIndexTest extends TestHelper {
       final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[keywords]");
 
       IndexCursor cursor = index.get(new Object[] { List.of("ceo", "tesla", "spacex", "boring", "neuralink", "twitter") });
-      Assertions.assertTrue(cursor.hasNext());
-      Assertions.assertEquals("Musk", cursor.next().asVertex().getString("lastName"));
-      Assertions.assertFalse(cursor.hasNext());
+      assertThat(cursor.hasNext()).isTrue();
+      assertThat(cursor.next().asVertex().getString("lastName")).isEqualTo("Musk");
+      assertThat(cursor.hasNext()).isFalse();
 
       ResultSet resultset = database.query("sql", "select from " + TYPE_NAME + " where keywords CONTAINS ?", "tesla");
-      Assertions.assertTrue(resultset.hasNext());
-      Assertions.assertEquals("Musk", resultset.next().toElement().asVertex().getString("lastName"));
-      Assertions.assertFalse(resultset.hasNext());
+      assertThat(resultset.hasNext()).isTrue();
+      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Musk");
+      assertThat(resultset.hasNext()).isFalse();
 
       resultset = database.query("sql", "select from " + TYPE_NAME + " where 'tesla' IN  keywords");
-      Assertions.assertTrue(resultset.hasNext());
-      Assertions.assertEquals("Musk", resultset.next().toElement().asVertex().getString("lastName"));
-      Assertions.assertFalse(resultset.hasNext());
+      assertThat(resultset.hasNext()).isTrue();
+      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Musk");
+      assertThat(resultset.hasNext()).isFalse();
 
       resultset = database.query("sql", "select from " + TYPE_NAME + " where ? IN keywords", "tesla");
-      Assertions.assertTrue(resultset.hasNext());
-      Assertions.assertEquals("Musk", resultset.next().toElement().asVertex().getString("lastName"));
-      Assertions.assertFalse(resultset.hasNext());
+      assertThat(resultset.hasNext()).isTrue();
+      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Musk");
+      assertThat(resultset.hasNext()).isFalse();
 
       cursor = index.get(new Object[] { List.of("inventor", "commodore", "amiga", "atari", "80s") });
-      Assertions.assertTrue(cursor.hasNext());
-      Assertions.assertEquals("Jay", cursor.next().asVertex().getString("firstName"));
-      Assertions.assertFalse(cursor.hasNext());
+      assertThat(cursor.hasNext()).isTrue();
+      assertThat(cursor.next().asVertex().getString("firstName")).isEqualTo("Jay");
+      assertThat(cursor.hasNext()).isFalse();
 
       cursor = index.get(new Object[] { List.of("writer") });
-      Assertions.assertTrue(cursor.hasNext());
+      assertThat(cursor.hasNext()).isTrue();
 
       int i = 0;
       for (; cursor.hasNext(); i++) {
         cursor.next();
       }
-      Assertions.assertEquals(TOT - 2, i);
+      assertThat(i).isEqualTo(TOT - 2);
     });
   }
 
@@ -92,9 +95,9 @@ public class MultipleTypesIndexTest extends TestHelper {
       v.save();
 
       IndexCursor cursor = index.get(new Object[] { list });
-      Assertions.assertTrue(cursor.hasNext());
-      Assertions.assertEquals("Zuck", cursor.next().asVertex().getString("lastName"));
-      Assertions.assertFalse(cursor.hasNext());
+      assertThat(cursor.hasNext()).isTrue();
+      assertThat(cursor.next().asVertex().getString("lastName")).isEqualTo("Zuck");
+      assertThat(cursor.hasNext()).isFalse();
     });
   }
 
@@ -118,7 +121,7 @@ public class MultipleTypesIndexTest extends TestHelper {
 
   protected void beginTest() {
     database.transaction(() -> {
-      Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+      assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
       final DocumentType type = database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);

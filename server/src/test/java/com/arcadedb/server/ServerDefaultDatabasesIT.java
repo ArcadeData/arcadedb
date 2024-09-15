@@ -22,12 +22,14 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.security.ServerSecurityException;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
 import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
@@ -57,30 +59,30 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
     try {
       getServer(0).getSecurity().authenticate("elon", "musk", "Amiga");
-      Assertions.fail();
+      fail("");
     } catch (final ServerSecurityException e) {
       // EXPECTED
     }
 
     try {
       getServer(0).getSecurity().authenticate("Jack", "Tramiel", "Universe");
-      Assertions.fail();
+      fail("");
     } catch (final ServerSecurityException e) {
       // EXPECTED
     }
 
     try {
       getServer(0).getSecurity().authenticate("Jack", "Tramiel", "RandomName");
-      Assertions.fail();
+      fail("");
     } catch (final ServerSecurityException e) {
       // EXPECTED
     }
 
-    Assertions.assertTrue(getServer(0).existsDatabase("Universe"));
-    Assertions.assertTrue(getServer(0).existsDatabase("Amiga"));
+    assertThat(getServer(0).existsDatabase("Universe")).isTrue();
+    assertThat(getServer(0).existsDatabase("Amiga")).isTrue();
 
-    Assertions.assertTrue(READ_WRITE.equals(getServer(0).getDatabase("Universe").getMode()));
-    Assertions.assertTrue(READ_WRITE.equals(getServer(0).getDatabase("Amiga").getMode()));
+    assertThat(getServer(0).getDatabase("Universe").getMode()).isEqualTo(READ_WRITE);
+    assertThat(getServer(0).getDatabase("Amiga").getMode()).isEqualTo(READ_WRITE);
 
     ((DatabaseInternal) getServer(0).getDatabase("Universe")).getEmbedded().drop();
     ((DatabaseInternal) getServer(0).getDatabase("Amiga")).getEmbedded().drop();

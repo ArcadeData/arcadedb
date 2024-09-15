@@ -28,11 +28,14 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.File;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 
 public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   @Override
@@ -65,19 +68,19 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
       database.deleteRecord(edge);
     });
 
-    final ResultSet resultset = getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
+    final Result result;
+    try (ResultSet resultset = getServer(0).getDatabase(getDatabaseName())
+        .command("sql", "align database")) {
 
-    Assertions.assertTrue(resultset.hasNext());
-    final Result result = resultset.next();
+      assertThat(resultset.hasNext()).isTrue();
+      result = resultset.next();
+      assertThat(result.hasProperty("ArcadeDB_0")).isFalse();
+      assertThat(result.hasProperty("ArcadeDB_1")).isTrue();
+      assertThat(result.<List<int[]>>getProperty("ArcadeDB_1")).hasSize(0);
+      assertThat(result.hasProperty("ArcadeDB_2")).isTrue();
+      assertThat(result.<List<int[]>>getProperty("ArcadeDB_2")).hasSize(0);
+    }
 
-    Assertions.assertFalse(result.hasProperty("ArcadeDB_0"));
-    Assertions.assertTrue(result.hasProperty("ArcadeDB_1"));
-    Assertions.assertEquals(0, ((List<int[]>) result.getProperty("ArcadeDB_1")).size());
-    Assertions.assertTrue(result.hasProperty("ArcadeDB_2"));
-    Assertions.assertEquals(0, ((List<int[]>) result.getProperty("ArcadeDB_2")).size());
-
-    // WAIT THE ALIGN IS COMPLETE BEFORE CHECKING THE DATABASES
-    Thread.sleep(3000);
   }
 
   @Test
@@ -90,25 +93,20 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     edge.delete();
     database.commit();
 
-    try {
-      checkDatabasesAreIdentical();
-      Assertions.fail();
-    } catch (final DatabaseComparator.DatabaseAreNotIdentical e) {
-      // EXPECTED
+    assertThatThrownBy(() -> checkDatabasesAreIdentical())
+        .isInstanceOf(DatabaseComparator.DatabaseAreNotIdentical.class);
+
+    final Result result;
+    try (ResultSet resultset = getServer(0).getDatabase(getDatabaseName()).command("sql", "align database")) {
+      assertThat(resultset.hasNext()).isTrue();
+      result = resultset.next();
+
+      assertThat(result.hasProperty("ArcadeDB_0")).isFalse();
+      assertThat(result.hasProperty("ArcadeDB_1")).isTrue();
+      assertThat(result.<List<int[]>>getProperty("ArcadeDB_1")).hasSize(3);
+      assertThat(result.hasProperty("ArcadeDB_2")).isTrue();
+      assertThat(result.<List<int[]>>getProperty("ArcadeDB_2")).hasSize(3);
+
     }
-
-    final ResultSet resultset = getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
-
-    Assertions.assertTrue(resultset.hasNext());
-    final Result result = resultset.next();
-
-    Assertions.assertFalse(result.hasProperty("ArcadeDB_0"));
-    Assertions.assertTrue(result.hasProperty("ArcadeDB_1"), "Missing response from server ArcadeDB_1: " + result.toJSON());
-    Assertions.assertEquals(3, ((List<int[]>) result.getProperty("ArcadeDB_1")).size());
-    Assertions.assertTrue(result.hasProperty("ArcadeDB_2"), "Missing response from server ArcadeDB_2: " + result.toJSON());
-    Assertions.assertEquals(3, ((List<int[]>) result.getProperty("ArcadeDB_2")).size());
-
-    // WAIT THE ALIGN IS COMPLETE BEFORE CHECKING THE DATABASES
-    Thread.sleep(3000);
   }
 }

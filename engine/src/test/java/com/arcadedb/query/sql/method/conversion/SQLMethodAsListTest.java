@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests the "asList()" method implemented by the OSQLMethodAsList class. Note that the only input
@@ -49,7 +49,7 @@ public class SQLMethodAsListTest {
   public void testNull() {
     // The expected behavior is to return an empty list.
     final Object result = function.execute(null, null, null, null);
-    assertEquals(result, new ArrayList<Object>());
+    assertThat(new ArrayList<Object>()).isEqualTo(result);
   }
 
   @Test
@@ -59,7 +59,7 @@ public class SQLMethodAsListTest {
     aList.add(1);
     aList.add("2");
     final Object result = function.execute(aList, null, null, null);
-    assertEquals(result, aList);
+    assertThat(aList).isEqualTo(result);
   }
 
   @Test
@@ -74,7 +74,7 @@ public class SQLMethodAsListTest {
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(1);
     expected.add("2");
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -88,7 +88,7 @@ public class SQLMethodAsListTest {
     final TestIterable<Object> anIterable = new TestIterable<Object>(expected);
     final Object result = function.execute(anIterable, null, null, null);
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -102,7 +102,7 @@ public class SQLMethodAsListTest {
     final TestIterable<Object> anIterable = new TestIterable<Object>(expected);
     final Object result = function.execute(anIterable.iterator(), null, null, null);
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -121,7 +121,7 @@ public class SQLMethodAsListTest {
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(doc);
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -132,6 +132,6 @@ public class SQLMethodAsListTest {
     final Object result = function.execute(Integer.valueOf(4), null, null, null);
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(Integer.valueOf(4));
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 }

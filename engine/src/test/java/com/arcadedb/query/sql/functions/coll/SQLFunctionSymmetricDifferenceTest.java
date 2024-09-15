@@ -20,10 +20,11 @@ package com.arcadedb.query.sql.functions.coll;
 
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.function.coll.SQLFunctionSymmetricDifference;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author edegtyarenko
@@ -62,9 +63,9 @@ public class SQLFunctionSymmetricDifferenceTest {
   }
 
   private void assertSetEquals(final Set<Object> actualResult, final Set<Object> expectedResult) {
-    Assertions.assertEquals(actualResult.size(), expectedResult.size());
+    assertThat(expectedResult.size()).isEqualTo(actualResult.size());
     for (final Object o : actualResult) {
-      Assertions.assertTrue(expectedResult.contains(o));
+      assertThat(expectedResult.contains(o)).isTrue();
     }
   }
 }

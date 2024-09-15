@@ -20,10 +20,11 @@ package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.parser.NeqOperator;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -32,36 +33,36 @@ public class NeqOperatorTest {
   @Test
   public void test() {
     final NeqOperator op = new NeqOperator(-1);
-    Assertions.assertTrue(op.execute(null, null, 1));
-    Assertions.assertTrue(op.execute(null, 1, null));
-    Assertions.assertTrue(op.execute(null, null, null));
+    assertThat(op.execute(null, null, 1)).isTrue();
+    assertThat(op.execute(null, 1, null)).isTrue();
+    assertThat(op.execute(null, null, null)).isTrue();
 
-    Assertions.assertFalse(op.execute(null, 1, 1));
-    Assertions.assertTrue(op.execute(null, 1, 0));
-    Assertions.assertTrue(op.execute(null, 0, 1));
+    assertThat(op.execute(null, 1, 1)).isFalse();
+    assertThat(op.execute(null, 1, 0)).isTrue();
+    assertThat(op.execute(null, 0, 1)).isTrue();
 
-    Assertions.assertTrue(op.execute(null, "aaa", "zzz"));
-    Assertions.assertTrue(op.execute(null, "zzz", "aaa"));
-    Assertions.assertFalse(op.execute(null, "aaa", "aaa"));
+    assertThat(op.execute(null, "aaa", "zzz")).isTrue();
+    assertThat(op.execute(null, "zzz", "aaa")).isTrue();
+    assertThat(op.execute(null, "aaa", "aaa")).isFalse();
 
-    Assertions.assertTrue(op.execute(null, 1, 1.1));
-    Assertions.assertTrue(op.execute(null, 1.1, 1));
+    assertThat(op.execute(null, 1, 1.1)).isTrue();
+    assertThat(op.execute(null, 1.1, 1)).isTrue();
 
-    Assertions.assertFalse(op.execute(null, BigDecimal.ONE, 1));
-    Assertions.assertFalse(op.execute(null, 1, BigDecimal.ONE));
+    assertThat(op.execute(null, BigDecimal.ONE, 1)).isFalse();
+    assertThat(op.execute(null, 1, BigDecimal.ONE)).isFalse();
 
-    Assertions.assertTrue(op.execute(null, 1.1, BigDecimal.ONE));
-    Assertions.assertTrue(op.execute(null, 2, BigDecimal.ONE));
+    assertThat(op.execute(null, 1.1, BigDecimal.ONE)).isTrue();
+    assertThat(op.execute(null, 2, BigDecimal.ONE)).isTrue();
 
-    Assertions.assertTrue(op.execute(null, BigDecimal.ONE, 0.999999));
-    Assertions.assertTrue(op.execute(null, BigDecimal.ONE, 0));
+    assertThat(op.execute(null, BigDecimal.ONE, 0.999999)).isTrue();
+    assertThat(op.execute(null, BigDecimal.ONE, 0)).isTrue();
 
-    Assertions.assertTrue(op.execute(null, BigDecimal.ONE, 2));
-    Assertions.assertTrue(op.execute(null, BigDecimal.ONE, 1.0001));
+    assertThat(op.execute(null, BigDecimal.ONE, 2)).isTrue();
+    assertThat(op.execute(null, BigDecimal.ONE, 1.0001)).isTrue();
 
-    Assertions.assertFalse(op.execute(null, new RID( 1, 10), new RID( (short) 1, 10)));
-    Assertions.assertTrue(op.execute(null, new RID( 1, 10), new RID( (short) 1, 20)));
+    assertThat(op.execute(null, new RID( 1, 10), new RID( (short) 1, 10))).isFalse();
+    assertThat(op.execute(null, new RID( 1, 10), new RID( (short) 1, 20))).isTrue();
 
-    Assertions.assertTrue(op.execute(null, new Object(), new Object()));
+    assertThat(op.execute(null, new Object(), new Object())).isTrue();
   }
 }

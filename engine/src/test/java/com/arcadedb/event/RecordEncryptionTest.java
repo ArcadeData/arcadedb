@@ -24,7 +24,8 @@ import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import javax.crypto.BadPaddingException;
@@ -40,6 +41,9 @@ import java.security.*;
 import java.security.spec.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Implements record encryption by using the database events.
@@ -81,30 +85,30 @@ public class RecordEncryptionTest extends TestHelper
           .save();
     });
 
-    Assertions.assertEquals(1, creates.get());
+    assertThat(creates.get()).isEqualTo(1);
 
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     database.transaction(() -> {
       final Vertex v1 = database.iterateType("BackAccount", true).next().asVertex();
-      Assertions.assertEquals("Nobody must know Elon and Zuck are brothers", v1.getString("secret"));
+      assertThat(v1.getString("secret")).isEqualTo("Nobody must know Elon and Zuck are brothers");
     });
 
-    Assertions.assertEquals(1, reads.get());
+    assertThat(reads.get()).isEqualTo(1);
 
     database.transaction(() -> {
       final MutableVertex v1 = database.iterateType("BackAccount", true).next().asVertex().modify();
       v1.set("secret", "Tool late, everybody knows it").save();
     });
 
-    Assertions.assertEquals(1, updates.get());
-    Assertions.assertEquals(2, reads.get());
+    assertThat(updates.get()).isEqualTo(1);
+    assertThat(reads.get()).isEqualTo(2);
 
     database.transaction(() -> {
       final Vertex v1 = database.iterateType("BackAccount", true).next().asVertex();
-      Assertions.assertEquals("Tool late, everybody knows it", v1.getString("secret"));
+      assertThat(v1.getString("secret")).isEqualTo("Tool late, everybody knows it");
     });
 
-    Assertions.assertEquals(3, reads.get());
+    assertThat(reads.get()).isEqualTo(3);
   }
 
   @Override

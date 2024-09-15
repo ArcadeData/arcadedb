@@ -26,7 +26,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.NanoClock;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
@@ -36,6 +36,10 @@ import java.time.chrono.*;
 import java.time.temporal.*;
 import java.util.*;
 import java.util.concurrent.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TypeConversionTest extends TestHelper {
   @Override
@@ -82,21 +86,21 @@ public class TypeConversionTest extends TestHelper {
       doc.set("localDate", localDate); // SCHEMALESS
       doc.set("localDateTime", localDateTime); // SCHEMALESS
 
-      Assertions.assertEquals(33, doc.get("int"));
-      Assertions.assertEquals(33l, doc.get("long"));
-      Assertions.assertEquals(33.33f, doc.get("float"));
-      Assertions.assertEquals(33.33d, doc.get("double"));
-      Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
-      Assertions.assertEquals(now, doc.get("date"));
+      assertThat(doc.get("int")).isEqualTo(33);
+      assertThat(doc.get("long")).isEqualTo(33l);
+      assertThat(doc.get("float")).isEqualTo(33.33f);
+      assertThat(doc.get("double")).isEqualTo(33.33d);
+      assertThat(doc.get("decimal")).isEqualTo(new BigDecimal("33.33"));
+      assertThat(doc.get("date")).isEqualTo(now);
 
-      Assertions.assertEquals(0, ((LocalDateTime) doc.get("datetime_second")).getNano());
-      Assertions.assertEquals(now, doc.get("datetime_millis"));
-      Assertions.assertEquals(ChronoUnit.MILLIS, DateUtils.getPrecision(doc.getLocalDateTime("datetime_millis").getNano()));
-      Assertions.assertEquals(ChronoUnit.MILLIS, DateUtils.getPrecision(((LocalDateTime) doc.get("datetime_micros")).getNano()));
-      Assertions.assertEquals(ChronoUnit.MILLIS, DateUtils.getPrecision(((LocalDateTime) doc.get("datetime_nanos")).getNano()));
+      assertThat(((LocalDateTime) doc.get("datetime_second")).getNano()).isEqualTo(0);
+      assertThat(doc.get("datetime_millis")).isEqualTo(now);
+      assertThat(DateUtils.getPrecision(doc.getLocalDateTime("datetime_millis").getNano())).isEqualTo(ChronoUnit.MILLIS);
+      assertThat(DateUtils.getPrecision(((LocalDateTime) doc.get("datetime_micros")).getNano())).isEqualTo(ChronoUnit.MILLIS);
+      assertThat(DateUtils.getPrecision(((LocalDateTime) doc.get("datetime_nanos")).getNano())).isEqualTo(ChronoUnit.MILLIS);
 
-      Assertions.assertEquals(localDate, doc.get("localDate"));
-      Assertions.assertEquals(localDateTime, doc.get("localDateTime"));
+      assertThat(doc.get("localDate")).isEqualTo(localDate);
+      assertThat(doc.get("localDateTime")).isEqualTo(localDateTime);
     });
   }
 
@@ -108,19 +112,19 @@ public class TypeConversionTest extends TestHelper {
       final Date now = new Date();
 
       doc.set("decimal", "33.33");
-      Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
+      assertThat(doc.get("decimal")).isEqualTo(new BigDecimal("33.33"));
 
       doc.set("decimal", 33.33f);
-      Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
+      assertThat(doc.get("decimal")).isEqualTo(new BigDecimal("33.33"));
 
       doc.set("decimal", 33.33d);
-      Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
+      assertThat(doc.get("decimal")).isEqualTo(new BigDecimal("33.33"));
 
       doc.save();
 
-      Assertions.assertEquals(String.format("%.1f", 33.3F),
+      assertEquals(String.format("%.1f", 33.3F),
           database.query("sql", "select decimal.format('%.1f') as d from " + doc.getIdentity()).nextIfAvailable().getProperty("d"));
-      Assertions.assertEquals(String.format("%.2f", 33.33F),
+      assertEquals(String.format("%.2f", 33.33F),
           database.query("sql", "select decimal.format('%.2f') as d from " + doc.getIdentity()).nextIfAvailable().getProperty("d"));
 
       doc.delete();
@@ -136,30 +140,30 @@ public class TypeConversionTest extends TestHelper {
 
       doc.set("date", now.getTime());
       doc.set("datetime_millis", now.getTime());
-      Assertions.assertEquals(now, doc.get("date"));
-      Assertions.assertEquals(now, doc.get("datetime_millis"));
+      assertThat(doc.get("date")).isEqualTo(now);
+      assertThat(doc.get("datetime_millis")).isEqualTo(now);
 
       doc.set("date", "" + now.getTime());
       doc.set("datetime_millis", "" + now.getTime());
-      Assertions.assertEquals(now, doc.get("date"));
-      Assertions.assertEquals(now, doc.get("datetime_millis"));
+      assertThat(doc.get("date")).isEqualTo(now);
+      assertThat(doc.get("datetime_millis")).isEqualTo(now);
 
       final SimpleDateFormat df = new SimpleDateFormat(database.getSchema().getDateTimeFormat());
 
       doc.set("date", df.format(now));
       doc.set("datetime_millis", df.format(now));
-      Assertions.assertEquals(df.format(now), df.format(doc.get("date")));
-      Assertions.assertEquals(df.format(now), df.format(doc.get("datetime_millis")));
+      assertThat(df.format(doc.get("date"))).isEqualTo(df.format(now));
+      assertThat(df.format(doc.get("datetime_millis"))).isEqualTo(df.format(now));
 
       final LocalDate localDate = LocalDate.now();
       final LocalDateTime localDateTime = LocalDateTime.now();
       doc.set("date", localDate);
       doc.set("datetime_nanos", localDateTime);
-      Assertions.assertEquals(localDate, doc.getLocalDate("date"));
-      Assertions.assertEquals(localDateTime.truncatedTo(DateUtils.getPrecision(localDateTime.getNano())),
+      assertThat(doc.getLocalDate("date")).isEqualTo(localDate);
+      assertEquals(localDateTime.truncatedTo(DateUtils.getPrecision(localDateTime.getNano())),
           doc.getLocalDateTime("datetime_nanos"));
 
-      Assertions.assertEquals(
+      assertEquals(
           TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(
               ChronoField.MILLI_OF_SECOND), doc.getCalendar("datetime_nanos").getTime().getTime());
     });
@@ -170,21 +174,21 @@ public class TypeConversionTest extends TestHelper {
     database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
     database.command("sql", "alter database `arcadedb.dateImplementation` `java.time.LocalDate`");
 
-    Assertions.assertEquals(LocalDateTime.class, ((DatabaseInternal) database).getSerializer().getDateTimeImplementation());
-    Assertions.assertEquals(LocalDate.class, ((DatabaseInternal) database).getSerializer().getDateImplementation());
+    assertThat(((DatabaseInternal) database).getSerializer().getDateTimeImplementation()).isEqualTo(LocalDateTime.class);
+    assertThat(((DatabaseInternal) database).getSerializer().getDateImplementation()).isEqualTo(LocalDate.class);
 
     database.close();
 
     database = factory.open();
 
-    Assertions.assertEquals(LocalDateTime.class, ((DatabaseInternal) database).getSerializer().getDateTimeImplementation());
-    Assertions.assertEquals(LocalDate.class, ((DatabaseInternal) database).getSerializer().getDateImplementation());
+    assertThat(((DatabaseInternal) database).getSerializer().getDateTimeImplementation()).isEqualTo(LocalDateTime.class);
+    assertThat(((DatabaseInternal) database).getSerializer().getDateImplementation()).isEqualTo(LocalDate.class);
 
     database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.util.Date`");
     database.command("sql", "alter database `arcadedb.dateImplementation` `java.util.Date`");
 
-    Assertions.assertEquals(Date.class, ((DatabaseInternal) database).getSerializer().getDateTimeImplementation());
-    Assertions.assertEquals(Date.class, ((DatabaseInternal) database).getSerializer().getDateImplementation());
+    assertThat(((DatabaseInternal) database).getSerializer().getDateTimeImplementation()).isEqualTo(Date.class);
+    assertThat(((DatabaseInternal) database).getSerializer().getDateImplementation()).isEqualTo(Date.class);
   }
 
   @Test
@@ -202,7 +206,7 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.SECONDS), doc.get("datetime_second"));
+      assertThat(doc.get("datetime_second")).isEqualTo(localDateTime.truncatedTo(ChronoUnit.SECONDS));
 
       database.transaction(() -> {
         // TEST MILLISECONDS PRECISION
@@ -211,7 +215,7 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MILLIS), doc.get("datetime_millis"));
+      assertThat(doc.get("datetime_millis")).isEqualTo(localDateTime.truncatedTo(ChronoUnit.MILLIS));
 
       // TEST MICROSECONDS PRECISION
       database.transaction(() -> {
@@ -220,7 +224,7 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MICROS), doc.get("datetime_micros"));
+      assertThat(doc.get("datetime_micros")).isEqualTo(localDateTime.truncatedTo(ChronoUnit.MICROS));
 
       // TEST NANOSECOND PRECISION
       database.transaction(() -> {
@@ -228,25 +232,21 @@ public class TypeConversionTest extends TestHelper {
         doc.save();
       });
       doc.reload();
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.NANOS), doc.get("datetime_nanos"));
+      assertThat(doc.get("datetime_nanos")).isEqualTo(localDateTime.truncatedTo(ChronoUnit.NANOS));
 
-      Assertions.assertNotNull(
-          database.query("sql", "select datetime_second.asLong() as long from ConversionTest").nextIfAvailable()
-              .getProperty("long"));
-      Assertions.assertNotNull(
-          database.query("sql", "select datetime_millis.asLong() as long from ConversionTest").nextIfAvailable()
-              .getProperty("long"));
-      Assertions.assertNotNull(
-          database.query("sql", "select datetime_micros.asLong() as long from ConversionTest").nextIfAvailable()
-              .getProperty("long"));
-      Assertions.assertNotNull(database.query("sql", "select datetime_nanos.asLong() as long from ConversionTest").nextIfAvailable()
-          .getProperty("long"));
+      assertThat((Long) database.query("sql", "select datetime_second.asLong() as long from ConversionTest").nextIfAvailable()
+        .getProperty("long")).isNotNull();
+      assertThat((Long) database.query("sql", "select datetime_millis.asLong() as long from ConversionTest").nextIfAvailable()
+        .getProperty("long")).isNotNull();
+      assertThat((Long) database.query("sql", "select datetime_micros.asLong() as long from ConversionTest").nextIfAvailable()
+        .getProperty("long")).isNotNull();
+      assertThat((Long) database.query("sql", "select datetime_nanos.asLong() as long from ConversionTest").nextIfAvailable()
+        .getProperty("long")).isNotNull();
 
-      Assertions.assertEquals(
-          TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(
-              ChronoField.MILLI_OF_SECOND), doc.getDate("datetime_millis").getTime());
+      assertThat(doc.getDate("datetime_millis").getTime()).isEqualTo(TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(
+        ChronoField.MILLI_OF_SECOND));
 
-      Assertions.assertTrue(localDateTime.isEqual(doc.getLocalDateTime("datetime_nanos")));
+      assertThat(localDateTime.isEqual(doc.getLocalDateTime("datetime_nanos"))).isTrue();
 
     } finally {
       ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(Date.class);
@@ -261,20 +261,20 @@ public class TypeConversionTest extends TestHelper {
     try {
       database.begin();
       ResultSet result = database.command("sql", "insert into ConversionTest set datetime_second = ?", localDateTime);
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.SECONDS), result.next().toElement().get("datetime_second"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().toElement().get("datetime_second")).isEqualTo(localDateTime.truncatedTo(ChronoUnit.SECONDS));
 
       result = database.command("sql", "insert into ConversionTest set datetime_millis = ?", localDateTime);
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MILLIS), result.next().toElement().get("datetime_millis"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().toElement().get("datetime_millis")).isEqualTo(localDateTime.truncatedTo(ChronoUnit.MILLIS));
 
       result = database.command("sql", "insert into ConversionTest set datetime_micros = ?", localDateTime);
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MICROS), result.next().toElement().get("datetime_micros"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().toElement().get("datetime_micros")).isEqualTo(localDateTime.truncatedTo(ChronoUnit.MICROS));
 
       result = database.command("sql", "insert into ConversionTest set datetime_nanos = ?", localDateTime);
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.NANOS), result.next().toElement().get("datetime_nanos"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().toElement().get("datetime_nanos")).isEqualTo(localDateTime.truncatedTo(ChronoUnit.NANOS));
 
       database.commit();
     } finally {
@@ -297,8 +297,8 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertEquals(calendar, doc.get("datetime_millis"));
-      Assertions.assertEquals(calendar, doc.getCalendar("datetime_millis"));
+      assertThat(doc.get("datetime_millis")).isEqualTo(calendar);
+      assertThat(doc.getCalendar("datetime_millis")).isEqualTo(calendar);
 
     } finally {
       ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(Date.class);
@@ -320,8 +320,8 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertEquals(localDate, doc.get("date"));
-      Assertions.assertTrue(localDate.isEqual(doc.getLocalDate("date")));
+      assertThat(doc.get("date")).isEqualTo(localDate);
+      assertThat(localDate.isEqual(doc.getLocalDate("date"))).isTrue();
 
     } finally {
       ((DatabaseInternal) database).getSerializer().setDateImplementation(Date.class);
@@ -344,8 +344,7 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertTrue(
-          zonedDateTime.truncatedTo(ChronoUnit.SECONDS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_second")));
+      assertThat(zonedDateTime.truncatedTo(ChronoUnit.SECONDS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_second"))).isTrue();
 
       database.transaction(() -> {
         // TEST MILLISECONDS PRECISION
@@ -354,8 +353,7 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertTrue(
-          zonedDateTime.truncatedTo(ChronoUnit.MILLIS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_millis")));
+      assertThat(zonedDateTime.truncatedTo(ChronoUnit.MILLIS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_millis"))).isTrue();
 
       if (!System.getProperty("os.name").startsWith("Windows")) {
         // NOTE: ON WINDOWS MICROSECONDS ARE NOT HANDLED CORRECTLY
@@ -367,8 +365,7 @@ public class TypeConversionTest extends TestHelper {
         });
 
         doc.reload();
-        Assertions.assertTrue(
-            zonedDateTime.truncatedTo(ChronoUnit.MICROS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_micros")));
+        assertThat(zonedDateTime.truncatedTo(ChronoUnit.MICROS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_micros"))).isTrue();
       }
 
       // TEST NANOSECOND PRECISION
@@ -377,9 +374,8 @@ public class TypeConversionTest extends TestHelper {
         doc.save();
       });
       doc.reload();
-      Assertions.assertTrue(
-          zonedDateTime.truncatedTo(ChronoUnit.NANOS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_nanos")));
-      Assertions.assertTrue(zonedDateTime.isEqual(doc.getZonedDateTime("datetime_nanos")));
+      assertThat(zonedDateTime.truncatedTo(ChronoUnit.NANOS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_nanos"))).isTrue();
+      assertThat(zonedDateTime.isEqual(doc.getZonedDateTime("datetime_nanos"))).isTrue();
 
     } finally {
       ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(Date.class);
@@ -401,7 +397,7 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertEquals(instant.truncatedTo(ChronoUnit.SECONDS), doc.get("datetime_second"));
+      assertThat(doc.get("datetime_second")).isEqualTo(instant.truncatedTo(ChronoUnit.SECONDS));
 
       database.transaction(() -> {
         // TEST MILLISECONDS PRECISION
@@ -410,7 +406,7 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      Assertions.assertEquals(instant.truncatedTo(ChronoUnit.MILLIS), doc.get("datetime_millis"));
+      assertThat(doc.get("datetime_millis")).isEqualTo(instant.truncatedTo(ChronoUnit.MILLIS));
 
       // TEST MICROSECONDS PRECISION
       database.transaction(() -> {
@@ -421,7 +417,7 @@ public class TypeConversionTest extends TestHelper {
       doc.reload();
       if (!System.getProperty("os.name").startsWith("Windows"))
         // NOTE: ON WINDOWS MICROSECONDS ARE NOT HANDLED CORRECTLY
-        Assertions.assertEquals(instant.truncatedTo(ChronoUnit.MICROS), doc.get("datetime_micros"));
+        assertThat(doc.get("datetime_micros")).isEqualTo(instant.truncatedTo(ChronoUnit.MICROS));
 
       // TEST NANOSECOND PRECISION
       database.transaction(() -> {
@@ -429,8 +425,8 @@ public class TypeConversionTest extends TestHelper {
         doc.save();
       });
       doc.reload();
-      Assertions.assertEquals(instant.truncatedTo(ChronoUnit.NANOS), doc.get("datetime_nanos"));
-      Assertions.assertEquals(instant, doc.getInstant("datetime_nanos"));
+      assertThat(doc.get("datetime_nanos")).isEqualTo(instant.truncatedTo(ChronoUnit.NANOS));
+      assertThat(doc.getInstant("datetime_nanos")).isEqualTo(instant);
 
     } finally {
       ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(Date.class);
@@ -439,25 +435,25 @@ public class TypeConversionTest extends TestHelper {
 
   @Test
   public void testConversion() {
-    Assertions.assertEquals(10, DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.SECONDS));
-    Assertions.assertEquals(10_000, DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.MILLIS));
-    Assertions.assertEquals(10_000_000, DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.MICROS));
-    Assertions.assertEquals(10_000_000_000L, DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.NANOS));
+    assertThat(DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.SECONDS)).isEqualTo(10);
+    assertThat(DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.MILLIS)).isEqualTo(10_000);
+    assertThat(DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.MICROS)).isEqualTo(10_000_000);
+    assertThat(DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.NANOS)).isEqualTo(10_000_000_000L);
 
-    Assertions.assertEquals(10, DateUtils.convertTimestamp(10_000_000, ChronoUnit.MICROS, ChronoUnit.SECONDS));
-    Assertions.assertEquals(10_000, DateUtils.convertTimestamp(10_000_000, ChronoUnit.MICROS, ChronoUnit.MILLIS));
-    Assertions.assertEquals(10_000_000, DateUtils.convertTimestamp(10_000_000, ChronoUnit.MICROS, ChronoUnit.MICROS));
-    Assertions.assertEquals(10_000_000_000L, DateUtils.convertTimestamp(10_000_000, ChronoUnit.MICROS, ChronoUnit.NANOS));
+    assertThat(DateUtils.convertTimestamp(10_000_000, ChronoUnit.MICROS, ChronoUnit.SECONDS)).isEqualTo(10);
+    assertThat(DateUtils.convertTimestamp(10_000_000, ChronoUnit.MICROS, ChronoUnit.MILLIS)).isEqualTo(10_000);
+    assertThat(DateUtils.convertTimestamp(10_000_000, ChronoUnit.MICROS, ChronoUnit.MICROS)).isEqualTo(10_000_000);
+    assertThat(DateUtils.convertTimestamp(10_000_000, ChronoUnit.MICROS, ChronoUnit.NANOS)).isEqualTo(10_000_000_000L);
 
-    Assertions.assertEquals(10, DateUtils.convertTimestamp(10_000, ChronoUnit.MILLIS, ChronoUnit.SECONDS));
-    Assertions.assertEquals(10_000, DateUtils.convertTimestamp(10_000, ChronoUnit.MILLIS, ChronoUnit.MILLIS));
-    Assertions.assertEquals(10_000_000, DateUtils.convertTimestamp(10_000, ChronoUnit.MILLIS, ChronoUnit.MICROS));
-    Assertions.assertEquals(10_000_000_000L, DateUtils.convertTimestamp(10_000, ChronoUnit.MILLIS, ChronoUnit.NANOS));
+    assertThat(DateUtils.convertTimestamp(10_000, ChronoUnit.MILLIS, ChronoUnit.SECONDS)).isEqualTo(10);
+    assertThat(DateUtils.convertTimestamp(10_000, ChronoUnit.MILLIS, ChronoUnit.MILLIS)).isEqualTo(10_000);
+    assertThat(DateUtils.convertTimestamp(10_000, ChronoUnit.MILLIS, ChronoUnit.MICROS)).isEqualTo(10_000_000);
+    assertThat(DateUtils.convertTimestamp(10_000, ChronoUnit.MILLIS, ChronoUnit.NANOS)).isEqualTo(10_000_000_000L);
 
-    Assertions.assertEquals(10, DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.SECONDS));
-    Assertions.assertEquals(10_000, DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.MILLIS));
-    Assertions.assertEquals(10_000_000, DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.MICROS));
-    Assertions.assertEquals(10_000_000_000L, DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.NANOS));
+    assertThat(DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.SECONDS)).isEqualTo(10);
+    assertThat(DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.MILLIS)).isEqualTo(10_000);
+    assertThat(DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.MICROS)).isEqualTo(10_000_000);
+    assertThat(DateUtils.convertTimestamp(10, ChronoUnit.SECONDS, ChronoUnit.NANOS)).isEqualTo(10_000_000_000L);
   }
 
   @Test
@@ -471,20 +467,20 @@ public class TypeConversionTest extends TestHelper {
       database.begin();
       final LocalDateTime date1 = LocalDateTime.now();
       ResultSet resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date1);
-      Assertions.assertTrue(resultSet.hasNext());
-      Assertions.assertEquals(date1.truncatedTo(ChronoUnit.MICROS), resultSet.next().toElement().get("datetime_micros"));
+      assertThat(resultSet.hasNext()).isTrue();
+      assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date1.truncatedTo(ChronoUnit.MICROS));
 
       final LocalDateTime date2 = LocalDateTime.now().plusSeconds(1);
       resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date2);
-      Assertions.assertTrue(resultSet.hasNext());
-      Assertions.assertEquals(date2.truncatedTo(ChronoUnit.MICROS), resultSet.next().toElement().get("datetime_micros"));
+      assertThat(resultSet.hasNext()).isTrue();
+      assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date2.truncatedTo(ChronoUnit.MICROS));
 
       resultSet = database.command("sql", "select from ConversionTest where datetime_micros between ? and ?", date1, date2);
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       resultSet.next();
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       resultSet.next();
-      Assertions.assertFalse(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isFalse();
 
       try {
         Thread.sleep(1001);
@@ -494,68 +490,68 @@ public class TypeConversionTest extends TestHelper {
 
       resultSet = database.command("sql", "select sysdate() - datetime_micros as diff from ConversionTest");
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       Result result = resultSet.next();
-      Assertions.assertFalse(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isFalse();
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertFalse(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isFalse();
 
-      Assertions.assertFalse(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isFalse();
 
       resultSet = database.command("sql",
           "select sysdate() - datetime_micros as diff from ConversionTest where sysdate() - datetime_micros < duration(100000000000, 'nanosecond')");
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertFalse(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isFalse();
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertFalse(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isFalse();
 
-      Assertions.assertFalse(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isFalse();
 
       resultSet = database.command("sql",
           "select datetime_micros - sysdate() as diff from ConversionTest where abs( datetime_micros - sysdate() ) < duration(100000000000, 'nanosecond')");
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
 
-      Assertions.assertFalse(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isFalse();
 
       resultSet = database.command("sql",
           "select datetime_micros - date(?, 'yyyy-MM-dd HH:mm:ss.SSS') as diff from ConversionTest where abs( datetime_micros - sysdate() ) < duration(100000000000, 'nanosecond')",
           DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now()));
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
 
-      Assertions.assertFalse(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isFalse();
 
       resultSet = database.command("sql",
           "select datetime_micros - date(?, 'yyyy-MM-dd HH:mm:ss.SSS') as diff from ConversionTest where abs( datetime_micros - sysdate() ) < duration(3, \"second\")",
           DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now()));
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertTrue(((Duration) result.getProperty("diff")).isNegative(), "Returned " + result.getProperty("diff"));
+      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
 
-      Assertions.assertFalse(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isFalse();
 
       database.commit();
     } finally {

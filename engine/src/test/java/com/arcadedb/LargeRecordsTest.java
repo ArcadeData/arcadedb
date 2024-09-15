@@ -21,10 +21,13 @@ package com.arcadedb;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.schema.DocumentType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Populate the database with records 3X the page size of buckets.
@@ -47,14 +50,14 @@ public class LargeRecordsTest extends TestHelper {
     final long pageOverSize = ((LocalBucket) type.getBuckets(true).get(0)).getPageSize() * 3;
 
     database.scanType("BigRecords", true, record -> {
-      Assertions.assertNotNull(record);
+      assertThat(record).isNotNull();
       final String buffer = record.asDocument().getString("buffer");
-      Assertions.assertEquals(pageOverSize, buffer.length());
+      assertThat(buffer.length()).isEqualTo(pageOverSize);
       total.incrementAndGet();
       return true;
     });
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
 
     database.commit();
   }

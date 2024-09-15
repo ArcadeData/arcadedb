@@ -32,13 +32,17 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class MVCCTest extends TestHelper {
   private static final int CYCLES      = 3;
@@ -77,8 +81,8 @@ public class MVCCTest extends TestHelper {
           database.async().transaction(() -> {
             final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
-            Assertions.assertTrue(tx.getModifiedPages() == 0);
-            Assertions.assertNull(tx.getPageCounter(1));
+            assertThat(tx.getModifiedPages()).isEqualTo(0);
+            assertThat(tx.getPageCounter(1)).isNull();
 
             final MutableDocument doc = database.newVertex("Transaction");
             doc.set("uuid", UUID.randomUUID().toString());
@@ -88,7 +92,7 @@ public class MVCCTest extends TestHelper {
 
             final IndexCursor accounts = database.lookupByKey("Account", new String[] { "id" }, new Object[] { 0 });
 
-            Assertions.assertTrue(accounts.hasNext());
+            assertThat(accounts.hasNext()).isTrue();
 
             final Identifiable account = accounts.next();
 
@@ -101,9 +105,9 @@ public class MVCCTest extends TestHelper {
       } finally {
         new DatabaseChecker(database).setVerboseLevel(0).check();
 
-        Assertions.assertTrue(mvccErrors.get() > 0);
-        Assertions.assertEquals(0, otherErrors.get());
-        Assertions.assertEquals(0, txErrors.get());
+        assertThat(mvccErrors.get() > 0).isTrue();
+        assertThat(otherErrors.get()).isEqualTo(0);
+        assertThat(txErrors.get()).isEqualTo(0);
 
         database.drop();
         database = factory.create();
@@ -138,14 +142,14 @@ public class MVCCTest extends TestHelper {
           final long finalAccountId = accountId;
 
           final IndexCursor accounts = database.lookupByKey("Account", new String[] { "id" }, new Object[] { finalAccountId });
-          Assertions.assertTrue(accounts.hasNext());
+          assertThat(accounts.hasNext()).isTrue();
           final Vertex account = accounts.next().asVertex();
 
           final int slot = ((DatabaseAsyncExecutorImpl) database.async()).getSlot(account.getIdentity().getBucketId());
 
           database.async().transaction(() -> {
             final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
-            Assertions.assertTrue(tx.getModifiedPages() == 0);
+            assertThat(tx.getModifiedPages()).isEqualTo(0);
 
             account.modify().set("updated", true).save();
           }, 0, null, null, slot);
@@ -153,14 +157,13 @@ public class MVCCTest extends TestHelper {
 
         database.async().waitCompletion();
 
-        Assertions.assertEquals(TOT_ACCOUNT,
-            (long) database.query("sql", "select count(*) as count from Account where updated = true").nextIfAvailable().getProperty("count"));
+        assertThat((long) database.query("sql", "select count(*) as count from Account where updated = true").nextIfAvailable().getProperty("count")).isEqualTo(TOT_ACCOUNT);
 
       } finally {
         new DatabaseChecker(database).setVerboseLevel(0).check();
 
-        Assertions.assertEquals(0, mvccErrors.get());
-        Assertions.assertEquals(0, otherErrors.get());
+        assertThat(mvccErrors.get()).isEqualTo(0);
+        assertThat(otherErrors.get()).isEqualTo(0);
 
         database.drop();
         database = factory.create();

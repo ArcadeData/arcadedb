@@ -21,11 +21,11 @@ package com.arcadedb.query.sql.method.conversion;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class SQLMethodAsJSONTest {
 
@@ -39,28 +39,28 @@ class SQLMethodAsJSONTest {
   @Test
   void testNull() {
     final Object result = method.execute(null, null, null, null);
-    Assertions.assertNull(result);
+    assertThat(result).isNull();
   }
 
   @Test
   void testEmptyJsonIsReturned() {
     final Object result = method.execute("", null, null, null);
-    Assertions.assertTrue(result instanceof JSONObject);
-    Assertions.assertTrue(((JSONObject) result).isEmpty());
+    assertThat(result instanceof JSONObject).isTrue();
+    assertThat(((JSONObject) result).isEmpty()).isTrue();
   }
 
   @Test
   void testStringIsReturnedAsString() {
     final Object result = method.execute(new JSONObject().put("name", "robot").toString(), null, null, null);
-    Assertions.assertTrue(result instanceof JSONObject);
-    Assertions.assertEquals("robot", ((JSONObject) result).getString("name"));
+    assertThat(result instanceof JSONObject).isTrue();
+    assertThat(((JSONObject) result).getString("name")).isEqualTo("robot");
   }
 
   @Test
   void testErrorJsonParsing() {
     try {
       final Object result = method.execute("{\"name\"]", null, null, null);
-      Assertions.fail();
+      fail("");
     } catch (JSONException e) {
       //EXPECTED
     }

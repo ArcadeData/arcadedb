@@ -28,10 +28,13 @@ import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class LocalGremlinFactoryIT {
   private static final String DATABASE_NAME = "local-database-factory";
@@ -41,11 +44,11 @@ public class LocalGremlinFactoryIT {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withLocal(DATABASE_NAME)) {
       for (int i = 0; i < 1_000; i++) {
         final ArcadeGraph instance = pool.get();
-        Assertions.assertNotNull(instance);
+        assertThat(instance).isNotNull();
         instance.close();
       }
 
-      Assertions.assertEquals(1, pool.getTotalInstancesCreated());
+      assertThat(pool.getTotalInstancesCreated()).isEqualTo(1);
     }
   }
 
@@ -54,17 +57,17 @@ public class LocalGremlinFactoryIT {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withLocal(DATABASE_NAME)) {
       for (int i = 0; i < pool.getMaxInstances(); i++) {
         final ArcadeGraph instance = pool.get();
-        Assertions.assertNotNull(instance);
+        assertThat(instance).isNotNull();
       }
 
       try {
         pool.get();
-        Assertions.fail();
+        fail("");
       } catch (IllegalArgumentException e) {
         // EXPECTED
       }
 
-      Assertions.assertEquals(pool.getMaxInstances(), pool.getTotalInstancesCreated());
+      assertThat(pool.getTotalInstancesCreated()).isEqualTo(pool.getMaxInstances());
     }
   }
 

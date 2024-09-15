@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.stream.*;
@@ -62,17 +62,13 @@ public class DDLTest extends TestHelper {
     database.transaction(() -> {
 
       final Long persons = database.command("sql", "SELECT count(*) as persons FROM Person ").next().<Long>getProperty("persons");
-
-      Assertions.assertEquals(numOfElements, persons);
-
+      assertThat(persons).isEqualTo(numOfElements);
       final Long cars = database.command("sql", "SELECT count(*) as cars FROM Car").next().<Long>getProperty("cars");
 
-      Assertions.assertEquals(numOfElements, cars);
-
+      assertThat(cars).isEqualTo(numOfElements);
       final Long vs = database.command("sql", "SELECT count(*) as vs FROM V").next().<Long>getProperty("vs");
 
-      Assertions.assertEquals(numOfElements * 2, vs);
-
+      assertThat(vs).isEqualTo(numOfElements * 2);
       final Long edges = database.command("sql", "SELECT count(*) as edges FROM Drives").next().<Long>getProperty("edges");
 
     });

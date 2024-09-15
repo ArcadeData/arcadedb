@@ -26,10 +26,16 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class LSMTreeIndexPolymorphicTest extends TestHelper {
 
@@ -44,11 +50,11 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
       final MutableDocument docChildDuplicated = database.newDocument("TestChild");
       database.transaction(() -> {
         docChildDuplicated.set("name", "Root");
-        Assertions.assertEquals("Root", docChildDuplicated.get("name"));
+        assertThat(docChildDuplicated.get("name")).isEqualTo("Root");
         docChildDuplicated.save();
       }, true, 0);
 
-      Assertions.fail("Duplicated shouldn't be allowed by unique index on sub type");
+      fail("Duplicated shouldn't be allowed by unique index on sub type");
 
     } catch (final DuplicatedKeyException e) {
       // EXPECTED
@@ -76,15 +82,15 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     testChild2.setSuperTypes(Arrays.asList(typeRoot2));
     final MutableDocument doc = database.newDocument("TestChild2");
     doc.set("name", "Document Name");
-    Assertions.assertEquals("Document Name", doc.get("name"));
+    assertThat(doc.get("name")).isEqualTo("Document Name");
     doc.save();
-    Assertions.assertEquals("Document Name", doc.get("name"));
+    assertThat(doc.get("name")).isEqualTo("Document Name");
     try (final ResultSet rs = database.query("sql", "select from TestChild2 where name = :name",
         Map.of("arg0", "Test2", "name", "Document Name"))) {
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Document docRetrieved = rs.next().getElement().orElse(null);
-      Assertions.assertEquals("Document Name", docRetrieved.get("name"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(docRetrieved.get("name")).isEqualTo("Document Name");
+      assertThat(rs.hasNext()).isFalse();
     }
     database.commit();
   }
@@ -103,15 +109,15 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     database.setAutoTransaction(true);
     final MutableDocument doc = database.newDocument("TestChild2");
     doc.set("name", "Document Name");
-    Assertions.assertEquals("Document Name", doc.get("name"));
+    assertThat(doc.get("name")).isEqualTo("Document Name");
     doc.save();
-    Assertions.assertEquals("Document Name", doc.get("name"));
+    assertThat(doc.get("name")).isEqualTo("Document Name");
     try (final ResultSet rs = database.query("sql", "select from TestChild2 where name = :name",
         Map.of("arg0", "Test2", "name", "Document Name"))) {
-      Assertions.assertTrue(rs.hasNext());  //<<<<<<----------FAILING HERE
+      assertThat(rs.hasNext()).isTrue();  //<<<<<<----------FAILING HERE
       final Document docRetrieved = rs.next().getElement().orElse(null);
-      Assertions.assertEquals("Document Name", docRetrieved.get("name"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(docRetrieved.get("name")).isEqualTo("Document Name");
+      assertThat(rs.hasNext()).isFalse();
     }
   }
 
@@ -127,62 +133,62 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     final MutableDocument docRoot = database.newDocument("TestRoot");
     database.transaction(() -> {
       docRoot.set("name", "Root");
-      Assertions.assertEquals("Root", docRoot.get("name"));
+      assertThat(docRoot.get("name")).isEqualTo("Root");
       docRoot.save();
     });
-    Assertions.assertEquals("Root", docRoot.get("name"));
+    assertThat(docRoot.get("name")).isEqualTo("Root");
 
     final MutableDocument docChild = database.newDocument("TestChild");
     database.transaction(() -> {
       docChild.set("name", "Child");
-      Assertions.assertEquals("Child", docChild.get("name"));
+      assertThat(docChild.get("name")).isEqualTo("Child");
       docChild.save();
     });
-    Assertions.assertEquals("Child", docChild.get("name"));
+    assertThat(docChild.get("name")).isEqualTo("Child");
   }
 
   private void checkQueries() {
     try (final ResultSet rs = database.query("sql", "select from TestRoot where name <> :name",
         Map.of("arg0", "Test2", "name", "Nonsense"))) {
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Document doc1Retrieved = rs.next().getElement().orElse(null);
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Document doc2Retrieved = rs.next().getElement().orElse(null);
 
       if (doc1Retrieved.getTypeName().equals("TestRoot"))
-        Assertions.assertEquals("Root", doc1Retrieved.get("name"));
+        assertThat(doc1Retrieved.get("name")).isEqualTo("Root");
       else if (doc2Retrieved.getTypeName().equals("TestChild"))
-        Assertions.assertEquals("Child", doc2Retrieved.get("name"));
+        assertThat(doc2Retrieved.get("name")).isEqualTo("Child");
       else
-        Assertions.fail();
+        fail("");
 
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
     }
 
     try (final ResultSet rs = database.query("sql", "select from TestChild where name = :name",
         Map.of("arg0", "Test2", "name", "Child"))) {
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Document doc1Retrieved = rs.next().getElement().orElse(null);
-      Assertions.assertEquals("Child", doc1Retrieved.get("name"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(doc1Retrieved.get("name")).isEqualTo("Child");
+      assertThat(rs.hasNext()).isFalse();
     }
 
     typeChild.removeSuperType(typeRoot);
 
     try (final ResultSet rs = database.query("sql", "select from TestChild where name = :name",
         Map.of("arg0", "Test2", "name", "Child"))) {
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Document doc1Retrieved = rs.next().getElement().orElse(null);
-      Assertions.assertEquals("Child", doc1Retrieved.get("name"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(doc1Retrieved.get("name")).isEqualTo("Child");
+      assertThat(rs.hasNext()).isFalse();
     }
 
     try (final ResultSet rs = database.query("sql", "select from TestRoot where name <> :name",
         Map.of("arg0", "Test2", "name", "Nonsense"))) {
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Document doc1Retrieved = rs.next().getElement().orElse(null);
-      Assertions.assertEquals("Root", doc1Retrieved.get("name"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(doc1Retrieved.get("name")).isEqualTo("Root");
+      assertThat(rs.hasNext()).isFalse();
     }
   }
 }

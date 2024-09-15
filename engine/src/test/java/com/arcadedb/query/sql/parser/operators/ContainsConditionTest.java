@@ -23,8 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -34,22 +33,22 @@ public class ContainsConditionTest {
   public void test() {
     final ContainsCondition op = new ContainsCondition(-1);
 
-    assertFalse(op.execute(null, null));
-    assertFalse(op.execute(null, "foo"));
+    assertThat(op.execute(null, null)).isFalse();
+    assertThat(op.execute(null, "foo")).isFalse();
 
     final List<Object> left = new ArrayList<Object>();
-    assertFalse(op.execute(left, "foo"));
-    assertFalse(op.execute(left, null));
+    assertThat(op.execute(left, "foo")).isFalse();
+    assertThat(op.execute(left, null)).isFalse();
 
     left.add("foo");
     left.add("bar");
 
-    assertTrue(op.execute(left, "foo"));
-    assertTrue(op.execute(left, "bar"));
-    assertFalse(op.execute(left, "fooz"));
+    assertThat(op.execute(left, "foo")).isTrue();
+    assertThat(op.execute(left, "bar")).isTrue();
+    assertThat(op.execute(left, "fooz")).isFalse();
 
     left.add(null);
-    assertTrue(op.execute(left, null));
+    assertThat(op.execute(left, null)).isTrue();
   }
 
   @Test
@@ -73,6 +72,6 @@ public class ContainsConditionTest {
     };
 
     final ContainsCondition op = new ContainsCondition(-1);
-    assertTrue(op.execute(left, right));
+    assertThat(op.execute(left, right)).isTrue();
   }
 }

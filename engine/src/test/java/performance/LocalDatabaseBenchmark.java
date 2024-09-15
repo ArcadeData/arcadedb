@@ -26,10 +26,11 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.select.SelectCompiled;
-import org.junit.jupiter.api.Assertions;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class LocalDatabaseBenchmark {
   private static final int TOTAL    = 1_000;
@@ -115,11 +116,11 @@ public class LocalDatabaseBenchmark {
 
     List<Long> allIds = checkRecordSequence(database);
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, allIds.size());
+    assertThat(allIds.size()).isEqualTo(TOTAL * CONCURRENT_THREADS);
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, totalRecordsOnClusters);
+    assertThat(totalRecordsOnClusters).isEqualTo(TOTAL * CONCURRENT_THREADS);
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, database.countType("User", true));
+    assertThat(database.countType("User", true)).isEqualTo(TOTAL * CONCURRENT_THREADS);
 
 //    queryNative();
 //    querySQL();
@@ -143,7 +144,7 @@ public class LocalDatabaseBenchmark {
         .property("id").eq().parameter("id")//
         .compile();
     for (int i = 0; i < TOTAL * CONCURRENT_THREADS; i++) {
-      Assertions.assertEquals(1, cached.parameter("id", i).vertices().toList().size());
+      assertThat(cached.parameter("id", i).vertices().toList().size()).isEqualTo(1);
     }
     System.out.println("NATIVE " + (System.currentTimeMillis() - begin) + "ms");
   }
@@ -151,9 +152,9 @@ public class LocalDatabaseBenchmark {
   private void querySQL() {
     long begin = System.currentTimeMillis();
     for (int i = 0; i < TOTAL * CONCURRENT_THREADS; i++) {
-      Assertions.assertEquals(1, database.query("sql",
-          "select from User where id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ?",
-          i, i, i, i, i, i, i, i, i, i).toVertices().size());
+      assertThat(database.query("sql",
+        "select from User where id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ?",
+        i, i, i, i, i, i, i, i, i, i).toVertices().size()).isEqualTo(1);
     }
     System.out.println("SQL " + (System.currentTimeMillis() - begin) + "ms");
   }

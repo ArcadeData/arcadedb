@@ -20,8 +20,11 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class CountFromTypeStepTest {
 
@@ -41,8 +44,8 @@ public class CountFromTypeStepTest {
       final CountFromTypeStep step = new CountFromTypeStep(className, ALIAS, context);
 
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(20, (long) result.next().getProperty(ALIAS));
-      Assertions.assertFalse(result.hasNext());
+      assertThat((long) result.next().getProperty(ALIAS)).isEqualTo(20);
+      assertThat(result.hasNext()).isFalse();
     });
   }
 }

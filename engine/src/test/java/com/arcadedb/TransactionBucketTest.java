@@ -26,11 +26,17 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
 public class TransactionBucketTest extends TestHelper {
   private static final int TOT = 10000;
@@ -49,21 +55,21 @@ public class TransactionBucketTest extends TestHelper {
     database.begin();
 
     database.scanBucket("V_0", record -> {
-      Assertions.assertNotNull(record);
+      assertThat(record).isNotNull();
 
       final Set<String> prop = new HashSet<String>();
         prop.addAll(((Document) record).getPropertyNames());
 
-      Assertions.assertEquals(3, ((Document) record).getPropertyNames().size(), 9);
-      Assertions.assertTrue(prop.contains("id"));
-      Assertions.assertTrue(prop.contains("name"));
-      Assertions.assertTrue(prop.contains("surname"));
+      assertThat(((Document) record).getPropertyNames().size()).isCloseTo(3, within(9));
+      assertThat(prop.contains("id")).isTrue();
+      assertThat(prop.contains("name")).isTrue();
+      assertThat(prop.contains("surname")).isTrue();
 
       total.incrementAndGet();
       return true;
     });
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
 
     database.commit();
   }
@@ -78,21 +84,22 @@ public class TransactionBucketTest extends TestHelper {
 
     while (iterator.hasNext()) {
       final Document record = (Document) iterator.next();
-      Assertions.assertNotNull(record);
+      assertThat(record).isNotNull();
 
       final Set<String> prop = new HashSet<String>();
         prop.addAll(record.getPropertyNames());
 
-      Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
-      Assertions.assertTrue(prop.contains("id"));
-      Assertions.assertTrue(prop.contains("name"));
-      Assertions.assertTrue(prop.contains("surname"));
+
+      assertThat(record.getPropertyNames().size()).isCloseTo(3, within(9));
+      assertThat(prop.contains("id")).isTrue();
+      assertThat(prop.contains("name")).isTrue();
+      assertThat(prop.contains("surname")).isTrue();
 
       total.incrementAndGet();
 
     }
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
 
     database.commit();
   }
@@ -105,16 +112,16 @@ public class TransactionBucketTest extends TestHelper {
 
     database.scanBucket("V_0", record -> {
       final Document record2 = (Document) database.lookupByRID(record.getIdentity(), false);
-      Assertions.assertNotNull(record2);
-      Assertions.assertEquals(record, record2);
+      assertThat(record2).isNotNull();
+      assertThat(record2).isEqualTo(record);
 
       final Set<String> prop = new HashSet<String>();
         prop.addAll(record2.getPropertyNames());
 
-      Assertions.assertEquals(record2.getPropertyNames().size(), 3);
-      Assertions.assertTrue(prop.contains("id"));
-      Assertions.assertTrue(prop.contains("name"));
-      Assertions.assertTrue(prop.contains("surname"));
+      assertThat(record2.getPropertyNames()).hasSize(3);
+      assertThat(prop.contains("id")).isTrue();
+      assertThat(prop.contains("name")).isTrue();
+      assertThat(prop.contains("surname")).isTrue();
 
       total.incrementAndGet();
       return true;
@@ -122,7 +129,7 @@ public class TransactionBucketTest extends TestHelper {
 
     database.commit();
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
   }
 
   @Test
@@ -140,23 +147,23 @@ public class TransactionBucketTest extends TestHelper {
       });
 
     } finally {
-      Assertions.assertEquals(0, database.countBucket("V_0"));
+      assertThat(database.countBucket("V_0")).isEqualTo(0);
     }
 
     database.commit();
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
 
     beginTest();
 
-    database.transaction(() -> Assertions.assertEquals(TOT, database.countBucket("V_0")));
+    database.transaction(() -> assertThat(database.countBucket("V_0")).isEqualTo(TOT));
   }
 
   @Test
   public void testDeleteFail() {
     reopenDatabaseInReadOnlyMode();
 
-    Assertions.assertThrows(DatabaseIsReadOnlyException.class, () -> {
+    assertThatExceptionOfType(DatabaseIsReadOnlyException.class).isThrownBy(() -> {
       database.begin();
 
       database.scanBucket("V_0", record -> {
@@ -186,8 +193,8 @@ public class TransactionBucketTest extends TestHelper {
     database.scanType("testIteratorOnEdges_Edge", true, record -> {
 
       final Edge e1 = (Edge) record;
-      Assertions.assertEquals(v1.getIdentity(), e1.getOut());
-      Assertions.assertEquals(v2.getIdentity(), e1.getIn());
+      assertThat(e1.getOut()).isEqualTo(v1.getIdentity());
+      assertThat(e1.getIn()).isEqualTo(v2.getIdentity());
 
       total.incrementAndGet();
       return true;
@@ -195,7 +202,7 @@ public class TransactionBucketTest extends TestHelper {
 
     database.commit();
 
-    Assertions.assertEquals(1, total.get());
+    assertThat(total.get()).isEqualTo(1);
   }
 
   @Test
@@ -211,15 +218,15 @@ public class TransactionBucketTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from testIteratorOnEdges_Edge");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
 
     final Record record = result.next().getRecord().get();
 
-    Assertions.assertNotNull(record);
+    assertThat(record).isNotNull();
 
     final Edge e2 = (Edge) record;
-    Assertions.assertEquals(v1.getIdentity(), e2.getOut());
-    Assertions.assertEquals(v2.getIdentity(), e2.getIn());
+    assertThat(e2.getOut()).isEqualTo(v1.getIdentity());
+    assertThat(e2.getIn()).isEqualTo(v2.getIdentity());
 
     database.commit();
   }
@@ -238,15 +245,15 @@ public class TransactionBucketTest extends TestHelper {
     database.transaction(() -> {
       final ResultSet result = database.query("sql", "select from testIteratorOnEdges_Edge");
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
       final Record record = result.next().getRecord().get();
 
-      Assertions.assertNotNull(record);
+      assertThat(record).isNotNull();
 
       final Edge e2 = (Edge) record;
-      Assertions.assertNotNull(e2.getOutVertex());
-      Assertions.assertNotNull(e2.getInVertex());
+      assertThat(e2.getOutVertex()).isNotNull();
+      assertThat(e2.getInVertex()).isNotNull();
     });
   }
 

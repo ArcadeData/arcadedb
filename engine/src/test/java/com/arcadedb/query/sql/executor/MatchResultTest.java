@@ -3,10 +3,11 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class MatchResultTest extends TestHelper {
 
@@ -40,6 +41,6 @@ public class MatchResultTest extends TestHelper {
       set.add(next.getIdentity());
     }
 
-    Assertions.assertEquals(3, set.size());
+    assertThat(set.size()).isEqualTo(3);
   }
 }

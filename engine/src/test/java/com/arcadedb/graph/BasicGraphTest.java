@@ -32,11 +32,16 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class BasicGraphTest extends BaseGraphTest {
   @Test
@@ -44,53 +49,53 @@ public class BasicGraphTest extends BaseGraphTest {
     database.begin();
     try {
 
-      Assertions.assertEquals(1, database.countType(VERTEX1_TYPE_NAME, false));
-      Assertions.assertEquals(2, database.countType(VERTEX2_TYPE_NAME, false));
+      assertThat(database.countType(VERTEX1_TYPE_NAME, false)).isEqualTo(1);
+      assertThat(database.countType(VERTEX2_TYPE_NAME, false)).isEqualTo(2);
 
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
-      Assertions.assertNotNull(v1);
+      assertThat(v1).isNotNull();
 
       // TEST CONNECTED VERTICES
-      Assertions.assertEquals(VERTEX1_TYPE_NAME, v1.getTypeName());
-      Assertions.assertEquals(VERTEX1_TYPE_NAME, v1.get("name"));
+      assertThat(v1.getTypeName()).isEqualTo(VERTEX1_TYPE_NAME);
+      assertThat(v1.get("name")).isEqualTo(VERTEX1_TYPE_NAME);
 
       final Iterator<Vertex> vertices2level = v1.getVertices(Vertex.DIRECTION.OUT, new String[] { EDGE1_TYPE_NAME }).iterator();
-      Assertions.assertNotNull(vertices2level);
-      Assertions.assertTrue(vertices2level.hasNext());
+      assertThat(vertices2level).isNotNull();
+      assertThat(vertices2level.hasNext()).isTrue();
 
       final Vertex v2 = vertices2level.next();
 
-      Assertions.assertNotNull(v2);
-      Assertions.assertEquals(VERTEX2_TYPE_NAME, v2.getTypeName());
-      Assertions.assertEquals(VERTEX2_TYPE_NAME, v2.get("name"));
+      assertThat(v2).isNotNull();
+      assertThat(v2.getTypeName()).isEqualTo(VERTEX2_TYPE_NAME);
+      assertThat(v2.get("name")).isEqualTo(VERTEX2_TYPE_NAME);
 
       final Iterator<Vertex> vertices2level2 = v1.getVertices(Vertex.DIRECTION.OUT, new String[] { EDGE2_TYPE_NAME }).iterator();
-      Assertions.assertTrue(vertices2level2.hasNext());
+      assertThat(vertices2level2.hasNext()).isTrue();
 
       final Vertex v3 = vertices2level2.next();
-      Assertions.assertNotNull(v3);
+      assertThat(v3).isNotNull();
 
-      Assertions.assertEquals(VERTEX2_TYPE_NAME, v3.getTypeName());
-      Assertions.assertEquals("V3", v3.get("name"));
+      assertThat(v3.getTypeName()).isEqualTo(VERTEX2_TYPE_NAME);
+      assertThat(v3.get("name")).isEqualTo("V3");
 
       final Iterator<Vertex> vertices3level = v2.getVertices(Vertex.DIRECTION.OUT, new String[] { EDGE2_TYPE_NAME }).iterator();
-      Assertions.assertNotNull(vertices3level);
-      Assertions.assertTrue(vertices3level.hasNext());
+      assertThat(vertices3level).isNotNull();
+      assertThat(vertices3level.hasNext()).isTrue();
 
       final Vertex v32 = vertices3level.next();
 
-      Assertions.assertNotNull(v32);
-      Assertions.assertEquals(VERTEX2_TYPE_NAME, v32.getTypeName());
-      Assertions.assertEquals("V3", v32.get("name"));
+      assertThat(v32).isNotNull();
+      assertThat(v32.getTypeName()).isEqualTo(VERTEX2_TYPE_NAME);
+      assertThat(v32.get("name")).isEqualTo("V3");
 
-      Assertions.assertTrue(v1.isConnectedTo(v2));
-      Assertions.assertTrue(v2.isConnectedTo(v1));
-      Assertions.assertTrue(v1.isConnectedTo(v3));
-      Assertions.assertTrue(v3.isConnectedTo(v1));
-      Assertions.assertTrue(v2.isConnectedTo(v3));
+      assertThat(v1.isConnectedTo(v2)).isTrue();
+      assertThat(v2.isConnectedTo(v1)).isTrue();
+      assertThat(v1.isConnectedTo(v3)).isTrue();
+      assertThat(v3.isConnectedTo(v1)).isTrue();
+      assertThat(v2.isConnectedTo(v3)).isTrue();
 
-      Assertions.assertFalse(v3.isConnectedTo(v1, Vertex.DIRECTION.OUT));
-      Assertions.assertFalse(v3.isConnectedTo(v2, Vertex.DIRECTION.OUT));
+      assertThat(v3.isConnectedTo(v1, Vertex.DIRECTION.OUT)).isFalse();
+      assertThat(v3.isConnectedTo(v2, Vertex.DIRECTION.OUT)).isFalse();
 
     } finally {
       database.commit();
@@ -103,19 +108,19 @@ public class BasicGraphTest extends BaseGraphTest {
     database.begin();
     try {
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
-      Assertions.assertNotNull(v1);
+      assertThat(v1).isNotNull();
 
       final Iterator<Edge> edges3 = v1.getEdges(Vertex.DIRECTION.OUT, new String[] { EDGE2_TYPE_NAME }).iterator();
-      Assertions.assertNotNull(edges3);
-      Assertions.assertTrue(edges3.hasNext());
+      assertThat(edges3).isNotNull();
+      assertThat(edges3.hasNext()).isTrue();
 
       try {
         final MutableEdge edge = edges3.next().modify();
-        Assertions.fail("Cannot modify lightweight edges");
+        fail("Cannot modify lightweight edges");
 //        edge.set("upgraded", true);
 //        edge.save();
 //
-//        Assertions.assertTrue(edge.getIdentity().getPosition() > -1);
+//        Assertions.assertThat(edge.getIdentity().getPosition() > -1).isTrue();
       } catch (final IllegalStateException e) {
       }
 
@@ -129,50 +134,50 @@ public class BasicGraphTest extends BaseGraphTest {
     database.begin();
     try {
 
-      Assertions.assertEquals(1, database.countType(EDGE1_TYPE_NAME, false));
-      Assertions.assertEquals(1, database.countType(EDGE2_TYPE_NAME, false));
+      assertThat(database.countType(EDGE1_TYPE_NAME, false)).isEqualTo(1);
+      assertThat(database.countType(EDGE2_TYPE_NAME, false)).isEqualTo(1);
 
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
-      Assertions.assertNotNull(v1);
+      assertThat(v1).isNotNull();
 
       // TEST CONNECTED EDGES
       final Iterator<Edge> edges1 = v1.getEdges(Vertex.DIRECTION.OUT, new String[] { EDGE1_TYPE_NAME }).iterator();
-      Assertions.assertNotNull(edges1);
-      Assertions.assertTrue(edges1.hasNext());
+      assertThat(edges1).isNotNull();
+      assertThat(edges1.hasNext()).isTrue();
 
       final Edge e1 = edges1.next();
 
-      Assertions.assertNotNull(e1);
-      Assertions.assertEquals(EDGE1_TYPE_NAME, e1.getTypeName());
-      Assertions.assertEquals(v1, e1.getOut());
-      Assertions.assertEquals("E1", e1.get("name"));
+      assertThat(e1).isNotNull();
+      assertThat(e1.getTypeName()).isEqualTo(EDGE1_TYPE_NAME);
+      assertThat(e1.getOut()).isEqualTo(v1);
+      assertThat(e1.get("name")).isEqualTo("E1");
 
       final Vertex v2 = e1.getInVertex();
-      Assertions.assertEquals(VERTEX2_TYPE_NAME, v2.get("name"));
+      assertThat(v2.get("name")).isEqualTo(VERTEX2_TYPE_NAME);
 
       final Iterator<Edge> edges2 = v2.getEdges(Vertex.DIRECTION.OUT, new String[] { EDGE2_TYPE_NAME }).iterator();
-      Assertions.assertTrue(edges2.hasNext());
+      assertThat(edges2.hasNext()).isTrue();
 
       final Edge e2 = edges2.next();
-      Assertions.assertNotNull(e2);
+      assertThat(e2).isNotNull();
 
-      Assertions.assertEquals(EDGE2_TYPE_NAME, e2.getTypeName());
-      Assertions.assertEquals(v2, e2.getOut());
-      Assertions.assertEquals("E2", e2.get("name"));
+      assertThat(e2.getTypeName()).isEqualTo(EDGE2_TYPE_NAME);
+      assertThat(e2.getOut()).isEqualTo(v2);
+      assertThat(e2.get("name")).isEqualTo("E2");
 
       final Vertex v3 = e2.getInVertex();
-      Assertions.assertEquals("V3", v3.get("name"));
+      assertThat(v3.get("name")).isEqualTo("V3");
 
       final Iterator<Edge> edges3 = v1.getEdges(Vertex.DIRECTION.OUT, new String[] { EDGE2_TYPE_NAME }).iterator();
-      Assertions.assertNotNull(edges3);
-      Assertions.assertTrue(edges3.hasNext());
+      assertThat(edges3).isNotNull();
+      assertThat(edges3.hasNext()).isTrue();
 
       final Edge e3 = edges3.next();
 
-      Assertions.assertNotNull(e3);
-      Assertions.assertEquals(EDGE2_TYPE_NAME, e3.getTypeName());
-      Assertions.assertEquals(v1, e3.getOutVertex());
-      Assertions.assertEquals(v3, e3.getInVertex());
+      assertThat(e3).isNotNull();
+      assertThat(e3.getTypeName()).isEqualTo(EDGE2_TYPE_NAME);
+      assertThat(e3.getOutVertex()).isEqualTo(v1);
+      assertThat(e3.getInVertex()).isEqualTo(v3);
 
       v2.getEdges();
 
@@ -186,11 +191,11 @@ public class BasicGraphTest extends BaseGraphTest {
     database.begin();
     try {
 
-      Assertions.assertEquals(1, database.countType(EDGE1_TYPE_NAME, false));
-      Assertions.assertEquals(1, database.countType(EDGE2_TYPE_NAME, false));
+      assertThat(database.countType(EDGE1_TYPE_NAME, false)).isEqualTo(1);
+      assertThat(database.countType(EDGE2_TYPE_NAME, false)).isEqualTo(1);
 
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
-      Assertions.assertNotNull(v1);
+      assertThat(v1).isNotNull();
 
       final MutableVertex v1Copy = v1.modify();
       v1Copy.set("newProperty1", "TestUpdate1");
@@ -198,12 +203,12 @@ public class BasicGraphTest extends BaseGraphTest {
 
       // TEST CONNECTED EDGES
       final Iterator<Edge> edges1 = v1.getEdges(Vertex.DIRECTION.OUT, new String[] { EDGE1_TYPE_NAME }).iterator();
-      Assertions.assertNotNull(edges1);
-      Assertions.assertTrue(edges1.hasNext());
+      assertThat(edges1).isNotNull();
+      assertThat(edges1.hasNext()).isTrue();
 
       final Edge e1 = edges1.next();
 
-      Assertions.assertNotNull(e1);
+      assertThat(e1).isNotNull();
 
       final MutableEdge e1Copy = e1.modify();
       e1Copy.set("newProperty2", "TestUpdate2");
@@ -212,9 +217,9 @@ public class BasicGraphTest extends BaseGraphTest {
       database.commit();
 
       final Vertex v1CopyReloaded = (Vertex) database.lookupByRID(v1Copy.getIdentity(), true);
-      Assertions.assertEquals("TestUpdate1", v1CopyReloaded.get("newProperty1"));
+      assertThat(v1CopyReloaded.get("newProperty1")).isEqualTo("TestUpdate1");
       final Edge e1CopyReloaded = (Edge) database.lookupByRID(e1Copy.getIdentity(), true);
-      Assertions.assertEquals("TestUpdate2", e1CopyReloaded.get("newProperty2"));
+      assertThat(e1CopyReloaded.get("newProperty2")).isEqualTo("TestUpdate2");
 
     } finally {
       new DatabaseChecker(database).setVerboseLevel(0).check();
@@ -227,16 +232,16 @@ public class BasicGraphTest extends BaseGraphTest {
     try {
 
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
-      Assertions.assertNotNull(v1);
+      assertThat(v1).isNotNull();
 
       Iterator<Vertex> vertices = v1.getVertices(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(vertices.hasNext());
+      assertThat(vertices.hasNext()).isTrue();
       Vertex v3 = vertices.next();
-      Assertions.assertNotNull(v3);
+      assertThat(v3).isNotNull();
 
-      Assertions.assertTrue(vertices.hasNext());
+      assertThat(vertices.hasNext()).isTrue();
       Vertex v2 = vertices.next();
-      Assertions.assertNotNull(v2);
+      assertThat(v2).isNotNull();
 
       final long totalVertices = database.countType(v1.getTypeName(), true);
 
@@ -244,41 +249,41 @@ public class BasicGraphTest extends BaseGraphTest {
       // -----------------------
       database.deleteRecord(v1);
 
-      Assertions.assertEquals(totalVertices - 1, database.countType(v1.getTypeName(), true));
+      assertThat(database.countType(v1.getTypeName(), true)).isEqualTo(totalVertices - 1);
 
       vertices = v2.getVertices(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertFalse(vertices.hasNext());
+      assertThat(vertices.hasNext()).isFalse();
 
       vertices = v2.getVertices(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(vertices.hasNext());
+      assertThat(vertices.hasNext()).isTrue();
 
       // Expecting 1 edge only: V2 is still connected to V3
       vertices = v3.getVertices(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertTrue(vertices.hasNext());
+      assertThat(vertices.hasNext()).isTrue();
       vertices.next();
-      Assertions.assertFalse(vertices.hasNext());
+      assertThat(vertices.hasNext()).isFalse();
 
       // RELOAD AND CHECK AGAIN
       // -----------------------
       v2 = (Vertex) database.lookupByRID(v2.getIdentity(), true);
 
       vertices = v2.getVertices(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertFalse(vertices.hasNext());
+      assertThat(vertices.hasNext()).isFalse();
 
       vertices = v2.getVertices(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(vertices.hasNext());
+      assertThat(vertices.hasNext()).isTrue();
 
       v3 = (Vertex) database.lookupByRID(v3.getIdentity(), true);
 
       // Expecting 1 edge only: V2 is still connected to V3
       vertices = v3.getVertices(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertTrue(vertices.hasNext());
+      assertThat(vertices.hasNext()).isTrue();
       vertices.next();
-      Assertions.assertFalse(vertices.hasNext());
+      assertThat(vertices.hasNext()).isFalse();
 
       try {
         database.lookupByRID(root, true);
-        Assertions.fail("Expected deleted record");
+        fail("Expected deleted record");
       } catch (final RecordNotFoundException e) {
       }
 
@@ -294,16 +299,16 @@ public class BasicGraphTest extends BaseGraphTest {
     try {
 
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
-      Assertions.assertNotNull(v1);
+      assertThat(v1).isNotNull();
 
       Iterator<Edge> edges = v1.getEdges(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(edges.hasNext());
+      assertThat(edges.hasNext()).isTrue();
       final Edge e3 = edges.next();
-      Assertions.assertNotNull(e3);
+      assertThat(e3).isNotNull();
 
-      Assertions.assertTrue(edges.hasNext());
+      assertThat(edges.hasNext()).isTrue();
       final Edge e2 = edges.next();
-      Assertions.assertNotNull(e2);
+      assertThat(e2).isNotNull();
 
       // DELETE THE EDGE
       // -----------------------
@@ -311,33 +316,33 @@ public class BasicGraphTest extends BaseGraphTest {
 
       Vertex vOut = e2.getOutVertex();
       edges = vOut.getEdges(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(edges.hasNext());
+      assertThat(edges.hasNext()).isTrue();
 
       edges.next();
-      Assertions.assertFalse(edges.hasNext());
+      assertThat(edges.hasNext()).isFalse();
 
       Vertex vIn = e2.getInVertex();
       edges = vIn.getEdges(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertFalse(edges.hasNext());
+      assertThat(edges.hasNext()).isFalse();
 
       // RELOAD AND CHECK AGAIN
       // -----------------------
       try {
         database.lookupByRID(e2.getIdentity(), true);
-        Assertions.fail("Expected deleted record");
+        fail("Expected deleted record");
       } catch (final RecordNotFoundException e) {
       }
 
       vOut = e2.getOutVertex();
       edges = vOut.getEdges(Vertex.DIRECTION.OUT).iterator();
-      Assertions.assertTrue(edges.hasNext());
+      assertThat(edges.hasNext()).isTrue();
 
       edges.next();
-      Assertions.assertFalse(edges.hasNext());
+      assertThat(edges.hasNext()).isFalse();
 
       vIn = e2.getInVertex();
       edges = vIn.getEdges(Vertex.DIRECTION.IN).iterator();
-      Assertions.assertFalse(edges.hasNext());
+      assertThat(edges.hasNext()).isFalse();
 
     } finally {
       database.commit();
@@ -351,34 +356,34 @@ public class BasicGraphTest extends BaseGraphTest {
     try {
 
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
-      Assertions.assertNotNull(v1);
+      assertThat(v1).isNotNull();
 
       Iterator<Edge> edges = v1.getEdges(Vertex.DIRECTION.OUT).iterator();
 
-      Assertions.assertTrue(edges.hasNext());
+      assertThat(edges.hasNext()).isTrue();
       final Edge e3 = edges.next();
-      Assertions.assertNotNull(e3);
+      assertThat(e3).isNotNull();
 
-      Assertions.assertTrue(edges.hasNext());
+      assertThat(edges.hasNext()).isTrue();
       final Edge e2 = edges.next();
-      Assertions.assertNotNull(e2);
+      assertThat(e2).isNotNull();
 
       // DELETE THE EDGE
       // -----------------------
       edges.remove();
 
-      Assertions.assertFalse(edges.hasNext());
+      assertThat(edges.hasNext()).isFalse();
 
       try {
         e2.getOutVertex();
-        Assertions.fail();
+        fail("");
       } catch (RecordNotFoundException e) {
         // EXPECTED
       }
 
       try {
         e2.getInVertex();
-        Assertions.fail();
+        fail("");
       } catch (RecordNotFoundException e) {
         // EXPECTED
       }
@@ -387,7 +392,7 @@ public class BasicGraphTest extends BaseGraphTest {
       // -----------------------
       try {
         database.lookupByRID(e2.getIdentity(), true);
-        Assertions.fail("Expected deleted record");
+        fail("Expected deleted record");
       } catch (final RecordNotFoundException e) {
         // EXPECTED
       }
@@ -408,36 +413,36 @@ public class BasicGraphTest extends BaseGraphTest {
 
       database.command("sql", "create edge " + EDGE1_TYPE_NAME + " from ? to ? unidirectional", v1, v1);
 
-      Assertions.assertTrue(v1.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext());
-      Assertions.assertEquals(v1, v1.getVertices(Vertex.DIRECTION.OUT).iterator().next());
-      Assertions.assertFalse(v1.getVertices(Vertex.DIRECTION.IN).iterator().hasNext());
+      assertThat(v1.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isTrue();
+      assertThat(v1.getVertices(Vertex.DIRECTION.OUT).iterator().next()).isEqualTo(v1);
+      assertThat(v1.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isFalse();
 
       // BIDIRECTIONAL EDGE
       final Vertex v2 = database.newVertex(VERTEX1_TYPE_NAME).save();
       v2.newEdge(EDGE1_TYPE_NAME, v2, true).save();
 
-      Assertions.assertTrue(v2.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext());
-      Assertions.assertEquals(v2, v2.getVertices(Vertex.DIRECTION.OUT).iterator().next());
+      assertThat(v2.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isTrue();
+      assertThat(v2.getVertices(Vertex.DIRECTION.OUT).iterator().next()).isEqualTo(v2);
 
-      Assertions.assertTrue(v2.getVertices(Vertex.DIRECTION.IN).iterator().hasNext());
-      Assertions.assertEquals(v2, v2.getVertices(Vertex.DIRECTION.IN).iterator().next());
+      assertThat(v2.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isTrue();
+      assertThat(v2.getVertices(Vertex.DIRECTION.IN).iterator().next()).isEqualTo(v2);
 
       database.commit();
 
       // UNIDIRECTIONAL EDGE
       final Vertex v1reloaded = (Vertex) database.lookupByRID(v1.getIdentity(), true);
-      Assertions.assertTrue(v1reloaded.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext());
-      Assertions.assertEquals(v1reloaded, v1reloaded.getVertices(Vertex.DIRECTION.OUT).iterator().next());
-      Assertions.assertFalse(v1reloaded.getVertices(Vertex.DIRECTION.IN).iterator().hasNext());
+      assertThat(v1reloaded.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isTrue();
+      assertThat(v1reloaded.getVertices(Vertex.DIRECTION.OUT).iterator().next()).isEqualTo(v1reloaded);
+      assertThat(v1reloaded.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isFalse();
 
       // BIDIRECTIONAL EDGE
       final Vertex v2reloaded = (Vertex) database.lookupByRID(v2.getIdentity(), true);
 
-      Assertions.assertTrue(v2reloaded.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext());
-      Assertions.assertEquals(v2reloaded, v2reloaded.getVertices(Vertex.DIRECTION.OUT).iterator().next());
+      assertThat(v2reloaded.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isTrue();
+      assertThat(v2reloaded.getVertices(Vertex.DIRECTION.OUT).iterator().next()).isEqualTo(v2reloaded);
 
-      Assertions.assertTrue(v2reloaded.getVertices(Vertex.DIRECTION.IN).iterator().hasNext());
-      Assertions.assertEquals(v2reloaded, v2reloaded.getVertices(Vertex.DIRECTION.IN).iterator().next());
+      assertThat(v2reloaded.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isTrue();
+      assertThat(v2reloaded.getVertices(Vertex.DIRECTION.IN).iterator().next()).isEqualTo(v2reloaded);
 
     } finally {
       new DatabaseChecker(database).setVerboseLevel(0).check();
@@ -460,15 +465,17 @@ public class BasicGraphTest extends BaseGraphTest {
           final Record v2 = v2Iterator.next();
 
           final ResultSet result = database.query("sql", "select shortestPath(?,?) as sp", v1, v2);
-          Assertions.assertTrue(result.hasNext());
+          assertThat(result.hasNext()).isTrue();
           final Result line = result.next();
 
-          Assertions.assertNotNull(line);
-          Assertions.assertTrue(line.getPropertyNames().contains("sp"));
-          Assertions.assertNotNull(line.getProperty("sp"));
-          Assertions.assertEquals(2, ((List) line.getProperty("sp")).size());
-          Assertions.assertEquals(v1, ((List) line.getProperty("sp")).get(0));
-          Assertions.assertEquals(v2, ((List) line.getProperty("sp")).get(1));
+          assertThat(line).isNotNull();
+          assertThat(line.getPropertyNames().contains("sp")).isTrue();
+          List<RID> sp = line.<List<RID>>getProperty("sp");
+          assertThat(sp).isNotNull();
+          assertThat(sp).hasSize(2);
+
+          assertThat(sp.get(0)).isEqualTo(v1);
+          assertThat(sp.get(1)).isEqualTo(v2);
         }
       }
 
@@ -495,12 +502,12 @@ public class BasicGraphTest extends BaseGraphTest {
       });
 
       final ResultSet result = database.query("sql", "select ciao() as ciao");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result line = result.next();
 
-      Assertions.assertNotNull(line);
-      Assertions.assertTrue(line.getPropertyNames().contains("ciao"));
-      Assertions.assertEquals("Ciao", line.getProperty("ciao"));
+      assertThat(line).isNotNull();
+      assertThat(line.getPropertyNames().contains("ciao")).isTrue();
+      assertThat(line.<String>getProperty("ciao")).isEqualTo("Ciao");
 
     } finally {
       new DatabaseChecker(database).setVerboseLevel(0).check();
@@ -518,12 +525,12 @@ public class BasicGraphTest extends BaseGraphTest {
       ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().getReflectionFactory().register("test_", getClass());
 
       final ResultSet result = database.query("sql", "select test_testReflectionMethod() as testReflectionMethod");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result line = result.next();
 
-      Assertions.assertNotNull(line);
-      Assertions.assertTrue(line.getPropertyNames().contains("testReflectionMethod"));
-      Assertions.assertEquals("reflect on this", line.getProperty("testReflectionMethod"));
+      assertThat(line).isNotNull();
+      assertThat(line.getPropertyNames().contains("testReflectionMethod")).isTrue();
+      assertThat(line.<String>getProperty("testReflectionMethod")).isEqualTo("reflect on this");
 
     } finally {
       new DatabaseChecker(database).setVerboseLevel(0).check();
@@ -563,7 +570,7 @@ public class BasicGraphTest extends BaseGraphTest {
       v2.set("rid", v1RID.get());
       v2.save();
 
-      Assertions.assertFalse(v1a.isConnectedTo(v2));
+      assertThat(v1a.isConnectedTo(v2)).isFalse();
     });
   }
 
@@ -589,13 +596,13 @@ public class BasicGraphTest extends BaseGraphTest {
       v2.set("rid", v1RID.get());
       v2.save();
 
-      Assertions.fail();
+      fail("");
 
     } catch (final RuntimeException e) {
       // EXPECTED
     }
 
-    Assertions.assertFalse(v1a.isConnectedTo(v2));
+    assertThat(v1a.isConnectedTo(v2)).isFalse();
   }
 
   @Test
@@ -613,7 +620,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
     try {
       database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true));
-      Assertions.fail();
+      fail("");
     } catch (final DuplicatedKeyException ex) {
       // EXPECTED
     }
@@ -649,19 +656,19 @@ public class BasicGraphTest extends BaseGraphTest {
       v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
       v2[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1002).save();
       final ResultSet result = database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
     });
 
     try {
       database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true));
-      Assertions.fail();
+      fail("");
     } catch (final DuplicatedKeyException ex) {
       // EXPECTED
     }
 
     try {
       database.transaction(() -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]));
-      Assertions.fail();
+      fail("");
     } catch (final DuplicatedKeyException ex) {
       // EXPECTED
     }
@@ -681,19 +688,19 @@ public class BasicGraphTest extends BaseGraphTest {
       v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
       v2[0] = database.newVertex(VERTEX2_TYPE_NAME).set("id", 1002).save();
       final ResultSet result = database.command("sql", "create edge EdgeConstraint from ? to ?", v1[0], v2[0]);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
     });
 
     try {
       database.transaction(() -> v2[0].newEdge("EdgeConstraint", v1[0], true));
-      Assertions.fail();
+      fail("");
     } catch (final ValidationException ex) {
       // EXPECTED
     }
 
     try {
       database.transaction(() -> database.command("sql", "create edge EdgeConstraint from ? to ?", v2[0], v1[0]));
-      Assertions.fail();
+      fail("");
     } catch (final ValidationException ex) {
       // EXPECTED
     }
@@ -711,7 +718,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
     try {
       final Edge e1 = v1.newEdge("a-vertex", v2, /*= bidirectional */ true); // <-- expect IllegalArgumentException
-      Assertions.fail("Created an edge of vertex type");
+      fail("Created an edge of vertex type");
     } catch (final ClassCastException e) {
       // EXPECTED
     }
@@ -732,7 +739,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
       final Iterator<Vertex> vertices = v1.getVertices(Vertex.DIRECTION.OUT).iterator();
       for (int i = 10000 - 1; vertices.hasNext(); --i) {
-        Assertions.assertEquals(i, vertices.next().get("id"));
+        assertThat(vertices.next().get("id")).isEqualTo(i);
       }
     });
   }

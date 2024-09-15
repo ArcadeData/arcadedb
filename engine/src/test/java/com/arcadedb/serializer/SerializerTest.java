@@ -29,12 +29,14 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.nio.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SerializerTest extends TestHelper {
 
@@ -80,66 +82,66 @@ public class SerializerTest extends TestHelper {
     binary.rewind();
     buffer.rewind();
 
-    Assertions.assertEquals(0, binary.getUnsignedNumber());
-    Assertions.assertEquals(0, buffer.getUnsignedNumber());
-    Assertions.assertEquals(3, binary.getUnsignedNumber());
-    Assertions.assertEquals(3, buffer.getUnsignedNumber());
-    Assertions.assertEquals(Short.MIN_VALUE, binary.getUnsignedNumber());
-    Assertions.assertEquals(Short.MIN_VALUE, buffer.getUnsignedNumber());
-    Assertions.assertEquals(Short.MAX_VALUE, binary.getUnsignedNumber());
-    Assertions.assertEquals(Short.MAX_VALUE, buffer.getUnsignedNumber());
-    Assertions.assertEquals(Integer.MIN_VALUE, binary.getUnsignedNumber());
-    Assertions.assertEquals(Integer.MIN_VALUE, buffer.getUnsignedNumber());
-    Assertions.assertEquals(Integer.MAX_VALUE, binary.getUnsignedNumber());
-    Assertions.assertEquals(Integer.MAX_VALUE, buffer.getUnsignedNumber());
-    Assertions.assertEquals(Long.MIN_VALUE, binary.getUnsignedNumber());
-    Assertions.assertEquals(Long.MIN_VALUE, buffer.getUnsignedNumber());
-    Assertions.assertEquals(Long.MAX_VALUE, binary.getUnsignedNumber());
-    Assertions.assertEquals(Long.MAX_VALUE, buffer.getUnsignedNumber());
+    assertThat(binary.getUnsignedNumber()).isEqualTo(0);
+    assertThat(buffer.getUnsignedNumber()).isEqualTo(0);
+    assertThat(binary.getUnsignedNumber()).isEqualTo(3);
+    assertThat(buffer.getUnsignedNumber()).isEqualTo(3);
+    assertThat(binary.getUnsignedNumber()).isEqualTo(Short.MIN_VALUE);
+    assertThat(buffer.getUnsignedNumber()).isEqualTo(Short.MIN_VALUE);
+    assertThat(binary.getUnsignedNumber()).isEqualTo(Short.MAX_VALUE);
+    assertThat(buffer.getUnsignedNumber()).isEqualTo(Short.MAX_VALUE);
+    assertThat(binary.getUnsignedNumber()).isEqualTo(Integer.MIN_VALUE);
+    assertThat(buffer.getUnsignedNumber()).isEqualTo(Integer.MIN_VALUE);
+    assertThat(binary.getUnsignedNumber()).isEqualTo(Integer.MAX_VALUE);
+    assertThat(buffer.getUnsignedNumber()).isEqualTo(Integer.MAX_VALUE);
+    assertThat(binary.getUnsignedNumber()).isEqualTo(Long.MIN_VALUE);
+    assertThat(buffer.getUnsignedNumber()).isEqualTo(Long.MIN_VALUE);
+    assertThat(binary.getUnsignedNumber()).isEqualTo(Long.MAX_VALUE);
+    assertThat(buffer.getUnsignedNumber()).isEqualTo(Long.MAX_VALUE);
 
-    Assertions.assertEquals(0, binary.getNumber());
-    Assertions.assertEquals(0, buffer.getNumber());
-    Assertions.assertEquals(3, binary.getNumber());
-    Assertions.assertEquals(3, buffer.getNumber());
-    Assertions.assertEquals(Short.MIN_VALUE, binary.getNumber());
-    Assertions.assertEquals(Short.MIN_VALUE, buffer.getNumber());
-    Assertions.assertEquals(Short.MAX_VALUE, binary.getNumber());
-    Assertions.assertEquals(Short.MAX_VALUE, buffer.getNumber());
-    Assertions.assertEquals(Integer.MIN_VALUE, binary.getNumber());
-    Assertions.assertEquals(Integer.MIN_VALUE, buffer.getNumber());
-    Assertions.assertEquals(Integer.MAX_VALUE, binary.getNumber());
-    Assertions.assertEquals(Integer.MAX_VALUE, buffer.getNumber());
-    Assertions.assertEquals(Long.MIN_VALUE, binary.getNumber());
-    Assertions.assertEquals(Long.MIN_VALUE, buffer.getNumber());
-    Assertions.assertEquals(Long.MAX_VALUE, binary.getNumber());
-    Assertions.assertEquals(Long.MAX_VALUE, buffer.getNumber());
+    assertThat(binary.getNumber()).isEqualTo(0);
+    assertThat(buffer.getNumber()).isEqualTo(0);
+    assertThat(binary.getNumber()).isEqualTo(3);
+    assertThat(buffer.getNumber()).isEqualTo(3);
+    assertThat(binary.getNumber()).isEqualTo(Short.MIN_VALUE);
+    assertThat(buffer.getNumber()).isEqualTo(Short.MIN_VALUE);
+    assertThat(binary.getNumber()).isEqualTo(Short.MAX_VALUE);
+    assertThat(buffer.getNumber()).isEqualTo(Short.MAX_VALUE);
+    assertThat(binary.getNumber()).isEqualTo(Integer.MIN_VALUE);
+    assertThat(buffer.getNumber()).isEqualTo(Integer.MIN_VALUE);
+    assertThat(binary.getNumber()).isEqualTo(Integer.MAX_VALUE);
+    assertThat(buffer.getNumber()).isEqualTo(Integer.MAX_VALUE);
+    assertThat(binary.getNumber()).isEqualTo(Long.MIN_VALUE);
+    assertThat(buffer.getNumber()).isEqualTo(Long.MIN_VALUE);
+    assertThat(binary.getNumber()).isEqualTo(Long.MAX_VALUE);
+    assertThat(buffer.getNumber()).isEqualTo(Long.MAX_VALUE);
 
-    Assertions.assertEquals(0, binary.getShort());
-    Assertions.assertEquals(0, buffer.getShort());
+    assertThat(binary.getShort()).isEqualTo((short) 0);
+    assertThat(buffer.getShort()).isEqualTo((short) 0);
 
-    Assertions.assertEquals(Short.MIN_VALUE, binary.getShort());
-    Assertions.assertEquals(Short.MIN_VALUE, buffer.getShort());
+    assertThat(binary.getShort()).isEqualTo(Short.MIN_VALUE);
+    assertThat(buffer.getShort()).isEqualTo(Short.MIN_VALUE);
 
-    Assertions.assertEquals(Short.MAX_VALUE, binary.getShort());
-    Assertions.assertEquals(Short.MAX_VALUE, buffer.getShort());
+    assertThat(binary.getShort()).isEqualTo(Short.MAX_VALUE);
+    assertThat(buffer.getShort()).isEqualTo(Short.MAX_VALUE);
 
-    Assertions.assertEquals(0, binary.getInt());
-    Assertions.assertEquals(0, buffer.getInt());
+    assertThat(binary.getInt()).isEqualTo(0);
+    assertThat(buffer.getInt()).isEqualTo(0);
 
-    Assertions.assertEquals(Integer.MIN_VALUE, binary.getInt());
-    Assertions.assertEquals(Integer.MIN_VALUE, buffer.getInt());
+    assertThat(binary.getInt()).isEqualTo(Integer.MIN_VALUE);
+    assertThat(buffer.getInt()).isEqualTo(Integer.MIN_VALUE);
 
-    Assertions.assertEquals(Integer.MAX_VALUE, binary.getInt());
-    Assertions.assertEquals(Integer.MAX_VALUE, buffer.getInt());
+    assertThat(binary.getInt()).isEqualTo(Integer.MAX_VALUE);
+    assertThat(buffer.getInt()).isEqualTo(Integer.MAX_VALUE);
 
-    Assertions.assertEquals(0l, binary.getLong());
-    Assertions.assertEquals(0l, buffer.getLong());
+    assertThat(binary.getLong()).isEqualTo(0l);
+    assertThat(buffer.getLong()).isEqualTo(0l);
 
-    Assertions.assertEquals(Long.MIN_VALUE, binary.getLong());
-    Assertions.assertEquals(Long.MIN_VALUE, buffer.getLong());
+    assertThat(binary.getLong()).isEqualTo(Long.MIN_VALUE);
+    assertThat(buffer.getLong()).isEqualTo(Long.MIN_VALUE);
 
-    Assertions.assertEquals(Long.MAX_VALUE, binary.getLong());
-    Assertions.assertEquals(Long.MAX_VALUE, buffer.getLong());
+    assertThat(binary.getLong()).isEqualTo(Long.MAX_VALUE);
+    assertThat(buffer.getLong()).isEqualTo(Long.MAX_VALUE);
   }
 
   @Test
@@ -174,21 +176,21 @@ public class SerializerTest extends TestHelper {
       buffer3.getByte(); // SKIP RECORD TYPE
       final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
-      Assertions.assertEquals(Integer.MIN_VALUE, record2.get("minInt"));
-      Assertions.assertEquals(Integer.MAX_VALUE, record2.get("maxInt"));
+      assertThat(record2.get("minInt")).isEqualTo(Integer.MIN_VALUE);
+      assertThat(record2.get("maxInt")).isEqualTo(Integer.MAX_VALUE);
 
-      Assertions.assertEquals(Long.MIN_VALUE, record2.get("minLong"));
-      Assertions.assertEquals(Long.MAX_VALUE, record2.get("maxLong"));
+      assertThat(record2.get("minLong")).isEqualTo(Long.MIN_VALUE);
+      assertThat(record2.get("maxLong")).isEqualTo(Long.MAX_VALUE);
 
-      Assertions.assertEquals(Short.MIN_VALUE, record2.get("minShort"));
-      Assertions.assertEquals(Short.MAX_VALUE, record2.get("maxShort"));
+      assertThat(record2.get("minShort")).isEqualTo(Short.MIN_VALUE);
+      assertThat(record2.get("maxShort")).isEqualTo(Short.MAX_VALUE);
 
-      Assertions.assertEquals(Byte.MIN_VALUE, record2.get("minByte"));
-      Assertions.assertEquals(Byte.MAX_VALUE, record2.get("maxByte"));
+      assertThat(record2.get("minByte")).isEqualTo(Byte.MIN_VALUE);
+      assertThat(record2.get("maxByte")).isEqualTo(Byte.MAX_VALUE);
 
-      Assertions.assertTrue(record2.get("decimal") instanceof BigDecimal);
-      Assertions.assertEquals(new BigDecimal("9876543210.0123456789"), record2.get("decimal"));
-      Assertions.assertEquals("Miner", record2.get("string"));
+      assertThat(record2.get("decimal") instanceof BigDecimal).isTrue();
+      assertThat(record2.get("decimal")).isEqualTo(new BigDecimal("9876543210.0123456789"));
+      assertThat(record2.get("string")).isEqualTo("Miner");
     });
   }
 
@@ -271,29 +273,29 @@ public class SerializerTest extends TestHelper {
       buffer3.getByte(); // SKIP RECORD TYPE
       final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
-      Assertions.assertIterableEquals(listOfBooleans, (Iterable<?>) record2.get("listOfBooleans"));
-      Assertions.assertIterableEquals(listOfBooleans, (Iterable<?>) record2.get("arrayOfBooleans"));
+      assertThat(record2.get("listOfBooleans")).isEqualTo(listOfBooleans);
+      assertThat(record2.get("arrayOfBooleans")).isEqualTo(listOfBooleans);
 
-      Assertions.assertIterableEquals(listOfIntegers, (Iterable<?>) record2.get("listOfIntegers"));
-      Assertions.assertIterableEquals(listOfIntegers, (Iterable<?>) record2.get("arrayOfIntegers"));
+      assertThat(record2.get("listOfIntegers")).isEqualTo(listOfIntegers);
+      assertThat(record2.get("arrayOfIntegers")).isEqualTo(listOfIntegers);
 
-      Assertions.assertIterableEquals(listOfLongs, (Iterable<?>) record2.get("listOfLongs"));
-      Assertions.assertIterableEquals(listOfLongs, (Iterable<?>) record2.get("arrayOfLongs"));
+      assertThat(record2.get("listOfLongs")).isEqualTo(listOfLongs);
+      assertThat(record2.get("arrayOfLongs")).isEqualTo(listOfLongs);
 
-      Assertions.assertIterableEquals(listOfShorts, (Iterable<?>) record2.get("listOfShorts"));
-      Assertions.assertIterableEquals(listOfShorts, (Iterable<?>) record2.get("arrayOfShorts"));
+      assertThat(record2.get("listOfShorts")).isEqualTo(listOfShorts);
+      assertThat(record2.get("arrayOfShorts")).isEqualTo(listOfShorts);
 
-      Assertions.assertIterableEquals(listOfFloats, (Iterable<?>) record2.get("listOfFloats"));
-      Assertions.assertIterableEquals(listOfFloats, (Iterable<?>) record2.get("arrayOfFloats"));
+      assertThat(record2.get("listOfFloats")).isEqualTo(listOfFloats);
+      assertThat(record2.get("arrayOfFloats")).isEqualTo(listOfFloats);
 
-      Assertions.assertIterableEquals(listOfDoubles, (Iterable<?>) record2.get("listOfDoubles"));
-      Assertions.assertIterableEquals(listOfDoubles, (Iterable<?>) record2.get("arrayOfDoubles"));
+      assertThat(record2.get("listOfDoubles")).isEqualTo(listOfDoubles);
+      assertThat(record2.get("arrayOfDoubles")).isEqualTo(listOfDoubles);
 
-      Assertions.assertIterableEquals(listOfStrings, (Iterable<?>) record2.get("listOfStrings"));
-      Assertions.assertIterableEquals(listOfStrings, (Iterable<?>) record2.get("arrayOfStrings"));
+      assertThat(record2.get("listOfStrings")).isEqualTo(listOfStrings);
+      assertThat(record2.get("arrayOfStrings")).isEqualTo(listOfStrings);
 
-      Assertions.assertIterableEquals(listOfMixed, (Iterable<?>) record2.get("listOfMixed"));
-      Assertions.assertIterableEquals(listOfMixed, (Iterable<?>) record2.get("arrayOfMixed"));
+      assertThat(record2.get("listOfMixed")).isEqualTo(listOfMixed);
+      assertThat(record2.get("arrayOfMixed")).isEqualTo(listOfMixed);
     });
   }
 
@@ -344,11 +346,11 @@ public class SerializerTest extends TestHelper {
       buffer3.getByte(); // SKIP RECORD TYPE
       final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
-      Assertions.assertArrayEquals(arrayOfIntegers, (int[]) record2.get("arrayOfIntegers"));
-      Assertions.assertArrayEquals(arrayOfLongs, (long[]) record2.get("arrayOfLongs"));
-      Assertions.assertArrayEquals(arrayOfShorts, (short[]) record2.get("arrayOfShorts"));
-      Assertions.assertArrayEquals(arrayOfFloats, (float[]) record2.get("arrayOfFloats"));
-      Assertions.assertArrayEquals(arrayOfDoubles, (double[]) record2.get("arrayOfDoubles"));
+      assertThat((int[]) record2.get("arrayOfIntegers")).isEqualTo(arrayOfIntegers);
+      assertThat((long[]) record2.get("arrayOfLongs")).isEqualTo(arrayOfLongs);
+      assertThat((short[]) record2.get("arrayOfShorts")).isEqualTo(arrayOfShorts);
+      assertThat((float[]) record2.get("arrayOfFloats")).isEqualTo(arrayOfFloats);
+      assertThat((double[]) record2.get("arrayOfDoubles")).isEqualTo(arrayOfDoubles);
     });
   }
 
@@ -416,14 +418,14 @@ public class SerializerTest extends TestHelper {
       buffer3.getByte(); // SKIP RECORD TYPE
       final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
-      Assertions.assertEquals(mapOfStringsBooleans, record2.get("mapOfStringsBooleans"));
-      Assertions.assertEquals(mapOfIntegers, record2.get("mapOfIntegers"));
-      Assertions.assertEquals(mapOfLongs, record2.get("mapOfLongs"));
-      Assertions.assertEquals(mapOfShorts, record2.get("mapOfShorts"));
-      Assertions.assertEquals(mapOfFloats, record2.get("mapOfFloats"));
-      Assertions.assertEquals(mapOfDoubles, record2.get("mapOfDoubles"));
-      Assertions.assertEquals(mapOfStrings, record2.get("mapOfStrings"));
-      Assertions.assertEquals(mapOfMixed, record2.get("mapOfMixed"));
+      assertThat(record2.get("mapOfStringsBooleans")).isEqualTo(mapOfStringsBooleans);
+      assertThat(record2.get("mapOfIntegers")).isEqualTo(mapOfIntegers);
+      assertThat(record2.get("mapOfLongs")).isEqualTo(mapOfLongs);
+      assertThat(record2.get("mapOfShorts")).isEqualTo(mapOfShorts);
+      assertThat(record2.get("mapOfFloats")).isEqualTo(mapOfFloats);
+      assertThat(record2.get("mapOfDoubles")).isEqualTo(mapOfDoubles);
+      assertThat(record2.get("mapOfStrings")).isEqualTo(mapOfStrings);
+      assertThat(record2.get("mapOfMixed")).isEqualTo(mapOfMixed);
     });
   }
 
@@ -456,11 +458,11 @@ public class SerializerTest extends TestHelper {
       buffer3.getByte(); // SKIP RECORD TYPE
       final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"), null);
 
-      Assertions.assertEquals(0, record2.get("id"));
+      assertThat(record2.get("id")).isEqualTo(0);
 
       final EmbeddedDocument embeddedDoc = (EmbeddedDocument) record2.get("embedded");
 
-      Assertions.assertEquals(1, embeddedDoc.get("id"));
+      assertThat(embeddedDoc.get("id")).isEqualTo(1);
     });
   }
 
@@ -500,14 +502,14 @@ public class SerializerTest extends TestHelper {
       buffer3.getByte(); // SKIP RECORD TYPE
       final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"), null);
 
-      Assertions.assertEquals(0, record2.get("id"));
+      assertThat(record2.get("id")).isEqualTo(0);
 
       final List<Document> embeddedList2 = (List<Document>) record2.get("embedded");
 
-      Assertions.assertIterableEquals(embeddedList, embeddedList2);
+      assertThat(embeddedList).isEqualTo(embeddedList2);
 
       for (final Document d : embeddedList2)
-        Assertions.assertTrue(d instanceof EmbeddedDocument);
+        assertThat(d instanceof EmbeddedDocument).isTrue();
     });
   }
 
@@ -550,15 +552,16 @@ public class SerializerTest extends TestHelper {
       buffer3.getByte(); // SKIP RECORD TYPE
       final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
-      Assertions.assertEquals(0, record2.get("id"));
+      assertThat(record2.get("id")).isEqualTo(0);
 
       final Map<Integer, Document> embeddedMap2 = (Map<Integer, Document>) record2.get("embedded");
 
-      Assertions.assertIterableEquals(embeddedMap.entrySet(), embeddedMap2.entrySet());
+      assertThat(embeddedMap).isEqualTo(embeddedMap2);
+//      Assertions.assertIterableEquals(embeddedMap.entrySet(), embeddedMap2.entrySet());
 
       for (final Map.Entry<Integer, Document> d : embeddedMap2.entrySet()) {
-        Assertions.assertTrue(d.getKey() instanceof Integer);
-        Assertions.assertTrue(d.getValue() instanceof EmbeddedDocument);
+        assertThat(d.getKey() instanceof Integer).isTrue();
+        assertThat(d.getValue() instanceof EmbeddedDocument).isTrue();
       }
     });
   }

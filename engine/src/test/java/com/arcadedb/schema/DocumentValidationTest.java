@@ -10,11 +10,15 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.text.*;
+import java.text.SimpleDateFormat;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class DocumentValidationTest extends TestHelper {
 
@@ -176,16 +180,16 @@ public class DocumentValidationTest extends TestHelper {
     database.command("sql", "create property Validation.string STRING (default \"1\")");
     database.command("sql", "create property Validation.dat DATETIME (default sysdate('YYYY-MM-DD HH:MM:SS'))");
 
-    Assertions.assertEquals(1L, clazz.getProperty("long").getDefaultValue());
-    Assertions.assertEquals("1", clazz.getProperty("string").getDefaultValue());
-    Assertions.assertTrue(clazz.getProperty("dat").getDefaultValue() instanceof Date);
+    assertThat(clazz.getProperty("long").getDefaultValue()).isEqualTo(1L);
+    assertThat(clazz.getProperty("string").getDefaultValue()).isEqualTo("1");
+    assertThat(clazz.getProperty("dat").getDefaultValue() instanceof Date).isTrue();
 
     database.transaction(() -> {
       final MutableDocument d = database.newDocument("Validation");
       d.save();
-      Assertions.assertEquals(1L, d.get("long"));
-      Assertions.assertEquals("1", d.get("string"));
-      Assertions.assertTrue(d.get("dat") instanceof Date);
+      assertThat(d.get("long")).isEqualTo(1L);
+      assertThat(d.get("string")).isEqualTo("1");
+      assertThat(d.get("dat") instanceof Date);
     });
   }
 
@@ -195,12 +199,12 @@ public class DocumentValidationTest extends TestHelper {
 
     database.command("sql", "create property Validation.string STRING (notnull, default \"1\")");
 
-    Assertions.assertEquals("1", clazz.getProperty("string").getDefaultValue());
+    assertThat(clazz.getProperty("string").getDefaultValue()).isEqualTo("1");
 
     database.transaction(() -> {
       final MutableDocument d = database.newDocument("Validation");
       d.save();
-      Assertions.assertEquals("1", d.get("string"));
+      assertThat(d.get("string")).isEqualTo("1");
     });
   }
 
@@ -211,23 +215,23 @@ public class DocumentValidationTest extends TestHelper {
     database.command("sql", "create property Validation.string STRING (mandatory true, notnull true, default \"Hi\")");
     database.command("sql", "create property Validation.dat DATETIME (mandatory true, default null)");
 
-    Assertions.assertEquals("Hi", clazz.getProperty("string").getDefaultValue());
-    Assertions.assertNull(clazz.getProperty("dat").getDefaultValue());
+    assertThat(clazz.getProperty("string").getDefaultValue()).isEqualTo("Hi");
+    assertThat(clazz.getProperty("dat").getDefaultValue()).isNull();
 
     database.transaction(() -> {
       final MutableDocument d = database.newDocument("Validation");
       d.save();
-      Assertions.assertEquals("Hi", d.get("string"));
-      Assertions.assertNull(d.get("dat"));
+      assertThat(d.get("string")).isEqualTo("Hi");
+      assertThat(d.get("dat")).isNull();
 
       final ResultSet resultSet = database.command("sql", "insert into Validation set string = null");
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       final Result result = resultSet.next();
 
-      Assertions.assertEquals("Hi", result.getProperty("string"));
-      Assertions.assertTrue(result.hasProperty("dat"));
-      Assertions.assertNull(result.getProperty("dat"));
+      assertThat(result.<String>getProperty("string")).isEqualTo("Hi");
+      assertThat(result.hasProperty("dat")).isTrue();
+      assertThat(result.<String>getProperty("dat")).isNull();
     });
   }
 
@@ -237,7 +241,7 @@ public class DocumentValidationTest extends TestHelper {
 
     database.command("sql", "create property Validation.int INTEGER (mandatory true)");
 
-    Assertions.assertTrue(clazz.getProperty("int").isMandatory());
+    assertThat(clazz.getProperty("int").isMandatory()).isTrue();
 
     final MutableDocument d = database.newDocument("Validation");
     d.set("int", 10);
@@ -265,7 +269,7 @@ public class DocumentValidationTest extends TestHelper {
       }
 
       final MutableEdge e = v1.newEdge("E", v2, true, "id", "12345");
-      Assertions.assertEquals("12345", e.getString("id"));
+      assertThat(e.getString("id")).isEqualTo("12345");
     });
   }
 
@@ -303,9 +307,9 @@ public class DocumentValidationTest extends TestHelper {
       }
 
       final Edge e = database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444', c = '2222'", v1, v2).nextIfAvailable().getEdge().get();
-      Assertions.assertEquals("12345", e.getString("a"));
-      Assertions.assertEquals("4444", e.getString("b"));
-      Assertions.assertEquals("2222", e.getString("c"));
+      assertThat(e.getString("a")).isEqualTo("12345");
+      assertThat(e.getString("b")).isEqualTo("4444");
+      assertThat(e.getString("c")).isEqualTo("2222");
     });
   }
 
@@ -327,9 +331,9 @@ public class DocumentValidationTest extends TestHelper {
     embedded.set("test", "test");
     try {
       d.validate();
-      Assertions.fail("Validation doesn't throw exception");
+      fail("Validation doesn't throw exception");
     } catch (final ValidationException e) {
-      Assertions.assertTrue(e.toString().contains("int"));
+      assertThat(e.toString().contains("int")).isTrue();
     }
   }
 
@@ -360,9 +364,9 @@ public class DocumentValidationTest extends TestHelper {
 
     try {
       d.validate();
-      Assertions.fail("Validation doesn't throw exception");
+      fail("Validation doesn't throw exception");
     } catch (final ValidationException e) {
-      Assertions.assertTrue(e.toString().contains("long"));
+      assertThat(e.toString().contains("long")).isTrue();
     }
   }
 
@@ -394,9 +398,9 @@ public class DocumentValidationTest extends TestHelper {
 
     try {
       d.validate();
-      Assertions.fail("Validation doesn't throw exception");
+      fail("Validation doesn't throw exception");
     } catch (final ValidationException e) {
-      Assertions.assertTrue(e.toString().contains("long"));
+      assertThat(e.toString().contains("long")).isTrue();
     }
   }
 
@@ -705,9 +709,9 @@ public class DocumentValidationTest extends TestHelper {
     final DocumentType clazzLoaded = database.getSchema().getType("Validation");
     final Property property = clazzLoaded.getPropertyIfExists("string");
 
-    Assertions.assertTrue(property.isMandatory());
-    Assertions.assertTrue(property.isReadonly());
-    Assertions.assertTrue(property.isNotNull());
+    assertThat(property.isMandatory()).isTrue();
+    assertThat(property.isReadonly()).isTrue();
+    assertThat(property.isNotNull()).isTrue();
   }
 
   @Test
@@ -715,14 +719,14 @@ public class DocumentValidationTest extends TestHelper {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
     try {
       clazz.createProperty("invString", Type.STRING).setMin("-1");
-      Assertions.fail();
+      fail("");
     } catch (IllegalArgumentException e) {
       // EXPECTED
     }
 
     try {
       clazz.createProperty("invBinary", Type.LIST).setMax("-1");
-      Assertions.fail();
+      fail("");
     } catch (IllegalArgumentException e) {
       // EXPECTED
     }
@@ -733,7 +737,7 @@ public class DocumentValidationTest extends TestHelper {
       final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
       newD.set(field, newValue);
       newD.validate();
-      Assertions.fail();
+      fail("");
     } catch (final ValidationException v) {
     }
   }
@@ -743,7 +747,7 @@ public class DocumentValidationTest extends TestHelper {
       final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
       newD.remove(fieldName);
       newD.validate();
-      Assertions.fail();
+      fail("");
     } catch (final ValidationException v) {
     }
   }
@@ -752,7 +756,7 @@ public class DocumentValidationTest extends TestHelper {
     try {
       toCheck.remove(fieldName);
       toCheck.validate();
-      Assertions.fail();
+      fail("");
     } catch (final ValidationException v) {
     }
   }

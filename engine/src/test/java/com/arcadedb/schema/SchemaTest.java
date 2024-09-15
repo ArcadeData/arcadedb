@@ -19,11 +19,14 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SchemaTest extends TestHelper {
 
@@ -31,29 +34,29 @@ public class SchemaTest extends TestHelper {
   public void tesSchemaSettings() {
     database.transaction(() -> {
       final ZoneId zoneId = database.getSchema().getZoneId();
-      Assertions.assertNotNull(zoneId);
+      assertThat(zoneId).isNotNull();
       database.getSchema().setZoneId(ZoneId.of("America/New_York"));
-      Assertions.assertEquals(ZoneId.of("America/New_York"), database.getSchema().getZoneId());
+      assertThat(database.getSchema().getZoneId()).isEqualTo(ZoneId.of("America/New_York"));
 
       final TimeZone timeZone = database.getSchema().getTimeZone();
-      Assertions.assertNotNull(timeZone);
+      assertThat(timeZone).isNotNull();
       database.getSchema().setTimeZone(TimeZone.getTimeZone("UK"));
-      Assertions.assertEquals(TimeZone.getTimeZone("UK"), database.getSchema().getTimeZone());
+      assertThat(database.getSchema().getTimeZone()).isEqualTo(TimeZone.getTimeZone("UK"));
 
       final String dateFormat = database.getSchema().getDateFormat();
-      Assertions.assertNotNull(dateFormat);
+      assertThat(dateFormat).isNotNull();
       database.getSchema().setDateFormat("yyyy-MMM-dd");
-      Assertions.assertEquals("yyyy-MMM-dd", database.getSchema().getDateFormat());
+      assertThat(database.getSchema().getDateFormat()).isEqualTo("yyyy-MMM-dd");
 
       final String dateTimeFormat = database.getSchema().getDateTimeFormat();
-      Assertions.assertNotNull(dateTimeFormat);
+      assertThat(dateTimeFormat).isNotNull();
       database.getSchema().setDateTimeFormat("yyyy-MMM-dd HH:mm:ss");
-      Assertions.assertEquals("yyyy-MMM-dd HH:mm:ss", database.getSchema().getDateTimeFormat());
+      assertThat(database.getSchema().getDateTimeFormat()).isEqualTo("yyyy-MMM-dd HH:mm:ss");
 
       final String encoding = database.getSchema().getEncoding();
-      Assertions.assertNotNull(encoding);
+      assertThat(encoding).isNotNull();
       database.getSchema().setEncoding("UTF-8");
-      Assertions.assertEquals("UTF-8", database.getSchema().getEncoding());
+      assertThat(database.getSchema().getEncoding()).isEqualTo("UTF-8");
     });
   }
 }

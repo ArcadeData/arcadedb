@@ -18,34 +18,20 @@
  */
 package com.arcadedb.server.gremlin;
 
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.gremlin.ArcadeGraph;
-import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.security.ServerSecurityException;
-import com.arcadedb.utility.CodeUtils;
-import com.arcadedb.utility.FileUtils;
-import org.apache.tinkerpop.gremlin.driver.Cluster;
-import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
-import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
-import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
-import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
-import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class GremlinServerSecurityTest extends AbstractGremlinServerIT {
 
   @Test
   public void getAllVertices() {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", "test")) {
-      Assertions.fail("Expected security exception");
+      fail("Expected security exception");
     } catch (final SecurityException e) {
-      Assertions.assertTrue(e.getMessage().contains("User/Password"));
+      assertThat(e.getMessage().contains("User/Password")).isTrue();
     }
   }
 

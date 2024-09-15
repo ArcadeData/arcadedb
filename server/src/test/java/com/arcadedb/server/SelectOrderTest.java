@@ -34,8 +34,9 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -44,6 +45,8 @@ import java.time.*;
 import java.time.format.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/741
@@ -109,7 +112,7 @@ public class SelectOrderTest {
         database.begin();
         try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
           while (resultSet.hasNext()) {
-            Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
+            assertThat(resultSet.next().getIdentity().get()).isEqualTo(rids[0]);
           }
         }
         database.commit();
@@ -120,7 +123,7 @@ public class SelectOrderTest {
         database.begin();
         try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
           while (resultSet.hasNext()) {
-            Assertions.assertEquals(rids[1], resultSet.next().getIdentity().get());
+            assertThat(resultSet.next().getIdentity().get()).isEqualTo(rids[1]);
           }
         }
         database.commit();
@@ -131,7 +134,7 @@ public class SelectOrderTest {
         database.begin();
         try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
           while (resultSet.hasNext()) {
-            Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
+            assertThat(resultSet.next().getIdentity().get()).isEqualTo(rids[0]);
           }
         }
         database.commit();
@@ -141,7 +144,7 @@ public class SelectOrderTest {
         database.begin();
         try (ResultSet resultSet = database.query("sql", sqlString)) {
           while (resultSet.hasNext()) {
-            Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
+            assertThat(resultSet.next().getIdentity().get()).isEqualTo(rids[0]);
           }
         }
         database.commit();
@@ -151,7 +154,7 @@ public class SelectOrderTest {
         database.begin();
         try (ResultSet resultSet = database.query("sql", sqlString)) {
           while (resultSet.hasNext()) {
-            Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
+            assertThat(resultSet.next().getIdentity().get()).isEqualTo(rids[0]);
           }
         }
         database.commit();
@@ -162,7 +165,7 @@ public class SelectOrderTest {
         database.begin();
         try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
           while (resultSet.hasNext()) {
-            Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
+            assertThat(resultSet.next().getIdentity().get()).isEqualTo(rids[0]);
           }
         }
         database.commit();
@@ -216,7 +219,8 @@ public class SelectOrderTest {
             stop = LocalDateTime.parse("20220320T002323", FILENAME_TIME_FORMAT);
             Object[] parameters1 = { name, type, start, stop };
             try (ResultSet resultSet = database.command("sql", sqlString, parameters1)) {
-              Assertions.assertTrue(resultSet.hasNext());
+
+              assertThat(resultSet.hasNext()).isTrue();
               result = resultSet.next();
             } catch (Exception e) {
               System.out.println(e.getMessage());
@@ -233,7 +237,7 @@ public class SelectOrderTest {
 
             try (ResultSet resultSet = database.query("sql", sqlString, parameters3)) {
 
-              Assertions.assertTrue(resultSet.hasNext());
+              assertThat(resultSet.hasNext()).isTrue();
 
               while (resultSet.hasNext()) {
                 result = resultSet.next();
@@ -241,7 +245,8 @@ public class SelectOrderTest {
                 start = result.getProperty("start");
 
                 if (lastStart != null)
-                  Assertions.assertTrue(start.compareTo(lastStart) <= 0, "" + start + " is greater than " + lastStart);
+                  assertThat(start.compareTo(lastStart)).isLessThanOrEqualTo(0)
+                      .withFailMessage("" + start + " is greater than " + lastStart);
 
                 lastStart = start;
               }
@@ -251,7 +256,7 @@ public class SelectOrderTest {
 
             sqlString = "SELECT name, start, stop FROM Product WHERE type = ? AND start <= ? AND stop >= ? ORDER BY start ASC";
             try (ResultSet resultSet = database.query("sql", sqlString, parameters3)) {
-              Assertions.assertTrue(resultSet.hasNext());
+              assertThat(resultSet.hasNext()).isTrue();
 
               while (resultSet.hasNext()) {
                 result = resultSet.next();
@@ -259,7 +264,8 @@ public class SelectOrderTest {
                 start = result.getProperty("start");
 
                 if (lastStart != null)
-                  Assertions.assertTrue(start.compareTo(lastStart) >= 0, "" + start + " is smaller than " + lastStart);
+                  assertThat(start.compareTo(lastStart)).isGreaterThanOrEqualTo(0)
+                      .withFailMessage("" + start + " is smaller than " + lastStart);
 
                 lastStart = start;
               }

@@ -20,8 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -33,16 +34,16 @@ public class DropTypeStatementExecutionTest extends TestHelper {
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
-    Assertions.assertNotNull(schema.getType(className));
+    assertThat(schema.getType(className)).isNotNull();
 
     final ResultSet result = database.command("sql", "drop type " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result next = result.next();
-    Assertions.assertEquals("drop type", next.getProperty("operation"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(next.<String>getProperty("operation")).isEqualTo("drop type");
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
-    Assertions.assertFalse(schema.existsType(className));
+    assertThat(schema.existsType(className)).isFalse();
   }
 
   @Test
@@ -51,21 +52,21 @@ public class DropTypeStatementExecutionTest extends TestHelper {
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
-    Assertions.assertNotNull(schema.getType(className));
+    assertThat(schema.getType(className)).isNotNull();
 
     ResultSet result = database.command("sql", "drop type " + className + " if exists");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result next = result.next();
-    Assertions.assertEquals("drop type", next.getProperty("operation"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(next.<String>getProperty("operation")).isEqualTo("drop type");
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
-    Assertions.assertFalse(schema.existsType(className));
+    assertThat(schema.existsType(className)).isFalse();
 
     result = database.command("sql", "drop type " + className + " if exists");
     result.close();
 
-    Assertions.assertFalse(schema.existsType(className));
+    assertThat(schema.existsType(className)).isFalse();
   }
 
   @Test
@@ -74,15 +75,15 @@ public class DropTypeStatementExecutionTest extends TestHelper {
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
-    Assertions.assertNotNull(schema.getType(className));
+    assertThat(schema.getType(className)).isNotNull();
 
     final ResultSet result = database.command("sql", "drop type ?", className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result next = result.next();
-    Assertions.assertEquals("drop type", next.getProperty("operation"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(next.<String>getProperty("operation")).isEqualTo("drop type");
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
-    Assertions.assertFalse(schema.existsType(className));
+    assertThat(schema.existsType(className)).isFalse();
   }
 }

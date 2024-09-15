@@ -26,11 +26,14 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.File;
+import java.io.IOException;
+import java.util.Iterator;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class JSONImporterIT {
   @Test
@@ -43,13 +46,13 @@ public class JSONImporterIT {
     importer.load();
 
     try (final Database db = new DatabaseFactory(databasePath).open()) {
-      Assertions.assertEquals(1, db.countType("Food", true));
+      assertThat(db.countType("Food", true)).isEqualTo(1);
 
       final Document food = db.iterateType("Food", true).next().asDocument(true);
       JSONObject json = new JSONObject(FileUtils.readFileAsString(new File("src/test/resources/importer-one-object.json")));
 
       for (Object name : json.names())
-        Assertions.assertTrue(food.has(name.toString()));
+        assertThat(food.has(name.toString())).isTrue();
     }
 
     TestHelper.checkActiveDatabases();
@@ -64,7 +67,7 @@ public class JSONImporterIT {
     importer.load();
 
     try (final Database db = new DatabaseFactory(databasePath).open()) {
-      Assertions.assertEquals(2, db.countType("Food", true));
+      assertThat(db.countType("Food", true)).isEqualTo(2);
     }
 
     TestHelper.checkActiveDatabases();
@@ -115,26 +118,26 @@ public class JSONImporterIT {
         final String name = vertex.getString("Name");
 
         if ("Marcus".equalsIgnoreCase(name)) {
-          Assertions.assertEquals("1234", vertex.getString("id"));
-          Assertions.assertEquals(0, vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER"));
-          Assertions.assertEquals(2, vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER"));
+          assertThat(vertex.getString("id")).isEqualTo("1234");
+          assertThat(vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER")).isEqualTo(0);
+          assertThat(vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER")).isEqualTo(2);
         } else if ("Win".equals(name)) {
-          Assertions.assertEquals("1230", vertex.getString("id"));
-          Assertions.assertEquals(1, vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER"));
-          Assertions.assertEquals(0, vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER"));
+          assertThat(vertex.getString("id")).isEqualTo("1230");
+          assertThat(vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER")).isEqualTo(1);
+          assertThat(vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER")).isEqualTo(0);
         } else if ("Dave".equals(name)) {
-          Assertions.assertEquals("1232", vertex.getString("id"));
-          Assertions.assertEquals(1, vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER"));
-          Assertions.assertEquals(1, vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER"));
+          assertThat(vertex.getString("id")).isEqualTo("1232");
+          assertThat(vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER")).isEqualTo(1);
+          assertThat(vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER")).isEqualTo(1);
         } else if ("Albert".equals(name)) {
-          Assertions.assertEquals("1239", vertex.getString("id"));
-          Assertions.assertEquals(1, vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER"));
-          Assertions.assertEquals(0, vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER"));
+          assertThat(vertex.getString("id")).isEqualTo("1239");
+          assertThat(vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER")).isEqualTo(1);
+          assertThat(vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER")).isEqualTo(0);
         } else
-          Assertions.fail();
+          fail("");
       }
 
-      Assertions.assertEquals(4, db.countType("User", true));
+      assertThat(db.countType("User", true)).isEqualTo(4);
     }
 
     TestHelper.checkActiveDatabases();

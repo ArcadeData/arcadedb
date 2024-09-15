@@ -42,8 +42,9 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -53,6 +54,8 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 
 import static com.arcadedb.server.StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * From Discussion https://github.com/ArcadeData/arcadedb/discussions/1129#discussioncomment-6226545
@@ -165,7 +168,7 @@ public class ConsoleAsyncInsertTest {
 
           dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
 
-          Assertions.assertEquals(PARALLEL_LEVEL, dtProducts.getBuckets(false).size());
+          assertThat(dtProducts.getBuckets(false).size()).isEqualTo(PARALLEL_LEVEL);
         });
       }
     }
@@ -242,7 +245,7 @@ public class ConsoleAsyncInsertTest {
           //dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
           dtProducts.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(List.of("name")));
 
-          Assertions.assertEquals(PARALLEL_LEVEL, dtProducts.getBuckets(false).size());
+          assertThat(dtProducts.getBuckets(false).size()).isEqualTo(PARALLEL_LEVEL);
         });
       }
     }
@@ -354,7 +357,7 @@ public class ConsoleAsyncInsertTest {
     try (ResultSet resultSet = database.command("sql",
         "insert into Product set name = ?, type = ?, start = ?, stop = ?, v = ? return @rid", arcadeDBServer.getConfiguration(),
         p.fileName, p.fileType, p.getStartValidity(), p.getStopValidity(), p.getVersion())) {
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       Result result = resultSet.next();
       rid = result.getProperty("@rid").toString();
     }
@@ -367,29 +370,29 @@ public class ConsoleAsyncInsertTest {
       orders.add(new CandidateOrder("SIR1LRM-7.1", rid, start, stop, "cs2minipds-test", "PENDING"));
     }
     JSONObject insertResult = insertOrdersAsync(database, orders);
-    Assertions.assertEquals(insertResult.getInt("totalRows"), TOTAL);
+    assertThat(TOTAL).isEqualTo(insertResult.getInt("totalRows"));
     int firstOrderId = 1;
     int lastOrderId = TOTAL;
     try (ResultSet resultSet = database.query("sql", "select from Order order by id")) {
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
     }
     String DELETE_ORDERS = "DELETE FROM Order WHERE id >= ? AND id <= ?";
     try (ResultSet resultSet = database.command("sql", DELETE_ORDERS, firstOrderId, lastOrderId)) {
-      Assertions.assertEquals(TOTAL, (Long) resultSet.next().getProperty("count"));
+      assertThat((Long) resultSet.next().getProperty("count")).isEqualTo(TOTAL);
     }
     try (ResultSet resultSet = database.query("sql", "select from Order order by id")) {
-      Assertions.assertFalse(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isFalse();
     }
     insertResult = insertOrdersAsync(database, orders);
-    Assertions.assertEquals(TOTAL, insertResult.getInt("totalRows"));
+    assertThat(insertResult.getInt("totalRows")).isEqualTo(TOTAL);
     try (ResultSet resultSet = database.query("sql", "select from Order")) {
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
     }
     try (ResultSet resultSet = database.query("sql", "select from Order order by processor")) {
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
     }
     try (ResultSet resultSet = database.query("sql", "select from Order order by id")) {
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
     } finally {
       arcadeDBServer.stop();
       FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
@@ -398,25 +401,25 @@ public class ConsoleAsyncInsertTest {
 
   private void checkResults(AtomicLong txErrorCounter, Database database, AtomicLong okCount, AtomicLong errCount, long N,
       long begin) {
-    Assertions.assertTrue(database.async().waitCompletion(30_000));
+    assertThat(database.async().waitCompletion(30_000)).isTrue();
 
     System.out.println("Total async insertion of " + N + " elements in " + (System.currentTimeMillis() - begin));
 
-    Assertions.assertEquals(okCount.get(), N);
-    Assertions.assertEquals(errCount.get(), 0);
-    Assertions.assertEquals(txErrorCounter.get(), 0);
+    assertThat(N).isEqualTo(okCount.get());
+    assertThat(errCount.get()).isEqualTo(0);
+    assertThat(txErrorCounter.get()).isEqualTo(0);
     try (ResultSet resultSet = database.query("sql", "SELECT count(*) as total FROM Product")) {
       Result result = resultSet.next();
-      Assertions.assertEquals((Long) result.getProperty("total"), N);
+      assertThat(N).isEqualTo((Long) result.getProperty("total"));
       Console console = new Console();
       String URL = "remote:localhost/" + DATABASE_NAME + " " + userName + " " + password;
-      Assertions.assertTrue(console.parse("connect " + URL));
+      assertThat(console.parse("connect " + URL)).isTrue();
       final StringBuilder buffer = new StringBuilder();
       console.setOutput(output -> buffer.append(output));
-      Assertions.assertTrue(console.parse("select count(*) from Product"));
+      assertThat(console.parse("select count(*) from Product")).isTrue();
       String[] lines = buffer.toString().split("\\r?\\n|\\r");
       int count = Integer.parseInt(lines[4].split("\\|")[2].trim());
-      Assertions.assertEquals(N, count);
+      assertThat(count).isEqualTo(N);
     } catch (IOException e) {
       System.out.println(e.getMessage());
     }

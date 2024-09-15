@@ -1,33 +1,15 @@
-/*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
- * SPDX-License-Identifier: Apache-2.0
- */
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
-import org.junit.jupiter.api.Assertions;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.*;
+import java.util.concurrent.CountDownLatch;
 
-/**
- * Tests the isolation of transactions based on the configured settings.
- */
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
 public class TransactionIsolationTest extends TestHelper {
   @Override
   protected void beginTest() {
@@ -46,23 +28,23 @@ public class TransactionIsolationTest extends TestHelper {
     final Thread thread1 = new Thread(() -> {
       database.transaction(() -> {
         try {
-          Assertions.assertEquals(0, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(0);
 
           final MutableVertex v = database.newVertex("Node");
           v.set("id", 0);
           v.set("origin", "thread1");
           v.save();
 
-          Assertions.assertEquals(1, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(1);
 
           sem1.countDown();
 
           sem2.await();
 
-          Assertions.assertEquals(1, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(1);
 
         } catch (InterruptedException e) {
-          Assertions.fail();
+          fail("InterruptedException occurred");
           throw new RuntimeException(e);
         }
       });
@@ -73,19 +55,19 @@ public class TransactionIsolationTest extends TestHelper {
         try {
           sem1.await();
 
-          Assertions.assertEquals(0, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(0);
 
           final MutableVertex v = database.newVertex("Node");
           v.set("id", 1);
           v.set("origin", "thread2");
           v.save();
 
-          Assertions.assertEquals(1, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(1);
 
           sem2.countDown();
 
         } catch (InterruptedException e) {
-          Assertions.fail();
+          fail("InterruptedException occurred");
           throw new RuntimeException(e);
         }
       });
@@ -110,7 +92,7 @@ public class TransactionIsolationTest extends TestHelper {
     final Thread thread1 = new Thread(() -> {
       database.transaction(() -> {
         database.newVertex("Node").set("id", 0, "origin", "thread1").save();
-        Assertions.assertEquals(1, database.countType("Node", true));
+        assertThat(database.countType("Node", true)).isEqualTo(1);
       });
 
       sem1.countDown();
@@ -119,17 +101,17 @@ public class TransactionIsolationTest extends TestHelper {
         try {
           sem2.await();
           // CHECK THE NEW RECORD (PHANTOM READ) IS VISIBLE
-          Assertions.assertEquals(2, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(2);
 
           database.newVertex("Node").set("id", 3, "origin", "thread1").save();
 
-          Assertions.assertEquals(3, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(3);
 
           // MODIFY A RECORD
           database.query("sql", "select from Node where id = 0").nextIfAvailable().getRecord().get().asVertex().modify().set("modified", true).save();
 
         } catch (InterruptedException e) {
-          Assertions.fail();
+          fail("InterruptedException occurred");
           throw new RuntimeException(e);
         }
       });
@@ -143,13 +125,13 @@ public class TransactionIsolationTest extends TestHelper {
           sem1.await();
 
           // CHECK THE NEW RECORD (PHANTOM READ) IS VISIBLE
-          Assertions.assertEquals(1, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(1);
 
           database.newVertex("Node").set("id", 1, "origin", "thread2").save();
-          Assertions.assertEquals(2, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(2);
 
         } catch (InterruptedException e) {
-          Assertions.fail();
+          fail("InterruptedException occurred");
           throw new RuntimeException(e);
         }
       });
@@ -160,13 +142,13 @@ public class TransactionIsolationTest extends TestHelper {
         try {
           sem3.await();
 
-          Assertions.assertEquals(3, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(3);
 
           // CHECK THE NEW RECORD WAS MODIFIED
-          Assertions.assertTrue((Boolean) database.query("sql", "select from Node where id = 0").nextIfAvailable().getProperty("modified"));
+          assertThat((Boolean) database.query("sql", "select from Node where id = 0").nextIfAvailable().getProperty("modified")).isTrue();
 
         } catch (InterruptedException e) {
-          Assertions.fail();
+          fail("InterruptedException occurred");
           throw new RuntimeException(e);
         }
       });
@@ -194,7 +176,7 @@ public class TransactionIsolationTest extends TestHelper {
       final Thread thread1 = new Thread(() -> {
         database.transaction(() -> {
           database.newVertex("Node").set("id", 0, "origin", "thread1").save();
-          Assertions.assertEquals(1, database.countType("Node", true));
+          assertThat(database.countType("Node", true)).isEqualTo(1);
         });
 
         sem1.countDown();
@@ -203,17 +185,17 @@ public class TransactionIsolationTest extends TestHelper {
           try {
             sem2.await();
             // CHECK THE NEW RECORD (PHANTOM READ) IS VISIBLE
-            Assertions.assertEquals(2, database.countType("Node", true));
+            assertThat(database.countType("Node", true)).isEqualTo(2);
 
             database.newVertex("Node").set("id", 3, "origin", "thread1").save();
 
-            Assertions.assertEquals(3, database.countType("Node", true));
+            assertThat(database.countType("Node", true)).isEqualTo(3);
 
             // MODIFY A RECORD
             database.query("sql", "select from Node where id = 0").nextIfAvailable().getRecord().get().asVertex().modify().set("modified", true).save();
 
           } catch (InterruptedException e) {
-            Assertions.fail();
+            fail("InterruptedException occurred");
             throw new RuntimeException(e);
           }
         });
@@ -227,13 +209,13 @@ public class TransactionIsolationTest extends TestHelper {
             sem1.await();
 
             // CHECK THE NEW RECORD (PHANTOM READ) IS VISIBLE
-            Assertions.assertEquals(1, database.countType("Node", true));
+            assertThat(database.countType("Node", true)).isEqualTo(1);
 
             database.newVertex("Node").set("id", 1, "origin", "thread2").save();
-            Assertions.assertEquals(2, database.countType("Node", true));
+            assertThat(database.countType("Node", true)).isEqualTo(2);
 
           } catch (InterruptedException e) {
-            Assertions.fail();
+            fail("InterruptedException occurred");
             throw new RuntimeException(e);
           }
         });
@@ -242,17 +224,25 @@ public class TransactionIsolationTest extends TestHelper {
           sem2.countDown();
 
           try {
-            Assertions.assertEquals(2, database.countType("Node", true));
+            assertThat(database.countType("Node", true)).isEqualTo(2);
 
-            Assertions.assertNull(database.query("sql", "select from Node where id = 0").nextIfAvailable().getProperty("modified"));
+              assertThat(
+                      database.query("sql", "select from Node where id = 0")
+                              .nextIfAvailable()
+                              .<String>getProperty("modified")
+              ).isNull();
 
             sem3.await();
 
             // CHECK THE NEW RECORD WAS MODIFIED
-            Assertions.assertNull(database.query("sql", "select from Node where id = 0").nextIfAvailable().getProperty("modified"));
+            assertThat(
+                    database.query("sql", "select from Node where id = 0")
+                            .nextIfAvailable()
+                            .<String>getProperty("modified")
+            ).isNull();
 
           } catch (InterruptedException e) {
-            Assertions.fail();
+            fail("InterruptedException occurred");
             throw new RuntimeException(e);
           }
         });

@@ -114,11 +114,11 @@ public class PerformanceComplexIndexTest {
 //      System.out.println("Lookup all the keys...");
 //      for (long id = 0; id < TOT; ++id) {
 //        final Cursor<RID> records = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { id });
-//        Assertions.assertNotNull(records);
-//        Assertions.assertEquals(1, records.size(), "Wrong result for lookup of key " + id);
+//        Assertions.assertThat(records).isNotNull();
+//        Assertions.assertThat(records.size().isEqualTo(1), "Wrong result for lookup of key " + id);
 //
 //        final Document record = (Document) records.next().getRecord();
-//        Assertions.assertEquals(id, record.get("id"));
+//        Assertions.assertThat(record.get("id")).isEqualTo(id);
 //
 //        if (id % 100000 == 0)
 //          System.out.println("Checked " + id + " lookups in " + (System.currentTimeMillis() - begin) + "ms");

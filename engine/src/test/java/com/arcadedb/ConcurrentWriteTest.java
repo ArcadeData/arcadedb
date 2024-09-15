@@ -25,12 +25,13 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ConcurrentWriteTest {
   private static final int           TOTAL                = 10_000;
@@ -84,11 +85,11 @@ public class ConcurrentWriteTest {
 
     List<Long> allIds = checkRecordSequence(database);
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, allIds.size());
+    assertThat(allIds.size()).isEqualTo(TOTAL * CONCURRENT_THREADS);
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, totalRecordsOnClusters);
+    assertThat(totalRecordsOnClusters).isEqualTo(TOTAL * CONCURRENT_THREADS);
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, database.countType("User", true));
+    assertThat(database.countType("User", true)).isEqualTo(TOTAL * CONCURRENT_THREADS);
   }
 
   private List<Long> checkRecordSequence(final Database database) {

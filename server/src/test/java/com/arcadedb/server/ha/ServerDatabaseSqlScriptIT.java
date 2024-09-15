@@ -24,11 +24,14 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
   @Override
@@ -64,9 +67,9 @@ public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
             "LET photo1 = CREATE vertex Photos SET id = \"3778f235a52d\", name = \"beach.jpg\", status = \"\";\n"
                 + "LET photo2 = CREATE vertex Photos SET id = \"23kfkd23223\", name = \"luca.jpg\", status = \"\";\n"
                 + "LET connected = Create edge Connected FROM $photo1 to $photo2 set type = \"User_Photos\";return $photo1;");
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         final Result response = result.next();
-        Assertions.assertEquals("beach.jpg", response.getProperty("name"));
+        assertThat(response.<String>getProperty("name")).isEqualTo("beach.jpg");
       });
     }
   }

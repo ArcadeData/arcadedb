@@ -22,11 +22,13 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
-import org.junit.jupiter.api.Assertions;
+
 
 import java.io.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ReplicationServerReplicaRestartForceDbInstallIT extends ReplicationServerIT {
   private final    AtomicLong totalMessages           = new AtomicLong();
@@ -41,8 +43,8 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
 
   @Override
   protected void onAfterTest() {
-    Assertions.assertFalse(hotResync);
-    Assertions.assertTrue(fullResync);
+    assertThat(hotResync).isFalse();
+    assertThat(fullResync).isTrue();
   }
 
   @Override
@@ -97,7 +99,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
               getServer(2).stop();
               GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.reset();
 
-              Assertions.assertTrue(new File("./target/replication/replication_ArcadeDB_2.rlog.0").exists());
+              assertThat(new File("./target/replication/replication_ArcadeDB_2.rlog.0").exists()).isTrue();
               new File("./target/replication/replication_ArcadeDB_2.rlog.0").delete();
 
               LogManager.instance().log(this, Level.SEVERE, "TEST: Restarting Replica 2...");

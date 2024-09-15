@@ -19,11 +19,10 @@
 package com.arcadedb.query.sql.functions.math;
 
 import com.arcadedb.query.sql.function.math.SQLFunctionVariance;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLFunctionVarianceTest {
 
@@ -37,7 +36,7 @@ public class SQLFunctionVarianceTest {
     @Test
     public void testEmpty() {
         final Object result = variance.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
@@ -49,7 +48,7 @@ public class SQLFunctionVarianceTest {
         }
 
         final Object result = variance.getResult();
-        Assertions.assertEquals(22.1875, result);
+      assertThat(result).isEqualTo(22.1875);
     }
 
     @Test
@@ -61,7 +60,7 @@ public class SQLFunctionVarianceTest {
         }
 
         final Object result = variance.getResult();
-        Assertions.assertEquals(2.25, result);
+      assertThat(result).isEqualTo(2.25);
     }
 
     @Test
@@ -73,6 +72,6 @@ public class SQLFunctionVarianceTest {
         }
 
         final Object result = variance.getResult();
-        Assertions.assertEquals(36.0, result);
+      assertThat(result).isEqualTo(36.0);
     }
 }

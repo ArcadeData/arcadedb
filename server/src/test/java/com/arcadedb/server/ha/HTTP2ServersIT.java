@@ -23,13 +23,17 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class HTTP2ServersIT extends BaseGraphServerTest {
   @Override
@@ -50,8 +54,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
         connection.connect();
         final String response = readResponse(connection);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
       } finally {
         connection.disconnect();
       }
@@ -63,8 +67,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
       final String response = command(serverIndex, "create vertex type VertexType" + serverIndex);
-      Assertions.assertTrue(response.contains("VertexType" + serverIndex),
-          "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
+      assertThat(response).contains("VertexType" + serverIndex)
+          .withFailMessage("Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
+
     });
 
     Thread.sleep(300);
@@ -87,9 +92,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       try {
         final String response = readResponse(connection);
         LogManager.instance().log(this, Level.FINE, "TEST: Response: %s", null, response);
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
-        Assertions.assertTrue(response.contains("V1"));
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+        assertThat(response.contains("V1")).isTrue();
 
       } finally {
         connection.disconnect();
@@ -114,8 +119,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(),
-              "executed on server " + serverIndex + " checking on server " + serverIndex);
+          assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result")).isNotEmpty().
+              withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V1 on server " + checkServer);
           throw e;
@@ -131,8 +136,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty(),
-              "executed on server " + serverIndex + " checking on server " + serverIndex);
+
+          assertThat(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result")).isNotEmpty()
+              .withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V2 on server " + checkServer);
           throw e;
@@ -147,8 +153,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(),
-              "executed on server " + serverIndex + " checking on server " + serverIndex);
+          assertThat(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result")).isNotEmpty()
+              .withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking on E1 on server " + checkServer);
           throw e;
@@ -164,8 +170,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty(),
-              "executed on server " + serverIndex + " checking on server " + serverIndex);
+          assertThat(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result")).isNotEmpty()
+              .withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V3 on server " + checkServer);
           throw e;
@@ -180,8 +186,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       testEachServer((checkServer) -> {
         try {
-          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty(),
-              "executed on server " + serverIndex + " checking on server " + serverIndex);
+          assertThat(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result")).isNotEmpty()
+              .withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for E2 on server " + checkServer);
           throw e;
@@ -196,14 +202,14 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       testEachServer((checkServer) -> {
         try {
           new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result");
-          Assertions.fail("executed on server " + serverIndex + " checking on server " + serverIndex);
+          fail("executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (FileNotFoundException e) {
           //  EXPECTED
         }
 
         try {
           new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result");
-          Assertions.fail("executed on server " + serverIndex + " checking on server " + serverIndex);
+          fail("executed on server " + serverIndex + " checking on server " + serverIndex);
         } catch (FileNotFoundException e) {
           //  EXPECTED
         }
@@ -216,8 +222,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     for (ArcadeDBServer server : getServers()) {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-      Assertions.assertNotNull(database.getLeaderAddress());
-      Assertions.assertFalse(database.getReplicaAddresses().isEmpty());
+      assertThat(database.getLeaderAddress()).isNotNull();
+      assertThat(database.getReplicaAddresses().isEmpty()).isFalse();
     }
   }
 }
