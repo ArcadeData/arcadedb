@@ -34,7 +34,7 @@
 
     <properties>
         <postgres.version>42.7.4</postgres.version>
-        <tomcat-jdbc.version>10.1.28</tomcat-jdbc.version>
+        <tomcat-jdbc.version>10.1.29</tomcat-jdbc.version>
     </properties>
 
     <dependencies>
