@@ -21,8 +21,10 @@ package com.arcadedb.engine;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
+import java.lang.reflect.*;
 import java.nio.*;
 import java.nio.channels.*;
+import java.nio.channels.spi.*;
 import java.util.logging.*;
 import java.util.zip.*;
 
@@ -31,6 +33,14 @@ public class PaginatedComponentFile extends ComponentFile {
   private RandomAccessFile file;
   private FileChannel      channel;
   private int              pageSize;
+
+  public class InterruptibleInvocationHandler implements InvocationHandler {
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+      LogManager.instance().log(this, Level.SEVERE, "Attempt to close channel");
+      return null;
+    }
+  }
 
   public PaginatedComponentFile() {
   }
@@ -195,6 +205,22 @@ public class PaginatedComponentFile extends ComponentFile {
     this.osFile = new File(filePath);
     this.file = new RandomAccessFile(osFile, mode == MODE.READ_WRITE ? "rw" : "r");
     this.channel = this.file.getChannel();
+    doNotCloseOnInterrupt(this.channel);
     this.open = true;
+  }
+
+  private void doNotCloseOnInterrupt(final FileChannel fc) {
+    try {
+      Field field = AbstractInterruptibleChannel.class.getDeclaredField("interruptor");
+      Class<?> interruptibleClass = field.getType();
+      field.setAccessible(true);
+      field.set(fc, Proxy.newProxyInstance(
+          interruptibleClass.getClassLoader(),
+          new Class[] { interruptibleClass },
+          new InterruptibleInvocationHandler()));
+    } catch (final Exception e) {
+      System.err.println("Couldn't disable close on interrupt");
+      e.printStackTrace();
+    }
   }
 }
