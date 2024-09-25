@@ -60,7 +60,7 @@ public class SQLMethodFormat extends AbstractSQLMethod {
       return result;
 
     } else if (DateUtils.isDate(value)) {
-      return DateUtils.format(value, format);
+      return DateUtils.format(value, format, iParams.length > 1 ? (String) iParams[1] : null);
     }
     return value != null ? String.format(format, value) : null;
   }
