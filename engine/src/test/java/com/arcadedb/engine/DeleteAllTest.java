@@ -28,10 +28,10 @@ public class DeleteAllTest {
         db.getSchema().createEdgeType(EDGE_TYPE, 1);
 
         for (int i = 0; i < CYCLES; i++) {
-          System.out.println("Cycle " + i);
-          List.of(new File(databaseFactory.getDatabasePath()).listFiles())
-              .forEach(f -> System.out.println("- " + f.getName() + ": " + FileUtils.getSizeAsString(
-                  f.length())));
+          //System.out.println("Cycle " + i);
+//          List.of(new File(databaseFactory.getDatabasePath()).listFiles())
+//              .forEach(f -> System.out.println("- " + f.getName() + ": " + FileUtils.getSizeAsString(
+//                  f.length())));
 
           db.transaction(() -> {
             final MutableVertex root = db.newVertex(VERTEX_TYPE)//
@@ -59,7 +59,7 @@ public class DeleteAllTest {
         }
 
         final ResultSet result = db.command("sql", "check database");
-        System.out.println(result.nextIfAvailable().toJSON());
+//        System.out.println(result.nextIfAvailable().toJSON());
       } finally {
 
         if (databaseFactory.exists())
