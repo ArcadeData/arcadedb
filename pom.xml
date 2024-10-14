@@ -221,6 +221,7 @@
                     <argLine>
                         --add-exports java.management/sun.management=ALL-UNNAMED
                         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
+                        --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
                     </argLine>
                 </configuration>
             </plugin>

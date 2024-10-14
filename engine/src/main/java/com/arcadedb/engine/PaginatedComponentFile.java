@@ -219,8 +219,7 @@ public class PaginatedComponentFile extends ComponentFile {
           new Class[] { interruptibleClass },
           new InterruptibleInvocationHandler()));
     } catch (final Exception e) {
-      System.err.println("Couldn't disable close on interrupt");
-      e.printStackTrace();
+      LogManager.instance().log(this, Level.SEVERE, "Couldn't disable close on interrupt", e);
     }
   }
 }
