@@ -46,7 +46,7 @@
     </licenses>
 
     <properties>
-        <maven-compiler-plugin.release>11</maven-compiler-plugin.release>
+        <maven-compiler-plugin.release>17</maven-compiler-plugin.release>
         <exclude.tests></exclude.tests>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
