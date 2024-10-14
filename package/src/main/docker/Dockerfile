@@ -23,7 +23,12 @@ ENV JAVA_OPTS=" "
 
 ENV ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
 
-ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998"
+ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true \
+    -Dcom.sun.management.jmxremote.local.only=false \
+    -Dcom.sun.management.jmxremote.authenticate=false \
+    -Dcom.sun.management.jmxremote.ssl=false \
+    -Dcom.sun.management.jmxremote.port=9999 \
+    -Dcom.sun.management.jmxremote.rmi.port=9998"
 
 RUN useradd -ms /bin/bash arcadedb
 
