@@ -39,6 +39,10 @@ public class Backup {
     settings.parseParameters(args);
   }
 
+  public Backup(final Database database) {
+    this.database = (DatabaseInternal) database;
+  }
+
   public Backup(final Database database, final String file) {
     this.database = (DatabaseInternal) database;
     settings.file = file;
@@ -69,7 +73,8 @@ public class Backup {
 
     } catch (final Exception e) {
       throw new BackupException(
-          "Error during backup of database '" + (database != null ? database.getName() : settings.databaseURL) + "' to file '" + settings.file + "'", e);
+          "Error during backup of database '" + (database != null ? database.getName() : settings.databaseURL) + "' to file '"
+              + settings.file + "'", e);
     } finally {
       closeDatabase();
     }

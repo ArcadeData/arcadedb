@@ -272,7 +272,7 @@ public class GremlinTest {
 
   @Test
   public void testCypherSyntaxError() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
       graph.getDatabase().getSchema().createVertexType("Person");
@@ -293,7 +293,7 @@ public class GremlinTest {
 
   @Test
   public void testGremlinParse() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
       final ArcadeGremlin gremlinReadOnly = graph.gremlin(
@@ -314,7 +314,7 @@ public class GremlinTest {
 
   @Test
   public void testGremlinLists() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testlist");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final ResultSet result = graph.gremlin("g.addV('Person').property( 'list', ['a', 'b'] )").execute();
 
@@ -333,7 +333,7 @@ public class GremlinTest {
 
   @Test
   public void testUseIndex() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING)
           .getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
@@ -353,7 +353,7 @@ public class GremlinTest {
 
   @Test
   public void labelExists() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testLabel");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.traversal().V().hasLabel("Car").forEachRemaining(System.out::println);
     } finally {
@@ -365,7 +365,7 @@ public class GremlinTest {
   @Disabled
   @Test
   public void infinityValue() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testInfinite");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final Vertex alice = graph.addVertex("person");
       alice.property("hair", Double.POSITIVE_INFINITY);
@@ -386,7 +386,7 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/690
   @Test
   public void testVertexConstraints() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testConstraints");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final VertexType type = graph.getDatabase().getSchema().getOrCreateVertexType("ChipID");
       type.getOrCreateProperty("name", Type.STRING).setMandatory(true).setNotNull(true).setReadonly(true);
@@ -405,7 +405,7 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/290
   @Test
   public void sort() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testOrder");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
       graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
@@ -431,7 +431,7 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/911
   @Test
   public void testLongOverflow() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testLongOverflow");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       Result value = graph.gremlin("g.inject(Long.MAX_VALUE, 0).sum()").execute().nextIfAvailable();
       Assertions.assertEquals(Long.MAX_VALUE, (long) value.getProperty("result"));
@@ -450,7 +450,7 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/912
   @Test
   public void testNumberConversion() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testNumberConversion");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       Result value = graph.gremlin("g.inject(1).size()").execute().nextIfAvailable();
       Assertions.assertEquals(1, (int) value.getProperty("result"));
@@ -461,7 +461,7 @@ public class GremlinTest {
 
   @Test
   public void testGroupBy() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testGroupBy");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
       graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
@@ -487,7 +487,7 @@ public class GremlinTest {
   // Issue https://github.com/ArcadeData/arcadedb/issues/1301
   @Test
   public void testMerge() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testMerge");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.database.command("sqlscript",//
           "CREATE VERTEX TYPE TestMerge;" + //
@@ -496,6 +496,29 @@ public class GremlinTest {
 
       graph.cypher("CREATE (v:TestMerge{id: 0})").execute();
       graph.cypher("UNWIND range(0, 10) AS id MERGE (v:TestMerge{id: id}) RETURN v").execute();
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  // https://github.com/ArcadeData/arcadedb/issues/1674
+  @Test
+  public void testBooleanProperties() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+      graph.database.command("sqlscript",//
+          "CREATE VERTEX TYPE A;" + //
+              "CREATE PROPERTY A.b BOOLEAN;");
+
+      graph.gremlin("g.addV('A').property('b', true)").execute().nextIfAvailable();
+      graph.gremlin("g.addV('A').property('b', true)").execute().nextIfAvailable();
+      graph.gremlin("g.addV('A').property('b', false)").execute().nextIfAvailable();
+      graph.gremlin("g.addV('A')").execute().nextIfAvailable();
+      Assertions.assertEquals(4, graph.gremlin("g.V().hasLabel('A')").execute().toVertices().size());
+      Assertions.assertEquals(2, graph.gremlin("g.V().hasLabel('A').has('b',true)").execute().toVertices().size());
+      Assertions.assertEquals(2,
+          (Long) graph.gremlin("g.V().hasLabel('A').has('b',true).count()").execute().nextIfAvailable().getProperty("result"));
 
     } finally {
       graph.drop();

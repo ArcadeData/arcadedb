@@ -24,7 +24,7 @@ function updateServer(callback) {
   jQuery
     .ajax({
       type: "GET",
-      url: "/api/v1/server",
+      url: "api/v1/server",
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
       },
@@ -414,7 +414,7 @@ function updateServerSetting(key, value) {
       jQuery
         .ajax({
           type: "POST",
-          url: "/api/v1/server",
+          url: "api/v1/server",
           data: JSON.stringify({
             language: "sql",
             command: "set server setting " + key + " " + $("#updateSettingInput").val(),
@@ -439,7 +439,7 @@ function getServerEvents(file) {
   jQuery
     .ajax({
       type: "POST",
-      url: "/api/v1/server",
+      url: "api/v1/server",
       data: "{ command: 'get server events" + (file != null ? " " + file : "") + "' }",
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);

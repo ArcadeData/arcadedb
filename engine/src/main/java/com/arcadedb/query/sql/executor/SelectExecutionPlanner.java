@@ -609,6 +609,27 @@ public class SelectExecutionPlanner {
       info.projection = postAggregate;
 
       addGroupByExpressionsToProjections(info, context);
+    } else
+      handleGroupByNoSplit(info, context);
+  }
+
+  private static void handleGroupByNoSplit(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().size() == 0)
+      return;
+
+    for (Expression exp : info.groupBy.getItems()) {
+      if (exp.isAggregate(context))
+        throw new CommandExecutionException("Cannot group by an aggregate function");
+
+      final ProjectionItem newItem = new ProjectionItem(-1);
+      newItem.setExpression(exp);
+      if (info.aggregateProjection == null)
+        info.aggregateProjection = new Projection(-1);
+
+      if (info.aggregateProjection.getItems() == null)
+        info.aggregateProjection.setItems(new ArrayList<>());
+
+      info.aggregateProjection.getItems().add(newItem);
     }
   }
 
@@ -1224,8 +1245,8 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * @param plan             the execution plan where to add the fetch step
-   * @param filterClusters   clusters of interest (all the others have to be excluded from the result)
+   * @param plan           the execution plan where to add the fetch step
+   * @param filterClusters clusters of interest (all the others have to be excluded from the result)
    * @param info
    * @param context
    */

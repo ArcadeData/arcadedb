@@ -26,9 +26,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.executor.MatchPrefetchStep;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 

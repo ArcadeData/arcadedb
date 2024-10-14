@@ -45,7 +45,7 @@ function updateDatabases(callback) {
   jQuery
     .ajax({
       type: "POST",
-      url: "/api/v1/server",
+      url: "api/v1/server",
       data: "{ command: 'list databases' }",
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
@@ -107,7 +107,7 @@ function createDatabase() {
       jQuery
         .ajax({
           type: "POST",
-          url: "/api/v1/server",
+          url: "api/v1/server",
           data: "{ 'command': 'create database " + database + "' }",
           beforeSend: function (xhr) {
             xhr.setRequestHeader("Authorization", globalCredentials);
@@ -141,7 +141,7 @@ function dropDatabase() {
       jQuery
         .ajax({
           type: "POST",
-          url: "/api/v1/server",
+          url: "api/v1/server",
           data: "{ 'command': 'drop database " + database + "' }",
           beforeSend: function (xhr) {
             xhr.setRequestHeader("Authorization", globalCredentials);
@@ -172,7 +172,7 @@ function resetDatabase() {
       jQuery
         .ajax({
           type: "POST",
-          url: "/api/v1/server",
+          url: "api/v1/server",
           data: "{ 'command': 'drop database " + database + "' }",
           beforeSend: function (xhr) {
             xhr.setRequestHeader("Authorization", globalCredentials);
@@ -182,7 +182,7 @@ function resetDatabase() {
           jQuery
             .ajax({
               type: "POST",
-              url: "/api/v1/server",
+              url: "api/v1/server",
               data: "{ 'command': 'create database " + database + "' }",
               beforeSend: function (xhr) {
                 xhr.setRequestHeader("Authorization", globalCredentials);
@@ -218,7 +218,7 @@ function backupDatabase() {
       jQuery
         .ajax({
           type: "POST",
-          url: "/api/v1/command/" + database,
+          url: "api/v1/command/" + database,
           data: JSON.stringify({
             language: "sql",
             command: "backup database",
@@ -253,7 +253,7 @@ function dropProperty(type, property) {
       jQuery
         .ajax({
           type: "POST",
-          url: "/api/v1/command/" + database,
+          url: "api/v1/command/" + database,
           data: JSON.stringify({
             language: "sql",
             command: "drop property `" + type + "`.`" + property + "`",
@@ -288,7 +288,7 @@ function dropIndex(indexName) {
       jQuery
         .ajax({
           type: "POST",
-          url: "/api/v1/command/" + database,
+          url: "api/v1/command/" + database,
           data: JSON.stringify({
             language: "sql",
             command: "drop index `" + indexName + "`",
@@ -427,7 +427,7 @@ function executeCommandTable() {
   jQuery
     .ajax({
       type: "POST",
-      url: "/api/v1/command/" + database,
+      url: "api/v1/command/" + database,
       data: JSON.stringify({
         language: language,
         command: command,
@@ -477,7 +477,7 @@ function executeCommandGraph() {
   jQuery
     .ajax({
       type: "POST",
-      url: "/api/v1/command/" + database,
+      url: "api/v1/command/" + database,
       data: JSON.stringify({
         language: language,
         command: command,
@@ -528,7 +528,7 @@ function displaySchema() {
   jQuery
     .ajax({
       type: "POST",
-      url: "/api/v1/query/" + database,
+      url: "api/v1/query/" + database,
       data: JSON.stringify({
         language: "sql",
         command: "select from schema:types",
@@ -776,7 +776,7 @@ function displayDatabaseSettings() {
   jQuery
     .ajax({
       type: "POST",
-      url: "/api/v1/query/" + database,
+      url: "api/v1/query/" + database,
       data: JSON.stringify({
         language: "sql",
         command: "select expand( settings ) from schema:database",
@@ -850,7 +850,7 @@ function updateDatabaseSetting(key, value) {
       jQuery
         .ajax({
           type: "POST",
-          url: "/api/v1/server",
+          url: "api/v1/server",
           data: JSON.stringify({
             language: "sql",
             command: "set database setting " + getCurrentDatabase() + " " + key + " " + $("#updateSettingInput").val(),

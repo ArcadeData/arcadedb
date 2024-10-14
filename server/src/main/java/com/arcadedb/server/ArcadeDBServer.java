@@ -148,6 +148,9 @@ public class ArcadeDBServer {
 
     // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
     httpServer = new HttpServer(this);
+
+    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON);
+
     httpServer.startService();
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
@@ -155,12 +158,14 @@ public class ArcadeDBServer {
       haServer.startService();
     }
 
-    loadDefaultDatabases();
+    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_HTTP_ON);
 
-    registerPlugins();
+    loadDefaultDatabases();
 
     // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
     loadDatabases();
+
+    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
 
@@ -220,7 +225,7 @@ public class ArcadeDBServer {
     return result;
   }
 
-  private void registerPlugins() {
+  private void registerPlugins(final ServerPlugin.INSTALLATION_PRIORITY installationPriority) {
     final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
       final String[] pluginEntries = registeredPlugins.split(",");
@@ -233,6 +238,10 @@ public class ArcadeDBServer {
 
           final Class<ServerPlugin> c = (Class<ServerPlugin>) Class.forName(pluginClass);
           final ServerPlugin pluginInstance = c.getConstructor().newInstance();
+
+          if (pluginInstance.getInstallationPriority() != installationPriority)
+            continue;
+
           pluginInstance.configure(this, configuration);
 
           pluginInstance.startService();

@@ -175,10 +175,10 @@ public class MatchEdgeTraverser {
 
           public void fetchNext() {
             final Object previousMatch = iCommandContext.getVariable("currentMatch");
-            final ResultInternal matched = (ResultInternal) iCommandContext.getVariable("matched");
-            if (matched != null) {
-              matched.setProperty(getStartingPointAlias(), sourceRecord.getProperty(getStartingPointAlias()));
-            }
+//            final ResultInternal matched = (ResultInternal) iCommandContext.getVariable("matched");
+//            if (matched != null) {
+//              matched.setProperty(getStartingPointAlias(), sourceRecord.getProperty(getStartingPointAlias()));
+//            }
             while (iter.hasNext()) {
               final ResultInternal next = iter.next();
               final Document elem = next.toElement();

@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>24.8.1-SNAPSHOT</version>
+        <version>24.11.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -33,8 +33,8 @@
     <packaging>jar</packaging>
 
     <properties>
-        <postgres.version>42.7.3</postgres.version>
-        <tomcat-jdbc.version>10.1.26</tomcat-jdbc.version>
+        <postgres.version>42.7.4</postgres.version>
+        <tomcat-jdbc.version>10.1.30</tomcat-jdbc.version>
     </properties>
 
     <dependencies>

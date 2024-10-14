@@ -323,8 +323,8 @@ public class DateUtils {
   public static boolean isDate(final Object obj) {
     if (obj == null)
       return false;
-    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDateTime || obj instanceof ZonedDateTime
-        || obj instanceof Instant;
+    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDate || obj instanceof LocalDateTime
+        || obj instanceof ZonedDateTime || obj instanceof Instant;
   }
 
   public static ChronoUnit getHigherPrecision(final Object... objs) {
@@ -369,7 +369,12 @@ public class DateUtils {
       return getFormatter(format).format(millisToLocalDateTime(((Date) obj).getTime(), timeZone));
     else if (obj instanceof Calendar)
       return getFormatter(format).format(millisToLocalDateTime(((Calendar) obj).getTimeInMillis(), timeZone));
-    else if (obj instanceof TemporalAccessor)
+    else if (obj instanceof LocalDateTime) {
+      if (timeZone != null)
+        return ((LocalDateTime) obj).atZone(ZoneId.of(timeZone)).format(getFormatter(format));
+      else
+        return getFormatter(format).format(((LocalDateTime) obj));
+    } else if (obj instanceof TemporalAccessor)
       return getFormatter(format).format((TemporalAccessor) obj);
     return null;
   }

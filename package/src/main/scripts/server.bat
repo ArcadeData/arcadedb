@@ -75,12 +75,24 @@ set CMD_LINE_ARGS=%*
 
 :doneSetArgs
 
-set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError --add-exports java.management/sun.management=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED -Dpolyglot.engine.WarnInterpreterOnly=false -Djava.awt.headless=true -Dfile.encoding=UTF8 -Djava.util.logging.config.file=config/arcadedb-log.properties
+set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError ^
+  --add-exports java.management/sun.management=ALL-UNNAMED ^
+  --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED ^
+  --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED ^
+  -Dpolyglot.engine.WarnInterpreterOnly=false ^
+  -Djava.awt.headless=true ^
+  -Dfile.encoding=UTF8 ^
+  -Djava.util.logging.config.file=config/arcadedb-log.properties
 
 rem ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G"
 set ARCADEDB_OPTS_MEMORY=
 
-set ARCADEDB_JMX=-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998
+set ARCADEDB_JMX=-Dcom.sun.management.jmxremote=true ^
+  -Dcom.sun.management.jmxremote.local.only=false ^
+  -Dcom.sun.management.jmxremote.authenticate=false ^
+  -Dcom.sun.management.jmxremote.ssl=false ^
+  -Dcom.sun.management.jmxremote.port=9999 ^
+  -Dcom.sun.management.jmxremote.rmi.port=9998
 
 rem TO DEBUG ARCADEDB SERVER RUN IT WITH THESE OPTIONS:
 rem -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=1044

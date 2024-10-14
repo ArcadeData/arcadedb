@@ -16,31 +16,35 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.method.conversion;
+package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
- * Returns a number as an integer (signed 16 bit representation).
- *
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsInteger extends AbstractSQLMethod {
+public class SQLMethodTrimSuffix extends AbstractSQLMethod {
 
-  public static final String NAME = "asinteger";
+  public static final String NAME = "trimsuffix";
 
-  public SQLMethodAsInteger() {
-    super(NAME);
+  public SQLMethodTrimSuffix() {
+    super(NAME, 1);
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
-    if (value instanceof Number)
-      return ((Number) value).intValue();
-    return value != null && !value.toString().isEmpty() ? Integer.valueOf(value.toString().trim()) : null;
+  public Object execute( final Object value, final Identifiable iRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value == null || null == iParams || null == iParams[0])
+      return value;
+
+    final String strval = value.toString();
+    final String suffix = iParams[0].toString();
+
+    if (strval.endsWith(suffix))
+      return strval.substring(0,strval.length() - suffix.length());
+    else
+      return strval;
   }
 }

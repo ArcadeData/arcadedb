@@ -23,5 +23,5 @@ jobs:
         uses: actions/checkout@v4
       - name: Meterian Scanner
         uses: MeterianHQ/meterian-github-action@v1.0.17
-        env:
-          METERIAN_API_TOKEN: ${{ secrets.METERIAN_API_TOKEN }}
+        with:
+          oss: true

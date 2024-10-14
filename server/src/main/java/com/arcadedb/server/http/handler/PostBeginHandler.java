@@ -41,7 +41,8 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database)
+      throws IOException {
     final HeaderValues txId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (txId != null && !txId.isEmpty()) {
       final HttpSession tx = httpServer.getSessionManager().getSessionById(user, txId.getFirst());
@@ -56,6 +57,9 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
       final JSONObject json = new JSONObject(payload);
       final Map<String, Object> requestMap = json.toMap();
       final String isolationLevel = (String) requestMap.get("isolationLevel");
+      if (isolationLevel == null)
+        return new ExecutionResponse(400, "Missing parameter 'isolationLevel'");
+
       database.begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel));
     } else
       database.begin();

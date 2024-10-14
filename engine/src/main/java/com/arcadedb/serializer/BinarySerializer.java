@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DataEncryption;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -65,6 +66,7 @@ public class BinarySerializer {
   private final BinaryComparator comparator = new BinaryComparator();
   private       Class<?>         dateImplementation;
   private       Class<?>         dateTimeImplementation;
+  private       DataEncryption   dataEncryption;
 
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
@@ -332,9 +334,10 @@ public class BinarySerializer {
     return null;
   }
 
-  public void serializeValue(final Database database, final Binary content, final byte type, Object value) {
+  public void serializeValue(final Database database, final Binary serialized, final byte type, Object value) {
     if (value == null)
       return;
+    Binary content = dataEncryption != null ? new Binary() : serialized;
 
     switch (type) {
     case BinaryTypes.TYPE_NULL:
@@ -393,8 +396,8 @@ public class BinarySerializer {
       break;
     case BinaryTypes.TYPE_COMPRESSED_RID: {
       final RID rid = ((Identifiable) value).getIdentity();
-      content.putNumber(rid.getBucketId());
-      content.putNumber(rid.getPosition());
+      serialized.putNumber(rid.getBucketId());
+      serialized.putNumber(rid.getPosition());
       break;
     }
     case BinaryTypes.TYPE_RID: {
@@ -403,8 +406,8 @@ public class BinarySerializer {
         value = ((Result) value).getElement().get();
 
       final RID rid = ((Identifiable) value).getIdentity();
-      content.putInt(rid.getBucketId());
-      content.putLong(rid.getPosition());
+      serialized.putInt(rid.getBucketId());
+      serialized.putLong(rid.getPosition());
       break;
     }
     case BinaryTypes.TYPE_UUID: {
@@ -563,10 +566,26 @@ public class BinarySerializer {
     default:
       LogManager.instance().log(this, Level.INFO, "Error on serializing value '" + value + "', type not supported");
     }
+
+    if (dataEncryption != null) {
+      switch (type) {
+        case BinaryTypes.TYPE_NULL:
+        case BinaryTypes.TYPE_COMPRESSED_RID:
+        case BinaryTypes.TYPE_RID:
+          break;
+        default:
+          serialized.putBytes(dataEncryption.encrypt(content.toByteArray()));
+      }
+    }
   }
 
-  public Object deserializeValue(final Database database, final Binary content, final byte type,
+  public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
       final EmbeddedModifier embeddedModifier) {
+    Binary content = dataEncryption != null &&
+        type != BinaryTypes.TYPE_NULL &&
+        type != BinaryTypes.TYPE_COMPRESSED_RID &&
+        type != BinaryTypes.TYPE_RID ? new Binary(dataEncryption.decrypt(deserialized.getBytes())) : deserialized;
+
     final Object value;
     switch (type) {
     case BinaryTypes.TYPE_NULL:
@@ -626,10 +645,10 @@ public class BinarySerializer {
       value = new BigDecimal(new BigInteger(unscaledValue), scale);
       break;
     case BinaryTypes.TYPE_COMPRESSED_RID:
-      value = new RID(database, (int) content.getNumber(), content.getNumber());
+      value = new RID(database, (int) deserialized.getNumber(), deserialized.getNumber());
       break;
     case BinaryTypes.TYPE_RID:
-      value = new RID(database, content.getInt(), content.getLong());
+      value = new RID(database, deserialized.getInt(), deserialized.getLong());
       break;
     case BinaryTypes.TYPE_UUID:
       value = new UUID(content.getNumber(), content.getNumber());
@@ -797,6 +816,10 @@ public class BinarySerializer {
 
   private void serializeDateTime(final Binary content, final Object value, final byte type) {
     content.putUnsignedNumber(DateUtils.dateTimeToTimestamp(value, DateUtils.getPrecisionFromBinaryType(type)));
+  }
+
+  public void setDataEncryption(final DataEncryption dataEncryption) {
+    this.dataEncryption = dataEncryption;
   }
 
 }

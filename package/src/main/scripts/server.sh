@@ -73,11 +73,22 @@ if [ -z "$ARCADEDB_OPTS_MEMORY" ]; then
 fi
 
 if [ -z "$JAVA_OPTS_SCRIPT" ]; then
-  JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError --add-exports java.management/sun.management=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED -Dpolyglot.engine.WarnInterpreterOnly=false -Djava.awt.headless=true -Dfile.encoding=UTF8 -Djava.util.logging.config.file=config/arcadedb-log.properties"
+  JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError \
+        --add-exports java.management/sun.management=ALL-UNNAMED \
+        --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED \
+        --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED \
+        -Dpolyglot.engine.WarnInterpreterOnly=false \
+        -Djava.awt.headless=true -Dfile.encoding=UTF8 \
+        -Djava.util.logging.config.file=config/arcadedb-log.properties"
 fi
 
 if [ -z "$ARCADEDB_JMX" ]; then
-  ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998"
+  ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true \
+        -Dcom.sun.management.jmxremote.local.only=false \
+        -Dcom.sun.management.jmxremote.authenticate=false \
+        -Dcom.sun.management.jmxremote.ssl=false \
+        -Dcom.sun.management.jmxremote.port=9999 \
+        -Dcom.sun.management.jmxremote.rmi.port=9998"
 fi
 
 echo $$ >$ARCADEDB_PID

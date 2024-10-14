@@ -58,6 +58,9 @@ public class HttpSessionManager extends RWLockContext {
   }
 
   public int checkSessionsValidity() {
+    if (sessions.isEmpty())
+      return 0;
+
     return executeInWriteLock(() -> {
       int expired = 0;
       Map.Entry<String, HttpSession> s;

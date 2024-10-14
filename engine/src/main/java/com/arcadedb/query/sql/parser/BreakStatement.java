@@ -3,7 +3,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -33,7 +32,7 @@ public class BreakStatement extends SimpleExecStatement {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append("RETURN");
+    builder.append("BREAK");
   }
 }
 /* JavaCC - OriginalChecksum=7c151cab41b31cd675cea2f3becdc628 (do not edit this line) */
