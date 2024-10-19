@@ -321,7 +321,7 @@ public class ConsoleTest {
     newConsole.close();
 
     int vertices = 0;
-    int edges = 0;
+    long edges = 0;
 
     try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + DATABASE_PATH)) {
       try (final Database database = factory.open()) {
