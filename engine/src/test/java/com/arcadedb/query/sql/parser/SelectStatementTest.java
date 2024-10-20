@@ -25,12 +25,8 @@ import org.junit.jupiter.api.Test;
 import java.io.*;
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class SelectStatementTest {
 
@@ -58,7 +54,7 @@ public class SelectStatementTest {
         //          System.out.println(builder.toString());
         //          System.out.println("............");
         //        }
-        fail();
+        fail("");
       }
 
       return result;
@@ -66,7 +62,7 @@ public class SelectStatementTest {
       if (isCorrect) {
         //System.out.println(query);
         e.printStackTrace();
-        fail();
+        fail("");
       }
     }
     return null;
@@ -75,23 +71,23 @@ public class SelectStatementTest {
   @Test
   public void testParserSimpleSelect1() {
     final SimpleNode stm = checkRightSyntax("select from Foo");
-    assertTrue(stm instanceof SelectStatement);
+    assertThat(stm instanceof SelectStatement).isTrue();
     final SelectStatement select = (SelectStatement) stm;
-    assertNull(select.getProjection());
-    assertNotNull(select.getTarget());
-    assertNull(select.getWhereClause());
+    assertThat(select.getProjection()).isNull();
+    assertThat(select.getTarget()).isNotNull();
+    assertThat(select.getWhereClause()).isNull();
   }
 
   @Test
   public void testParserSimpleSelect2() {
     final SimpleNode stm = checkRightSyntax("select bar from Foo");
-    assertTrue(stm instanceof SelectStatement);
+    assertThat(stm instanceof SelectStatement).isTrue();
     final SelectStatement select = (SelectStatement) stm;
-    assertNotNull(select.getProjection());
-    assertNotNull(select.getProjection().getItems());
-    assertEquals(select.getProjection().getItems().size(), 1);
-    assertNotNull(select.getTarget());
-    assertNull(select.getWhereClause());
+    assertThat(select.getProjection()).isNotNull();
+    assertThat(select.getProjection().getItems()).isNotNull();
+    assertThat(select.getProjection().getItems().size()).isEqualTo(1);
+    assertThat(select.getTarget()).isNotNull();
+    assertThat(select.getWhereClause()).isNull();
   }
 
   @Test
@@ -165,7 +161,7 @@ public class SelectStatementTest {
   public void testIn() {
     final SimpleNode result = checkRightSyntax("select count(*) from OFunction where name in [\"a\"]");
     // result.dump("    ");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -173,7 +169,7 @@ public class SelectStatementTest {
   public void testNotIn() {
     final SimpleNode result = checkRightSyntax("select count(*) from OFunction where name not in [\"a\"]");
     // result.dump("    ");
-    assertTrue(result instanceof Statement);
+    assertThat(result instanceof Statement).isTrue();
 
   }
 
@@ -181,7 +177,7 @@ public class SelectStatementTest {
   public void testMath1() {
     final SimpleNode result = checkRightSyntax("" + "select * from sqlSelectIndexReuseTestClass where prop1 = 1 + 1");
     // result.dump("    ");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -189,7 +185,7 @@ public class SelectStatementTest {
   public void testMath2() {
     final SimpleNode result = checkRightSyntax("" + "select * from sqlSelectIndexReuseTestClass where prop1 = foo + 1");
     // result.dump("    ");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -197,7 +193,7 @@ public class SelectStatementTest {
   public void testMath5() {
     final SimpleNode result = checkRightSyntax("" + "select * from sqlSelectIndexReuseTestClass where prop1 = foo + 1 * bar - 5");
 
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -205,7 +201,7 @@ public class SelectStatementTest {
   public void testContainsWithCondition() {
     final SimpleNode result = checkRightSyntax("select from Profile where customReferences.values() CONTAINS 'a'");
 
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -213,7 +209,7 @@ public class SelectStatementTest {
   public void testNamedParam() {
     final SimpleNode result = checkRightSyntax("select from JavaComplexTestClass where enumField = :enumItem");
 
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -221,7 +217,7 @@ public class SelectStatementTest {
   public void testBoolean() {
     final SimpleNode result = checkRightSyntax("select from Foo where bar = true");
     // result.dump("    ");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -229,14 +225,14 @@ public class SelectStatementTest {
   public void testDottedAtField() {
     final SimpleNode result = checkRightSyntax("select from City where country.@type = 'Country'");
     // result.dump("    ");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
   public void testQuotedFieldNameFrom() {
     final SimpleNode result = checkRightSyntax("select `from` from City where country.@type = 'Country'");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -257,7 +253,7 @@ public class SelectStatementTest {
   public void testLongDotted() {
     final SimpleNode result = checkRightSyntax("select from Profile where location.city.country.name = 'Spain'");
     // result.dump("    ");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -265,7 +261,7 @@ public class SelectStatementTest {
   public void testInIsNotAReservedWord() {
     final SimpleNode result = checkRightSyntax("select count(*) from TRVertex where in.type() not in [\"LINKSET\"] ");
     // result.dump("    ");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
@@ -273,13 +269,13 @@ public class SelectStatementTest {
   public void testSelectFunction() {
     final SimpleNode result = checkRightSyntax("select max(1,2,7,0,-2,3), 'pluto'");
     // result.dump("    ");
-    assertTrue(result instanceof SelectWithoutTargetStatement);
+    assertThat(result instanceof SelectWithoutTargetStatement).isTrue();
   }
 
   @Test
   public void testEscape1() {
     final SimpleNode result = checkRightSyntax("select from bucket:internal where \"\\u005C\\u005C\" = \"\\u005C\\u005C\" ");
-    assertTrue(result instanceof SelectStatement);
+    assertThat(result instanceof SelectStatement).isTrue();
   }
 
   @Test
@@ -299,9 +295,9 @@ public class SelectStatementTest {
 
       final StringBuilder parsed = new StringBuilder();
       stm.toString(params, parsed);
-      assertEquals(parsed.toString(), "SELECT FROM bar WHERE name NOT IN []");
+      assertThat(parsed.toString()).isEqualTo("SELECT FROM bar WHERE name NOT IN []");
     } catch (final Exception e) {
-      fail();
+      fail("");
     }
   }
 
@@ -309,7 +305,7 @@ public class SelectStatementTest {
   public void testEscape2() {
     try {
       checkWrongSyntax("select from bucket:internal where \"\\u005C\" = \"\\u005C\" ");
-      fail();
+      fail("");
     } catch (final Error e) {
       // EXPECTED
     }
@@ -548,10 +544,10 @@ public class SelectStatementTest {
   public void testFlatten() {
     final SelectStatement stm = (SelectStatement) checkRightSyntax("select from ouser where name = 'foo'");
     final List<AndBlock> flattened = stm.whereClause.flatten();
-    assertTrue(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isBaseIdentifier());
-    assertFalse(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isBaseIdentifier());
-    assertFalse(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isEarlyCalculated(new BasicCommandContext()));
-    assertTrue(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isEarlyCalculated(new BasicCommandContext()));
+    assertThat(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isBaseIdentifier()).isTrue();
+    assertThat(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isBaseIdentifier()).isFalse();
+    assertThat(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isEarlyCalculated(new BasicCommandContext())).isFalse();
+    assertThat(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isEarlyCalculated(new BasicCommandContext())).isTrue();
   }
 
   @Test

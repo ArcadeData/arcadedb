@@ -19,10 +19,13 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandSQLParsingException;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Created by luigidellaquila on 02/07/15.
@@ -33,15 +36,15 @@ public class ProjectionTest {
   public void testIsExpand() throws ParseException {
     final SqlParser parser = getParserFor("select expand(foo)  from V");
     final SelectStatement stm = (SelectStatement) parser.Parse();
-    Assertions.assertTrue(stm.getProjection().isExpand());
+    assertThat(stm.getProjection().isExpand()).isTrue();
 
     final SqlParser parser2 = getParserFor("select foo  from V");
     final SelectStatement stm2 = (SelectStatement) parser2.Parse();
-    Assertions.assertFalse(stm2.getProjection().isExpand());
+    assertThat(stm2.getProjection().isExpand()).isFalse();
 
     final SqlParser parser3 = getParserFor("select expand  from V");
     final SelectStatement stm3 = (SelectStatement) parser3.Parse();
-    Assertions.assertFalse(stm3.getProjection().isExpand());
+    assertThat(stm3.getProjection().isExpand()).isFalse();
   }
 
   @Test
@@ -53,11 +56,11 @@ public class ProjectionTest {
     try {
       getParserFor("select expand(foo), bar  from V").Parse();
 
-      Assertions.fail();
+      fail("");
     } catch (final CommandSQLParsingException ex) {
 
     } catch (final Exception x) {
-      Assertions.fail();
+      fail("");
     }
   }
 

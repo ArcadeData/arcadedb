@@ -18,41 +18,41 @@
  */
 package com.arcadedb;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
 import static com.arcadedb.GlobalConfiguration.TEST;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ConfigurationTest {
   @Test
   public void testGlobalExport2Json() {
-    Assertions.assertFalse(TEST.getValueAsBoolean());
+    assertThat(TEST.getValueAsBoolean()).isFalse();
     final String json = GlobalConfiguration.toJSON();
     TEST.setValue(true);
-    Assertions.assertTrue(TEST.getValueAsBoolean());
+    assertThat(TEST.getValueAsBoolean()).isTrue();
     GlobalConfiguration.fromJSON(json);
-    Assertions.assertFalse(TEST.getValueAsBoolean());
+    assertThat(TEST.getValueAsBoolean()).isFalse();
   }
 
   @Test
   public void testContextExport2Json() {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(TEST, false);
-    Assertions.assertFalse(cfg.getValueAsBoolean(TEST));
+    assertThat(cfg.getValueAsBoolean(TEST)).isFalse();
     final String json = cfg.toJSON();
     cfg.setValue(TEST, true);
-    Assertions.assertTrue(cfg.getValueAsBoolean(TEST));
+    assertThat(cfg.getValueAsBoolean(TEST)).isTrue();
     cfg.fromJSON(json);
-    Assertions.assertFalse(cfg.getValueAsBoolean(TEST));
+    assertThat(cfg.getValueAsBoolean(TEST)).isFalse();
   }
 
   @Test
   public void testDump() {
     final ByteArrayOutputStream out = new ByteArrayOutputStream();
     GlobalConfiguration.dumpConfiguration(new PrintStream(out));
-    Assertions.assertTrue(out.size() > 0);
+    assertThat(out.size() > 0).isTrue();
   }
 
 }

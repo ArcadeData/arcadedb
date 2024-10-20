@@ -35,7 +35,6 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -45,6 +44,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/discussion/1129
@@ -131,8 +131,8 @@ public class BatchInsertUpdateTest {
           else if (status.equals("updated"))
             ++updated;
         }
-        Assertions.assertEquals(TOTAL, created);
-        Assertions.assertEquals(TOTAL / 2, updated);
+        assertThat(created).isEqualTo(TOTAL);
+        assertThat(updated).isEqualTo(TOTAL / 2);
 
       } finally {
         arcadeDBServer.stop();

@@ -21,10 +21,13 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -50,25 +53,25 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "create vertex " + className + " content " + array);
 
     for (int i = 0; i < 1000; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name" + i, item.getProperty("name").toString());
-      Assertions.assertEquals("surname" + i, item.getProperty("surname").toString());
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name").toString()).isEqualTo("name" + i);
+      assertThat(item.getProperty("surname").toString()).isEqualTo("surname" + i);
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
 
     for (int i = 0; i < 1000; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name" + i, item.getProperty("name").toString());
-      Assertions.assertEquals("surname" + i, item.getProperty("surname").toString());
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name").toString()).isEqualTo("name" + i);
+      assertThat(item.getProperty("surname").toString()).isEqualTo("surname" + i);
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -81,21 +84,21 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "create vertex " + className + " set name = 'name1'");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -107,10 +110,10 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
 
     try {
       final ResultSet result = database.command("sql", "create vertex " + className + " set name = 'name1'");
-      Assertions.fail();
+      fail("");
     } catch (final CommandExecutionException e1) {
     } catch (final Exception e2) {
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -123,22 +126,22 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "create vertex " + className + "  (name, surname) values ('name1', 'surname1')");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
-      Assertions.assertEquals("surname1", item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -152,28 +155,28 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
         "create vertex " + className + "  (name, surname) values ('name1', 'surname1'), ('name2', 'surname2')");
 
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name" + (i + 1), item.getProperty("name"));
-      Assertions.assertEquals("surname" + (i + 1), item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name" + (i + 1));
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname" + (i + 1));
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Set<String> names = new HashSet<>();
     names.add("name1");
     names.add("name2");
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
-      names.remove(item.getProperty("name"));
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isNotNull();
+      names.remove(item.<String>getProperty("name"));
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertTrue(names.isEmpty());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(names.isEmpty()).isTrue();
     result.close();
   }
 
@@ -186,22 +189,22 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "create vertex " + className + " content {'name':'name1', 'surname':'surname1'}");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
-      Assertions.assertEquals("surname1", item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 }

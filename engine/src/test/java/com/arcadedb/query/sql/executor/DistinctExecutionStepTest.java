@@ -19,8 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Created by luigidellaquila on 26/07/16.
@@ -52,10 +53,10 @@ public class DistinctExecutionStepTest {
 
     step.setPrevious(prev);
     final ResultSet res = step.syncPull(ctx, 10);
-    Assertions.assertTrue(res.hasNext());
+    assertThat(res.hasNext()).isTrue();
     res.next();
-    Assertions.assertTrue(res.hasNext());
+    assertThat(res.hasNext()).isTrue();
     res.next();
-    Assertions.assertFalse(res.hasNext());
+    assertThat(res.hasNext()).isFalse();
   }
 }

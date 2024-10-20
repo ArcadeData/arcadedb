@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SQLFunctionDijkstraTest {
@@ -80,11 +81,11 @@ public class SQLFunctionDijkstraTest {
       setUp(graph);
       final List<Vertex> result = functionDijkstra.execute(null, null, null, new Object[] { v1, v4, "'weight'" }, new BasicCommandContext());
 
-      assertEquals(4, result.size());
-      assertEquals(v1, result.get(0));
-      assertEquals(v2, result.get(1));
-      assertEquals(v3, result.get(2));
-      assertEquals(v4, result.get(3));
+      assertThat(result).hasSize(4);
+      assertThat(result.get(0)).isEqualTo(v1);
+      assertThat(result.get(1)).isEqualTo(v2);
+      assertThat(result.get(2)).isEqualTo(v3);
+      assertThat(result.get(3)).isEqualTo(v4);
     });
   }
 }

@@ -26,13 +26,15 @@ import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
-import java.net.*;
-import java.util.zip.*;
+import java.net.URL;
+import java.util.zip.GZIPInputStream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class JsonlExporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
@@ -50,13 +52,13 @@ public class JsonlExporterIT {
       final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
       importer.run().close();
 
-      Assertions.assertFalse(importer.isError());
-      Assertions.assertTrue(databaseDirectory.exists());
+      assertThat(importer.isError()).isFalse();
+      assertThat(databaseDirectory.exists()).isTrue();
 
       new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format jsonl").split(" ")).exportDatabase();
 
-      Assertions.assertTrue(file.exists());
-      Assertions.assertTrue(file.length() > 0);
+      assertThat(file.exists()).isTrue();
+      assertThat(file.length() > 0).isTrue();
 
       int lines = 0;
       try (final BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(file))))) {
@@ -67,7 +69,7 @@ public class JsonlExporterIT {
         }
       }
 
-      Assertions.assertTrue(lines > 10);
+      assertThat(lines > 10).isTrue();
 
     } finally {
       FileUtils.deleteRecursively(databaseDirectory);
@@ -80,7 +82,7 @@ public class JsonlExporterIT {
     try {
       emptyDatabase().close();
       new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format unknown").split(" ")).exportDatabase();
-      Assertions.fail();
+      fail("");
     } catch (final ExportException e) {
       // EXPECTED
     }
@@ -92,7 +94,7 @@ public class JsonlExporterIT {
       emptyDatabase().close();
       new File(FILE).createNewFile();
       new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -format jsonl").split(" ")).exportDatabase();
-      Assertions.fail();
+      fail("");
     } catch (final ExportException e) {
       // EXPECTED
     }

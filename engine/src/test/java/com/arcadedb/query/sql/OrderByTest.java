@@ -29,11 +29,14 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.time.format.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/839
@@ -81,7 +84,7 @@ public class OrderByTest {
         stop = LocalDateTime.parse("20220320T002323", FILENAME_TIME_FORMAT);
         Object[] parameters1 = { name, type, start, stop };
         try (ResultSet resultSet = database.command("sql", sqlString, parameters1)) {
-          Assertions.assertTrue(resultSet.hasNext());
+          assertThat(resultSet.hasNext()).isTrue();
           result = resultSet.next();
         } catch (Exception e) {
           System.out.println(e.getMessage());
@@ -98,15 +101,17 @@ public class OrderByTest {
 
         try (ResultSet resultSet = database.query("sql", sqlString, parameters3)) {
 
-          Assertions.assertTrue(resultSet.hasNext());
+          assertThat(resultSet.hasNext()).isTrue();
 
           while (resultSet.hasNext()) {
             result = resultSet.next();
 
             start = result.getProperty("start");
 
-            if (lastStart != null)
-              Assertions.assertTrue(start.compareTo(lastStart) <= 0, "" + start + " is greater than " + lastStart);
+            if (lastStart != null) {
+              assertThat(start.compareTo(lastStart)).isLessThanOrEqualTo(0)
+                  .withFailMessage("" + start + " is greater than " + lastStart);
+            }
 
             lastStart = start;
           }
@@ -116,15 +121,19 @@ public class OrderByTest {
 
         sqlString = "SELECT name, start, stop FROM Product WHERE type = ? AND start <= ? AND stop >= ? ORDER BY start ASC";
         try (ResultSet resultSet = database.query("sql", sqlString, parameters3)) {
-          Assertions.assertTrue(resultSet.hasNext());
+
+          assertThat(resultSet.hasNext()).isTrue();
 
           while (resultSet.hasNext()) {
             result = resultSet.next();
 
             start = result.getProperty("start");
 
-            if (lastStart != null)
-              Assertions.assertTrue(start.compareTo(lastStart) >= 0, "" + start + " is smaller than " + lastStart);
+            if (lastStart != null) {
+
+              assertThat(start.compareTo(lastStart)).isGreaterThanOrEqualTo(0)
+                  .withFailMessage("" + start + " is smaller than " + lastStart);
+            }
 
             lastStart = start;
           }

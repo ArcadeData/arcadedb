@@ -24,18 +24,19 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ConsoleBatchTest {
   @Test
   public void batchMode() throws IOException {
     Console.execute(new String[] { "-b", "create database console; create vertex type ConsoleOnlyVertex;" });
     final Database db = new DatabaseFactory("./target/databases/console").open();
-    Assertions.assertTrue(db.getSchema().existsType("ConsoleOnlyVertex"));
+    assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
     db.drop();
   }
 
@@ -43,7 +44,7 @@ public class ConsoleBatchTest {
   public void interactiveMode() throws IOException {
     Console.execute(new String[] { "create database console; create vertex type ConsoleOnlyVertex;exit" });
     final Database db = new DatabaseFactory("./target/databases/console").open();
-    Assertions.assertTrue(db.getSchema().existsType("ConsoleOnlyVertex"));
+    assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
     db.drop();
   }
 
@@ -52,7 +53,7 @@ public class ConsoleBatchTest {
     FileUtils.deleteRecursively(new File("./console"));
     Console.execute(new String[] { "-Darcadedb.server.databaseDirectory=.", "create database console; create vertex type ConsoleOnlyVertex;exit;" });
     final Database db = new DatabaseFactory("./console").open();
-    Assertions.assertTrue(db.getSchema().existsType("ConsoleOnlyVertex"));
+    assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
     db.drop();
     GlobalConfiguration.resetAll();
   }

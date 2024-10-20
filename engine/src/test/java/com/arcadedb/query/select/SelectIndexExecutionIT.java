@@ -23,10 +23,12 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -66,13 +68,13 @@ public class SelectIndexExecutionIT extends TestHelper {
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
         final List<Vertex> list = result.toList();
-        Assertions.assertEquals(i < 100 ? 1 : 0, list.size());
+        assertThat(list.size()).isEqualTo(i < 100 ? 1 : 0);
 
-        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") == finalI && r.getString("name").equals("Elon")));
+        list.forEach(r -> assertThat(r.getInteger("id") == finalI && r.getString("name").equals("Elon")).isTrue());
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"), "With id " + i);
-        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+        assertThat(result.getMetrics().get("evaluatedRecords")).as("With id " + i).isEqualTo(1L);
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
     }
   }
@@ -89,11 +91,11 @@ public class SelectIndexExecutionIT extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
-        result.forEachRemaining(r -> Assertions.assertTrue(r.getInteger("id") == finalI || r.getString("name").equals("Elon")));
+        result.forEachRemaining(r -> assertThat(r.getInteger("id") == finalI || r.getString("name").equals("Elon")).isTrue());
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(i < 100 ? 100L : 101L, result.getMetrics().get("evaluatedRecords"), "" + finalI);
-        Assertions.assertEquals(2, result.getMetrics().get("usedIndexes"));
+        assertThat(result.getMetrics().get("evaluatedRecords")).as("" + finalI).isEqualTo(i < 100 ? 100L : 101L);
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(2);
       }
     }
   }
@@ -110,11 +112,11 @@ public class SelectIndexExecutionIT extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
-        result.forEachRemaining(r -> Assertions.assertEquals((int) r.getInteger("id"), finalI));
+        result.forEachRemaining(r -> assertThat((int) r.getInteger("id")).isEqualTo(finalI));
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+        assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
     }
 
@@ -128,11 +130,11 @@ public class SelectIndexExecutionIT extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
-        result.forEachRemaining(r -> Assertions.assertEquals((int) r.getInteger("id"), finalI));
+        result.forEachRemaining(r -> assertThat((int) r.getInteger("id")).isEqualTo(finalI));
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+        assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
     }
   }
@@ -150,8 +152,8 @@ public class SelectIndexExecutionIT extends TestHelper {
         result.toList();
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(110L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(0, result.getMetrics().get("usedIndexes"));
+        assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(110L);
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
       }
     }
 
@@ -166,8 +168,8 @@ public class SelectIndexExecutionIT extends TestHelper {
         result.toList();
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(110L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(0, result.getMetrics().get("usedIndexes"));
+        assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(110L);
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
       }
     }
 
@@ -183,13 +185,13 @@ public class SelectIndexExecutionIT extends TestHelper {
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
         final List<Vertex> list = result.toList();
-        Assertions.assertEquals(1, list.size());
+        assertThat(list.size()).isEqualTo(1);
 
-        list.forEach(r -> Assertions.assertEquals((int) r.getInteger("id"), finalI));
+        list.forEach(r -> assertThat((int) r.getInteger("id")).isEqualTo(finalI));
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
-        Assertions.assertEquals(1L, result.getMetrics().get("evaluatedRecords"));
-        Assertions.assertEquals(2, result.getMetrics().get("usedIndexes"));
+        assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(2);
       }
     }
 
@@ -205,9 +207,9 @@ public class SelectIndexExecutionIT extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
-        Assertions.assertEquals(109 - i, list.size());
-        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") > finalI));
-        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+        assertThat(list.size()).isEqualTo(109 - i);
+        list.forEach(r -> assertThat(r.getInteger("id")).isGreaterThan(finalI));
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
     }
 
@@ -219,9 +221,9 @@ public class SelectIndexExecutionIT extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
-        Assertions.assertEquals(110 - i, list.size());
-        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") >= finalI));
-        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+        assertThat(list.size()).isEqualTo(110 - i);
+        list.forEach(r -> assertThat(r.getInteger("id")).isGreaterThanOrEqualTo(finalI));
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
     }
 
@@ -233,9 +235,9 @@ public class SelectIndexExecutionIT extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
-        Assertions.assertEquals(i, list.size());
-        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") < finalI));
-        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+        assertThat(list.size()).isEqualTo(i);
+        list.forEach(r -> assertThat(r.getInteger("id")).isLessThan(finalI));
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
     }
 
@@ -247,9 +249,9 @@ public class SelectIndexExecutionIT extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
-        Assertions.assertEquals(i + 1, list.size());
-        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") <= finalI));
-        Assertions.assertEquals(1, result.getMetrics().get("usedIndexes"));
+        assertThat(list.size()).isEqualTo(i + 1);
+        list.forEach(r -> assertThat(r.getInteger("id")).isLessThanOrEqualTo(finalI));
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
     }
 
@@ -261,9 +263,9 @@ public class SelectIndexExecutionIT extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         final List<Vertex> list = result.toList();
-        Assertions.assertEquals(109, list.size());
-        list.forEach(r -> Assertions.assertTrue(r.getInteger("id") != finalI));
-        Assertions.assertEquals(0, result.getMetrics().get("usedIndexes"));
+        assertThat(list.size()).isEqualTo(109);
+        list.forEach(r -> assertThat(r.getInteger("id")).isNotEqualTo(finalI));
+        assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
       }
     }
   }

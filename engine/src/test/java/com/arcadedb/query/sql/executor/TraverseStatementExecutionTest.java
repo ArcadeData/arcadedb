@@ -20,10 +20,13 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -53,11 +56,11 @@ public class TraverseStatementExecutionTest extends TestHelper {
       final ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a')");
 
       for (int i = 0; i < 4; i++) {
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         final Result item = result.next();
-        Assertions.assertEquals(i, item.getMetadata("$depth"));
+        assertThat(item.getMetadata("$depth")).isEqualTo(i);
       }
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
     });
   }
@@ -87,11 +90,11 @@ public class TraverseStatementExecutionTest extends TestHelper {
           "traverse out() from (select from " + classPrefix + "V where name = 'a') WHILE $depth < 2");
 
       for (int i = 0; i < 2; i++) {
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         final Result item = result.next();
-        Assertions.assertEquals(i, item.getMetadata("$depth"));
+        assertThat(item.getMetadata("$depth")).isEqualTo(i);
       }
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
     });
   }
@@ -121,21 +124,21 @@ public class TraverseStatementExecutionTest extends TestHelper {
           "traverse out() from (select from " + classPrefix + "V where name = 'a') MAXDEPTH 1");
 
       for (int i = 0; i < 2; i++) {
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         final Result item = result.next();
-        Assertions.assertEquals(i, item.getMetadata("$depth"));
+        assertThat(item.getMetadata("$depth")).isEqualTo(i);
       }
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
 
       result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a') MAXDEPTH 2");
 
       for (int i = 0; i < 3; i++) {
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         final Result item = result.next();
-        Assertions.assertEquals(i, item.getMetadata("$depth"));
+        assertThat(item.getMetadata("$depth")).isEqualTo(i);
       }
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
     });
   }
@@ -165,11 +168,11 @@ public class TraverseStatementExecutionTest extends TestHelper {
           "traverse out() from (select from " + classPrefix + "V where name = 'a') STRATEGY BREADTH_FIRST");
 
       for (int i = 0; i < 4; i++) {
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         final Result item = result.next();
-        Assertions.assertEquals(i, item.getMetadata("$depth"));
+        assertThat(item.getMetadata("$depth")).isEqualTo(i);
       }
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
     });
   }
@@ -195,9 +198,9 @@ public class TraverseStatementExecutionTest extends TestHelper {
       script += "return $top;";
 
       final ResultSet result = database.command("sqlscript", script);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
     });
   }

@@ -21,10 +21,13 @@ package com.arcadedb.query.sql.functions.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
+import static org.assertj.core.api.AssertionsForClassTypes.within;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CustomSQLFunctionsTest {
@@ -32,7 +35,7 @@ public class CustomSQLFunctionsTest {
   public void testRandom() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_random() as random");
-      assertTrue((Double) result.next().getProperty("random") > 0);
+      assertThat(result.next().<Double>getProperty("random")).isGreaterThan(0);
     });
   }
 
@@ -40,7 +43,7 @@ public class CustomSQLFunctionsTest {
   public void testLog10() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_log10(10000) as log10");
-      assertEquals(result.next().getProperty("log10"), 4.0, 0.0001);
+      assertThat(result.next().<Double>getProperty("log10")).isCloseTo(4.0, within(0.0001));
     });
   }
 
@@ -48,7 +51,7 @@ public class CustomSQLFunctionsTest {
   public void testAbsInt() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_abs(-5) as abs");
-      assertTrue((Integer) result.next().getProperty("abs") == 5);
+      assertThat(result.next().<Integer>getProperty("abs")).isEqualTo(5);
     });
   }
 
@@ -56,7 +59,7 @@ public class CustomSQLFunctionsTest {
   public void testAbsDouble() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_abs(-5.0d) as abs");
-      assertTrue((Double) result.next().getProperty("abs") == 5.0);
+      assertThat(result.next().<Double>getProperty("abs")).isEqualTo(5.0);
     });
   }
 
@@ -64,15 +67,16 @@ public class CustomSQLFunctionsTest {
   public void testAbsFloat() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_abs(-5.0f) as abs");
-      assertTrue((Float) result.next().getProperty("abs") == 5.0);
+      assertThat(result.next().<Float>getProperty("abs")).isEqualTo(5.0f);
     });
   }
 
   @Test
   public void testNonExistingFunction() {
-    assertThrows(CommandParsingException.class, () -> TestHelper.executeInNewDatabase("testRandom", (db) -> {
-      final ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");
-      result.next();
-    }));
+    assertThatExceptionOfType(CommandParsingException.class).isThrownBy(
+        () -> TestHelper.executeInNewDatabase("testRandom", (db) -> {
+          final ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");
+          result.next();
+        }));
   }
 }

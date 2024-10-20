@@ -18,53 +18,54 @@
  */
 package com.arcadedb;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class ConstantsTest {
 
   @Test
   void getVersionMajor() {
-    Assertions.assertNotNull(Constants.getVersionMajor());
+    assertThat(Constants.getVersionMajor()).isNotNull();
   }
 
   @Test
   void getVersionMinor() {
-    Assertions.assertNotNull(Constants.getVersionMinor());
+    assertThat(Constants.getVersionMinor()).isNotNull();
   }
 
   @Test
   void getVersionHotfix() {
-    Assertions.assertNotNull(Constants.getVersionHotfix());
+    assertThat(Constants.getVersionHotfix()).isNotNull();
   }
 
   @Test
   void getVersion() {
-    Assertions.assertNotNull(Constants.getVersion());
+    assertThat(Constants.getVersion()).isNotNull();
   }
 
   @Test
   void getRawVersion() {
-    Assertions.assertNotNull(Constants.getRawVersion());
+    assertThat(Constants.getRawVersion()).isNotNull();
   }
 
   @Test
   void getBranch() {
-    Assertions.assertNotNull(Constants.getBranch());
+    assertThat(Constants.getBranch()).isNotNull();
   }
 
   @Test
   void getBuildNumber() {
-    Assertions.assertNotNull(Constants.getBuildNumber());
+    assertThat(Constants.getBuildNumber()).isNotNull();
   }
 
   @Test
   void getTimestamp() {
-    Assertions.assertNotNull(Constants.getTimestamp());
+    assertThat(Constants.getTimestamp()).isNotNull();
   }
 
   @Test
   void isSnapshot() {
-    Assertions.assertNotNull(Constants.isSnapshot());
+    assertThat(Constants.isSnapshot()).isNotNull();
   }
 }

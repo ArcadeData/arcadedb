@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests the "asMap()" method implemented by the OSQLMethodAsMap class. Note that the only input to
@@ -48,7 +48,7 @@ public class SQLMethodAsMapTest {
   public void testNull() {
     // The expected behavior is to return an empty map.
     final Object result = function.execute(null, null, null, null);
-    assertEquals(result, new HashMap<Object, Object>());
+    assertThat(new HashMap<Object, Object>()).isEqualTo(result);
   }
 
   @Test
@@ -58,7 +58,7 @@ public class SQLMethodAsMapTest {
     aMap.put("p1", 1);
     aMap.put("p2", 2);
     final Object result = function.execute(aMap, null, null, null);
-    assertEquals(result, aMap);
+    assertThat(aMap).isEqualTo(result);
   }
 
   @Test
@@ -73,7 +73,7 @@ public class SQLMethodAsMapTest {
 
     final Object result = function.execute(doc, null, null, null);
 
-    assertEquals(doc.toMap(false), result);
+    assertThat(result).isEqualTo(doc.toMap(false));
   }
 
   @Test
@@ -92,7 +92,7 @@ public class SQLMethodAsMapTest {
     final HashMap<Object, Object> expected = new HashMap<Object, Object>();
     expected.put("p1", 1);
     expected.put("p2", 2);
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -111,13 +111,13 @@ public class SQLMethodAsMapTest {
     final HashMap<Object, Object> expected = new HashMap<Object, Object>();
     expected.put("p1", 1);
     expected.put("p2", 2);
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
   public void testOtherValue() {
     // The expected behavior is to return null.
     final Object result = function.execute(Integer.valueOf(4), null, null, null);
-    assertEquals(result, null);
+    assertThat(result).isNull();
   }
 }

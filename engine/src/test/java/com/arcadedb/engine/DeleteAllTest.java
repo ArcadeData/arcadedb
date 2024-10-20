@@ -5,11 +5,13 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class DeleteAllTest {
   private final static int    TOT_RECORDS = 100_000;
@@ -28,10 +30,10 @@ public class DeleteAllTest {
         db.getSchema().createEdgeType(EDGE_TYPE, 1);
 
         for (int i = 0; i < CYCLES; i++) {
-          System.out.println("Cycle " + i);
-          List.of(new File(databaseFactory.getDatabasePath()).listFiles())
-              .forEach(f -> System.out.println("- " + f.getName() + ": " + FileUtils.getSizeAsString(
-                  f.length())));
+          //System.out.println("Cycle " + i);
+//          List.of(new File(databaseFactory.getDatabasePath()).listFiles())
+//              .forEach(f -> System.out.println("- " + f.getName() + ": " + FileUtils.getSizeAsString(
+//                  f.length())));
 
           db.transaction(() -> {
             final MutableVertex root = db.newVertex(VERTEX_TYPE)//
@@ -48,18 +50,18 @@ public class DeleteAllTest {
           });
 
           db.transaction(() -> {
-            Assertions.assertEquals(TOT_RECORDS, db.countType(VERTEX_TYPE, true));
-            Assertions.assertEquals(TOT_RECORDS - 1, db.countType(EDGE_TYPE, true));
+            assertThat(db.countType(VERTEX_TYPE, true)).isEqualTo(TOT_RECORDS);
+            assertThat(db.countType(EDGE_TYPE, true)).isEqualTo(TOT_RECORDS - 1);
 
             db.command("sql", "delete from " + VERTEX_TYPE);
 
-            Assertions.assertEquals(0, db.countType(VERTEX_TYPE, true));
-            Assertions.assertEquals(0, db.countType(EDGE_TYPE, true));
+            assertThat(db.countType(VERTEX_TYPE, true)).isEqualTo(0);
+            assertThat(db.countType(EDGE_TYPE, true)).isEqualTo(0);
           });
         }
 
         final ResultSet result = db.command("sql", "check database");
-        System.out.println(result.nextIfAvailable().toJSON());
+//        System.out.println(result.nextIfAvailable().toJSON());
       } finally {
 
         if (databaseFactory.exists())

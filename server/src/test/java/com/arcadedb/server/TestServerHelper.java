@@ -28,11 +28,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.File;
+import java.util.Collection;
+import java.util.logging.Level;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Executes all the tests while the server is up and running.
@@ -106,7 +108,7 @@ public abstract class TestServerHelper {
       throws Exception {
     try {
       callback.call();
-      Assertions.fail();
+      fail("");
     } catch (final Throwable e) {
       if (e.getClass().equals(expectedException))
         // EXPECTED
@@ -139,7 +141,7 @@ public abstract class TestServerHelper {
       } else
         db.close();
 
-    Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
+    assertThat(activeDatabases.isEmpty()).as("Found active databases: " + activeDatabases).isTrue();
   }
 
   public static void deleteDatabaseFolders(final int totalServers) {

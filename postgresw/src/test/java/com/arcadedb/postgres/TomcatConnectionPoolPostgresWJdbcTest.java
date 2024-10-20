@@ -23,13 +23,14 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.apache.tomcat.jdbc.pool.DataSource;
 import org.apache.tomcat.jdbc.pool.PoolProperties;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
 import java.sql.*;
-import java.util.*;
+import java.util.Properties;
+
+import static org.assertj.core.api.Assertions.fail;
 
 public class TomcatConnectionPoolPostgresWJdbcTest extends BaseGraphServerTest {
   @Override
@@ -99,7 +100,7 @@ public class TomcatConnectionPoolPostgresWJdbcTest extends BaseGraphServerTest {
       try (final Statement st = conn.createStatement()) {
         try {
           st.executeQuery("SELECT * FROM V");
-          Assertions.fail("The query should go in error");
+          fail("The query should go in error");
         } catch (final PSQLException e) {
         }
       }

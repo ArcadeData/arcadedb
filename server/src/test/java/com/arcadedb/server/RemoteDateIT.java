@@ -34,7 +34,6 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +41,7 @@ import java.time.*;
 import java.time.temporal.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests dates by using server and/or remote connection.
@@ -77,17 +77,16 @@ public class RemoteDateIT {
       database.begin();
       sqlString = "INSERT INTO Order SET vstart = ?";
       try (ResultSet resultSet = database.command("sql", sqlString, vstart)) {
-        Assertions.assertEquals(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.MICROS),
-            resultSet.next().toJSON().getLong("vstart"));
+        assertThat(resultSet.next().toJSON().getLong("vstart")).isEqualTo(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.MICROS));
       }
       sqlString = "select from Order";
       System.out.println(sqlString);
       Result result = null;
       try (ResultSet resultSet = database.query("sql", sqlString)) {
         result = resultSet.next();
-        Assertions.assertEquals(vstart, result.toElement().get("vstart"));
+        assertThat(result.toElement().get("vstart")).isEqualTo(vstart);
       }
-      Assertions.assertNotNull(result);
+      assertThat(result).isNotNull();
 
       database.commit();
 
@@ -96,9 +95,9 @@ public class RemoteDateIT {
       result = null;
       try (ResultSet resultSet = remote.query("sql", sqlString)) {
         result = resultSet.next();
-        Assertions.assertEquals(vstart.toString(), result.toElement().get("vstart"));
+        assertThat(result.toElement().get("vstart")).isEqualTo(vstart.toString());
       }
-      Assertions.assertNotNull(result);
+      assertThat(result).isNotNull();
 
     } finally {
       arcadeDBServer.stop();

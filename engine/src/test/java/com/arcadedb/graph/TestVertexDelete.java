@@ -2,12 +2,14 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestVertexDelete {
   public static class DeleteOnClose implements AutoCloseable {
@@ -58,8 +60,8 @@ public class TestVertexDelete {
         db.transaction(() -> {
           var v1c = db.countType("v1", false);
           var pc = db.countType("hasParent", false);
-          Assertions.assertEquals(0, v1c);
-          Assertions.assertEquals(0, pc);
+          assertThat(v1c).isEqualTo(0);
+          assertThat(pc).isEqualTo(0);
         });
       }
     }

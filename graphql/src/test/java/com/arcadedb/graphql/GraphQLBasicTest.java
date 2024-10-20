@@ -22,10 +22,13 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class GraphQLBasicTest extends AbstractGraphQLTest {
 
@@ -61,18 +64,18 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
           "  }" +//
           "}" +//
           "}")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
 
         record.toJSON();
 
         rid = record.getIdentity().get();
-        Assertions.assertNotNull(rid);
+        assertThat(rid).isNotNull();
 
-        Assertions.assertEquals(8, record.getPropertyNames().size());
-        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
+        assertThat(record.getPropertyNames()).hasSize(8);
+        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
 
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       return null;
@@ -85,21 +88,21 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql", "{ bookByName(name: \"Harry Potter and the Philosopher's Stone\")}")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
-        Assertions.assertEquals(7, record.getPropertyNames().size());
-        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
-        Assertions.assertEquals("Harry Potter and the Philosopher's Stone", record.getProperty("name"));
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(record.getPropertyNames()).hasSize(7);
+        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Harry Potter and the Philosopher's Stone");
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       try (final ResultSet resultSet = database.query("graphql", "{ bookByName(name: \"Mr. brain\") }")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
-        Assertions.assertEquals(7, record.getPropertyNames().size());
-        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
-        Assertions.assertEquals("Mr. brain", record.getProperty("name"));
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(record.getPropertyNames()).hasSize(7);
+        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Mr. brain");
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       return null;
@@ -113,7 +116,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
 
       try {
         database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }");
-        Assertions.fail();
+        fail();
       } catch (final CommandParsingException e) {
         // EXPECTED
       }
@@ -144,17 +147,17 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
       database.command("graphql", types);
 
       try (final ResultSet resultSet = database.query("graphql", "{ books }")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         Result record = resultSet.next();
-        Assertions.assertEquals(7, record.getPropertyNames().size());
-        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
+        assertThat(record.getPropertyNames()).hasSize(7);
+        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
 
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         record = resultSet.next();
-        Assertions.assertEquals(7, record.getPropertyNames().size());
-        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
+        assertThat(record.getPropertyNames()).hasSize(7);
+        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
 
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       return null;
@@ -183,17 +186,17 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
       database.command("graphql", types);
 
       try (final ResultSet resultSet = database.query("graphql", "{ books { id\n name\n pageCount\n authors @relationship(type: \"WRONG\", direction: IN)} }")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         Result record = resultSet.next();
-        Assertions.assertEquals(7, record.getPropertyNames().size());
-        Assertions.assertEquals(0, countIterable(record.getProperty("authors")));
+        assertThat(record.getPropertyNames()).hasSize(7);
+        assertThat(countIterable(record.getProperty("authors"))).isEqualTo(0);
 
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         record = resultSet.next();
-        Assertions.assertEquals(7, record.getPropertyNames().size());
-        Assertions.assertEquals(0, countIterable(record.getProperty("authors")));
+        assertThat(record.getPropertyNames()).hasSize(7);
+        assertThat(countIterable(record.getProperty("authors"))).isEqualTo(0);
 
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       return null;
@@ -222,17 +225,17 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
       database.command("graphql", types);
 
       try (final ResultSet resultSet = database.query("graphql", "{ books( where: \"name = 'Mr. brain'\" ) }")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
-        Assertions.assertEquals(7, record.getPropertyNames().size());
+        assertThat(record.getPropertyNames()).hasSize(7);
 
-        Assertions.assertEquals("book-2", record.getProperty("id"));
-        Assertions.assertEquals("Mr. brain", record.getProperty("name"));
-        Assertions.assertEquals(422, (Integer) record.getProperty("pageCount"));
+        assertThat(record.<String>getProperty("id")).isEqualTo("book-2");
+        assertThat(record.<String>getProperty("name")).isEqualTo("Mr. brain");
+        assertThat((Integer) record.getProperty("pageCount")).isEqualTo(422);
 
-        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
+        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
 
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       return null;

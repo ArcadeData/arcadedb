@@ -27,10 +27,14 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class LSMTreeFullTextIndexTest extends TestHelper {
   private static final int    TOT       = 10000;
@@ -39,14 +43,14 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
   @Test
   public void testIndexing() {
-    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
     type.createProperty("text", String.class);
     final Index typeIndex = database.getSchema()
         .createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
 
-    Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isTrue();
 
     final String text =
         "Jay Glenn Miner (May 31, 1932 – June 20, 1994) was an American integrated circuit designer, known primarily for developing multimedia chips for the Atari 2600 and Atari 8-bit family and as the \"father of the Amiga\". He received a BS in EECS from UC Berkeley in 1959.[2]\n"
@@ -77,7 +81,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
       final List<String> keywords = ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).analyzeText(
           ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).getAnalyzer(), new Object[] { text });
-      Assertions.assertFalse(keywords.isEmpty());
+      assertThat(keywords.isEmpty()).isFalse();
 
       for (final String k : keywords) {
         int totalPerKeyword = 0;
@@ -94,24 +98,24 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
             ++totalPerIndex;
           }
 
-          Assertions.assertEquals(result.estimateSize(), totalPerIndex);
+          assertThat(totalPerIndex).isEqualTo(result.estimateSize());
 
           totalPerKeyword += totalPerIndex;
         }
-        Assertions.assertEquals(TOT, totalPerKeyword);
+        assertThat(totalPerKeyword).isEqualTo(TOT);
       }
     });
 
     reopenDatabase();
 
-    Assertions.assertEquals(Schema.INDEX_TYPE.FULL_TEXT, database.getSchema().getIndexes()[0].getType());
+    assertThat(database.getSchema().getIndexes()[0].getType()).isEqualTo(Schema.INDEX_TYPE.FULL_TEXT);
 
     database.getSchema().dropIndex(typeIndex.getName());
   }
 
   @Test
   public void testIndexingComposite() {
-    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
     type.createProperty("text", String.class);
@@ -119,7 +123,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
     try {
       database.getSchema()
           .createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text", "type" }, PAGE_SIZE);
-      Assertions.fail();
+      fail("");
     } catch (IndexException e) {
       // EXPECTED
     }
@@ -128,14 +132,14 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
   @Test
   public void testQuery() {
     database.transaction(() -> {
-      Assertions.assertFalse(database.getSchema().existsType("Docs"));
+      assertThat(database.getSchema().existsType("Docs")).isFalse();
 
       final DocumentType type = database.getSchema().createDocumentType("Docs");
       type.createProperty("text", String.class);
       final Index typeIndex = database.getSchema()
           .createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "Docs", new String[] { "text" });
 
-      Assertions.assertTrue(database.getSchema().existsType("Docs"));
+      assertThat(database.getSchema().existsType("Docs")).isTrue();
 
       final String text =
           "Jay Glenn Miner (May 31, 1932 – June 20, 1994) was an American integrated circuit designer, known primarily for developing multimedia chips for the Atari 2600 and Atari 8-bit family and as the \"father of the Amiga\". He received a BS in EECS from UC Berkeley in 1959.[2]\n"
@@ -178,13 +182,17 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
           continue;
 
         final ResultSet result = database.query("sql", "select from Docs where text = '" + toFind + "'", toFind);
-        Assertions.assertTrue(result.hasNext(), "Cannot find key '" + toFind + "'");
+        assertThat(result.hasNext())
+            .isTrue()
+            .withFailMessage("Cannot find key '" + toFind + "'");
 
         final Result res = result.next();
-        Assertions.assertNotNull(res);
+        assertThat(res).isNotNull();
 
         final String content = res.getProperty("text").toString().toLowerCase();
-        Assertions.assertTrue(content.contains(toFind), "Cannot find the word '" + toFind + "' in indexed text '" + content + "'");
+        assertThat(content.contains(toFind))
+            .isTrue()
+            .withFailMessage("Cannot find the word '" + toFind + "' in indexed text '" + content + "'");
       }
     });
   }
@@ -198,7 +206,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
         database.command("sql", "CREATE INDEX ON doc (str) FULL_TEXT null_strategy error");
         database.command("sql", "INSERT INTO doc (str) VALUES ('a'), ('b'), (null)");
       });
-      Assertions.fail();
+      fail("");
     } catch (TransactionException e) {
     }
 

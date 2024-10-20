@@ -22,8 +22,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.fail;
 
 public class CheckRecordTypeStepTest {
 
@@ -54,8 +58,8 @@ public class CheckRecordTypeStepTest {
 
       step.setPrevious(previous);
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(10, result.stream().count());
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.stream().count()).isEqualTo(10);
+      assertThat(result.hasNext()).isFalse();
     });
   }
 
@@ -86,8 +90,8 @@ public class CheckRecordTypeStepTest {
 
       step.setPrevious(previous);
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(10, result.stream().count());
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.stream().count()).isEqualTo(10);
+      assertThat(result.hasNext()).isFalse();
     });
   }
 
@@ -123,7 +127,7 @@ public class CheckRecordTypeStepTest {
           result.next();
         }
       });
-      Assertions.fail("Expected CommandExecutionException");
+      fail("Expected CommandExecutionException");
 
     } catch (final CommandExecutionException e) {
       // OK

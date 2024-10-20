@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -30,12 +31,15 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class LSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -61,11 +65,11 @@ public class LSMTreeIndexTest extends TestHelper {
         }
 
         total++;
-        Assertions.assertEquals(1, results.size());
-        Assertions.assertEquals(i, (int) results.get(0));
+        assertThat(results).hasSize(1);
+        assertThat((int) results.get(0)).isEqualTo(i);
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
     });
   }
 
@@ -81,23 +85,23 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          Assertions.assertNotNull(index);
+          assertThat(index).isNotNull();
 
           final IndexCursor iterator;
           try {
             iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
-            Assertions.assertNotNull(iterator);
+            assertThat((Iterator<? extends Identifiable>) iterator).isNotNull();
 
             while (iterator.hasNext()) {
               final Identifiable value = iterator.next();
 
-              Assertions.assertNotNull(value);
+              assertThat(value).isNotNull();
 
               final int fieldValue = (int) value.asDocument().get("id");
-              Assertions.assertEquals(i, fieldValue);
+              assertThat(fieldValue).isEqualTo(i);
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+              assertThat(iterator.getKeys()).isNotNull();
+              assertThat(iterator.getKeys().length).isEqualTo(1);
 
               total++;
             }
@@ -106,7 +110,7 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        Assertions.assertEquals(1, total, "Get item with id=" + i);
+        assertThat(total).withFailMessage("Get item with id=" + i).isEqualTo(1);
       }
     });
   }
@@ -123,28 +127,28 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          Assertions.assertNotNull(index);
+          assertThat(index).isNotNull();
 
           final IndexCursor iterator;
           iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
             final Identifiable value = iterator.next();
 
-            Assertions.assertNotNull(value);
+            assertThat(value).isNotNull();
 
             final int fieldValue = (int) value.asDocument().get("id");
-            Assertions.assertTrue(fieldValue >= i && fieldValue <= i + 1);
+            assertThat(fieldValue >= i && fieldValue <= i + 1).isTrue();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             ++total;
           }
         }
 
-        Assertions.assertEquals(2, total, "range " + i + "-" + (i + 1));
+        assertThat(total).withFailMessage("range " + i + "-" + (i + 1)).isEqualTo(2);
       }
     });
   }
@@ -162,28 +166,28 @@ public class LSMTreeIndexTest extends TestHelper {
 //          for (Index index : indexes) {
 //            if( index instanceof TypeIndex)
 //              continue;
-//            Assertions.assertNotNull(index);
+//            Assertions.assertThat(index).isNotNull();
 //
 //            final IndexCursor iterator;
 //            iterator = ((RangeIndex) index).range(new Object[] { i }, true, new Object[] { i - 1 }, true);
-//            Assertions.assertNotNull(iterator);
+//            Assertions.assertThat(iterator).isNotNull();
 //
 //            while (iterator.hasNext()) {
 //              Identifiable value = iterator.next();
 //
-//              Assertions.assertNotNull(value);
+//              Assertions.assertThat(value).isNotNull();
 //
 //              int fieldValue = (int) value.asDocument().get("id");
-//              Assertions.assertTrue(fieldValue >= i - 1 && fieldValue <= i);
+//              Assertions.assertThat(fieldValue >= i - 1 && fieldValue <= i).isTrue();
 //
-//              Assertions.assertNotNull(iterator.getKeys());
-//              Assertions.assertEquals(1, iterator.getKeys().length);
+//              Assertions.assertThat(iterator.getKeys()).isNotNull();
+//              Assertions.assertThat(iterator.getKeys().length).isEqualTo(1);
 //
 //              ++total;
 //            }
 //          }
 //
-//          Assertions.assertEquals(2, total, "range " + i + "-" + (i - 1));
+//          Assertions.assertThat(total).isEqualTo(2, within("range " + i + "-" + (i - 1)));
 //        }
 //      }
 //    });
@@ -213,17 +217,18 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        Assertions.assertEquals(1, found, "Key '" + Arrays.toString(key) + "' found " + found + " times");
+        assertThat(found).isEqualTo(1).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times");
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
         for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
-          Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i + " inside the TX by using get()");
+          assertThat(index.get(new Object[] { i }).hasNext()).isFalse()
+              .withFailMessage("Found item with key " + i + " inside the TX by using get()");
         }
       }
 
@@ -235,7 +240,7 @@ public class LSMTreeIndexTest extends TestHelper {
 //              continue;
 //            final IndexCursor cursor = ((RangeIndex) index).range(new Object[] { i }, true, new Object[] { i }, true);
 //
-//            Assertions.assertFalse(cursor.hasNext() && cursor.next() != null, "Found item with key " + i + " inside the TX by using range()");
+//            Assertions.assertThat(cursor.hasNext() && cursor.next().isFalse() != null, "Found item with key " + i + " inside the TX by using range()");
 //          }
 //        }
     }, true, 0);
@@ -247,7 +252,9 @@ public class LSMTreeIndexTest extends TestHelper {
         for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
-          Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i + " after the TX was committed");
+          assertThat(index.get(new Object[] { i }).hasNext())
+              .withFailMessage("Found item with key " + i + " after the TX was committed")
+              .isFalse();
         }
       }
 
@@ -258,7 +265,9 @@ public class LSMTreeIndexTest extends TestHelper {
             continue;
 
           final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
-          Assertions.assertFalse(cursor.hasNext() && cursor.next() != null, "Found item with key " + i + " after the TX was committed by using range()");
+
+          assertThat(cursor.hasNext() && cursor.next() != null).isFalse()
+              .withFailMessage("Found item with key " + i + " after the TX was committed by using range()");
         }
       }
     }, true, 0);
@@ -289,10 +298,12 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        Assertions.assertEquals(1, found, "Key '" + Arrays.toString(key) + "' found " + found + " times");
+        assertThat(found)
+            .withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times")
+            .isEqualTo(1);
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
@@ -300,7 +311,7 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i);
+          assertThat(index.get(new Object[] { i }).hasNext()).withFailMessage("Found item with key " + i).isFalse();
         }
       }
 
@@ -311,7 +322,7 @@ public class LSMTreeIndexTest extends TestHelper {
 //            if (index instanceof TypeIndex)
 //              continue;
 //
-//            Assertions.assertFalse(((RangeIndex) index).range(new Object[] { i }, true, new Object[] { i }, true).hasNext(),
+//            Assertions.assertThat(((RangeIndex) index).isFalse().range(new Object[] { i }, true, new Object[] { i }, true).hasNext(),
 //                "Found item with key " + i + " inside the TX by using range()");
 //          }
 //        }
@@ -325,7 +336,9 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i + " after the TX was committed");
+          assertThat(index.get(new Object[] { i }).hasNext())
+              .withFailMessage("Found item with key " + i + " after the TX was committed")
+              .isFalse();
         }
       }
 
@@ -336,7 +349,10 @@ public class LSMTreeIndexTest extends TestHelper {
             continue;
 
           final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
-          Assertions.assertFalse(cursor.hasNext() && cursor.next() != null, "Found item with key " + i + " after the TX was committed by using range()");
+
+          assertThat(cursor.hasNext() && cursor.next() != null)
+              .withFailMessage("Found item with key " + i + " after the TX was committed by using range()")
+              .isFalse();
         }
       }
     }, true, 0);
@@ -369,10 +385,10 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        Assertions.assertEquals(1, found, "Key '" + Arrays.toString(key) + "' found " + found + " times");
+        assertThat(found).isEqualTo(1).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times");
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
@@ -380,7 +396,7 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i);
+          assertThat(index.get(new Object[] { i }).hasNext()).isFalse().withFailMessage("Found item with key " + i);
         }
       }
     });
@@ -416,10 +432,10 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        Assertions.assertEquals(1, found, "Key '" + Arrays.toString(key) + "' found " + found + " times");
+        assertThat(found).isEqualTo(1).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times");
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
@@ -427,7 +443,7 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i);
+          assertThat(index.get(new Object[] { i }).hasNext()).isFalse().withFailMessage("Found item with key " + i);
         }
       }
     });
@@ -441,7 +457,7 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          Assertions.assertTrue(index.get(new Object[] { i }).hasNext(), "Cannot find item with key " + i);
+          assertThat(index.get(new Object[] { i }).hasNext()).isTrue().withFailMessage("Cannot find item with key " + i);
         }
       }
     });
@@ -452,7 +468,7 @@ public class LSMTreeIndexTest extends TestHelper {
     database.transaction(() -> {
       for (int i = 0; i < 1000; ++i) {
         final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
-        Assertions.assertTrue(cursor.hasNext(), "Key " + i + " not found");
+        assertThat(cursor.hasNext()).isTrue().withFailMessage("Key " + i + " not found");
 
         final Document doc = cursor.next().asDocument();
         doc.modify().set("id", i + TOT).save();
@@ -465,20 +481,20 @@ public class LSMTreeIndexTest extends TestHelper {
     database.transaction(() -> {
       for (int i = 0; i < 1000; ++i) {
         final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
-        Assertions.assertTrue(cursor.hasNext(), "Key " + i + " not found");
+        assertThat(cursor.hasNext()).withFailMessage("Key " + i + " not found").isTrue();
 
         final Document doc = cursor.next().asDocument();
         doc.delete();
 
         database.newDocument(TYPE_NAME).fromMap(doc.toMap()).set("version", 2).save();
       }
-    }, true, 0);
+    }, true, 2);
 
     database.transaction(() -> {
       for (int i = 0; i < 1000; ++i) {
         final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
-        Assertions.assertTrue(cursor.hasNext(), "Key " + i + " not found");
-        Assertions.assertEquals(2, cursor.next().asDocument().getInteger("version"));
+        assertThat(cursor.hasNext()).withFailMessage("Key " + i + " not found").isTrue();
+        assertThat(cursor.next().asDocument().getInteger("version")).isEqualTo(2);
       }
     });
   }
@@ -492,7 +508,7 @@ public class LSMTreeIndexTest extends TestHelper {
       for (final ResultSet it = resultSet; it.hasNext(); ) {
         final Result r = it.next();
 
-        Assertions.assertNotNull(r.getElement().get().get("id"));
+        assertThat(r.getElement().get().get("id")).isNotNull();
 
         final MutableDocument record = r.getElement().get().modify();
         record.set("id", (Integer) record.get("id") + 1000000);
@@ -521,10 +537,10 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        Assertions.assertEquals(0, found, "Key '" + Arrays.toString(key) + "' found " + found + " times");
+        assertThat(found).isEqualTo(0).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times");
       }
 
-      Assertions.assertEquals(0, total);
+      assertThat(total).isEqualTo(0);
 
       total = 0;
 
@@ -549,15 +565,16 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        Assertions.assertEquals(1, found, "Key '" + Arrays.toString(key) + "' found " + found + " times");
+        assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(1);
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
         for (final Index index : indexes)
-          Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i);
+          assertThat(index.get(new Object[] { i }).hasNext()).withFailMessage("Found item with key " + i).isFalse();
+        ;
       }
 
     });
@@ -594,10 +611,10 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        Assertions.assertEquals(1, found, "Key '" + Arrays.toString(key) + "' found " + found + " times");
+        assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(1);
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
     });
   }
 
@@ -619,22 +636,21 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
-        final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).iterator(true);
+          final IndexCursor iterator = ((RangeIndex) index).iterator(true);
 
 //            LogManager.instance()
 //                .log(this, Level.INFO, "*****************************************************************************\nCURSOR BEGIN%s", iterator.dumpStats());
 
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterator<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
-            Assertions.assertNotNull(iterator.next());
+            assertThat(iterator.next()).isNotNull();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -647,7 +663,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
     });
   }
 
@@ -669,23 +685,23 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
-        final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).iterator(false);
-          Assertions.assertNotNull(iterator);
+          final IndexCursor iterator = ((RangeIndex) index).iterator(false);
+          assertThat((Iterator<? extends Identifiable>) iterator).isNotNull();
 
           Object prevKey = null;
           while (iterator.hasNext()) {
-            Assertions.assertNotNull(iterator.next());
+            assertThat(iterator.next()).isNotNull();
 
             final Object[] keys = iterator.getKeys();
-            Assertions.assertNotNull(keys);
-            Assertions.assertEquals(1, keys.length);
+            assertThat(keys).isNotNull();
+            assertThat(keys.length).isEqualTo(1);
 
             if (prevKey != null)
-              Assertions.assertTrue(((Comparable) keys[0]).compareTo(prevKey) < 0, "Key " + keys[0] + " is not minor than " + prevKey);
+              assertThat(((Comparable) keys[0]).compareTo(prevKey) < 0).withFailMessage(
+                  "Key " + keys[0] + " is not minor than " + prevKey).isTrue();
 
             prevKey = keys[0];
             ++total;
@@ -696,7 +712,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(TOT, total);
+      assertThat(total).isEqualTo(TOT);
     });
   }
 
@@ -710,19 +726,19 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         final IndexCursor iterator;
         try {
           iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, true);
 
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
-            Assertions.assertNotNull(iterator.next());
+            assertThat(iterator.next()).isNotNull();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -731,7 +747,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(TOT - 10, total);
+      assertThat(total).isEqualTo(TOT - 10);
     });
   }
 
@@ -745,19 +761,19 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         final IndexCursor iterator;
         try {
           iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, false);
 
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
-            Assertions.assertNotNull(iterator.next());
+            assertThat(iterator.next()).isNotNull();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -766,7 +782,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(TOT - 11, total);
+      assertThat(total).isEqualTo(TOT - 11);
     });
   }
 
@@ -780,18 +796,18 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         final IndexCursor iterator;
         try {
           iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, true);
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
-            Assertions.assertNotNull(iterator.next());
+            assertThat(iterator.next()).isNotNull();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -800,7 +816,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(10, total);
+      assertThat(total).isEqualTo(10);
     });
   }
 
@@ -814,18 +830,18 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         final IndexCursor iterator;
         try {
           iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, false);
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
-            Assertions.assertNotNull(iterator.next());
+            assertThat(iterator.next()).isNotNull();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -834,7 +850,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(9, total);
+      assertThat(total).isEqualTo(9);
     });
   }
 
@@ -848,23 +864,23 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         final IndexCursor iterator;
         try {
           iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
             final Identifiable value = iterator.next();
 
-            Assertions.assertNotNull(value);
+            assertThat(value).isNotNull();
 
             final int fieldValue = (int) value.asDocument().get("id");
-            Assertions.assertTrue(fieldValue >= 10 && fieldValue <= 19);
+            assertThat(fieldValue >= 10 && fieldValue <= 19).isTrue();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -873,7 +889,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(10, total);
+      assertThat(total).isEqualTo(10);
     });
   }
 
@@ -887,23 +903,23 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         final IndexCursor iterator;
         try {
           iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
             final Identifiable value = iterator.next();
 
-            Assertions.assertNotNull(value);
+            assertThat(value).isNotNull();
 
             final int fieldValue = (int) value.asDocument().get("id");
-            Assertions.assertTrue(fieldValue >= 10 && fieldValue < 19);
+            assertThat(fieldValue >= 10 && fieldValue < 19).isTrue();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -912,7 +928,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(9, total);
+      assertThat(total).isEqualTo(9);
     });
   }
 
@@ -926,23 +942,23 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         final IndexCursor iterator;
         try {
           iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
             final Identifiable value = iterator.next();
 
-            Assertions.assertNotNull(value);
+            assertThat(value).isNotNull();
 
             final int fieldValue = (int) value.asDocument().get("id");
-            Assertions.assertTrue(fieldValue > 10 && fieldValue <= 19);
+            assertThat(fieldValue > 10 && fieldValue <= 19).isTrue();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -951,7 +967,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(9, total);
+      assertThat(total).isEqualTo(9);
     });
   }
 
@@ -965,23 +981,23 @@ public class LSMTreeIndexTest extends TestHelper {
         if (index instanceof TypeIndex)
           continue;
 
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         final IndexCursor iterator;
         try {
           iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
-          Assertions.assertNotNull(iterator);
+          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
             final Identifiable value = iterator.next();
 
-            Assertions.assertNotNull(value);
+            assertThat(value).isNotNull();
 
             final int fieldValue = (int) value.asDocument().get("id");
-            Assertions.assertTrue(fieldValue > 10 && fieldValue < 19);
+            assertThat(fieldValue > 10 && fieldValue < 19).isTrue();
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            assertThat(iterator.getKeys()).isNotNull();
+            assertThat(iterator.getKeys().length).isEqualTo(1);
 
             total++;
           }
@@ -990,7 +1006,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertEquals(8, total);
+      assertThat(total).isEqualTo(8);
     });
   }
 
@@ -1041,34 +1057,39 @@ public class LSMTreeIndexTest extends TestHelper {
                   crossThreadsInserted.incrementAndGet();
 
                   if (threadInserted % 1000 == 0)
-                    LogManager.instance().log(this, Level.INFO, "%s Thread %d inserted record %s, total %d records with key %d (total=%d)", null, getClass(),
-                        Thread.currentThread().getId(), v.getIdentity(), i, threadInserted, crossThreadsInserted.get());
+                    LogManager.instance()
+                        .log(this, Level.INFO, "%s Thread %d inserted record %s, total %d records with key %d (total=%d)", null,
+                            getClass(),
+                            Thread.currentThread().getId(), v.getIdentity(), i, threadInserted, crossThreadsInserted.get());
 
                   keyPresent = true;
 
                 } catch (final NeedRetryException e) {
                   needRetryExceptions.incrementAndGet();
-                  Assertions.assertFalse(database.isTransactionActive());
+                  assertThat(database.isTransactionActive()).isFalse();
                   continue;
                 } catch (final DuplicatedKeyException e) {
                   duplicatedExceptions.incrementAndGet();
                   keyPresent = true;
-                  Assertions.assertFalse(database.isTransactionActive());
+                  assertThat(database.isTransactionActive()).isFalse();
                 } catch (final Exception e) {
-                  LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().getId());
-                  Assertions.assertFalse(database.isTransactionActive());
+                  LogManager.instance()
+                      .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().getId());
+                  assertThat(database.isTransactionActive()).isFalse();
                   return;
                 }
               }
 
               if (!keyPresent)
-                LogManager.instance().log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
-                    Thread.currentThread().getId(), i, maxRetries, crossThreadsInserted.get());
+                LogManager.instance()
+                    .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
+                        Thread.currentThread().getId(), i, maxRetries, crossThreadsInserted.get());
 
             }
 
             LogManager.instance()
-                .log(this, Level.INFO, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(), threadInserted);
+                .log(this, Level.INFO, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(),
+                    threadInserted);
 
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().getId());
@@ -1090,7 +1111,8 @@ public class LSMTreeIndexTest extends TestHelper {
     }
 
     LogManager.instance()
-        .log(this, Level.INFO, "%s Completed (inserted=%d needRetryExceptions=%d duplicatedExceptions=%d)", null, getClass(), crossThreadsInserted.get(),
+        .log(this, Level.INFO, "%s Completed (inserted=%d needRetryExceptions=%d duplicatedExceptions=%d)", null, getClass(),
+            crossThreadsInserted.get(),
             needRetryExceptions.get(), duplicatedExceptions.get());
 
     if (total != crossThreadsInserted.get()) {
@@ -1122,20 +1144,21 @@ public class LSMTreeIndexTest extends TestHelper {
       }
     }
 
-    Assertions.assertEquals(total, crossThreadsInserted.get());
-//    Assertions.assertTrue(needRetryExceptions.get() > 0);
-    Assertions.assertTrue(duplicatedExceptions.get() > 0);
+    assertThat(crossThreadsInserted.get()).isEqualTo(total);
+//    Assertions.assertThat(needRetryExceptions.get() > 0).isTrue();
+    assertThat(duplicatedExceptions.get() > 0).isTrue();
 
-    Assertions.assertEquals(startingWith + total, database.countType(TYPE_NAME, true));
+    assertThat(database.countType(TYPE_NAME, true)).isEqualTo(startingWith + total);
   }
 
   protected void beginTest() {
     database.transaction(() -> {
-      Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+      assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
-      final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final Index typeIndex = database.getSchema()
+          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);
@@ -1150,7 +1173,7 @@ public class LSMTreeIndexTest extends TestHelper {
       database.begin();
 
       for (final Index index : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
-        Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
+        assertThat(((IndexInternal) index).getStats().get("pages") > 1).isTrue();
       }
     });
   }

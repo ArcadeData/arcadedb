@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLMethodKeysTest {
 
@@ -43,6 +43,6 @@ public class SQLMethodKeysTest {
     resultInternal.setProperty("surname", "Bar");
 
     final Object result = function.execute(resultInternal, null, null, null);
-    assertEquals(new LinkedHashSet(Arrays.asList("name", "surname")), result);
+    assertThat(result).isEqualTo(new LinkedHashSet(Arrays.asList("name", "surname")));
   }
 }

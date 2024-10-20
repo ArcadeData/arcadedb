@@ -29,10 +29,11 @@ import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSo
 import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class GremlinServerTest extends AbstractGremlinServerIT {
 
@@ -40,7 +41,7 @@ public class GremlinServerTest extends AbstractGremlinServerIT {
   public void getAllVertices() {
     final GraphTraversalSource g = traversal();
     final var vertices = g.V().limit(3).toList();
-    Assertions.assertEquals(3, vertices.size());
+    assertThat(vertices.size()).isEqualTo(3);
   }
 
   @AfterEach

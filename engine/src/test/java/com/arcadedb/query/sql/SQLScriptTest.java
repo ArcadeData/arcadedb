@@ -7,10 +7,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLScriptTest extends TestHelper {
   public void beginTest() {
@@ -32,7 +34,7 @@ public class SQLScriptTest extends TestHelper {
     script.append("return $a;\n");
     ResultSet qResult = database.command("sqlscript", script.toString());
 
-    Assertions.assertEquals(3, CollectionUtils.countEntries(qResult));
+    assertThat(CollectionUtils.countEntries(qResult)).isEqualTo(3);
   }
 
   @Test
@@ -44,7 +46,7 @@ public class SQLScriptTest extends TestHelper {
     script.append("return $a;\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
-    Assertions.assertEquals(3, CollectionUtils.countEntries(qResult));
+    assertThat(CollectionUtils.countEntries(qResult)).isEqualTo(3);
   }
 
   @Test
@@ -56,7 +58,7 @@ public class SQLScriptTest extends TestHelper {
     script.append("return $a;\n");
     Document qResult = database.command("SQLScript", script.toString()).next().toElement();
 
-    Assertions.assertNotNull(qResult);
+    assertThat(qResult).isNotNull();
   }
 
   @Test
@@ -66,8 +68,7 @@ public class SQLScriptTest extends TestHelper {
       script.append("let $a = insert into V set test = 'sql script test';\n");
       script.append("return $a.asJSON();\n");
       String qResult = database.command("SQLScript", script.toString()).next().getProperty("value").toString();
-      Assertions.assertNotNull(qResult);
-
+      assertThat(qResult).isNotNull();
       // VALIDATE JSON
       new JSONObject(qResult);
 
@@ -76,10 +77,10 @@ public class SQLScriptTest extends TestHelper {
       script.append("return $a.asJSON();\n");
       String result = database.command("SQLScript", script.toString()).next().getProperty("value").toString();
 
-      Assertions.assertNotNull(result);
+
+      assertThat(result).isNotNull();
       result = result.trim();
-      Assertions.assertTrue(result.startsWith("{"));
-      Assertions.assertTrue(result.endsWith("}"));
+      assertThat(result).startsWith("{").endsWith("}");
 
       // VALIDATE JSON
       new JSONObject(result);
@@ -95,7 +96,7 @@ public class SQLScriptTest extends TestHelper {
     script.append("sleep 500");
     database.command("SQLScript", script.toString());
 
-    Assertions.assertTrue(System.currentTimeMillis() - begin >= 500);
+    assertThat(System.currentTimeMillis() - begin >= 500).isTrue();
   }
 
   //@Test
@@ -128,10 +129,10 @@ public class SQLScriptTest extends TestHelper {
     script.append("return [{ a: 'b' }]");
     ResultSet result = database.command("SQLScript", script.toString());
 
-    Assertions.assertNotNull(result);
+    assertThat(Optional.ofNullable(result)).isNotNull();
 
-    Assertions.assertEquals("b", result.next().getProperty("a"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.next().<String>getProperty("a")).isEqualTo("b");
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
@@ -145,10 +146,9 @@ public class SQLScriptTest extends TestHelper {
       script.append("UPDATE TestCounter SET weight += $counter[0].count RETURN AfTER @this;\n");
       ResultSet qResult = database.command("SQLScript", script.toString());
 
-      Assertions.assertTrue(qResult.hasNext());
-      final Result result = qResult.next();
-
-      Assertions.assertEquals(4L, (Long) result.getProperty("weight"));
+      assertThat(qResult.hasNext()).isTrue();
+      Result result = qResult.next();
+      assertThat(result.<Long>getProperty("weight")).isEqualTo(4L);
     });
   }
 
@@ -163,8 +163,8 @@ public class SQLScriptTest extends TestHelper {
     script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
-    Assertions.assertNotNull(qResult);
-    Assertions.assertEquals(qResult.next().getProperty("value"), "OK");
+    assertThat(Optional.ofNullable(qResult)).isNotNull();
+    assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
   }
 
   @Test
@@ -178,8 +178,8 @@ public class SQLScriptTest extends TestHelper {
     script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
-    Assertions.assertNotNull(qResult);
-    Assertions.assertEquals(qResult.next().getProperty("value"), "OK");
+    assertThat(Optional.ofNullable(qResult)).isNotNull();
+    assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
   }
 
   @Test
@@ -187,8 +187,8 @@ public class SQLScriptTest extends TestHelper {
     StringBuilder script = new StringBuilder();
     script.append("let $a = select 1 as one; if($a[0].one = 1){return 'OK';}return 'FAIL';");
     ResultSet qResult = database.command("SQLScript", script.toString());
-    Assertions.assertNotNull(qResult);
-    Assertions.assertEquals(qResult.next().getProperty("value"), "OK");
+    assertThat(Optional.ofNullable(qResult)).isNotNull();
+    assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
   }
 
   @Test
@@ -205,8 +205,8 @@ public class SQLScriptTest extends TestHelper {
     script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
-    Assertions.assertNotNull(qResult);
-    Assertions.assertEquals(qResult.next().getProperty("value"), "OK");
+    assertThat(Optional.ofNullable(qResult)).isNotNull();
+    assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
   }
 
   @Test
@@ -223,8 +223,8 @@ public class SQLScriptTest extends TestHelper {
     script.append("return 'OK';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
-    Assertions.assertNotNull(qResult);
-    Assertions.assertEquals(qResult.next().getProperty("value"), "OK");
+    assertThat(Optional.ofNullable(qResult)).isNotNull();
+    assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
   }
 
   @Test
@@ -238,8 +238,8 @@ public class SQLScriptTest extends TestHelper {
     script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
-    Assertions.assertNotNull(qResult);
-    Assertions.assertEquals(3, CollectionUtils.countEntries(qResult));
+    assertThat(Optional.ofNullable(qResult)).isNotNull();
+    assertThat(CollectionUtils.countEntries(qResult)).isEqualTo(3);
   }
 
   @Test
@@ -254,8 +254,8 @@ public class SQLScriptTest extends TestHelper {
     script.append("return 'FAIL';\n");
     ResultSet qResult = database.command("SQLScript", script.toString());
 
-    Assertions.assertNotNull(qResult);
-    Assertions.assertEquals(qResult.next().getProperty("value"), "OK");
+    assertThat(Optional.ofNullable(qResult)).isNotNull();
+    assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
   }
 
   @Test
@@ -276,8 +276,10 @@ public class SQLScriptTest extends TestHelper {
 
       ResultSet result = database.query("sql", "SELECT FROM QuotedRegex2");
       Document doc = result.next().toElement();
-      Assertions.assertFalse(result.hasNext());
-      Assertions.assertEquals("'';", doc.get("regexp"));
+
+      assertThat(result.hasNext()).isFalse();
+      assertThat(doc.get("regexp")).isEqualTo("'';");
+
     });
   }
 
@@ -299,7 +301,7 @@ public class SQLScriptTest extends TestHelper {
 
     rs = database.query("sql", "SELECT FROM " + className + " WHERE name = ?", "bozo");
 
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
     rs.close();
   }
@@ -318,7 +320,7 @@ public class SQLScriptTest extends TestHelper {
 
     rs = database.query("sql", "SELECT FROM " + className + " WHERE name = ?", "bozo");
 
-    Assertions.assertTrue(rs.hasNext());
+    assertThat(rs.hasNext()).isTrue();
     rs.next();
     rs.close();
   }
@@ -327,6 +329,7 @@ public class SQLScriptTest extends TestHelper {
   public void testInsertJsonNewLines() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("doc");
+
       final ResultSet result = database.command("sqlscript", "INSERT INTO doc CONTENT {\n" + //
           "\"head\" : {\n" + //
           "  \"vars\" : [ \"item\", \"itemLabel\" ]\n" + //
@@ -356,10 +359,10 @@ public class SQLScriptTest extends TestHelper {
           "    }\n" + //
           "}");
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result res = result.next();
-      Assertions.assertTrue(res.hasProperty("head"));
-      Assertions.assertTrue(res.hasProperty("results"));
+      assertThat(res.hasProperty("head")).isTrue();
+      assertThat(res.hasProperty("results")).isTrue();
     });
   }
 }

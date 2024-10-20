@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 import java.util.stream.*;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /*
@@ -195,14 +196,14 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v1, v4, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(4, result.size());
-      assertEquals(v1, result.get(0));
-      assertEquals(v2, result.get(1));
-      assertEquals(v3, result.get(2));
-      assertEquals(v4, result.get(3));
+      assertThat(result).hasSize(4);
+      assertThat(result.get(0)).isEqualTo(v1);
+      assertThat(result.get(1)).isEqualTo(v2);
+      assertThat(result.get(2)).isEqualTo(v3);
+      assertThat(result.get(3)).isEqualTo(v4);
     });
   }
 
@@ -220,12 +221,12 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
-      assertEquals(3, result.size());
-      assertEquals(v1, result.get(0));
-      assertEquals(v5, result.get(1));
-      assertEquals(v6, result.get(2));
+      assertThat(result).hasSize(3);
+      assertThat(result.get(0)).isEqualTo(v1);
+      assertThat(result.get(1)).isEqualTo(v5);
+      assertThat(result.get(2)).isEqualTo(v6);
     });
   }
 
@@ -244,13 +245,13 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(3, result.size());
-      assertEquals(v1, result.get(0));
-      assertEquals(v5, result.get(1));
-      assertEquals(v6, result.get(2));
+      assertThat(result).hasSize(3);
+      assertThat(result.get(0)).isEqualTo(v1);
+      assertThat(result.get(1)).isEqualTo(v5);
+      assertThat(result.get(2)).isEqualTo(v6);
     });
   }
 
@@ -269,13 +270,13 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(3, result.size());
-      assertEquals(v1, result.get(0));
-      assertEquals(v5, result.get(1));
-      assertEquals(v6, result.get(2));
+      assertThat(result).hasSize(3);
+      assertThat(result.get(0)).isEqualTo(v1);
+      assertThat(result.get(1)).isEqualTo(v5);
+      assertThat(result.get(2)).isEqualTo(v6);
     });
   }
 
@@ -294,13 +295,13 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v3, v5, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(3, result.size());
-      assertEquals(v3, result.get(0));
-      assertEquals(v6, result.get(1));
-      assertEquals(v5, result.get(2));
+      assertThat(result).hasSize(3);
+      assertThat(result.get(0)).isEqualTo(v3);
+      assertThat(result.get(1)).isEqualTo(v6);
+      assertThat(result.get(2)).isEqualTo(v5);
     });
   }
 
@@ -319,16 +320,16 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(6, result.size());
-      assertEquals(v6, result.get(0));
-      assertEquals(v5, result.get(1));
-      assertEquals(v2, result.get(2));
-      assertEquals(v3, result.get(3));
-      assertEquals(v4, result.get(4));
-      assertEquals(v1, result.get(5));
+      assertThat(result).hasSize(6);
+      assertThat(result.get(0)).isEqualTo(v6);
+      assertThat(result.get(1)).isEqualTo(v5);
+      assertThat(result.get(2)).isEqualTo(v2);
+      assertThat(result.get(3)).isEqualTo(v3);
+      assertThat(result.get(4)).isEqualTo(v4);
+      assertThat(result.get(5)).isEqualTo(v1);
     });
   }
 
@@ -348,16 +349,16 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(6, result.size());
-      assertEquals(v6, result.get(0));
-      assertEquals(v5, result.get(1));
-      assertEquals(v2, result.get(2));
-      assertEquals(v3, result.get(3));
-      assertEquals(v4, result.get(4));
-      assertEquals(v1, result.get(5));
+      assertThat(result).hasSize(6);
+      assertThat(result.get(0)).isEqualTo(v6);
+      assertThat(result.get(1)).isEqualTo(v5);
+      assertThat(result.get(2)).isEqualTo(v2);
+      assertThat(result.get(3)).isEqualTo(v3);
+      assertThat(result.get(4)).isEqualTo(v4);
+      assertThat(result.get(5)).isEqualTo(v1);
     });
   }
 
@@ -378,15 +379,15 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(5, result.size());
-      assertEquals(v6, result.get(0));
-      assertEquals(v5, result.get(1));
-      assertEquals(v2, result.get(2));
-      assertEquals(v4, result.get(3));
-      assertEquals(v1, result.get(4));
+      assertThat(result).hasSize(5);
+      assertThat(result.get(0)).isEqualTo(v6);
+      assertThat(result.get(1)).isEqualTo(v5);
+      assertThat(result.get(2)).isEqualTo(v2);
+      assertThat(result.get(3)).isEqualTo(v4);
+      assertThat(result.get(4)).isEqualTo(v1);
     });
   }
 
@@ -407,13 +408,13 @@ public class SQLFunctionAstarTest {
       ctx.setDatabase(graph);
       final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(3, result.size());
-      assertEquals(v6, result.get(0));
-      assertEquals(v5, result.get(1));
-      assertEquals(v1, result.get(2));
+      assertThat(result).hasSize(3);
+      assertThat(result.get(0)).isEqualTo(v6);
+      assertThat(result.get(1)).isEqualTo(v5);
+      assertThat(result.get(2)).isEqualTo(v1);
     });
   }
 
@@ -429,14 +430,14 @@ public class SQLFunctionAstarTest {
       final List result = new ArrayList();
       result.addAll(r.stream().map(Result::toElement).collect(Collectors.toList()));
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
-        assertEquals((Object) 16L, rs.next().getProperty("count"));
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
-      assertEquals(4, result.size());
-      assertEquals(v1.getIdentity(), result.get(0));
-      assertEquals(v2.getIdentity(), result.get(1));
-      assertEquals(v3.getIdentity(), result.get(2));
-      assertEquals(v4.getIdentity(), result.get(3));
+      assertThat(result).hasSize(4);
+      assertThat(result.get(0)).isEqualTo(v1.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v2.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v3.getIdentity());
+      assertThat(result.get(3)).isEqualTo(v4.getIdentity());
     });
   }
 }

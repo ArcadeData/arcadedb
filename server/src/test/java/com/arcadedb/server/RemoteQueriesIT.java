@@ -36,7 +36,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -45,6 +45,7 @@ import java.time.*;
 import java.time.format.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -85,10 +86,10 @@ public class RemoteQueriesIT {
     Vertex toVtx = database.command("sql", "CREATE VERTEX ToVtx").next().getVertex().get();
     Edge conEdg = fromVtx.newEdge("ConEdge", toVtx, true);
 
-    Assertions.assertEquals(1, fromVtx.countEdges(Vertex.DIRECTION.OUT, "ConEdge"));
-    Assertions.assertEquals(0, fromVtx.countEdges(Vertex.DIRECTION.IN, "ConEdge"));
-    Assertions.assertTrue(fromVtx.getEdges(Vertex.DIRECTION.OUT, "ConEdge").iterator().hasNext());
-    Assertions.assertFalse(fromVtx.getEdges(Vertex.DIRECTION.IN, "ConEdge").iterator().hasNext());
+    assertThat(fromVtx.countEdges(Vertex.DIRECTION.OUT, "ConEdge")).isEqualTo(1);
+    assertThat(fromVtx.countEdges(Vertex.DIRECTION.IN, "ConEdge")).isEqualTo(0);
+    assertThat(fromVtx.getEdges(Vertex.DIRECTION.OUT, "ConEdge").iterator().hasNext()).isTrue();
+    assertThat(fromVtx.getEdges(Vertex.DIRECTION.IN, "ConEdge").iterator().hasNext()).isFalse();
   }
 
   @Test
@@ -128,7 +129,7 @@ public class RemoteQueriesIT {
       database.transaction(() -> {
         String sqlString = "INSERT INTO Order SET id = ?, status = ?, processor = ?";
         try (ResultSet resultSet1 = database.command("sql", sqlString, id, status, processor)) {
-          Assertions.assertEquals("" + id, resultSet1.next().getProperty("id"));
+          assertThat(resultSet1.next().<String>getProperty("id")).isEqualTo("" + id);
         }
       });
     }
@@ -137,7 +138,7 @@ public class RemoteQueriesIT {
       Object[] parameters2 = { "ERROR", 1 };
       String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
       try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
-        Assertions.assertEquals("1", resultSet1.next().getProperty("id"));
+          assertThat(resultSet1.next().<String>getProperty("id")).isEqualTo("1");
       } catch (Exception e) {
         System.out.println(e.getMessage());
         e.printStackTrace();
@@ -151,7 +152,7 @@ public class RemoteQueriesIT {
       Object[] parameters2 = { "PENDING" };
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
       try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
-        Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
+        assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
       } catch (Exception e) {
         System.out.println(e.getMessage());
         e.printStackTrace();
@@ -165,7 +166,7 @@ public class RemoteQueriesIT {
       Object[] parameters2 = { "PENDING" };
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
       try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
-        Assertions.assertEquals("PENDING", resultSet1.next().getProperty("status"));
+        assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
       } catch (Exception e) {
         System.out.println(e.getMessage());
         e.printStackTrace();
@@ -194,7 +195,7 @@ public class RemoteQueriesIT {
     ContextConfiguration configuration = new ContextConfiguration();
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
-    Assertions.assertTrue(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == java.time.LocalDateTime.class);
+    assertThat(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == java.time.LocalDateTime.class).isTrue();
 
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
@@ -211,9 +212,9 @@ public class RemoteQueriesIT {
     stop = LocalDateTime.parse("20220320T002323", FILENAME_TIME_FORMAT);
     Object[] parameters1 = { name, type, start, stop };
     try (ResultSet resultSet = database.command("sql", sqlString, parameters1)) {
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      Assertions.assertTrue(result.getProperty("start").equals(start), "start value retrieved does not match start value inserted");
+      assertThat(start).as("start value retrieved does not match start value inserted").isEqualTo(result.getProperty("start"));
     } catch (Exception e) {
       e.printStackTrace();
     }
@@ -223,10 +224,10 @@ public class RemoteQueriesIT {
     stop = LocalDateTime.parse("2022-03-19T00:28:26.525650", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
     Object[] parameters2 = { type, start, stop };
     try (ResultSet resultSet = database.query("sql", sqlString, parameters2)) {
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       while (resultSet.hasNext()) {
         result = resultSet.next();
-        //Assertions.assertTrue(result.getProperty("start").equals(start), "start value retrieved does not match start value inserted");
+        //Assertions.assertThat(result.getProperty("start").equals(start)).as("start value retrieved does not match start value inserted").isTrue();
       }
     }
   }

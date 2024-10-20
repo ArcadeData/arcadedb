@@ -32,7 +32,8 @@ import io.undertow.websockets.core.CloseMessage;
 import io.undertow.websockets.core.WebSocketChannel;
 import io.undertow.websockets.core.WebSocketFrameType;
 import io.undertow.websockets.core.WebSockets;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.xnio.OptionMap;
 import org.xnio.Options;
 import org.xnio.Xnio;
@@ -45,6 +46,7 @@ import java.util.concurrent.*;
 import java.util.logging.*;
 
 import static org.apache.lucene.store.BufferedIndexInput.BUFFER_SIZE;
+import static org.assertj.core.api.Assertions.fail;
 
 public class WebSocketClientHelper implements AutoCloseable {
   private final XnioWorker                 worker;
@@ -84,7 +86,7 @@ public class WebSocketClientHelper implements AutoCloseable {
       protected void onError(final WebSocketChannel channel, final Throwable error) {
         LogManager.instance().log(this, Level.SEVERE, "WS client error: " + error);
         super.onError(channel, error);
-        Assertions.fail(error.getMessage());
+        fail(error.getMessage());
       }
     });
     this.channel.resumeReceives();

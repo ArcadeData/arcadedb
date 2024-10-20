@@ -23,11 +23,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.net.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLLocalImporterIT {
   @Test
@@ -43,8 +44,8 @@ public class SQLLocalImporterIT {
       //database.command("sql", "import database " + "file:///Users/luca/Downloads/Reactome.gz");
       database.command("sql", "import database file://" + inputFile.getFile());
 
-      Assertions.assertEquals(500, database.countType("Person", false));
-      Assertions.assertEquals(10000, database.countType("Friend", false));
+      assertThat(database.countType("Person", false)).isEqualTo(500);
+      assertThat(database.countType("Friend", false)).isEqualTo(10000);
     }
 
     TestHelper.checkActiveDatabases();

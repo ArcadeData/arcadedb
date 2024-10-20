@@ -30,11 +30,15 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Database[]          databases   = new Database[getServerCount()];
@@ -61,7 +65,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
     // CREATE NEW BUCKET
     final Bucket newBucket = databases[0].getSchema().createBucket("newBucket");
     for (final Database database : databases)
-      Assertions.assertTrue(database.getSchema().existsBucket("newBucket"));
+      assertThat(database.getSchema().existsBucket("newBucket")).isTrue();
 
     type1.addBucket(newBucket);
     testOnAllServers((database) -> isInSchemaFile(database, "newBucket"));
@@ -69,7 +73,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
     // CHANGE SCHEMA FROM A REPLICA (ERROR EXPECTED)
     try {
       databases[1].getSchema().createVertexType("RuntimeVertex1");
-      Assertions.fail();
+      fail("");
     } catch (final ServerIsNotTheLeaderException e) {
       // EXPECTED
     }
@@ -89,7 +93,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     databases[0].getSchema().getType("RuntimeVertex0").removeBucket(databases[0].getSchema().getBucketByName("newBucket"));
     for (final Database database : databases)
-      Assertions.assertFalse(database.getSchema().getType("RuntimeVertex0").hasBucket("newBucket"));
+      assertThat(database.getSchema().getType("RuntimeVertex0").hasBucket("newBucket")).isFalse();
 
     databases[0].getSchema().dropBucket("newBucket");
     testOnAllServers((database) -> isNotInSchemaFile(database, "newBucket"));
@@ -120,7 +124,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
         for (int i = 0; i < 10; i++)
           databases[1].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
       });
-      Assertions.fail();
+      fail("");
     } catch (final TransactionException e) {
       // EXPECTED
     }
@@ -133,7 +137,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
       try {
         databases[0].getSchema().createVertexType("RuntimeVertexTx0");
       } catch (final Exception e) {
-        Assertions.fail(e);
+        fail(e);
       }
     });
 
@@ -148,7 +152,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
         final String result = callback.call(database);
         schemaFiles.put(database.getDatabasePath(), result);
       } catch (final Exception e) {
-        Assertions.fail(e);
+        fail("", e);
       }
     }
     checkSchemaFilesAreTheSameOnAllServers();
@@ -157,10 +161,10 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private String isInSchemaFile(final Database database, final String match) {
     try {
       final String content = FileUtils.readFileAsString(database.getSchema().getEmbedded().getConfigurationFile());
-      Assertions.assertTrue(content.contains(match));
+      assertThat(content.contains(match)).isTrue();
       return content;
     } catch (final IOException e) {
-      Assertions.fail(e);
+      fail("", e);
       return null;
     }
   }
@@ -168,24 +172,23 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private String isNotInSchemaFile(final Database database, final String match) {
     try {
       final String content = FileUtils.readFileAsString(database.getSchema().getEmbedded().getConfigurationFile());
-      Assertions.assertFalse(content.contains(match));
+      assertThat(content.contains(match)).isFalse();
       return content;
     } catch (final IOException e) {
-      Assertions.fail(e);
+      fail("", e);
       return null;
     }
   }
 
   private void checkSchemaFilesAreTheSameOnAllServers() {
-    Assertions.assertEquals(getServerCount(), schemaFiles.size());
+    assertThat(schemaFiles.size()).isEqualTo(getServerCount());
     String first = null;
     for (final Map.Entry<String, String> entry : schemaFiles.entrySet()) {
       if (first == null)
         first = entry.getValue();
       else
-        Assertions.assertEquals(first, entry.getValue(),
-            "Server " + entry.getKey() + " has different schema saved:\nFIRST SERVER:\n" + first + "\n" + entry.getKey()
-                + " SERVER:\n" + entry.getValue());
+        assertThat(entry.getValue()).as("Server " + entry.getKey() + " has different schema saved:\nFIRST SERVER:\n" + first + "\n" + entry.getKey()
+          + " SERVER:\n" + entry.getValue()).isEqualTo(first);
     }
   }
 

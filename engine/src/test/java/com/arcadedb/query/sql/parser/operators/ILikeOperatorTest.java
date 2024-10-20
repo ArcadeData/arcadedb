@@ -20,8 +20,9 @@ package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.parser.ILikeOperator;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -30,22 +31,22 @@ public class ILikeOperatorTest {
   @Test
   public void test() {
     final ILikeOperator op = new ILikeOperator(-1);
-    Assertions.assertTrue(op.execute(null, "FOOBAR", "%ooba%"));
-    Assertions.assertTrue(op.execute(null, "FOOBAR", "%oo%"));
-    Assertions.assertFalse(op.execute(null, "FOOBAR", "oo%"));
-    Assertions.assertFalse(op.execute(null, "FOOBAR", "%oo"));
-    Assertions.assertFalse(op.execute(null, "FOOBAR", "%fff%"));
-    Assertions.assertTrue(op.execute(null, "FOOBAR", "foobar"));
-    Assertions.assertTrue(op.execute(null, "100%", "100\\%"));
-    Assertions.assertTrue(op.execute(null, "100%", "100%"));
-    Assertions.assertTrue(op.execute(null, "", ""));
-    Assertions.assertTrue(op.execute(null, "100?", "100\\?"));
-    Assertions.assertTrue(op.execute(null, "100?", "100?"));
-    Assertions.assertTrue(op.execute(null, "abc\ndef", "%E%"));
+    assertThat(op.execute(null, "FOOBAR", "%ooba%")).isTrue();
+    assertThat(op.execute(null, "FOOBAR", "%oo%")).isTrue();
+    assertThat(op.execute(null, "FOOBAR", "oo%")).isFalse();
+    assertThat(op.execute(null, "FOOBAR", "%oo")).isFalse();
+    assertThat(op.execute(null, "FOOBAR", "%fff%")).isFalse();
+    assertThat(op.execute(null, "FOOBAR", "foobar")).isTrue();
+    assertThat(op.execute(null, "100%", "100\\%")).isTrue();
+    assertThat(op.execute(null, "100%", "100%")).isTrue();
+    assertThat(op.execute(null, "", "")).isTrue();
+    assertThat(op.execute(null, "100?", "100\\?")).isTrue();
+    assertThat(op.execute(null, "100?", "100?")).isTrue();
+    assertThat(op.execute(null, "abc\ndef", "%E%")).isTrue();
   }
 
   @Test
   public void replaceSpecialCharacters() {
-    Assertions.assertEquals("(?s)\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*", QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%"));
+    assertThat(QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%")).isEqualTo("(?s)\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*");
   }
 }

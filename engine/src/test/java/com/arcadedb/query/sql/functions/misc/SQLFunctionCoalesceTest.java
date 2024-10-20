@@ -20,10 +20,13 @@ package com.arcadedb.query.sql.functions.misc;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -36,19 +39,19 @@ public class SQLFunctionCoalesceTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE doc");
       database.command("sql", "INSERT INTO doc (num) VALUES (1),(3),(5),(2),(4)");
 
-      Assertions.assertEquals(5, database.countType("doc", true));
+      assertThat(database.countType("doc", true)).isEqualTo(5);
 
       ResultSet result = database.query("sql", "SELECT coalesce((SELECT num FROM doc)) as coal");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
       List coal = result.next().getProperty("coal");
-      Assertions.assertEquals(5, coal.size());
+      assertThat(coal).hasSize(5);
 
       result = database.query("sql", "SELECT coalesce((SELECT num FROM doc ORDER BY num)) as coal");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
       coal = result.next().getProperty("coal");
-      Assertions.assertEquals(5, coal.size());
+      assertThat(coal).hasSize(5);
     });
   }
 }

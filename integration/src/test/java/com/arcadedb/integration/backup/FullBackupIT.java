@@ -35,13 +35,16 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class FullBackupIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
@@ -56,8 +59,8 @@ public class FullBackupIT {
 
     new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o").split(" ")).backupDatabase();
 
-    Assertions.assertTrue(file.exists());
-    Assertions.assertTrue(file.length() > 0);
+    assertThat(file.exists()).isTrue();
+    assertThat(file.length() > 0).isTrue();
 
     new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o").split(" ")).restoreDatabase();
 
@@ -76,8 +79,8 @@ public class FullBackupIT {
 
       new Backup(importedDatabase, FILE).backupDatabase();
 
-      Assertions.assertTrue(file.exists());
-      Assertions.assertTrue(file.length() > 0);
+      assertThat(file.exists()).isTrue();
+      assertThat(file.length() > 0).isTrue();
 
       new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
 
@@ -137,7 +140,7 @@ public class FullBackupIT {
               for (int k = 0; k < 500; k++) {
                 final MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId)
                     .set("id", totalPerThread.getAndIncrement()).save();
-                Assertions.assertEquals(threadBucket.getFileId(), v.getIdentity().getBucketId());
+                assertThat(v.getIdentity().getBucketId()).isEqualTo(threadBucket.getFileId());
 
                 if (k + 1 % 100 == 0) {
                   importedDatabase.commit();
@@ -159,7 +162,7 @@ public class FullBackupIT {
 
       // EXECUTE 10 BACKUPS EVERY SECOND
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
-        Assertions.assertFalse(importedDatabase.isTransactionActive());
+        assertThat(importedDatabase.isTransactionActive()).isFalse();
         final long totalVertices = importedDatabase.countType("BackupTest", true);
         new Backup(importedDatabase, FILE + "_" + i).setVerboseLevel(1).backupDatabase();
         Thread.sleep(1000);
@@ -170,8 +173,8 @@ public class FullBackupIT {
 
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
         final File file = new File(FILE + "_" + i);
-        Assertions.assertTrue(file.exists());
-        Assertions.assertTrue(file.length() > 0);
+        assertThat(file.exists()).isTrue();
+        assertThat(file.length() > 0).isTrue();
 
         final String databasePath = DATABASE_PATH + "_restored_" + i;
 
@@ -179,7 +182,7 @@ public class FullBackupIT {
 
         try (final Database restoredDatabase = new DatabaseFactory(databasePath).open(ComponentFile.MODE.READ_ONLY)) {
           // VERIFY ONLY WHOLE TRANSACTION ARE WRITTEN
-          Assertions.assertTrue(restoredDatabase.countType("BackupTest", true) % 500 == 0);
+          assertThat(restoredDatabase.countType("BackupTest", true) % 500).isEqualTo(0);
         }
       }
 
@@ -199,7 +202,7 @@ public class FullBackupIT {
     try {
       emptyDatabase().close();
       new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format unknown").split(" ")).backupDatabase();
-      Assertions.fail();
+      fail("");
     } catch (final BackupException e) {
       // EXPECTED
     }
@@ -211,7 +214,7 @@ public class FullBackupIT {
       emptyDatabase().close();
       new File(FILE).createNewFile();
       new Backup(("-f " + FILE + " -d " + DATABASE_PATH).split(" ")).backupDatabase();
-      Assertions.fail();
+      fail("");
     } catch (final BackupException e) {
       // EXPECTED
     }
@@ -224,8 +227,8 @@ public class FullBackupIT {
         ("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
     final Database importedDatabase = importer.run();
 
-    Assertions.assertFalse(importer.isError());
-    Assertions.assertTrue(new File(DATABASE_PATH).exists());
+    assertThat(importer.isError()).isFalse();
+    assertThat(new File(DATABASE_PATH).exists()).isTrue();
     return importedDatabase;
   }
 

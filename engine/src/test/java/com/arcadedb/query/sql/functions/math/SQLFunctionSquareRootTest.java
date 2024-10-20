@@ -21,15 +21,15 @@ package com.arcadedb.query.sql.functions.math;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.math.SQLFunctionSquareRoot;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SQLFunctionSquareRootTest {
 
@@ -43,126 +43,126 @@ public class SQLFunctionSquareRootTest {
     @Test
     public void testEmpty() {
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testNull() {
         function.execute(null, null, null, new Object[]{null}, null);
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testPositiveInteger() {
         function.execute(null, null, null, new Object[]{4}, null);
         final Object result = function.getResult();
-        assertTrue(result instanceof Integer);
-        assertEquals(result, 2);
+      assertThat(result instanceof Integer).isTrue();
+      assertThat(result).isEqualTo(2);
     }
 
     @Test
     public void testNegativeInteger() {
         function.execute(null, null, null, new Object[]{-4}, null);
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testPositiveLong() {
         function.execute(null, null, null, new Object[]{4L}, null);
         final Object result = function.getResult();
-        assertTrue(result instanceof Long);
-        assertEquals(result, 2L);
+      assertThat(result instanceof Long).isTrue();
+      assertThat(result).isEqualTo(2L);
     }
 
     @Test
     public void testNegativeLong() {
         function.execute(null, null, null, new Object[]{-4L}, null);
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testPositiveShort() {
         function.execute(null, null, null, new Object[]{(short) 4}, null);
         final Object result = function.getResult();
-        assertTrue(result instanceof Short);
-        assertEquals(result, (short) 2);
+      assertThat(result instanceof Short).isTrue();
+      assertThat((short) 2).isEqualTo(result);
     }
 
     @Test
     public void testNegativeShort() {
         function.execute(null, null, null, new Object[]{(short) -4}, null);
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testPositiveDouble() {
         function.execute(null, null, null, new Object[]{4.0D}, null);
         final Object result = function.getResult();
-        assertTrue(result instanceof Double);
-        assertEquals(result, 2.0D);
+      assertThat(result instanceof Double).isTrue();
+      assertThat(result).isEqualTo(2.0D);
     }
 
     @Test
     public void testNegativeDouble() {
         function.execute(null, null, null, new Object[]{-4.0D}, null);
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testPositiveFloat() {
         function.execute(null, null, null, new Object[]{4.0F}, null);
         final Object result = function.getResult();
-        assertTrue(result instanceof Float);
-        assertEquals(result, 2.0F);
+      assertThat(result instanceof Float).isTrue();
+      assertThat(result).isEqualTo(2.0F);
     }
 
     @Test
     public void testNegativeFloat() {
         function.execute(null, null, null, new Object[]{-4.0F}, null);
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testPositiveBigDecimal() {
         function.execute(null, null, null, new Object[]{new BigDecimal("4.0")}, null);
         final Object result = function.getResult();
-        assertTrue(result instanceof BigDecimal);
-        assertEquals(result, new BigDecimal("2"));
+      assertThat(result instanceof BigDecimal).isTrue();
+      assertThat(new BigDecimal("2")).isEqualTo(result);
     }
 
     @Test
     public void testNegativeBigDecimal() {
         function.execute(null, null, null, new Object[]{BigDecimal.valueOf(-4.0D)}, null);
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testPositiveBigInteger() {
         function.execute(null, null, null, new Object[]{new BigInteger("4")}, null);
         final Object result = function.getResult();
-        assertTrue(result instanceof BigInteger);
-        assertEquals(result, new BigInteger("2"));
+      assertThat(result instanceof BigInteger).isTrue();
+      assertThat(new BigInteger("2")).isEqualTo(result);
     }
 
     @Test
     public void testNegativeBigInteger() {
         function.execute(null, null, null, new Object[]{new BigInteger("-4")}, null);
         final Object result = function.getResult();
-        assertNull(result);
+      assertThat(result).isNull();
     }
 
     @Test
     public void testNonNumber() {
         try {
             function.execute(null, null, null, new Object[]{"abc"}, null);
-            Assertions.fail("Expected  IllegalArgumentException");
+          fail("Expected  IllegalArgumentException");
         } catch (final IllegalArgumentException e) {
             // OK
         }
@@ -172,7 +172,7 @@ public class SQLFunctionSquareRootTest {
     public void testFromQuery() throws Exception {
         TestHelper.executeInNewDatabase("./target/databases/testSqrtFunction", (db) -> {
             final ResultSet result = db.query("sql", "select sqrt(4.0) as sqrt");
-            assertEquals(2.0F, ((Number) result.next().getProperty("sqrt")).floatValue());
+            assertThat(((Number) result.next().getProperty("sqrt")).floatValue()).isEqualTo(2.0F);
         });
     }
 }

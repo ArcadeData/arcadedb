@@ -1,21 +1,3 @@
-/*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
- * SPDX-License-Identifier: Apache-2.0
- */
 package com.arcadedb;
 
 import com.arcadedb.database.Document;
@@ -27,12 +9,14 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
 public class TransactionTypeTest extends TestHelper {
   private static final int    TOT       = 10000;
@@ -50,21 +34,21 @@ public class TransactionTypeTest extends TestHelper {
     database.begin();
 
     database.scanType(TYPE_NAME, true, record -> {
-      Assertions.assertNotNull(record);
+      assertThat(record).isNotNull();
 
       final Set<String> prop = new HashSet<String>();
       prop.addAll(record.getPropertyNames());
 
-      Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
-      Assertions.assertTrue(prop.contains("id"));
-      Assertions.assertTrue(prop.contains("name"));
-      Assertions.assertTrue(prop.contains("surname"));
+      assertThat(record.getPropertyNames().size()).isEqualTo(3);
+      assertThat(prop.contains("id")).isTrue();
+      assertThat(prop.contains("name")).isTrue();
+      assertThat(prop.contains("surname")).isTrue();
 
       total.incrementAndGet();
       return true;
     });
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
 
     database.commit();
   }
@@ -77,16 +61,16 @@ public class TransactionTypeTest extends TestHelper {
 
     database.scanType(TYPE_NAME, true, record -> {
       final Document record2 = (Document) database.lookupByRID(record.getIdentity(), false);
-      Assertions.assertNotNull(record2);
-      Assertions.assertEquals(record, record2);
+      assertThat(record2).isNotNull();
+      assertThat(record2).isEqualTo(record);
 
       final Set<String> prop = new HashSet<String>();
       prop.addAll(record2.getPropertyNames());
 
-      Assertions.assertEquals(record2.getPropertyNames().size(), 3);
-      Assertions.assertTrue(prop.contains("id"));
-      Assertions.assertTrue(prop.contains("name"));
-      Assertions.assertTrue(prop.contains("surname"));
+      assertThat(record2.getPropertyNames().size()).isEqualTo(3);
+      assertThat(prop.contains("id")).isTrue();
+      assertThat(prop.contains("name")).isTrue();
+      assertThat(prop.contains("surname")).isTrue();
 
       total.incrementAndGet();
       return true;
@@ -94,7 +78,7 @@ public class TransactionTypeTest extends TestHelper {
 
     database.commit();
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
   }
 
   @Test
@@ -105,27 +89,27 @@ public class TransactionTypeTest extends TestHelper {
 
     for (int i = 0; i < TOT; i++) {
       final IndexCursor result = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { i });
-      Assertions.assertNotNull(result);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(Optional.ofNullable(result)).isNotNull();
+      assertThat(result.hasNext()).isTrue();
 
       final Document record2 = (Document) result.next().getRecord();
 
-      Assertions.assertEquals(i, record2.get("id"));
+      assertThat(record2.get("id")).isEqualTo(i);
 
       final Set<String> prop = new HashSet<String>();
       prop.addAll(record2.getPropertyNames());
 
-      Assertions.assertEquals(record2.getPropertyNames().size(), 3);
-      Assertions.assertTrue(prop.contains("id"));
-      Assertions.assertTrue(prop.contains("name"));
-      Assertions.assertTrue(prop.contains("surname"));
+      assertThat(record2.getPropertyNames().size()).isEqualTo(3);
+      assertThat(prop.contains("id")).isTrue();
+      assertThat(prop.contains("name")).isTrue();
+      assertThat(prop.contains("surname")).isTrue();
 
       total.incrementAndGet();
     }
 
     database.commit();
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
   }
 
   @Test
@@ -142,22 +126,22 @@ public class TransactionTypeTest extends TestHelper {
 
     database.commit();
 
-    Assertions.assertEquals(TOT, total.get());
+    assertThat(total.get()).isEqualTo(TOT);
 
     database.begin();
 
-    Assertions.assertEquals(0, database.countType(TYPE_NAME, true));
+    assertThat(database.countType(TYPE_NAME, true)).isEqualTo(0);
 
     // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
     final Index[] indexes = database.getSchema().getIndexes();
     for (int i = 0; i < TOT; ++i) {
       for (final Index index : indexes)
-        Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i);
+        assertThat(index.get(new Object[]{i}).hasNext()).as("Found item with key " + i).isFalse();
     }
 
     beginTest();
 
-    database.transaction(() -> Assertions.assertEquals(TOT, database.countType(TYPE_NAME, true)));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT));
   }
 
   @Test
@@ -176,11 +160,11 @@ public class TransactionTypeTest extends TestHelper {
 
     database.commit();
 
-    Assertions.assertEquals(1, total.get());
+    assertThat(total.get()).isEqualTo(1);
 
     database.begin();
 
-    Assertions.assertEquals(originalCount - 1, database.countType(TYPE_NAME, true));
+    assertThat(database.countType(TYPE_NAME, true)).isEqualTo(originalCount - 1);
 
     // COUNT WITH SCAN
     total.set(0);
@@ -188,14 +172,14 @@ public class TransactionTypeTest extends TestHelper {
       total.incrementAndGet();
       return true;
     });
-    Assertions.assertEquals(originalCount - 1, total.get());
+    assertThat(total.get()).isEqualTo(originalCount - 1);
 
     // COUNT WITH ITERATE TYPE
     total.set(0);
     for (final Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
       total.incrementAndGet();
 
-    Assertions.assertEquals(originalCount - 1, total.get());
+    assertThat(total.get()).isEqualTo(originalCount - 1);
   }
 
   @Test
@@ -214,11 +198,11 @@ public class TransactionTypeTest extends TestHelper {
 
     database.commit();
 
-    Assertions.assertEquals(1, total.get());
+    assertThat(total.get()).isEqualTo(1);
 
     database.begin();
 
-    Assertions.assertEquals(originalCount, database.countType(TYPE_NAME, true));
+    assertThat(database.countType(TYPE_NAME, true)).isEqualTo(originalCount);
 
     // COUNT WITH SCAN
     total.set(0);
@@ -226,21 +210,21 @@ public class TransactionTypeTest extends TestHelper {
       total.incrementAndGet();
       return true;
     });
-    Assertions.assertEquals(originalCount, total.get());
+    assertThat(total.get()).isEqualTo(originalCount);
 
     // COUNT WITH ITERATE TYPE
     total.set(0);
     for (final Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
       total.incrementAndGet();
 
-    Assertions.assertEquals(originalCount, total.get());
+    assertThat(total.get()).isEqualTo(originalCount);
   }
 
   @Test
   public void testDeleteFail() {
     reopenDatabaseInReadOnlyMode();
 
-    Assertions.assertThrows(DatabaseIsReadOnlyException.class, () -> {
+    assertThatExceptionOfType(DatabaseIsReadOnlyException.class).isThrownBy(() -> {
 
       database.begin();
 
@@ -262,9 +246,9 @@ public class TransactionTypeTest extends TestHelper {
       database.transaction(() -> database.newDocument(TYPE_NAME).set("id", -2, "tx", 2).save());
     });
 
-    Assertions.assertEquals(0, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 0")));
-    Assertions.assertEquals(1, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 1")));
-    Assertions.assertEquals(1, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 2")));
+    assertThat(CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 0"))).isEqualTo(0);
+    assertThat(CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 1"))).isEqualTo(1);
+    assertThat(CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 2"))).isEqualTo(1);
   }
 
   @Override

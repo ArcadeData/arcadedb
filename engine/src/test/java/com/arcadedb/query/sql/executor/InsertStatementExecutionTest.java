@@ -22,10 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -43,21 +46,21 @@ public class InsertStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "insert into " + className + " set name = 'name1'");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -69,22 +72,22 @@ public class InsertStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "insert into " + className + "  (name, surname) values ('name1', 'surname1')");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
-      Assertions.assertEquals("surname1", item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -97,28 +100,28 @@ public class InsertStatementExecutionTest extends TestHelper {
         "insert into " + className + "  (name, surname) values ('name1', 'surname1'), ('name2', 'surname2')");
 
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name" + (i + 1), item.getProperty("name"));
-      Assertions.assertEquals("surname" + (i + 1), item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name" + (i + 1));
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname" + (i + 1));
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Set<String> names = new HashSet<>();
     names.add("name1");
     names.add("name2");
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
-      names.remove(item.getProperty("name"));
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isNotNull();
+      names.remove(item.<String>getProperty("name"));
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertTrue(names.isEmpty());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(names.isEmpty()).isTrue();
     result.close();
   }
 
@@ -138,13 +141,13 @@ public class InsertStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "insert into " + className2 + " from select from " + className1);
 
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Set<String> names = new HashSet<>();
     for (int i = 0; i < 10; i++) {
@@ -152,15 +155,15 @@ public class InsertStatementExecutionTest extends TestHelper {
     }
     result = database.query("sql", "select from " + className2);
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
-      names.remove(item.getProperty("name"));
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isNotNull();
+      names.remove(item.<String>getProperty("name"));
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertTrue(names.isEmpty());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(names.isEmpty()).isTrue();
     result.close();
   }
 
@@ -180,13 +183,13 @@ public class InsertStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "insert into " + className2 + " ( select from " + className1 + ")");
 
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isNotNull();
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Set<String> names = new HashSet<>();
     for (int i = 0; i < 10; i++) {
@@ -194,15 +197,15 @@ public class InsertStatementExecutionTest extends TestHelper {
     }
     result = database.query("sql", "select from " + className2);
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertNotNull(item.getProperty("name"));
-      names.remove(item.getProperty("name"));
-      Assertions.assertNotNull(item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isNotNull();
+      names.remove(item.<String>getProperty("name"));
+      assertThat(item.<String>getProperty("surname")).isNotNull();
     }
-    Assertions.assertFalse(result.hasNext());
-    Assertions.assertTrue(names.isEmpty());
+    assertThat(result.hasNext()).isFalse();
+    assertThat(names.isEmpty()).isTrue();
     result.close();
   }
 
@@ -213,13 +216,13 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     ResultSet result = database.command("sql", "insert into " + className1 + " set test = ( select 777 )");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
+    assertThat(item).isNotNull();
     List<Integer> list = item.getProperty("test");
-    Assertions.assertEquals(1, list.size());
-    Assertions.assertEquals(777, list.get(0));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(list.size()).isEqualTo(1);
+    assertThat(list.get(0)).isEqualTo(777);
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
@@ -229,15 +232,15 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     ResultSet result = database.command("sql", "insert into " + className1 + " set test = ( select 777, 888 )");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
+    assertThat(item).isNotNull();
     List<Map> list = item.getProperty("test");
-    Assertions.assertEquals(1, list.size());
+    assertThat(list.size()).isEqualTo(1);
     Map<String, Integer> map = list.get(0);
-    Assertions.assertEquals(777, map.get("777"));
-    Assertions.assertEquals(888, map.get("888"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(map.get("777")).isEqualTo(777);
+    assertThat(map.get("888")).isEqualTo(888);
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
@@ -248,22 +251,22 @@ public class InsertStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "insert into " + className + " content {'name':'name1', 'surname':'surname1'}");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
-      Assertions.assertEquals("surname1", item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -283,25 +286,25 @@ public class InsertStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "insert into " + className + " content " + array);
 
     for (int i = 0; i < 1000; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name" + i, item.getProperty("name").toString());
-      Assertions.assertEquals("surname" + i, item.getProperty("surname").toString());
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name").toString()).isEqualTo("name" + i);
+      assertThat(item.getProperty("surname").toString()).isEqualTo("surname" + i);
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
 
     for (int i = 0; i < 1000; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name" + i, item.getProperty("name").toString());
-      Assertions.assertEquals("surname" + i, item.getProperty("surname").toString());
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name").toString()).isEqualTo("name" + i);
+      assertThat(item.getProperty("surname").toString()).isEqualTo("surname" + i);
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -314,14 +317,14 @@ public class InsertStatementExecutionTest extends TestHelper {
         "insert into " + className + " content { 'embedded': { '@type':'testContent', 'name':'name1', 'surname':'surname1'} }");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       EmbeddedDocument embedded = item.getProperty("embedded");
-      Assertions.assertEquals("name1", embedded.getString("name"));
-      Assertions.assertEquals("surname1", embedded.getString("surname"));
+      assertThat(embedded.getString("name")).isEqualTo("name1");
+      assertThat(embedded.getString("surname")).isEqualTo("surname1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
@@ -337,22 +340,22 @@ public class InsertStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "insert into " + className + " content :theContent", params);
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
-      Assertions.assertEquals("surname1", item.getProperty("surname"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -375,11 +378,11 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "seLECT FROM " + className2);
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result row = result.next();
       final Object val = row.getProperty("processingType");
-      Assertions.assertNotNull(val);
-      Assertions.assertTrue(val instanceof Identifiable);
+      assertThat(val).isNotNull();
+      assertThat(val instanceof Identifiable).isTrue();
     }
     result.close();
   }
@@ -398,16 +401,16 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "seLECT FROM " + className2);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result row = result.next();
       final Object list = row.getProperty("sub");
-      Assertions.assertNotNull(list);
-      Assertions.assertTrue(list instanceof List);
-      Assertions.assertEquals(1, ((List) list).size());
+      assertThat(list).isNotNull();
+      assertThat(list instanceof List).isTrue();
+      assertThat(((List) list).size()).isEqualTo(1);
 
       final Object o = ((List) list).get(0);
-      Assertions.assertTrue(o instanceof Map);
-      Assertions.assertEquals("foo", ((Map) o).get("name"));
+      assertThat(o instanceof Map).isTrue();
+      assertThat(((Map) o).get("name")).isEqualTo("foo");
     }
     result.close();
   }
@@ -426,16 +429,16 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "seLECT FROM " + className2);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result row = result.next();
       final Object list = row.getProperty("sub");
-      Assertions.assertNotNull(list);
-      Assertions.assertTrue(list instanceof List);
-      Assertions.assertEquals(1, ((List) list).size());
+      assertThat(list).isNotNull();
+      assertThat(list instanceof List).isTrue();
+      assertThat(((List) list).size()).isEqualTo(1);
 
       final Object o = ((List) list).get(0);
-      Assertions.assertTrue(o instanceof Map);
-      Assertions.assertEquals("foo", ((Map) o).get("name"));
+      assertThat(o instanceof Map).isTrue();
+      assertThat(((Map) o).get("name")).isEqualTo("foo");
     }
     result.close();
   }
@@ -448,21 +451,21 @@ public class InsertStatementExecutionTest extends TestHelper {
     ResultSet result = database.command("sql", "insert into " + className + " set name = 'name1' RETURN 'OK' as result");
 
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("OK", item.getProperty("result"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("result")).isEqualTo("OK");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertNotNull(item);
-      Assertions.assertEquals("name1", item.getProperty("name"));
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isEqualTo("name1");
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -480,12 +483,12 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     for (int i = 0; i < 2; i++) {
       final Result item = result.next();
-      if (item.getProperty("name").equals("parent")) {
-        Assertions.assertTrue(item.getProperty("children") instanceof Collection);
-        Assertions.assertEquals(1, ((Collection) item.getProperty("children")).size());
+      if (item.<String>getProperty("name").equals("parent")) {
+        assertThat(item.getProperty("children") instanceof Collection).isTrue();
+        assertThat(((Collection) item.getProperty("children")).size()).isEqualTo(1);
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -506,10 +509,10 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     final Result item = result.next();
     final Map theMap = item.getProperty("mymap");
-    Assertions.assertEquals(1, theMap.size());
-    Assertions.assertNotNull(theMap.get("A-1"));
+    assertThat(theMap.size()).isEqualTo(1);
+    assertThat(theMap.get("A-1")).isNotNull();
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -525,9 +528,9 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     final Result item = result.next();
     final String memo = item.getProperty("memo");
-    Assertions.assertEquals("this is a \n multi line text", memo);
+    assertThat(memo).isEqualTo("this is a \n multi line text");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -537,7 +540,7 @@ public class InsertStatementExecutionTest extends TestHelper {
     database.getSchema().createEdgeType(className);
     try {
       database.command("sql", "insert into " + className + " set `@out` = #1:10, `@in` = #1:11");
-      Assertions.fail();
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
@@ -575,10 +578,10 @@ public class InsertStatementExecutionTest extends TestHelper {
         "    }\n" + //
         "}");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result res = result.next();
-    Assertions.assertTrue(res.hasProperty("head"));
-    Assertions.assertTrue(res.hasProperty("results"));
+    assertThat(res.hasProperty("head")).isTrue();
+    assertThat(res.hasProperty("results")).isTrue();
   }
 
   @Test
@@ -586,8 +589,8 @@ public class InsertStatementExecutionTest extends TestHelper {
     database.getSchema().createDocumentType("RegInfoDoc");
     final ResultSet result = database.command("sql",
         "insert into RegInfoDoc set payload = \"(Pn/m)*1000kg/kW, with \\\"Pn\\\" being the\\n\\np  and \\\"m\\\" (kg)\"");
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("(Pn/m)*1000kg/kW, with \"Pn\" being the\n\np  and \"m\" (kg)", result.next().getProperty("payload"));
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("payload")).isEqualTo("(Pn/m)*1000kg/kW, with \"Pn\" being the\n\np  and \"m\" (kg)");
   }
 
   @Test
@@ -607,6 +610,6 @@ public class InsertStatementExecutionTest extends TestHelper {
     for (; result.hasNext(); i++)
       result.next();
 
-    Assertions.assertEquals(3, i);
+    assertThat(i).isEqualTo(3);
   }
 }

@@ -22,10 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLRemoteImporterIT {
   @Test
@@ -37,10 +38,10 @@ public class SQLRemoteImporterIT {
       //database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/MovieRatings.gz");
       database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/GratefulDeadConcerts.gz");
 
-      Assertions.assertEquals(809, database.countType("V", false));
-      Assertions.assertEquals(7047, database.countType("followed_by", false));
-      Assertions.assertEquals(501, database.countType("sung_by", false));
-      Assertions.assertEquals(501, database.countType("written_by", false));
+      assertThat(database.countType("V", false)).isEqualTo(809);
+      assertThat(database.countType("followed_by", false)).isEqualTo(7047);
+      assertThat(database.countType("sung_by", false)).isEqualTo(501);
+      assertThat(database.countType("written_by", false)).isEqualTo(501);
     }
 
     TestHelper.checkActiveDatabases();

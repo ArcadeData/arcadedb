@@ -20,8 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -30,18 +31,18 @@ public class AlterDatabaseExecutionTest extends TestHelper {
   @Test
   public void testBasicCreateProperty() {
     final int defPageSize = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
-    Assertions.assertEquals(defPageSize, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE)).isEqualTo(defPageSize);
 
     database.command("sql", "ALTER DATABASE `arcadedb.bucketDefaultPageSize` 262144");
 
-    Assertions.assertEquals(262144, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE)).isEqualTo(262144);
 
     database.command("sql", "ALTER DATABASE `arcadedb.bucketDefaultPageSize` " + defPageSize);
 
-    Assertions.assertEquals(defPageSize, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE)).isEqualTo(defPageSize);
 
     database.command("sql", "ALTER DATABASE `arcadedb.dateTimeFormat` 'yyyy-MM-dd HH:mm:ss.SSS'");
 
-    Assertions.assertEquals("yyyy-MM-dd HH:mm:ss.SSS", database.getSchema().getDateTimeFormat());
+    assertThat(database.getSchema().getDateTimeFormat()).isEqualTo("yyyy-MM-dd HH:mm:ss.SSS");
   }
 }

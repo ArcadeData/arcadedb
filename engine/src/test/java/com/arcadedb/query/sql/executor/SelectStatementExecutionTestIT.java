@@ -20,8 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Created by tglman on 09/06/17.
@@ -51,9 +52,9 @@ public class SelectStatementExecutionTestIT extends TestHelper {
         final Result item = result.next();
         //        Assertions.assertNotNull(item);
         final Object name = item.getProperty("name");
-        Assertions.assertFalse("name1".equals(name));
+        assertThat(name).isNotEqualTo("name1");
       }
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
       final long end = System.nanoTime();
     }

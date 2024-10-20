@@ -24,12 +24,15 @@ import com.arcadedb.database.RID;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class RedisWTest extends BaseGraphServerTest {
 
@@ -42,8 +45,8 @@ public class RedisWTest extends BaseGraphServerTest {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
 
     // PING
-    Assertions.assertEquals("PONG", jedis.ping());
-    Assertions.assertEquals("This is a test", jedis.ping("This is a test"));
+    assertThat(jedis.ping()).isEqualTo("PONG");
+    assertThat(jedis.ping("This is a test")).isEqualTo("This is a test");
 
     // SET
     long beginTime = System.currentTimeMillis();
@@ -52,14 +55,14 @@ public class RedisWTest extends BaseGraphServerTest {
     System.out.println("SET " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // EXISTS
-    Assertions.assertFalse(jedis.exists("fooNotFound"));
+    assertThat(jedis.exists("fooNotFound")).isFalse();
 
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertTrue(jedis.exists("foo" + i));
+      assertThat(jedis.exists("foo" + i)).isTrue();
     System.out.println("EXISTS " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
-    Assertions.assertEquals(0, jedis.exists("fooNotFound", "eitherThis"));
+    assertThat(jedis.exists("fooNotFound", "eitherThis")).isEqualTo(0);
 
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; i += 10) {
@@ -67,7 +70,7 @@ public class RedisWTest extends BaseGraphServerTest {
       for (int k = 0; k < 10; ++k)
         keyChunk[k] = "foo" + (i + k);
       final Long result = jedis.exists(keyChunk);
-      Assertions.assertEquals(10, result);
+      assertThat(result).isEqualTo(10);
     }
     System.out.println(
         "MULTI EXISTS (chunk of 10 keys) " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
@@ -75,47 +78,47 @@ public class RedisWTest extends BaseGraphServerTest {
     // GET
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertEquals(String.valueOf(i), jedis.get("foo" + i));
+      assertThat(jedis.get("foo" + i)).isEqualTo(String.valueOf(i));
     System.out.println("GET " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // INCR
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertEquals(i + 1L, jedis.incr("foo" + i));
+      assertThat(jedis.incr("foo" + i)).isEqualTo(i + 1L);
     System.out.println("INCR " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // DECR
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertEquals(i, jedis.decr("foo" + i));
+      assertThat(jedis.decr("foo" + i)).isEqualTo(i);
     System.out.println("DECR " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // INCRBY
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertEquals(i + 3L, jedis.incrBy("foo" + i, 3));
+      assertThat(jedis.incrBy("foo" + i, 3)).isEqualTo(i + 3L);
     System.out.println("INCRBY " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // DECRBY
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertEquals(i, jedis.decrBy("foo" + i, 3));
+      assertThat(jedis.decrBy("foo" + i, 3)).isEqualTo(i);
     System.out.println("DECRBY " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // INCRBYFLOAT
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertEquals(i + 3.3D, jedis.incrByFloat("foo" + i, 3.3));
+      assertThat(jedis.incrByFloat("foo" + i, 3.3)).isEqualTo(i + 3.3D);
     System.out.println("INCRBYFLOAT " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // GETDEL
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertEquals(String.valueOf(i + 3.3D), jedis.getDel("foo" + i));
+      assertThat(jedis.getDel("foo" + i)).isEqualTo(String.valueOf(i + 3.3D));
     System.out.println("GETDEL " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     for (int i = 0; i < TOTAL_RAM; ++i)
-      Assertions.assertNull(jedis.get("foo" + i));
+      assertThat(jedis.get("foo" + i)).isNull();
   }
 
   @Test
@@ -140,8 +143,8 @@ public class RedisWTest extends BaseGraphServerTest {
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_PERSISTENT; ++i) {
       // RETRIEVE BY ID (LONG)
-      Assertions.assertTrue(jedis.hexists(getDatabaseName() + ".Account[id]", String.valueOf(i)));
-      Assertions.assertTrue(jedis.hexists(getDatabaseName() + ".Account[email]", "jay.miner" + i + "@commodore.com"));
+      assertThat(jedis.hexists(getDatabaseName() + ".Account[id]", String.valueOf(i))).isTrue();
+      assertThat(jedis.hexists(getDatabaseName() + ".Account[email]", "jay.miner" + i + "@commodore.com")).isTrue();
     }
     System.out.println("HEXISTS " + TOTAL_PERSISTENT + " items to the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
@@ -157,28 +160,28 @@ public class RedisWTest extends BaseGraphServerTest {
 
       // RETRIEVE BY ID (LONG)
       JSONObject doc = new JSONObject(jedis.hget(getDatabaseName() + ".Account[id]", String.valueOf(i)));
-      Assertions.assertNotNull(doc.getString("@rid"));
-      Assertions.assertEquals("Account", doc.getString("@type"));
+      assertThat(doc.getString("@rid")).isNotNull();
+      assertThat(doc.getString("@type")).isEqualTo("Account");
       doc.remove("@type");
       doc.remove("@rid");
       doc.remove("@cat");
 
-      Assertions.assertEquals(expectedJson.toMap(), doc.toMap());
+      assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 
       // RETRIEVE BY EMAIL (STRING)
       doc = new JSONObject(jedis.hget(getDatabaseName() + ".Account[email]", "jay.miner" + i + "@commodore.com"));
-      Assertions.assertNotNull(doc.getString("@rid"));
-      Assertions.assertEquals("Account", doc.getString("@type"));
+      assertThat(doc.getString("@rid")).isNotNull();
+      assertThat(doc.getString("@type")).isEqualTo("Account");
       doc.remove("@type");
       doc.remove("@rid");
       doc.remove("@cat");
 
-      Assertions.assertEquals(expectedJson.toMap(), doc.toMap());
+      assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 
       // RETRIEVE BY EMAIL (STRING)
       doc = new JSONObject(jedis.hget(getDatabaseName() + ".Account[email]", "jay.miner" + i + "@commodore.com"));
-      Assertions.assertNotNull(doc.getString("@rid"));
-      Assertions.assertEquals("Account", doc.getString("@type"));
+      assertThat(doc.getString("@rid")).isNotNull();
+      assertThat(doc.getString("@type")).isEqualTo("Account");
       doc.remove("@type");
       doc.remove("@cat");
 
@@ -186,21 +189,21 @@ public class RedisWTest extends BaseGraphServerTest {
       final Object rid = doc.remove("@rid");
       rids.add(new RID(database, rid.toString()));
 
-      Assertions.assertEquals(expectedJson.toMap(), doc.toMap());
+      assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 
       // RETRIEVE BY RID
       doc = new JSONObject(jedis.hget(getDatabaseName(), rid.toString()));
-      Assertions.assertNotNull(doc.getString("@rid"));
-      Assertions.assertEquals("Account", doc.getString("@type"));
+      assertThat(doc.getString("@rid")).isNotNull();
+      assertThat(doc.getString("@type")).isEqualTo("Account");
       doc.remove("@rid");
       doc.remove("@type");
       doc.remove("@cat");
 
-      Assertions.assertEquals(expectedJson.toMap(), doc.toMap());
+      assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
     }
     System.out.println("HGET " + TOTAL_PERSISTENT + " items by 2 keys + rid from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
-    Assertions.assertEquals(TOTAL_PERSISTENT, rids.size());
+    assertThat(rids.size()).isEqualTo(TOTAL_PERSISTENT);
 
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_PERSISTENT; i += 10) {
@@ -211,11 +214,11 @@ public class RedisWTest extends BaseGraphServerTest {
       // RETRIEVE BY CHUNK OF 10 RIDS
       final List<String> result = jedis.hmget(getDatabaseName(), ridChunk);
 
-      Assertions.assertEquals(10, result.size());
+      assertThat(result.size()).isEqualTo(10);
 
       for (int k = 0; k < 10; ++k) {
         final JSONObject doc = new JSONObject(result.get(k));
-        Assertions.assertEquals("Account", doc.getString("@type"));
+        assertThat(doc.getString("@type")).isEqualTo("Account");
       }
     }
 
@@ -226,7 +229,7 @@ public class RedisWTest extends BaseGraphServerTest {
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_PERSISTENT; i += 2) {
       // DELETE BY ID (LONG)
-      Assertions.assertEquals(2, jedis.hdel(getDatabaseName() + ".Account[id]", String.valueOf(i), String.valueOf(i + 1)));
+      assertThat(jedis.hdel(getDatabaseName() + ".Account[id]", String.valueOf(i), String.valueOf(i + 1))).isEqualTo(2);
     }
     System.out.println("HDEL " + TOTAL_PERSISTENT + " items from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
   }
@@ -236,10 +239,10 @@ public class RedisWTest extends BaseGraphServerTest {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
     try {
       jedis.aclList();
-      Assertions.fail();
+      fail("");
     } catch (final JedisDataException e) {
       // EXPECTED
-      Assertions.assertEquals("Command not found", e.getMessage());
+      assertThat(e.getMessage()).isEqualTo("Command not found");
     }
   }
 

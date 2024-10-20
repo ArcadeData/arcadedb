@@ -27,10 +27,11 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.log.LogManager;
-import org.junit.jupiter.api.Assertions;
 
 import java.io.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class PerformanceIndexCompaction {
   public static void main(final String[] args) throws Exception {
@@ -51,12 +52,12 @@ public class PerformanceIndexCompaction {
       LogManager.instance().log(this, Level.INFO, "Total indexes items %d", totalIndexed);
 
       for (final Index index : database.getSchema().getIndexes())
-        Assertions.assertTrue(((IndexInternal) index).compact());
+        assertThat(((IndexInternal) index).compact()).isTrue();
 
       final long totalIndexed2 = countIndexedItems(database);
 
-      Assertions.assertEquals(total, totalIndexed);
-      Assertions.assertEquals(totalIndexed, totalIndexed2);
+      assertThat(totalIndexed).isEqualTo(total);
+      assertThat(totalIndexed2).isEqualTo(totalIndexed);
 
       System.out.println("Compaction done");
 

@@ -24,11 +24,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
@@ -70,7 +72,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
   public void testReplication() throws Exception {
     try {
       super.testReplication();
-      Assertions.fail("Replication is supposed to fail without enough online servers");
+      fail("Replication is supposed to fail without enough online servers");
     } catch (final QuorumNotReachedException e) {
       // CATCH IT
     }
@@ -84,11 +86,11 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
     db.begin();
     try {
-      Assertions.assertTrue(1 + getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true), "Check for vertex count for server" + serverIndex);
+      assertThat(1 + getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true)).as("Check for vertex count for server" + serverIndex).isTrue();
 
     } catch (final Exception e) {
       e.printStackTrace();
-      Assertions.fail("Error on checking on server" + serverIndex);
+      fail("Error on checking on server" + serverIndex);
     }
   }
 

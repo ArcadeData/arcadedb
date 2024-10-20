@@ -21,9 +21,13 @@ package com.arcadedb.query.sql.functions.text;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.text.SQLFunctionStrcmpci;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -40,44 +44,44 @@ public class SQLFunctionStrcmpciTest {
   @Test
   public void testEmpty() {
     final Object result = function.getResult();
-    Assertions.assertNull(result);
+    assertThat(result).isNull();
   }
 
   @Test
   public void testResult() {
-    Assertions.assertEquals(0, function.execute(null, null, null, new String[] { "ThisIsATest", "THISISATEST" }, null));
+    assertThat(function.execute(null, null, null, new String[]{"ThisIsATest", "THISISATEST"}, null)).isEqualTo(0);
   }
 
   @Test
   public void testQuery() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionStrcmpci", (db) -> {
       ResultSet result = db.query("sql", "select strcmpci('ThisIsATest', 'THISISATEST') as strcmpci");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(0, (Integer) result.next().getProperty("strcmpci"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Integer) result.next().getProperty("strcmpci")).isEqualTo(0);
 
       result = db.query("sql", "select strcmpci(null, null) as strcmpci");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(0, (Integer) result.next().getProperty("strcmpci"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Integer) result.next().getProperty("strcmpci")).isEqualTo(0);
 
       result = db.query("sql", "select strcmpci('ThisIsATest', null) as strcmpci");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(1, (Integer) result.next().getProperty("strcmpci"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Integer) result.next().getProperty("strcmpci")).isEqualTo(1);
 
       result = db.query("sql", "select strcmpci(null, 'ThisIsATest') as strcmpci");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(-1, (Integer) result.next().getProperty("strcmpci"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Integer) result.next().getProperty("strcmpci")).isEqualTo(-1);
 
       result = db.query("sql", "select strcmpci('ThisIsATest', 'THISISATESTO') as strcmpci");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(-1, (Integer) result.next().getProperty("strcmpci"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Integer) result.next().getProperty("strcmpci")).isEqualTo(-1);
 
       result = db.query("sql", "select strcmpci('ThisIsATestO', 'THISISATEST') as strcmpci");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(+1, (Integer) result.next().getProperty("strcmpci"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Integer) result.next().getProperty("strcmpci")).isEqualTo(+1);
 
       result = db.query("sql", "select strcmpci('ThisIsATestO', 'THISISATESTE') as strcmpci");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(+1, (Integer) result.next().getProperty("strcmpci"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Integer) result.next().getProperty("strcmpci")).isEqualTo(+1);
     });
   }
 }

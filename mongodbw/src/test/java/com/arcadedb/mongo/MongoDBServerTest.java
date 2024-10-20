@@ -36,8 +36,7 @@ import static com.mongodb.client.model.Filters.exists;
 import static com.mongodb.client.model.Filters.gt;
 import static com.mongodb.client.model.Filters.lte;
 import static com.mongodb.client.model.Filters.ne;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class MongoDBServerTest extends BaseGraphServerTest {
 
@@ -63,7 +62,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
     client.getDatabase(getDatabaseName()).createCollection("MongoDBCollection");
 
     collection = client.getDatabase(getDatabaseName()).getCollection("MongoDBCollection");
-    assertEquals(0, collection.countDocuments());
+    assertThat(collection.countDocuments()).isEqualTo(0);
 
     obj = new Document("id", 0).append("name", "Jay").append("lastName", "Miner").append("id", 0);
     collection.insertOne(obj);
@@ -88,24 +87,24 @@ public class MongoDBServerTest extends BaseGraphServerTest {
 
   @Test
   public void testSimpleInsertQuery() {
-    assertEquals(10, collection.countDocuments());
-    assertEquals(obj, stripMetadata(collection.find().first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: \"Jay\" } ")).first()));
-    assertNull(collection.find(BsonDocument.parse("{ name: \"Jay2\" } ")).first());
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $eq: \"Jay\" } } ")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $ne: \"Jay2\" } } ")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $in: [ \"Jay\", \"John\" ] } } ")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $nin: [ \"Jay2\", \"John\" ] } } ")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $lt: \"Jay2\" } } ")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $lte: \"Jay2\" } } ")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $gt: \"A\" } } ")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $gte: \"A\" } } ")).first()));
-    assertEquals(obj, stripMetadata(collection.find(and(gt("name", "A"), lte("name", "Jay"))).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ $or: [ { name: { $eq: 'Jay' } }, { lastName: 'Miner222'} ] }")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ $not: { name: { $eq: 'Jay2' } } }")).first()));
-    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse(
-        "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ] }")).first()));
-    assertEquals(obj, stripMetadata(collection.find(and(eq("name", "Jay"), exists("lastName"), eq("lastName", "Miner"), ne("lastName", "Miner22"))).first()));
+    assertThat(collection.countDocuments()).isEqualTo(10);
+    assertThat(stripMetadata(collection.find().first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: \"Jay\" } ")).first())).isEqualTo(obj);
+    assertThat(collection.find(BsonDocument.parse("{ name: \"Jay2\" } ")).first()).isNull();
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $eq: \"Jay\" } } ")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $ne: \"Jay2\" } } ")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $in: [ \"Jay\", \"John\" ] } } ")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $nin: [ \"Jay2\", \"John\" ] } } ")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $lt: \"Jay2\" } } ")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $lte: \"Jay2\" } } ")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $gt: \"A\" } } ")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $gte: \"A\" } } ")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(and(gt("name", "A"), lte("name", "Jay"))).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ $or: [ { name: { $eq: 'Jay' } }, { lastName: 'Miner222'} ] }")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ $not: { name: { $eq: 'Jay2' } } }")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(BsonDocument.parse(
+      "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ] }")).first())).isEqualTo(obj);
+    assertThat(stripMetadata(collection.find(and(eq("name", "Jay"), exists("lastName"), eq("lastName", "Miner"), ne("lastName", "Miner22"))).first())).isEqualTo(obj);
   }
 
   @Test
@@ -115,7 +114,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
             "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: 1 } }"))
         .iterator(); it.hasNext(); ++i) {
       final Document doc = it.next();
-      assertEquals(i, doc.get("id"));
+      assertThat(doc.get("id")).isEqualTo(i);
     }
 
     i = 9;
@@ -123,7 +122,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
             "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: -1 } }"))
         .iterator(); it.hasNext(); --i) {
       final Document doc = it.next();
-      assertEquals(i, doc.get("id"));
+      assertThat(doc.get("id")).isEqualTo(i);
     }
   }
 }

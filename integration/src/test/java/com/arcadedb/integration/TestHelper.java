@@ -3,10 +3,11 @@ package com.arcadedb.integration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
-import org.junit.jupiter.api.Assertions;
 
 import java.util.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class TestHelper {
   public static void checkActiveDatabases() {
@@ -18,6 +19,6 @@ public abstract class TestHelper {
     for (final Database db : activeDatabases)
       db.close();
 
-    Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
+    assertThat(activeDatabases.isEmpty()).as("Found active databases: " + activeDatabases).isTrue();
   }
 }

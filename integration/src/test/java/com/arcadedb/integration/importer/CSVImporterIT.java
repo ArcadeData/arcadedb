@@ -21,8 +21,9 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class CSVImporterIT {
   @Test
@@ -36,7 +37,7 @@ public class CSVImporterIT {
     final Database db = databaseFactory.create();
     try {
       db.command("sql", "import database file://src/test/resources/importer-vertices.csv");
-      Assertions.assertEquals(6, db.countType("Document", true));
+      assertThat(db.countType("Document", true)).isEqualTo(6);
     } finally {
       db.drop();
     }
@@ -56,7 +57,7 @@ public class CSVImporterIT {
     importer.load();
 
     try (final Database db = databaseFactory.open()) {
-      Assertions.assertEquals(6, db.countType("Node", true));
+      assertThat(db.countType("Node", true)).isEqualTo(6);
     }
 
     importer = new Importer(("-edges src/test/resources/importer-edges.csv -database " + databasePath
@@ -64,8 +65,8 @@ public class CSVImporterIT {
     importer.load();
 
     try (final Database db = databaseFactory.open()) {
-      Assertions.assertEquals(6, db.countType("Node", true));
-      Assertions.assertEquals("Jay", db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex().get("First Name"));
+      assertThat(db.countType("Node", true)).isEqualTo(6);
+      assertThat(db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex().get("First Name")).isEqualTo("Jay");
     }
 
     databaseFactory.open().drop();

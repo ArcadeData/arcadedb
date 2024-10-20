@@ -23,10 +23,15 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class PolymorphicTest extends TestHelper {
 
@@ -45,26 +50,26 @@ public class PolymorphicTest extends TestHelper {
 
       try {
         motorcycle.createProperty("brand", String.class);
-        Assertions.fail("Expected to fail by creating the same property name as the parent type");
+        fail("Expected to fail by creating the same property name as the parent type");
       } catch (final SchemaException e) {
       }
 
-      Assertions.assertTrue(database.getSchema().getType("Motorcycle").instanceOf("Vehicle"));
+      assertThat(database.getSchema().getType("Motorcycle").instanceOf("Vehicle")).isTrue();
 
       database.getSchema().buildVertexType().withName("Car").withTotalBuckets(3).create().addSuperType("Vehicle");
-      Assertions.assertTrue(database.getSchema().getType("Car").instanceOf("Vehicle"));
+      assertThat(database.getSchema().getType("Car").instanceOf("Vehicle")).isTrue();
 
       database.getSchema().buildVertexType().withName("Supercar").withTotalBuckets(3).create().addSuperType("Car");
-      Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Car"));
-      Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Vehicle"));
+      assertThat(database.getSchema().getType("Supercar").instanceOf("Car")).isTrue();
+      assertThat(database.getSchema().getType("Supercar").instanceOf("Vehicle")).isTrue();
 
       //------------
       // PEOPLE VERTICES
       //------------
       final VertexType person = database.getSchema().createVertexType("Person");
       database.getSchema().createVertexType("Client").addSuperType(person);
-      Assertions.assertTrue(database.getSchema().getType("Client").instanceOf("Person"));
-      Assertions.assertFalse(database.getSchema().getType("Client").instanceOf("Vehicle"));
+      assertThat(database.getSchema().getType("Client").instanceOf("Person")).isTrue();
+      assertThat(database.getSchema().getType("Client").instanceOf("Vehicle")).isFalse();
 
       //------------
       // EDGES
@@ -72,8 +77,8 @@ public class PolymorphicTest extends TestHelper {
       database.getSchema().createEdgeType("Drives");
       database.getSchema().createEdgeType("Owns").addSuperType("Drives");
 
-      Assertions.assertTrue(database.getSchema().getType("Owns").instanceOf("Drives"));
-      Assertions.assertFalse(database.getSchema().getType("Owns").instanceOf("Vehicle"));
+      assertThat(database.getSchema().getType("Owns").instanceOf("Drives")).isTrue();
+      assertThat(database.getSchema().getType("Owns").instanceOf("Vehicle")).isFalse();
     });
 
     final Database db = database;
@@ -114,35 +119,33 @@ public class PolymorphicTest extends TestHelper {
     database.begin();
     try {
       // NON POLYMORPHIC COUNTING
-      Assertions.assertEquals(0, database.countType("Vehicle", false));
-      Assertions.assertEquals(1, database.countType("Car", false));
-      Assertions.assertEquals(1, database.countType("Supercar", false));
-      Assertions.assertEquals(1, database.countType("Motorcycle", false));
+      assertThat(database.countType("Vehicle", false)).isEqualTo(0);
+      assertThat(database.countType("Car", false)).isEqualTo(1);
+      assertThat(database.countType("Supercar", false)).isEqualTo(1);
+      assertThat(database.countType("Motorcycle", false)).isEqualTo(1);
 
-      Assertions.assertEquals(0, database.countType("Person", false));
-      Assertions.assertEquals(1, database.countType("Client", false));
+      assertThat(database.countType("Person", false)).isEqualTo(0);
+      assertThat(database.countType("Client", false)).isEqualTo(1);
 
-      Assertions.assertEquals(1, database.countType("Drives", false));
-      Assertions.assertEquals(2, database.countType("Owns", false));
+      assertThat(database.countType("Drives", false)).isEqualTo(1);
+      assertThat(database.countType("Owns", false)).isEqualTo(2);
 
       // POLYMORPHIC COUNTING
-      Assertions.assertEquals(3, database.countType("Vehicle", true));
-      Assertions.assertEquals(2, database.countType("Car", true));
-      Assertions.assertEquals(1, database.countType("Supercar", true));
-      Assertions.assertEquals(1, database.countType("Motorcycle", true));
+      assertThat(database.countType("Vehicle", true)).isEqualTo(3);
+      assertThat(database.countType("Car", true)).isEqualTo(2);
+      assertThat(database.countType("Supercar", true)).isEqualTo(1);
+      assertThat(database.countType("Motorcycle", true)).isEqualTo(1);
 
-      Assertions.assertEquals(1, database.countType("Person", true));
-      Assertions.assertEquals(1, database.countType("Client", true));
+      assertThat(database.countType("Person", true)).isEqualTo(1);
+      assertThat(database.countType("Client", true)).isEqualTo(1);
 
-      Assertions.assertEquals(3, database.countType("Drives", true));
-      Assertions.assertEquals(2, database.countType("Owns", true));
+      assertThat(database.countType("Drives", true)).isEqualTo(3);
+      assertThat(database.countType("Owns", true)).isEqualTo(2);
 
-      Assertions.assertEquals(3L,
-          (long) database.query("sql", "select count(*) as count from Vehicle").nextIfAvailable().getProperty("count"));
+      assertThat((long) database.query("sql", "select count(*) as count from Vehicle").nextIfAvailable().getProperty("count")).isEqualTo(3L);
 
-      Assertions.assertEquals(3L,
-          (long) database.query("sql", "select count(*) as count from Vehicle WHERE $this INSTANCEOF Vehicle").nextIfAvailable()
-              .getProperty("count"));
+      assertThat((long) database.query("sql", "select count(*) as count from Vehicle WHERE $this INSTANCEOF Vehicle").nextIfAvailable()
+        .getProperty("count")).isEqualTo(3L);
 
     } finally {
       database.commit();
@@ -153,28 +156,28 @@ public class PolymorphicTest extends TestHelper {
   public void scan() {
     database.begin();
     try {
-      Assertions.assertEquals(0, scanAndCountType(database, "Vehicle", false));
-      Assertions.assertEquals(1, scanAndCountType(database, "Car", false));
-      Assertions.assertEquals(1, scanAndCountType(database, "Supercar", false));
-      Assertions.assertEquals(1, scanAndCountType(database, "Motorcycle", false));
+      assertThat(scanAndCountType(database, "Vehicle", false)).isEqualTo(0);
+      assertThat(scanAndCountType(database, "Car", false)).isEqualTo(1);
+      assertThat(scanAndCountType(database, "Supercar", false)).isEqualTo(1);
+      assertThat(scanAndCountType(database, "Motorcycle", false)).isEqualTo(1);
 
-      Assertions.assertEquals(0, scanAndCountType(database, "Person", false));
-      Assertions.assertEquals(1, scanAndCountType(database, "Client", false));
+      assertThat(scanAndCountType(database, "Person", false)).isEqualTo(0);
+      assertThat(scanAndCountType(database, "Client", false)).isEqualTo(1);
 
-      Assertions.assertEquals(1, scanAndCountType(database, "Drives", false));
-      Assertions.assertEquals(2, scanAndCountType(database, "Owns", false));
+      assertThat(scanAndCountType(database, "Drives", false)).isEqualTo(1);
+      assertThat(scanAndCountType(database, "Owns", false)).isEqualTo(2);
 
       // POLYMORPHIC COUNTING
-      Assertions.assertEquals(3, scanAndCountType(database, "Vehicle", true));
-      Assertions.assertEquals(2, scanAndCountType(database, "Car", true));
-      Assertions.assertEquals(1, scanAndCountType(database, "Supercar", true));
-      Assertions.assertEquals(1, scanAndCountType(database, "Motorcycle", true));
+      assertThat(scanAndCountType(database, "Vehicle", true)).isEqualTo(3);
+      assertThat(scanAndCountType(database, "Car", true)).isEqualTo(2);
+      assertThat(scanAndCountType(database, "Supercar", true)).isEqualTo(1);
+      assertThat(scanAndCountType(database, "Motorcycle", true)).isEqualTo(1);
 
-      Assertions.assertEquals(1, scanAndCountType(database, "Person", true));
-      Assertions.assertEquals(1, scanAndCountType(database, "Client", true));
+      assertThat(scanAndCountType(database, "Person", true)).isEqualTo(1);
+      assertThat(scanAndCountType(database, "Client", true)).isEqualTo(1);
 
-      Assertions.assertEquals(3, scanAndCountType(database, "Drives", true));
-      Assertions.assertEquals(2, scanAndCountType(database, "Owns", true));
+      assertThat(scanAndCountType(database, "Drives", true)).isEqualTo(3);
+      assertThat(scanAndCountType(database, "Owns", true)).isEqualTo(2);
 
     } finally {
       database.commit();
@@ -192,7 +195,7 @@ public class PolymorphicTest extends TestHelper {
     try {
       database.command("sql",
           "INSERT INTO V1 SET prop2 = 'test'"); // this throws the exception as expected since I didn't set the mandatory prop1
-      Assertions.fail();
+      fail("");
     } catch (ValidationException e) {
       // EXPECTED
     }
@@ -200,7 +203,7 @@ public class PolymorphicTest extends TestHelper {
     try {
       database.command("sql",
           "INSERT INTO V2 SET prop2 = 'test'"); // this ignores the constraint on prop1 and insert the record although I didn't set the value
-      Assertions.fail();
+      fail("");
     } catch (ValidationException e) {
       // EXPECTED
     }
@@ -211,14 +214,14 @@ public class PolymorphicTest extends TestHelper {
    */
   @Test
   public void testBrokenInheritanceAfterTypeDropLast() {
-    Assertions.assertEquals(3, database.countType("Vehicle", true));
+    assertThat(database.countType("Vehicle", true)).isEqualTo(3);
     database.transaction(() -> {
       database.command("sql", "DELETE FROM Supercar");
       database.getSchema().dropType("Supercar");
     });
-    Assertions.assertEquals(2, database.countType("Vehicle", true));
-    Assertions.assertEquals(1, database.countType("Car", true));
-    Assertions.assertEquals(1, database.countType("Motorcycle", true));
+    assertThat(database.countType("Vehicle", true)).isEqualTo(2);
+    assertThat(database.countType("Car", true)).isEqualTo(1);
+    assertThat(database.countType("Motorcycle", true)).isEqualTo(1);
   }
 
   /**
@@ -226,13 +229,13 @@ public class PolymorphicTest extends TestHelper {
    */
   @Test
   public void testBrokenInheritanceAfterTypeDropMiddle() {
-    Assertions.assertEquals(3, database.countType("Vehicle", true));
+    assertThat(database.countType("Vehicle", true)).isEqualTo(3);
     database.transaction(() -> {
       database.command("sql", "DELETE FROM Car");
       database.getSchema().dropType("Car");
     });
-    Assertions.assertEquals(1, database.countType("Vehicle", true));
-    Assertions.assertEquals(1, database.countType("Motorcycle", true));
+    assertThat(database.countType("Vehicle", true)).isEqualTo(1);
+    assertThat(database.countType("Motorcycle", true)).isEqualTo(1);
   }
 
   /**
@@ -240,20 +243,20 @@ public class PolymorphicTest extends TestHelper {
    */
   @Test
   public void testBrokenInheritanceAfterTypeDropFirst() {
-    Assertions.assertEquals(3, database.countType("Vehicle", true));
+    assertThat(database.countType("Vehicle", true)).isEqualTo(3);
     database.transaction(() -> {
       database.getSchema().dropType("Vehicle");
     });
-    Assertions.assertEquals(2, database.countType("Car", true));
-    Assertions.assertEquals(1, database.countType("Supercar", true));
-    Assertions.assertEquals(1, database.countType("Motorcycle", true));
+    assertThat(database.countType("Car", true)).isEqualTo(2);
+    assertThat(database.countType("Supercar", true)).isEqualTo(1);
+    assertThat(database.countType("Motorcycle", true)).isEqualTo(1);
   }
 
   private int scanAndCountType(final Database db, final String type, final boolean polymorphic) {
     // NON POLYMORPHIC COUNTING
     final AtomicInteger counter = new AtomicInteger();
     db.scanType(type, polymorphic, record -> {
-      Assertions.assertTrue(db.getSchema().getType(record.getTypeName()).instanceOf(type));
+      assertThat(db.getSchema().getType(record.getTypeName()).instanceOf(type)).isTrue();
       counter.incrementAndGet();
       return true;
     });

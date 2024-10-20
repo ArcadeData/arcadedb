@@ -19,10 +19,11 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test JSON parser and it support for types.
@@ -36,7 +37,7 @@ public class JSONTest extends TestHelper {
     JSONObject json = new JSONObject().put("date", date);
     final String serialized = json.toString();
     JSONObject deserialized = new JSONObject(serialized);
-    Assertions.assertEquals(json, deserialized);
+    assertThat(deserialized).isEqualTo(json);
   }
 
   @Test
@@ -44,7 +45,7 @@ public class JSONTest extends TestHelper {
     JSONObject json = new JSONObject().put("list", Collections.unmodifiableList(List.of(1, 2, 3)));
     final String serialized = json.toString();
     JSONObject deserialized = new JSONObject(serialized);
-    Assertions.assertEquals(json, deserialized);
+    assertThat(deserialized).isEqualTo(json);
   }
 
   @Test
@@ -54,7 +55,7 @@ public class JSONTest extends TestHelper {
     JSONObject json = new JSONObject().put("list", list);
     final String serialized = json.toString();
     JSONObject deserialized = new JSONObject(serialized);
-    Assertions.assertEquals(json, deserialized);
+    assertThat(deserialized).isEqualTo(json);
   }
 
   @Test
@@ -65,7 +66,7 @@ public class JSONTest extends TestHelper {
     final String serialized = json.toString();
     JSONObject deserialized = new JSONObject(serialized);
 
-    Assertions.assertEquals(json, deserialized);
+    assertThat(deserialized).isEqualTo(json);
   }
 
   @Test
@@ -78,19 +79,19 @@ public class JSONTest extends TestHelper {
     final String serialized = json.toString();
     JSONObject deserialized = new JSONObject(serialized);
 
-    Assertions.assertEquals(json, deserialized);
+    assertThat(deserialized).isEqualTo(json);
   }
 
   @Test
   public void testMalformedTrailingCommas() {
     JSONObject json = new JSONObject("{'array':[1,2,3,]}");
-    Assertions.assertEquals(4, json.getJSONArray("array").length());
+    assertThat(json.getJSONArray("array").length()).isEqualTo(4);
 
     json = new JSONObject("{'array':[{'a':3},]}");
-    Assertions.assertEquals(2, json.getJSONArray("array").length());
+    assertThat(json.getJSONArray("array").length()).isEqualTo(2);
 // NOT SUPPORTED BY GSON LIBRARY
 //    json = new JSONObject("{'map':{'a':3,}");
-//    Assertions.assertEquals(2, json.getJSONArray("map").length());
+//    Assertions.assertThat(json.getJSONArray("map").length()).isEqualTo(2);
   }
 
   @Test
@@ -100,9 +101,9 @@ public class JSONTest extends TestHelper {
     json.put("arrayNan", new JSONArray().put(0).put(Double.NaN).put(5));
     json.validate();
 
-    Assertions.assertEquals(json.getInt("nan"), 0);
-    Assertions.assertEquals(json.getJSONArray("arrayNan").get(0), 0);
-    Assertions.assertEquals(json.getJSONArray("arrayNan").get(1), 0);
-    Assertions.assertEquals(json.getJSONArray("arrayNan").get(2), 5);
+    assertThat(json.getInt("nan")).isEqualTo(0);
+    assertThat(json.getJSONArray("arrayNan").get(0)).isEqualTo(0);
+    assertThat(json.getJSONArray("arrayNan").get(1)).isEqualTo(0);
+    assertThat(json.getJSONArray("arrayNan").get(2)).isEqualTo(5);
   }
 }

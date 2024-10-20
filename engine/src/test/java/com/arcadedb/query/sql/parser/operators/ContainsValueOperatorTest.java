@@ -19,10 +19,11 @@
 package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.parser.ContainsValueOperator;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com) */
 public class ContainsValueOperatorTest {
@@ -30,20 +31,20 @@ public class ContainsValueOperatorTest {
   public void test() {
     final ContainsValueOperator op = new ContainsValueOperator(-1);
 
-    Assertions.assertFalse(op.execute(null,null, null));
-    Assertions.assertFalse(op.execute(null,null, "foo"));
+    assertThat(op.execute(null, null, null)).isFalse();
+    assertThat(op.execute(null, null, "foo")).isFalse();
 
     final Map<Object, Object> originMap = new HashMap<Object, Object>();
-    Assertions.assertFalse(op.execute(null,originMap, "bar"));
-    Assertions.assertFalse(op.execute(null,originMap, null));
+    assertThat(op.execute(null, originMap, "bar")).isFalse();
+    assertThat(op.execute(null, originMap, null)).isFalse();
 
     originMap.put("foo", "bar");
     originMap.put(1, "baz");
     originMap.put(2, 12);
 
-    Assertions.assertTrue(op.execute(null,originMap, "bar"));
-    Assertions.assertTrue(op.execute(null,originMap, "baz"));
-    Assertions.assertTrue(op.execute(null,originMap, 12));
-    Assertions.assertFalse(op.execute(null,originMap, "asdfafsd"));
+    assertThat(op.execute(null, originMap, "bar")).isTrue();
+    assertThat(op.execute(null, originMap, "baz")).isTrue();
+    assertThat(op.execute(null, originMap, 12)).isTrue();
+    assertThat(op.execute(null, originMap, "asdfafsd")).isFalse();
   }
 }

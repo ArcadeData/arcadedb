@@ -25,8 +25,9 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ExecutionPlanCacheTest {
 
@@ -57,30 +58,30 @@ public class ExecutionPlanCacheTest {
       // schema changes
       db.query("sql", stm).close();
       cache = ExecutionPlanCache.instance(db);
-      Assertions.assertTrue(cache.contains(stm));
+      assertThat(cache.contains(stm)).isTrue();
 
       final DocumentType clazz = db.getSchema().createDocumentType(testName);
-      Assertions.assertFalse(cache.contains(stm));
+      assertThat(cache.contains(stm)).isFalse();
 
       Thread.sleep(2);
 
       // schema changes 2
       db.query("sql", stm).close();
       cache = ExecutionPlanCache.instance(db);
-      Assertions.assertTrue(cache.contains(stm));
+      assertThat(cache.contains(stm)).isTrue();
 
       final Property prop = clazz.createProperty("name", Type.STRING);
-      Assertions.assertFalse(cache.contains(stm));
+      assertThat(cache.contains(stm)).isFalse();
 
       Thread.sleep(2);
 
       // index changes
       db.query("sql", stm).close();
       cache = ExecutionPlanCache.instance(db);
-      Assertions.assertTrue(cache.contains(stm));
+      assertThat(cache.contains(stm)).isTrue();
 
       db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, testName, "name");
-      Assertions.assertFalse(cache.contains(stm));
+      assertThat(cache.contains(stm)).isFalse();
 
     } finally {
       db.drop();

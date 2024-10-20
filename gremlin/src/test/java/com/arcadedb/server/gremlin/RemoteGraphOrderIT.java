@@ -25,17 +25,22 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class RemoteGraphOrderIT extends AbstractGremlinServerIT {
 
   @Test
   public void testOrder() throws Exception {
     testEachServer((serverIndex) -> {
-      Assertions.assertTrue(
+      assertThat(
           new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
-              getDatabaseName()));
+              getDatabaseName())).isTrue();
 
       try (final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -66,21 +71,30 @@ public class RemoteGraphOrderIT extends AbstractGremlinServerIT {
         Edge edgType1 = rootVtx.newEdge("EdgType1", connectedVtx1, true);
 
         //Correct result - Returns one vertex/edge
-        for (Vertex v : rootVtx.getVertices(Vertex.DIRECTION.OUT, "EdgType0"))
-          Assertions.assertEquals("ConnectedVtx", v.getTypeName());
-        for (Edge e : rootVtx.getEdges(Vertex.DIRECTION.OUT, "EdgType0"))
-          Assertions.assertEquals("EdgType0", e.getTypeName());
+// Vertices with outgoing "EdgType0" edge
+        Iterable<Vertex> connectedVertices = rootVtx.getVertices(Vertex.DIRECTION.OUT, "EdgType0");
 
-        Assertions.assertEquals(0, rootVtx.countEdges(Vertex.DIRECTION.IN, "EdgType0"));
-        Assertions.assertEquals(0, rootVtx.countEdges(Vertex.DIRECTION.IN, "EdgType1"));
-        Assertions.assertEquals(1, rootVtx.countEdges(Vertex.DIRECTION.OUT, "EdgType0"));
-        Assertions.assertEquals(1, rootVtx.countEdges(Vertex.DIRECTION.OUT, "EdgType1"));
+        assertThat(connectedVertices)
+            .extracting(Vertex::getTypeName) // extract type names of vertices
+            .containsExactly("ConnectedVtx"); // assert all extracted names are "ConnectedVtx"
 
-        int count = 0;
-        for (Vertex v : rootVtx.getVertices(Vertex.DIRECTION.OUT, "EdgType1"))
-          ++count;
-        Assertions.assertEquals(1, count);
+        // Edges with type "EdgType0"
+        Iterable<Edge> outgoingEdges = rootVtx.getEdges(Vertex.DIRECTION.OUT, "EdgType0");
 
+        assertThat(outgoingEdges)
+            .extracting(Edge::getTypeName) // extract edge types
+            .containsExactly("EdgType0"); // assert all extracted types are "EdgType0"
+
+        // Incoming edge counts
+        assertThat(rootVtx.countEdges(Vertex.DIRECTION.IN, "EdgType0")).isEqualTo(0);
+        assertThat(rootVtx.countEdges(Vertex.DIRECTION.IN, "EdgType1")).isEqualTo(0);
+        assertThat(rootVtx.countEdges(Vertex.DIRECTION.OUT, "EdgType0")).isEqualTo(1);
+        assertThat(rootVtx.countEdges(Vertex.DIRECTION.OUT, "EdgType1")).isEqualTo(1);
+
+        // Counting outgoing "EdgType1" edges
+        Iterable<Vertex> vertices = rootVtx.getVertices(Vertex.DIRECTION.OUT, "EdgType1");
+
+        assertThat(vertices).hasSize(1);
       }
     });
   }

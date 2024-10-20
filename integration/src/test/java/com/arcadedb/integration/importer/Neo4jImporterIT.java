@@ -30,7 +30,7 @@ import com.arcadedb.integration.TestHelper;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -39,6 +39,9 @@ import java.text.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class Neo4jImporterIT {
   private final static String DATABASE_PATH = "target/databases/neo4j";
@@ -54,38 +57,38 @@ public class Neo4jImporterIT {
           ("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o -decimalType double").split(" "));
       importer.run();
 
-      Assertions.assertFalse(importer.isError());
+      assertThat(importer.isError()).isFalse();
 
-      Assertions.assertTrue(databaseDirectory.exists());
+      assertThat(databaseDirectory.exists()).isTrue();
 
       try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
         try (final Database database = factory.open()) {
           final DocumentType personType = database.getSchema().getType("User");
-          Assertions.assertNotNull(personType);
-          Assertions.assertEquals(3, database.countType("User", true));
+          assertThat(personType).isNotNull();
+          assertThat(database.countType("User", true)).isEqualTo(3);
 
           final IndexCursor cursor = database.lookupByKey("User", "id", "0");
-          Assertions.assertTrue(cursor.hasNext());
+          assertThat(cursor.hasNext()).isTrue();
           final Vertex v = cursor.next().asVertex();
-          Assertions.assertEquals("Adam", v.get("name"));
-          Assertions.assertEquals("2015-07-04T19:32:24", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").format(v.getLong("born")));
+          assertThat(v.get("name")).isEqualTo("Adam");
+          assertThat(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").format(v.getLong("born"))).isEqualTo("2015-07-04T19:32:24");
 
           final Map<String, Object> place = (Map<String, Object>) v.get("place");
-          Assertions.assertEquals(33.46789, place.get("latitude"));
-          Assertions.assertNull(place.get("height"));
+          assertThat(place.get("latitude")).isEqualTo(33.46789);
+          assertThat(place.get("height")).isNull();
 
-          Assertions.assertEquals(Arrays.asList("Sam", "Anna", "Grace"), v.get("kids"));
+          assertThat(v.get("kids")).isEqualTo(Arrays.asList("Sam", "Anna", "Grace"));
 
           final DocumentType friendType = database.getSchema().getType("KNOWS");
-          Assertions.assertNotNull(friendType);
-          Assertions.assertEquals(1, database.countType("KNOWS", true));
+          assertThat(friendType).isNotNull();
+          assertThat(database.countType("KNOWS", true)).isEqualTo(1);
 
           final Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
-          Assertions.assertTrue(relationships.hasNext());
+          assertThat(relationships.hasNext()).isTrue();
           final Edge e = relationships.next();
 
-          Assertions.assertEquals(1993, e.get("since"));
-          Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
+          assertThat(e.get("since")).isEqualTo(1993);
+          assertThat(e.get("bffSince")).isEqualTo("P5M1DT12H");
         }
       }
       TestHelper.checkActiveDatabases();
@@ -100,10 +103,10 @@ public class Neo4jImporterIT {
     final Neo4jImporter importer = new Neo4jImporter(("-i " + inputFile.getFile() + "2 -d " + DATABASE_PATH + " -o").split(" "));
     try {
       importer.run();
-      Assertions.fail("Expected File Not Found Exception");
+      fail("Expected File Not Found Exception");
     } catch (final IllegalArgumentException e) {
     }
-    Assertions.assertTrue(importer.isError());
+    assertThat(importer.isError()).isTrue();
   }
 
   @Test
@@ -170,38 +173,38 @@ public class Neo4jImporterIT {
 
       t.get().join();
 
-      Assertions.assertFalse(importer.isError());
+      assertThat(importer.isError()).isFalse();
 
-      Assertions.assertTrue(databaseDirectory.exists());
+      assertThat(databaseDirectory.exists()).isTrue();
 
       try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
         try (final Database database = factory.open()) {
           final DocumentType personType = database.getSchema().getType("User");
-          Assertions.assertNotNull(personType);
-          Assertions.assertEquals(TOTAL, database.countType("User", true));
+          assertThat(personType).isNotNull();
+          assertThat(database.countType("User", true)).isEqualTo(TOTAL);
 
           final IndexCursor cursor = database.lookupByKey("User", "id", "0");
-          Assertions.assertTrue(cursor.hasNext());
+          assertThat(cursor.hasNext()).isTrue();
           final Vertex v = cursor.next().asVertex();
-          Assertions.assertEquals("Adam", v.get("name"));
-          Assertions.assertEquals("2015-07-04T19:32:24", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").format(v.getLong("born")));
+          assertThat(v.get("name")).isEqualTo("Adam");
+          assertThat(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").format(v.getLong("born"))).isEqualTo("2015-07-04T19:32:24");
 
           final Map<String, Object> place = (Map<String, Object>) v.get("place");
-          Assertions.assertEquals(33.46789, place.get("latitude"));
-          Assertions.assertNull(place.get("height"));
+          assertThat(place.get("latitude")).isEqualTo(33.46789);
+          assertThat(place.get("height")).isNull();
 
-          Assertions.assertEquals(Arrays.asList("Sam", "Anna", "Grace"), v.get("kids"));
+          assertThat(v.get("kids")).isEqualTo(Arrays.asList("Sam", "Anna", "Grace"));
 
           final DocumentType friendType = database.getSchema().getType("KNOWS");
-          Assertions.assertNotNull(friendType);
-          Assertions.assertEquals(TOTAL / 2, database.countType("KNOWS", true));
+          assertThat(friendType).isNotNull();
+          assertThat(database.countType("KNOWS", true)).isEqualTo(TOTAL / 2);
 
           final Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
-          Assertions.assertTrue(relationships.hasNext());
+          assertThat(relationships.hasNext()).isTrue();
           final Edge e = relationships.next();
 
-          Assertions.assertEquals(1993, e.get("since"));
-          Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
+          assertThat(e.get("since")).isEqualTo(1993);
+          assertThat(e.get("bffSince")).isEqualTo("P5M1DT12H");
         }
       }
       TestHelper.checkActiveDatabases();
@@ -223,24 +226,24 @@ public class Neo4jImporterIT {
       final Neo4jImporter importer = new Neo4jImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH).split(" "));
       importer.run();
 
-      Assertions.assertFalse(importer.isError());
+      assertThat(importer.isError()).isFalse();
 
-      Assertions.assertTrue(databaseDirectory.exists());
+      assertThat(databaseDirectory.exists()).isTrue();
 
       try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
         try (final Database database = factory.open()) {
           final DocumentType placeType = database.getSchema().getType("Place");
-          Assertions.assertNotNull(placeType);
-          Assertions.assertEquals(1, database.countType("Place", true));
+          assertThat(placeType).isNotNull();
+          assertThat(database.countType("Place", true)).isEqualTo(1);
 
           final DocumentType cityType = database.getSchema().getType("City");
-          Assertions.assertNotNull(cityType);
-          Assertions.assertEquals(1, database.countType("City", true));
+          assertThat(cityType).isNotNull();
+          assertThat(database.countType("City", true)).isEqualTo(1);
 
           IndexCursor cursor = database.lookupByKey("City_Place", "id", "0");
-          Assertions.assertTrue(cursor.hasNext());
+          assertThat(cursor.hasNext()).isTrue();
           Vertex v = cursor.next().asVertex();
-          Assertions.assertEquals("Test", v.get("name"));
+          assertThat(v.get("name")).isEqualTo("Test");
         }
       }
       TestHelper.checkActiveDatabases();

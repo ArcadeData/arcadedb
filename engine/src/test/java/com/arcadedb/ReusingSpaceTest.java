@@ -21,8 +21,9 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.graph.MutableVertex;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ReusingSpaceTest extends TestHelper {
   @Test
@@ -35,7 +36,7 @@ public class ReusingSpaceTest extends TestHelper {
         db.getSchema().dropType("CreateAndDelete");
         db.getSchema().getOrCreateVertexType("CreateAndDelete", 1);
       }
-      Assertions.assertEquals(0, db.countType("CreateAndDelete", true));
+      assertThat(db.countType("CreateAndDelete", true)).isEqualTo(0);
 
       for (int i = 0; i < 3000; i++) {
         final MutableVertex[] v = new MutableVertex[1];
@@ -53,7 +54,7 @@ public class ReusingSpaceTest extends TestHelper {
         });
       }
 
-      Assertions.assertEquals(0, db.countType("CreateAndDelete", true));
+      assertThat(db.countType("CreateAndDelete", true)).isEqualTo(0);
 
     } finally {
       new DatabaseChecker(database).setVerboseLevel(0).check();

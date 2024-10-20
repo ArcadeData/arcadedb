@@ -29,12 +29,15 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.time.format.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -90,7 +93,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
     final List<Document> resultSet = database.select().fromType(className).where().property("name").eq().value("name1").documents()
         .toList();
 
-    Assertions.assertEquals(1, resultSet.size());
+    assertThat(resultSet.size()).isEqualTo(1);
     final Document record = resultSet.get(0);
 
     final String bucketName = database.getSchema().getBucketById(record.getIdentity().getBucketId()).getName();
@@ -98,86 +101,86 @@ public class UpsertStatementExecutionTest extends TestHelper {
     // BY BUCKET NAME
     ResultSet result = database.command("sql",
         "update bucket:" + bucketName + " set foo = 'bar' upsert where name = 'name1'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item).isNotNull();
+    assertThat(item.<Long>getProperty("count")).isEqualTo( 1L);
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     // BY BUCKET ID
     result = database.command("sql",
         "update bucket:" + record.getIdentity().getBucketId() + " set foo = 'bar' upsert where name = 'name1'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item).isNotNull();
+    assertThat(item.<Long>getProperty("count")).isEqualTo( 1L);
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     result = database.query("sql", "SElect from bucket:" + buckets.get(0).getName());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
 
     while (result.hasNext()) {
       item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final String name = item.getProperty("name");
-      Assertions.assertNotNull(name);
+      assertThat(name).isNotNull();
       if ("name1".equals(name)) {
-        Assertions.assertEquals("bar", item.getProperty("foo"));
+        assertThat(item.<String>getProperty("foo")).isEqualTo("bar");
       } else {
-        Assertions.assertNull(item.getProperty("foo"));
+        assertThat(item.<String>getProperty("foo")).isNull();
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     result = database.command("sql", "update bucket:" + bucketName + " remove foo upsert where name = 'name1'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item).isNotNull();
+    assertThat(item.<Long>getProperty("count")).isEqualTo((Object) 1L);
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     result = database.query("sql", "SElect from bucket:" + bucketName);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
 
     while (result.hasNext()) {
       item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final String name = item.getProperty("name");
-      Assertions.assertNotNull(name);
-      Assertions.assertNull(item.getProperty("foo"));
+      assertThat(name).isNotNull();
+      assertThat(item.<String>getProperty("foo")).isNull();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
   @Test
   public void testUpsert1() {
     ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert where name = 'name1'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item).isNotNull();
+    assertThat(item.<Long>getProperty("count")).isEqualTo((Object) 1L);
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     result = database.query("sql", "SElect from " + className);
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final String name = item.getProperty("name");
-      Assertions.assertNotNull(name);
+      assertThat(name).isNotNull();
       if ("name1".equals(name)) {
-        Assertions.assertEquals("bar", item.getProperty("foo"));
+        assertThat(item.<String>getProperty("foo")).isEqualTo("bar");
       } else {
-        Assertions.assertNull(item.getProperty("foo"));
+        assertThat(item.<String>getProperty("foo")).isNull();
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -192,12 +195,12 @@ public class UpsertStatementExecutionTest extends TestHelper {
     final ResultSet result = database.command("sql",
         "update extra_node set extraitem = 'Hugo2' upsert return after $current where extraitem = 'Hugo'");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
+    assertThat(item).isNotNull();
     final Vertex current = item.getProperty("$current");
-    Assertions.assertEquals("Hugo2", current.getString("extraitem"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(current.getString("extraitem")).isEqualTo("Hugo2");
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -206,11 +209,11 @@ public class UpsertStatementExecutionTest extends TestHelper {
     final ResultSet result = database.command("sql",
         "update " + className + " set foo = 'bar' upsert  return after  where name = 'name1' ");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals("bar", item.getProperty("foo"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("foo")).isEqualTo("bar");
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -218,27 +221,27 @@ public class UpsertStatementExecutionTest extends TestHelper {
   public void testUpsert2() {
 
     ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert where name = 'name11'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item).isNotNull();
+    assertThat(item.<Long>getProperty("count")).isEqualTo((Object) 1L);
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     result = database.query("sql", "SElect from " + className);
     for (int i = 0; i < 11; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final String name = item.getProperty("name");
-      Assertions.assertNotNull(name);
+      assertThat(name).isNotNull();
       if ("name11".equals(name)) {
-        Assertions.assertEquals("bar", item.getProperty("foo"));
+        assertThat(item.<String>getProperty("foo")).isEqualTo("bar");
       } else {
-        Assertions.assertNull(item.getProperty("foo"));
+        assertThat(item.<String>getProperty("foo")).isNull();
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -270,27 +273,27 @@ public class UpsertStatementExecutionTest extends TestHelper {
     }
 
     ResultSet result = database.command("sql", "update UpsertableVertex set foo = 'bar' upsert where name = 'name1'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertNotNull(item);
-    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item).isNotNull();
+    assertThat(item.<Long>getProperty("count")).isEqualTo(1L);
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     result = database.query("sql", "SElect from UpsertableVertex");
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       item = result.next();
-      Assertions.assertNotNull(item);
+      assertThat(item).isNotNull();
       final String name = item.getProperty("name");
-      Assertions.assertNotNull(name);
+      assertThat(name).isNotNull();
       if ("name1".equals(name)) {
-        Assertions.assertEquals("bar", item.getProperty("foo"));
+        assertThat(item.<String>getProperty("foo")).isEqualTo("bar");
       } else {
-        Assertions.assertNull(item.getProperty("foo"));
+        assertThat(item.<String>getProperty("foo")).isNull();
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -325,8 +328,8 @@ public class UpsertStatementExecutionTest extends TestHelper {
         ResultSet resultSet = database.query("sql", "SELECT from Product");
         while (resultSet.hasNext()) {
           result = resultSet.next();
-          Assertions.assertNotNull(result.getProperty("start"));
-          Assertions.assertNotNull(result.getProperty("stop"));
+          assertThat(result.<LocalDateTime>getProperty("start")).isNotNull();
+          assertThat(result.<LocalDateTime>getProperty("stop")).isNotNull();
         }
       });
     }
@@ -376,12 +379,12 @@ public class UpsertStatementExecutionTest extends TestHelper {
       try (ResultSet resultSet = database.query("sql",
           "SELECT start, stop FROM Product WHERE start <= ? AND stop >= ? ORDER BY start DESC, stop DESC LIMIT 1", start, stop)) {
 
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
 
         while (resultSet.hasNext()) {
           result = resultSet.next();
-          Assertions.assertNotNull(result.getProperty("start"));
-          Assertions.assertNotNull(result.getProperty("stop"));
+          assertThat(result.<LocalDateTime>getProperty("start")).isNotNull();
+          assertThat(result.<LocalDateTime>getProperty("stop")).isNotNull();
         }
       }
     });

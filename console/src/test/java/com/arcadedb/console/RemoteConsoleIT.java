@@ -25,11 +25,13 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.IOException;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class RemoteConsoleIT extends BaseGraphServerTest {
   private static final String URL               = "remote:localhost:2480/console root " + DEFAULT_PASSWORD_FOR_TESTS;
@@ -47,24 +49,24 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   public void testCreateDatabase() throws IOException {
-    Assertions.assertTrue(console.parse("create database " + URL_NEW_DB));
+    assertThat(console.parse("create database " + URL_NEW_DB)).isTrue();
   }
 
   @Test
   public void testConnect() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
+    assertThat(console.parse("connect " + URL)).isTrue();
   }
 
   @Test
   public void testConnectShortURL() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL_SHORT));
+    assertThat(console.parse("connect " + URL_SHORT)).isTrue();
   }
 
   @Test
   public void testConnectNoCredentials() throws IOException {
     try {
-      Assertions.assertTrue(console.parse("connect " + URL_NOCREDENTIALS + ";create document type VVVV"));
-      Assertions.fail("Security was bypassed!");
+      assertThat(console.parse("connect " + URL_NOCREDENTIALS + ";create document type VVVV")).isTrue();
+      fail("Security was bypassed!");
     } catch (final ConsoleException e) {
       // EXPECTED
     }
@@ -73,8 +75,8 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   @Test
   public void testConnectWrongPassword() throws IOException {
     try {
-      Assertions.assertTrue(console.parse("connect " + URL_WRONGPASSWD + ";create document type VVVV"));
-      Assertions.fail("Security was bypassed!");
+      assertThat(console.parse("connect " + URL_WRONGPASSWD + ";create document type VVVV")).isTrue();
+      fail("Security was bypassed!");
     } catch (final SecurityException e) {
       // EXPECTED
     }
@@ -82,95 +84,95 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   public void testCreateType() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("create document type Person2"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("create document type Person2")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
-    Assertions.assertTrue(console.parse("info types"));
-    Assertions.assertTrue(buffer.toString().contains("Person2"));
-    Assertions.assertTrue(console.parse("drop type Person2"));
+    assertThat(console.parse("info types")).isTrue();
+    assertThat(buffer.toString().contains("Person2")).isTrue();
+    assertThat(console.parse("drop type Person2")).isTrue();
   }
 
   @Test
   public void testInsertAndSelectRecord() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("create document type Person2"));
-    Assertions.assertTrue(console.parse("insert into Person2 set name = 'Jay', lastname='Miner'"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("create document type Person2")).isTrue();
+    assertThat(console.parse("insert into Person2 set name = 'Jay', lastname='Miner'")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
-    Assertions.assertTrue(console.parse("select from Person2"));
-    Assertions.assertTrue(buffer.toString().contains("Jay"));
-    Assertions.assertTrue(console.parse("drop type Person2"));
+    assertThat(console.parse("select from Person2")).isTrue();
+    assertThat(buffer.toString().contains("Jay")).isTrue();
+    assertThat(console.parse("drop type Person2")).isTrue();
   }
 
   @Test
   public void testListDatabases() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("list databases;"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("list databases;")).isTrue();
   }
 
   @Test
   public void testInsertAndRollback() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("begin"));
-    Assertions.assertTrue(console.parse("create document type Person"));
-    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'"));
-    Assertions.assertTrue(console.parse("rollback"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("begin")).isTrue();
+    assertThat(console.parse("create document type Person")).isTrue();
+    assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
+    assertThat(console.parse("rollback")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
-    Assertions.assertTrue(console.parse("select from Person"));
-    Assertions.assertFalse(buffer.toString().contains("Jay"));
+    assertThat(console.parse("select from Person")).isTrue();
+    assertThat(buffer.toString().contains("Jay")).isFalse();
   }
 
   @Test
   public void testInsertAndCommit() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("begin"));
-    Assertions.assertTrue(console.parse("create document type Person"));
-    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'"));
-    Assertions.assertTrue(console.parse("commit"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("begin")).isTrue();
+    assertThat(console.parse("create document type Person")).isTrue();
+    assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
+    assertThat(console.parse("commit")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
-    Assertions.assertTrue(console.parse("select from Person"));
-    Assertions.assertTrue(buffer.toString().contains("Jay"));
+    assertThat(console.parse("select from Person")).isTrue();
+    assertThat(buffer.toString().contains("Jay")).isTrue();
   }
 
   @Test
   public void testTransactionExpired() throws IOException, InterruptedException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("begin"));
-    Assertions.assertTrue(console.parse("create document type Person"));
-    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("begin")).isTrue();
+    assertThat(console.parse("create document type Person")).isTrue();
+    assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
     Thread.sleep(5000);
     try {
-      Assertions.assertTrue(console.parse("commit"));
-      Assertions.fail();
+      assertThat(console.parse("commit")).isTrue();
+      fail("");
     } catch (final Exception e) {
       // EXPECTED
     }
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
-    Assertions.assertTrue(console.parse("select from Person"));
-    Assertions.assertFalse(buffer.toString().contains("Jay"));
+    assertThat(console.parse("select from Person")).isTrue();
+    assertThat(buffer.toString().contains("Jay")).isFalse();
   }
 
   @Test
   public void testUserMgmt() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
+    assertThat(console.parse("connect " + URL)).isTrue();
     try {
-      Assertions.assertTrue(console.parse("drop user elon"));
+      assertThat(console.parse("drop user elon")).isTrue();
     } catch (final Exception e) {
       // EXPECTED IF ALREADY EXISTENT
     }
 
     try {
-      Assertions.assertTrue(console.parse("create user jay identified by m"));
-      Assertions.fail();
+      assertThat(console.parse("create user jay identified by m")).isTrue();
+      fail("");
     } catch (final RuntimeException e) {
       // PASSWORD MUST BE AT LEAST 5 CHARS
     }
@@ -180,34 +182,34 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
       for (int i = 0; i < 257; i++)
         longPassword += "P";
 
-      Assertions.assertTrue(console.parse("create user jay identified by " + longPassword));
-      Assertions.fail();
+      assertThat(console.parse("create user jay identified by " + longPassword)).isTrue();
+      fail("");
     } catch (final RuntimeException e) {
       // PASSWORD MUST BE MAX 256 CHARS LONG
     }
 
-    Assertions.assertTrue(console.parse("create user elon identified by musk"));
-    Assertions.assertTrue(console.parse("drop user elon"));
+    assertThat(console.parse("create user elon identified by musk")).isTrue();
+    assertThat(console.parse("drop user elon")).isTrue();
 
     // TEST SYNTAX ERROR
     try {
-      Assertions.assertTrue(console.parse("create user elon identified by musk grand connect on db1"));
-      Assertions.fail();
+      assertThat(console.parse("create user elon identified by musk grand connect on db1")).isTrue();
+      fail("");
     } catch (final Exception e) {
       // EXPECTED
     }
 
-    Assertions.assertTrue(console.parse("create user elon identified by musk grant connect to db1"));
-    Assertions.assertTrue(console.parse("create user jeff identified by amazon grant connect to db1:readonly"));
-    Assertions.assertTrue(console.parse("drop user elon"));
+    assertThat(console.parse("create user elon identified by musk grant connect to db1")).isTrue();
+    assertThat(console.parse("create user jeff identified by amazon grant connect to db1:readonly")).isTrue();
+    assertThat(console.parse("drop user elon")).isTrue();
   }
 
   @Test
   public void testHelp() throws IOException {
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
-    Assertions.assertTrue(console.parse("?"));
-    Assertions.assertTrue(buffer.toString().contains("quit"));
+    assertThat(console.parse("?")).isTrue();
+    assertThat(buffer.toString().contains("quit")).isTrue();
   }
 
   /**
@@ -215,84 +217,82 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
    */
   @Test
   public void testProjectionOrder() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("create document type Order"));
-    Assertions.assertTrue(console.parse(
-        "insert into Order set processor = 'SIR1LRM-7.1', vstart = '20220319_002624.404379', vstop = '20220319_002826.525650', status = 'PENDING'"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("create document type Order")).isTrue();
+    assertThat(console.parse(
+      "insert into Order set processor = 'SIR1LRM-7.1', vstart = '20220319_002624.404379', vstop = '20220319_002826.525650', status = 'PENDING'")).isTrue();
 
     {
       final StringBuilder buffer = new StringBuilder();
       console.setOutput(output -> buffer.append(output));
-      Assertions.assertTrue(console.parse("select processor, vstart, vstop, pstart, pstop, status, node from Order"));
+      assertThat(console.parse("select processor, vstart, vstop, pstart, pstop, status, node from Order")).isTrue();
 
       int pos = buffer.toString().indexOf("processor");
-      Assertions.assertTrue(pos > -1);
+      assertThat(pos > -1).isTrue();
       pos = buffer.toString().indexOf("vstart", pos);
-      Assertions.assertTrue(pos > -1);
+      assertThat(pos > -1).isTrue();
       pos = buffer.toString().indexOf("vstop", pos);
-      Assertions.assertTrue(pos > -1);
+      assertThat(pos > -1).isTrue();
       pos = buffer.toString().indexOf("pstart", pos);
-      Assertions.assertTrue(pos > -1);
+      assertThat(pos > -1).isTrue();
       pos = buffer.toString().indexOf("pstop", pos);
-      Assertions.assertTrue(pos > -1);
+      assertThat(pos > -1).isTrue();
       pos = buffer.toString().indexOf("status", pos);
-      Assertions.assertTrue(pos > -1);
+      assertThat(pos > -1).isTrue();
       pos = buffer.toString().indexOf("node", pos);
-      Assertions.assertTrue(pos > -1);
+      assertThat(pos > -1).isTrue();
     }
   }
 
   @Test
   public void testCustomPropertyInSchema() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
-    Assertions.assertTrue(console.parse("ALTER TYPE doc CUSTOM testType = 444;"));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING;"));
-    Assertions.assertTrue(console.parse("ALTER PROPERTY doc.prop CUSTOM test = true;"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("CREATE DOCUMENT TYPE doc;")).isTrue();
+    assertThat(console.parse("ALTER TYPE doc CUSTOM testType = 444;")).isTrue();
+    assertThat(console.parse("CREATE PROPERTY doc.prop STRING;")).isTrue();
+    assertThat(console.parse("ALTER PROPERTY doc.prop CUSTOM test = true;")).isTrue();
 
-    Assertions.assertEquals(444, console.getDatabase().getSchema().getType("doc").getCustomValue("testType"));
-    Assertions.assertEquals(true, console.getDatabase().getSchema().getType("doc").getProperty("prop").getCustomValue("test"));
+    assertThat(console.getDatabase().getSchema().getType("doc").getCustomValue("testType")).isEqualTo(444);
+    assertThat(console.getDatabase().getSchema().getType("doc").getProperty("prop").getCustomValue("test")).isEqualTo(true);
 
     console.getDatabase().getSchema().getType("doc").setCustomValue("testType", "555");
-    Assertions.assertEquals("555", console.getDatabase().getSchema().getType("doc").getCustomValue("testType"));
+    assertThat(console.getDatabase().getSchema().getType("doc").getCustomValue("testType")).isEqualTo("555");
 
-    Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
-        console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
-            .getProperty("type"));
+    assertThat(console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
+      .<String>getProperty("type")).isEqualTo(Type.BOOLEAN.name().toUpperCase());
 
-    Assertions.assertEquals(Type.BOOLEAN.name().toUpperCase(),
-        console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
-            .getProperty("type"));
+    assertThat(console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
+      .<String>getProperty("type")).isEqualTo(Type.BOOLEAN.name().toUpperCase());
   }
 
   @Test
   public void testIfWithSchemaResult() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + URL));
-    Assertions.assertTrue(console.parse("CREATE DOCUMENT TYPE doc;"));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY doc.prop STRING;"));
+    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("CREATE DOCUMENT TYPE doc;")).isTrue();
+    assertThat(console.parse("CREATE PROPERTY doc.prop STRING;")).isTrue();
 
-    Assertions.assertTrue(console.parse("INSERT INTO doc set name = 'doc'"));
+    assertThat(console.parse("INSERT INTO doc set name = 'doc'")).isTrue();
 
     ResultSet resultSet = console.getDatabase().command("sql",
         "SELECT name, (name = 'doc') as name2, if( (name = 'doc'), true, false) as name3, if( (name IN ['doc','XXX']), true, false) as name4, ifnull( (name = 'doc'), null) as name5 FROM schema:types");
 
-    Assertions.assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
 
     Result result = resultSet.next();
 
-    Assertions.assertEquals("doc", result.getProperty("name"));
-    Assertions.assertTrue((boolean) result.getProperty("name2"));
-    Assertions.assertTrue((boolean) result.getProperty("name3"));
-    Assertions.assertTrue((boolean) result.getProperty("name4"));
-    Assertions.assertTrue((boolean) result.getProperty("name5"));
+    assertThat(result.<String>getProperty("name")).isEqualTo("doc");
+    assertThat( result.<Boolean>getProperty("name2")).isTrue();
+    assertThat( result.<Boolean>getProperty("name3")).isTrue();
+    assertThat( result.<Boolean>getProperty("name4")).isTrue();
+    assertThat( result.<Boolean>getProperty("name5")).isTrue();
 
     resultSet = console.getDatabase().command("sql", "SELECT name FROM schema:types WHERE 'a_b' = 'a b'.replace(' ','_')");
 
-    Assertions.assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
 
     result = resultSet.next();
 
-    Assertions.assertEquals("doc", result.getProperty("name"));
+    assertThat(result.<String>getProperty("name")).isEqualTo("doc");
   }
 
   @Override
@@ -315,7 +315,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
       console = new Console();
       console.parse("close");
     } catch (final IOException e) {
-      Assertions.fail(e);
+      fail("", e);
     }
   }
 
