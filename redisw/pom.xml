@@ -33,7 +33,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <jedis.version>3.7.1</jedis.version>
+        <jedis.version>5.2.0</jedis.version>
     </properties>
 
     <dependencies>
