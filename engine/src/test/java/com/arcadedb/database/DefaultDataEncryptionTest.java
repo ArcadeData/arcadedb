@@ -18,7 +18,7 @@
  */
 package com.arcadedb.database;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.nio.ByteBuffer;
 import java.security.NoSuchAlgorithmException;
@@ -50,7 +50,7 @@ class DefaultDataEncryptionTest {
     String data = "data";
     byte[] encryptedData = dde.encrypt(data.getBytes());
     String decryptedData = new String(dde.decrypt(encryptedData));
-    assertEquals(data, decryptedData);
+    assertThat(decryptedData).isEqualTo(data);
   }
 
   @Test
@@ -59,6 +59,6 @@ class DefaultDataEncryptionTest {
     double data = 1000000d;
     byte[] encryptedData = dde.encrypt(ByteBuffer.allocate(8).putLong(Double.doubleToLongBits(data)).array());
     var decryptedData = Double.longBitsToDouble(ByteBuffer.wrap(dde.decrypt(encryptedData)).getLong());
-    assertEquals(data, decryptedData);
+    assertThat(decryptedData).isEqualTo(data);
   }
 }

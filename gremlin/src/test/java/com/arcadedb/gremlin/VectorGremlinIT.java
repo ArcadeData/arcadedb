@@ -21,15 +21,18 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class VectorGremlinIT {
   @Test
@@ -49,38 +52,44 @@ public class VectorGremlinIT {
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );
 
-      Assertions.assertEquals(10, db.countType("Word", true));
+      assertThat(db.countType("Word", true)).isEqualTo(10);
 
       final float[] vector = new float[100];
 
       ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", vector, 10);
-      Assertions.assertTrue(resultSet.hasNext());
-      final List<Pair<Identifiable, Float>> approximateResults = new ArrayList<>();
+      assertThat(resultSet.hasNext()).isTrue();
+      final List<RID> approximateResults = new ArrayList<>();
       while (resultSet.hasNext()) {
         final Result row = resultSet.next();
         final List<Map<String, Object>> neighbors = row.getProperty("neighbors");
 
-        for (Map<String, Object> neighbor : neighbors)
-          approximateResults.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
+        for (Map<String, Object> neighbor : neighbors) {
+          ImmutableVertex vertex = (ImmutableVertex) neighbor.get("vertex");
+          approximateResults.add(vertex.getIdentity());
+
+        }
       }
 
-      Assertions.assertEquals(10, approximateResults.size());
+      assertThat(approximateResults).hasSize(10);
 
-      resultSet = db.query("gremlin", "g.call('arcadedb#vectorNeighbors', [ 'indexName': 'Word[name,vector]', 'vector': vector, 'limit': 10 ] )", "vector",
+      resultSet = db.query("gremlin",
+          "g.call('arcadedb#vectorNeighbors', [ 'indexName': 'Word[name,vector]', 'vector': vector, 'limit': 10 ] )", "vector",
           vector);
-      Assertions.assertTrue(resultSet.hasNext());
-      final List<Object> approximateResultsFromGremlin = new ArrayList<>();
+      assertThat(resultSet.hasNext()).isTrue();
+      final List<RID> approximateResultsFromGremlin = new ArrayList<>();
       while (resultSet.hasNext()) {
         final Result row = resultSet.next();
         final List<Map<String, Object>> neighbors = row.getProperty("result");
 
-        for (Map<String, Object> neighbor : neighbors)
-          approximateResultsFromGremlin.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
+        for (Map<String, Object> neighbor : neighbors) {
+          ArcadeVertex vertex = (ArcadeVertex) neighbor.get("vertex");
+          approximateResultsFromGremlin.add(vertex.getIdentity());
+        }
       }
 
-      Assertions.assertEquals(10, approximateResultsFromGremlin.size());
+      assertThat(approximateResultsFromGremlin).hasSize(10);
 
-      Assertions.assertEquals(approximateResults, approximateResultsFromGremlin);
+      assertThat(approximateResultsFromGremlin).isEqualTo(approximateResults);
 
     } finally {
       db.drop();

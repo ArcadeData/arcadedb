@@ -27,11 +27,15 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import org.assertj.core.api.Assertions;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 public class CRUDTest extends TestHelper {
   private static final int TOT = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 2;
@@ -59,11 +63,11 @@ public class CRUDTest extends TestHelper {
 
       db.begin();
 
-      Assertions.assertEquals(TOT, db.countType("V", true));
+      assertThat(db.countType("V", true)).isEqualTo(TOT);
 
       db.scanType("V", true, record -> {
-        Assertions.assertEquals(true, record.get("update"));
-        Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField"));
+        assertThat(record.get("update")).isEqualTo(true);
+        assertThat(record.get("largeField")).isEqualTo("This is a large field to force the page overlap at some point");
         return true;
       });
 
@@ -83,16 +87,15 @@ public class CRUDTest extends TestHelper {
         final String largeField = "largeField" + i;
         updateAll(largeField);
 
-        Assertions.assertEquals(TOT, db.countType("V", true));
+        assertThat(db.countType("V", true)).isEqualTo(TOT);
 
-        Assertions.assertEquals(TOT,
-            ((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
-                .getProperty("count")).intValue(), "Count not expected for field '" + largeField + "'");
+        assertThat(((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
+          .getProperty("count")).intValue()).as("Count not expected for field '" + largeField + "'").isEqualTo(TOT);
 
         db.commit();
         db.begin();
 
-        Assertions.assertEquals(TOT, db.countType("V", true));
+        assertThat(db.countType("V", true)).isEqualTo(TOT);
 
         LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates", i);
       }
@@ -111,24 +114,23 @@ public class CRUDTest extends TestHelper {
         final String largeField = "largeField" + i;
         updateAll(largeField);
 
-        Assertions.assertEquals(TOT, db.countType("V", true));
-        Assertions.assertEquals(TOT,
-            ((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
-                .getProperty("count")).intValue(), "Count not expected for field '" + largeField + "'");
+        assertThat(db.countType("V", true)).isEqualTo(TOT);
+        assertThat(((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
+          .getProperty("count")).intValue()).as("Count not expected for field '" + largeField + "'").isEqualTo(TOT);
 
         db.commit();
         db.begin();
 
-        Assertions.assertEquals(TOT, db.countType("V", true));
+        assertThat(db.countType("V", true)).isEqualTo(TOT);
 
         LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates", i);
       }
 
       db.scanType("V", true, record -> {
-        Assertions.assertEquals(true, record.get("update"));
+        assertThat(record.get("update")).isEqualTo(true);
 
         for (int i = 0; i < 10; ++i)
-          Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + i));
+          assertThat(record.get("largeField" + i)).isEqualTo("This is a large field to force the page overlap at some point");
 
         return true;
       });
@@ -184,39 +186,37 @@ public class CRUDTest extends TestHelper {
 
         db.begin();
 
-        Assertions.assertEquals(TOT, db.countType("V", true));
+        assertThat(db.countType("V", true)).isEqualTo(TOT);
 
         updateAll("largeField" + i);
 
-        Assertions.assertEquals(TOT, db.countType("V", true));
+        assertThat(db.countType("V", true)).isEqualTo(TOT);
 
         db.commit();
         db.begin();
 
-        Assertions.assertEquals(TOT, db.countType("V", true));
+        assertThat(db.countType("V", true)).isEqualTo(TOT);
 
         db.scanType("V", true, record -> {
-          Assertions.assertEquals(true, record.get("update"));
+          assertThat(record.get("update")).isEqualTo(true);
 
-          Assertions.assertEquals("This is a large field to force the page overlap at some point",
-              record.get("largeField" + counter), "Unexpected content in record " + record.getIdentity());
-
+          assertThat(record.get("largeField" + counter)).isEqualTo("This is a large field to force the page overlap at some point");
           return true;
         });
 
         deleteAll();
 
-        Assertions.assertEquals(0, db.countType("V", true));
+        assertThat(db.countType("V", true)).isEqualTo(0);
 
         db.commit();
 
-        database.transaction(() -> Assertions.assertEquals(0, db.countType("V", true)));
+        database.transaction(() -> assertThat(db.countType("V", true)).isEqualTo(0));
 
         LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates+delete", i);
 
         createAll();
 
-        database.transaction(() -> Assertions.assertEquals(TOT, db.countType("V", true)));
+        database.transaction(() -> assertThat(db.countType("V", true)).isEqualTo(TOT));
       }
 
     } finally {

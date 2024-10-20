@@ -24,13 +24,20 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.utility.FileUtils;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.File;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class MultipleDatabasesTest extends TestHelper {
   @Test
@@ -51,7 +58,7 @@ public class MultipleDatabasesTest extends TestHelper {
       final MutableVertex v = database.newVertex("V1").set("db", 1).save();
       try {
         v.newEmbeddedDocument("V1", "embedded").set("db", 1).set("embedded", true).save();
-        Assertions.fail();
+        fail();
       } catch (final IllegalArgumentException e) {
         // EXPECTED
       }
@@ -83,17 +90,17 @@ public class MultipleDatabasesTest extends TestHelper {
     });
 
     // CHECK PRESENCE OF RECORDS IN EACH DATABASE
-    Assertions.assertEquals(1, database.iterateType("V1", true).next().asVertex().get("db"));
-    Assertions.assertEquals(1, database.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db"));
-    Assertions.assertEquals(2, database2.iterateType("V1", true).next().asVertex().get("db"));
-    Assertions.assertEquals(2, database2.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db"));
-    Assertions.assertEquals(3, database3.iterateType("V1", true).next().asVertex().get("db"));
-    Assertions.assertEquals(3, database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db"));
+    assertThat(database.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(1);
+    assertThat(database.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(1);
+    assertThat(database2.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(2);
+    assertThat(database2.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(2);
+    assertThat(database3.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(3);
+    assertThat(database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(3);
 
     // CHECK COPIED RECORDS TOO
-    Assertions.assertEquals(1, database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded1").get("db"));
-    Assertions.assertEquals(2, ((List<EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("list2")).get(0).get("db"));
-    Assertions.assertEquals(2, ((Map<String, EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("map2")).get("copied2").get("db"));
+    assertThat(database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded1").get("db")).isEqualTo(1);
+    assertThat(((List<EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("list2")).get(0).get("db")).isEqualTo(2);
+    assertThat(((Map<String, EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("map2")).get("copied2").get("db")).isEqualTo(2);
 
     database.close();
     database2.close();
@@ -106,7 +113,7 @@ public class MultipleDatabasesTest extends TestHelper {
   public void testErrorMultipleDatabaseInstancesSamePath() {
     try {
       new DatabaseFactory(getDatabasePath()).open();
-      Assertions.fail();
+      fail("");
     } catch (final DatabaseOperationException e) {
       // EXPECTED
     }

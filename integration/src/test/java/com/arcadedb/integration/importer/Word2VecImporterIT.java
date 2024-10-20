@@ -22,10 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class Word2VecImporterIT {
   @Test
@@ -44,7 +45,7 @@ public class Word2VecImporterIT {
           + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );
-      Assertions.assertEquals(10, db.countType("Word", true));
+      assertThat(db.countType("Word", true)).isEqualTo(10);
     } finally {
       db.drop();
       TestHelper.checkActiveDatabases();

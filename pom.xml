@@ -69,6 +69,7 @@
 
         <assertj-core.version>3.26.3</assertj-core.version>
         <junit.jupiter.version>5.11.2</junit.jupiter.version>
+        <awaitility.version>4.2.2</awaitility.version>
 
         <skipIntegration>true</skipIntegration>
 
@@ -353,6 +354,12 @@
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
             <version>${mockito-core.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <version>${awaitility.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -33,11 +33,12 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
 
 import java.io.*;
 import java.util.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Inserts a graph. Configurations:
@@ -261,10 +262,10 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       int j = 0;
       for (; j < expectedTotalEdges; j++) {
         final IndexCursor edgeCursor = index.get(new Object[] { j });
-        Assertions.assertTrue(edgeCursor.hasNext());
+        assertThat(edgeCursor.hasNext()).isTrue();
         final Edge e = edgeCursor.next().asEdge(true);
-        Assertions.assertNotNull(e);
-        Assertions.assertEquals(j, e.get("id"));
+        assertThat(e).isNotNull();
+        assertThat(e.get("id")).isEqualTo(j);
 
         if (j % 1_000_000 == 0) {
           final long elapsed = System.currentTimeMillis() - begin;
@@ -294,13 +295,13 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       for (; i < VERTICES; ++i) {
         for (final Edge e : cachedVertices[i].getEdges(Vertex.DIRECTION.OUT, EDGE_TYPE_NAME)) {
           if (EDGE_IDS)
-            Assertions.assertNotNull(e.get("id"));
+            assertThat(e.get("id")).isNotNull();
           ++outEdges;
         }
 
         for (final Edge e : cachedVertices[i].getEdges(Vertex.DIRECTION.IN, EDGE_TYPE_NAME)) {
           if (EDGE_IDS)
-            Assertions.assertNotNull(e.get("id"));
+            assertThat(e.get("id")).isNotNull();
           ++inEdges;
         }
 
@@ -322,8 +323,8 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
 
       final int expectedTotalEdges = VERTICES * EDGES_PER_VERTEX;
 
-      Assertions.assertEquals(expectedTotalEdges, inEdges);
-      Assertions.assertEquals(expectedTotalEdges, outEdges);
+      assertThat(inEdges).isEqualTo(expectedTotalEdges);
+      assertThat(outEdges).isEqualTo(expectedTotalEdges);
 
     } finally {
       database.commit();

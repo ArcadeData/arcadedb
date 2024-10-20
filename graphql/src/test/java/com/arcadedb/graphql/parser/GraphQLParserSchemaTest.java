@@ -18,8 +18,10 @@
  */
 package com.arcadedb.graphql.parser;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class GraphQLParserSchemaTest {
   @Test
@@ -40,7 +42,7 @@ public class GraphQLParserSchemaTest {
         "  lastName: String\n" +//
         "}");
 
-    Assertions.assertTrue(ast.children.length > 0);
+    assertThat(ast.children.length > 0).isTrue();
   }
 
   @Test
@@ -62,7 +64,7 @@ public class GraphQLParserSchemaTest {
           "  lastName: String\n" +//
           "  wrote: [Book] @relationship(type: \"IS_AUTHOR_OF\", direction: OUT)\n" +//
           "} dsfjsd fjsdkjf sdk");
-      Assertions.fail(ast.treeToString(""));
+      fail(ast.treeToString(""));
     } catch (final ParseException e) {
       // EXPECTED
     }
@@ -87,7 +89,7 @@ public class GraphQLParserSchemaTest {
           "  lastName: String\n" +//
           "  wrote: [Book] @relationship(type: \"IS_AUTHOR_OF\", direction: OUT)\n" +//
           "} dsfjsd fjsdkjf sdk");
-      Assertions.fail(ast.treeToString(""));
+      fail(ast.treeToString(""));
     } catch (final ParseException e) {
       // EXPECTED
     }

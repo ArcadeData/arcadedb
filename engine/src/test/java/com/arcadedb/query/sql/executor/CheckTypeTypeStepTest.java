@@ -21,8 +21,12 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.fail;
 
 public class CheckTypeTypeStepTest {
 
@@ -36,7 +40,7 @@ public class CheckTypeTypeStepTest {
       final CheckTypeTypeStep step = new CheckTypeTypeStep(childClass.getName(), parentClass.getName(), context);
 
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(0, result.stream().count());
+      assertThat(result.stream().count()).isEqualTo(0);
     });
   }
 
@@ -49,7 +53,7 @@ public class CheckTypeTypeStepTest {
       final CheckTypeTypeStep step = new CheckTypeTypeStep(className, className, context);
 
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(0, result.stream().count());
+      assertThat(result.stream().count()).isEqualTo(0);
     });
   }
 
@@ -64,7 +68,7 @@ public class CheckTypeTypeStepTest {
 
         step.syncPull(context, 20);
       });
-      Assertions.fail("Expected CommandExecutionException");
+      fail("Expected CommandExecutionException");
     } catch (final CommandExecutionException e) {
       // OK
     }

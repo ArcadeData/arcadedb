@@ -35,7 +35,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
@@ -44,6 +43,8 @@ import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * This class has been copied under Console project to avoid complex dependencies.
@@ -111,14 +112,14 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     final Database database = databases[0];
     database.transaction(() -> {
       final Schema schema = database.getSchema();
-      Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
+      assertThat(schema.existsType(VERTEX1_TYPE_NAME)).isFalse();
 
       final VertexType v = schema.buildVertexType().withName(VERTEX1_TYPE_NAME).withTotalBuckets(3).create();
       v.createProperty("id", Long.class);
 
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
 
-      Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
+      assertThat(schema.existsType(VERTEX2_TYPE_NAME)).isFalse();
       schema.buildVertexType().withName(VERTEX2_TYPE_NAME).withTotalBuckets(3).create();
 
       schema.createEdgeType(EDGE1_TYPE_NAME);
@@ -141,8 +142,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
     // CREATION OF EDGE PASSING PARAMS AS VARARGS
     final MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
-    Assertions.assertEquals(e1.getOut(), v1);
-    Assertions.assertEquals(e1.getIn(), v2);
+    assertThat(v1).isEqualTo(e1.getOut());
+    assertThat(v2).isEqualTo(e1.getIn());
 
     final MutableVertex v3 = db.newVertex(VERTEX2_TYPE_NAME);
     v3.set("name", "V3");
@@ -153,12 +154,12 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
     // CREATION OF EDGE PASSING PARAMS AS MAP
     final MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
-    Assertions.assertEquals(e2.getOut(), v2);
-    Assertions.assertEquals(e2.getIn(), v3);
+    assertThat(v2).isEqualTo(e2.getOut());
+    assertThat(v3).isEqualTo(e2.getIn());
 
     final MutableEdge e3 = v1.newEdge(EDGE2_TYPE_NAME, v3, true);
-    Assertions.assertEquals(e3.getOut(), v1);
-    Assertions.assertEquals(e3.getIn(), v3);
+    assertThat(v1).isEqualTo(e3.getOut());
+    assertThat(v3).isEqualTo(e3.getIn());
 
     db.commit();
 
@@ -168,7 +169,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   protected void waitForReplicationIsCompleted(final int serverNumber) {
     while (getServer(serverNumber).getHA().getMessagesInQueue() > 0) {
       try {
-        Thread.sleep(500);
+        Thread.sleep(1000);
       } catch (InterruptedException e) {
         throw new RuntimeException(e);
       }
@@ -205,7 +206,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       }
     } finally {
       try {
-        LogManager.instance().log(this, Level.FINE, "END OF THE TEST: Check DBS are identical...");
+        LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
         checkDatabasesAreIdentical();
       } finally {
         GlobalConfiguration.resetAll();
@@ -236,9 +237,9 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     if (servers != null)
       for (final ArcadeDBServer server : servers) {
         if (server != null) {
-          Assertions.assertFalse(server.isStarted());
-          Assertions.assertEquals(ArcadeDBServer.STATUS.OFFLINE, server.getStatus());
-          Assertions.assertEquals(0, server.getHttpServer().getSessionManager().getActiveSessions());
+          assertThat(server.isStarted()).isFalse();
+          assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.STATUS.OFFLINE);
+          assertThat(server.getHttpServer().getSessionManager().getActiveSessions()).isEqualTo(0);
         }
       }
 
@@ -247,7 +248,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     new Exception().printStackTrace(output);
     output.flush();
     final String out = os.toString();
-    Assertions.assertFalse(out.contains("ArcadeDB"), "Some thread is still up & running: \n" + out);
+    assertThat(out.contains("ArcadeDB")).as("Some thread is still up & running: \n" + out).isFalse();
   }
 
   protected String getServerAddresses() {
@@ -315,11 +316,11 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
                   LogManager.instance().log(this, Level.WARNING, "All %d replicas are online", lastTotalConnectedReplica);
                   return;
                 } else
-                  Thread.sleep(300);
+                  Thread.sleep(500);
               }
             } else
               // WAIT FOR HA COMPONENT TO BE ONLINE
-              Thread.sleep(300);
+              Thread.sleep(500);
           }
         }
       } catch (InterruptedException e) {
@@ -560,7 +561,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       LogManager.instance()
           .log(this, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
 
-    //Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
+    //Assertions.assertThat(activeDatabases.isEmpty().isTrue(), "Found active databases: " + activeDatabases);
   }
 
   protected String command(final int serverIndex, final String command) throws Exception {
@@ -577,8 +578,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       final String response = readResponse(initialConnection);
 
       LogManager.instance().log(this, Level.FINE, "Response: %s", response);
-      Assertions.assertEquals(200, initialConnection.getResponseCode());
-      Assertions.assertEquals("OK", initialConnection.getResponseMessage());
+      assertThat(initialConnection.getResponseCode()).isEqualTo(200);
+      assertThat(initialConnection.getResponseMessage()).isEqualTo("OK");
       return response;
 
     } catch (final Exception e) {
@@ -602,8 +603,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     try {
       final String response = readResponse(connection);
       LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-      Assertions.assertEquals(200, connection.getResponseCode());
-      Assertions.assertEquals("OK", connection.getResponseMessage());
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      assertThat(connection.getResponseMessage()).isEqualTo("OK");
 
       return new JSONObject(response);
 

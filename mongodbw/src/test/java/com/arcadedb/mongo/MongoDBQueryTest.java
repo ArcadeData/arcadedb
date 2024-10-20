@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class MongoDBQueryTest {
 
@@ -65,14 +65,14 @@ public class MongoDBQueryTest {
     for (final ResultSet resultset = database.query("mongo",
         "{ collection: 'MongoDBCollection', query: { $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: 1 } } }"); resultset.hasNext(); ++i) {
       final Result doc = resultset.next();
-      assertEquals(i, (Integer) doc.getProperty("id"));
+      assertThat((Integer) doc.getProperty("id")).isEqualTo(i);
     }
 
     i = 9;
     for (final ResultSet resultset = database.query("mongo",
         "{ collection: 'MongoDBCollection', query: { $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: -1 } } }"); resultset.hasNext(); --i) {
       final Result doc = resultset.next();
-      assertEquals(i, (Integer) doc.getProperty("id"));
+      assertThat((Integer) doc.getProperty("id")).isEqualTo(i);
     }
   }
 }

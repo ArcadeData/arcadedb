@@ -20,9 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.fail;
 
 public class MatchStatementTest {
 
@@ -42,13 +43,13 @@ public class MatchStatementTest {
     try {
       final SimpleNode result = osql.Parse();
       if (!isCorrect) {
-        fail();
+        fail("");
       }
       return result;
     } catch (final Exception e) {
       if (isCorrect) {
         e.printStackTrace();
-        fail();
+        fail("");
       }
     }
     return null;

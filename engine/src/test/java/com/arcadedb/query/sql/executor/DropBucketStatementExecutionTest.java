@@ -22,8 +22,11 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -35,12 +38,12 @@ public class DropBucketStatementExecutionTest extends TestHelper {
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
-    Assertions.assertNotNull(schema.getType(className));
+    assertThat(schema.getType(className)).isNotNull();
 
     for (Bucket bucket : database.getSchema().getType(className).getBuckets(false)) {
       try {
         database.command("sql", "drop bucket " + bucket.getName());
-        Assertions.fail();
+        fail("");
       } catch (CommandExecutionException e) {
         // EXPECTED
       }
@@ -48,13 +51,13 @@ public class DropBucketStatementExecutionTest extends TestHelper {
       database.command("sql", "alter type " + className + " bucket -" + bucket.getName());
 
       final ResultSet result = database.command("sql", "drop bucket " + bucket.getName());
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result next = result.next();
-      Assertions.assertEquals("drop bucket", next.getProperty("operation"));
-      Assertions.assertFalse(result.hasNext());
+      assertThat(next.<String>getProperty("operation")).isEqualTo("drop bucket");
+      assertThat(result.hasNext()).isFalse();
       result.close();
 
-      Assertions.assertFalse(schema.existsBucket(bucket.getName()));
+      assertThat(schema.existsBucket(bucket.getName())).isFalse();
     }
   }
 }

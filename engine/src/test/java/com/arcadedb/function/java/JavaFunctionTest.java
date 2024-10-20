@@ -4,10 +4,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.*;
+import java.lang.reflect.InvocationTargetException;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class JavaFunctionTest extends TestHelper {
 
@@ -23,13 +25,13 @@ public class JavaFunctionTest extends TestHelper {
 
   @Test
   public void testRegistration()
-      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+          throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     // TEST REGISTRATION HERE
     registerClass();
 
     try {
       registerClass();
-      Assertions.fail();
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
@@ -40,13 +42,13 @@ public class JavaFunctionTest extends TestHelper {
 
   @Test
   public void testRegistrationByClassInstance()
-      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+          throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     // TEST REGISTRATION HERE
     database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class));
 
     try {
       database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class));
-      Assertions.fail();
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
@@ -57,29 +59,29 @@ public class JavaFunctionTest extends TestHelper {
 
   @Test
   public void testRegistrationSingleMethods()
-      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+          throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     // TEST REGISTRATION HERE
     database.getSchema()
-        .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
+            .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
 
     try {
       database.getSchema()
-          .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
-      Assertions.fail();
+              .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 
     database.getSchema().unregisterFunctionLibrary("math");
     database.getSchema()
-        .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
+            .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
   }
 
   @Test
   public void testFunctionNotFound() {
     try {
       database.getSchema().getFunction("math", "sum");
-      Assertions.fail();
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
@@ -87,35 +89,35 @@ public class JavaFunctionTest extends TestHelper {
 
   @Test
   public void testMethodParameterByPosition()
-      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+          throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     // TEST REGISTRATION HERE
     registerClass();
 
     final Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
-    Assertions.assertEquals(8, result);
+    assertThat(result).isEqualTo(8);
   }
 
   @Test
   public void testStaticMethodParameterByPosition()
-      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+          throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     registerClass();
 
     final Integer result = (Integer) database.getSchema().getFunction("math", "SUM").execute(3, 5);
-    Assertions.assertEquals(8, result);
+    assertThat(result).isEqualTo(8);
   }
 
   @Test
   public void testExecuteFromSQL()
-      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+          throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     registerClass();
 
     database.transaction(() -> {
       final ResultSet rs = database.command("SQL", "SELECT `math.sum`(20,7) as sum");
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Result record = rs.next();
-      Assertions.assertNotNull(record);
-      Assertions.assertFalse(record.getIdentity().isPresent());
-      Assertions.assertEquals(27, ((Number) record.getProperty("sum")).intValue());
+      assertThat(record).isNotNull();
+      assertThat(record.getIdentity()).isNotPresent();
+      assertThat(((Number) record.getProperty("sum")).intValue()).isEqualTo(27);
     });
   }
 
@@ -124,7 +126,7 @@ public class JavaFunctionTest extends TestHelper {
     registerClass();
     try {
       database.getSchema().getFunction("math", "NOT_found").execute(3, 5);
-      Assertions.fail();
+      fail("");
     } catch (IllegalArgumentException e) {
       // EXPECTED
     }
@@ -132,11 +134,11 @@ public class JavaFunctionTest extends TestHelper {
 
   @Test
   public void testExecutionError()
-      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+          throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     registerClass();
     try {
       database.getSchema().getFunction("math", "SUM").execute("invalid", 5);
-      Assertions.fail();
+      fail("");
     } catch (FunctionExecutionException e) {
       // EXPECTED
     }

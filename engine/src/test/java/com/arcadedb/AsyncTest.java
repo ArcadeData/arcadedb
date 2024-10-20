@@ -25,12 +25,15 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class AsyncTest extends TestHelper {
   private static final int    TOT       = 10000;
@@ -47,7 +50,7 @@ public class AsyncTest extends TestHelper {
         return true;
       });
 
-      Assertions.assertEquals(TOT, callbackInvoked.get());
+      assertThat(callbackInvoked.get()).isEqualTo(TOT);
 
       database.async().waitCompletion();
       database.async().waitCompletion();
@@ -78,13 +81,13 @@ public class AsyncTest extends TestHelper {
       database.commit();
     }
 
-    Assertions.assertEquals(TOT, callbackInvoked.get());
-    Assertions.assertEquals(TOT, updatedRecords.get());
+    assertThat(callbackInvoked.get()).isEqualTo(TOT);
+    assertThat(updatedRecords.get()).isEqualTo(TOT);
 
     final ResultSet resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
 
-    Assertions.assertTrue(resultSet.hasNext());
-    Assertions.assertEquals(TOT, ((Number) resultSet.next().getProperty("count")).intValue());
+    assertThat(resultSet.hasNext()).isTrue();
+    assertThat(((Number) resultSet.next().getProperty("count")).intValue()).isEqualTo(TOT);
   }
 
   @Test
@@ -102,13 +105,13 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion();
 
-      Assertions.assertEquals(TOT, callbackInvoked.get());
-      Assertions.assertEquals(TOT, deletedRecords.get());
+      assertThat(callbackInvoked.get()).isEqualTo(TOT);
+      assertThat(deletedRecords.get()).isEqualTo(TOT);
 
       final ResultSet resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
 
-      Assertions.assertTrue(resultSet.hasNext());
-      Assertions.assertEquals(0, ((Number) resultSet.next().getProperty("count")).intValue());
+      assertThat(resultSet.hasNext()).isTrue();
+      assertThat(((Number) resultSet.next().getProperty("count")).intValue()).isEqualTo(0);
 
       populateDatabase();
 
@@ -130,7 +133,7 @@ public class AsyncTest extends TestHelper {
         return callbackInvoked.getAndIncrement() < 10;
       });
 
-      Assertions.assertTrue(callbackInvoked.get() < 20);
+      assertThat(callbackInvoked.get() < 20).isTrue();
 
     } finally {
       database.commit();
@@ -158,8 +161,8 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(1, completeCallbackInvoked.get());
-      Assertions.assertEquals(0, errorCallbackInvoked.get());
+      assertThat(completeCallbackInvoked.get()).isEqualTo(1);
+      assertThat(errorCallbackInvoked.get()).isEqualTo(0);
 
     } finally {
       database.commit();
@@ -189,9 +192,9 @@ public class AsyncTest extends TestHelper {
       // WAIT INDEFINITELY
       counter.await();
 
-      Assertions.assertTrue(resultSets[0].hasNext());
-      Assertions.assertTrue(resultSets[1].hasNext());
-      Assertions.assertTrue(resultSets[2].hasNext());
+      assertThat(resultSets[0].hasNext()).isTrue();
+      assertThat(resultSets[1].hasNext()).isTrue();
+      assertThat(resultSets[2].hasNext()).isTrue();
 
     } finally {
       database.commit();
@@ -219,8 +222,8 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(1, completeCallbackInvoked.get());
-      Assertions.assertEquals(0, errorCallbackInvoked.get());
+      assertThat(completeCallbackInvoked.get()).isEqualTo(1);
+      assertThat(errorCallbackInvoked.get()).isEqualTo(0);
 
     } finally {
       database.commit();
@@ -237,9 +240,9 @@ public class AsyncTest extends TestHelper {
 
       final IndexCursor resultSet = database.lookupByKey(TYPE_NAME, "id", Integer.MAX_VALUE);
 
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       final Document record = resultSet.next().asDocument();
-      Assertions.assertEquals(Integer.MAX_VALUE, record.get("id"));
+      assertThat(record.get("id")).isEqualTo(Integer.MAX_VALUE);
 
     } finally {
       database.commit();
@@ -268,8 +271,8 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(1, completeCallbackInvoked.get());
-      Assertions.assertEquals(0, errorCallbackInvoked.get());
+      assertThat(completeCallbackInvoked.get()).isEqualTo(1);
+      assertThat(errorCallbackInvoked.get()).isEqualTo(0);
 
     } finally {
       database.commit();
@@ -297,8 +300,8 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(1, completeCallbackInvoked.get());
-      Assertions.assertEquals(0, errorCallbackInvoked.get());
+      assertThat(completeCallbackInvoked.get()).isEqualTo(1);
+      assertThat(errorCallbackInvoked.get()).isEqualTo(0);
 
     } finally {
       database.commit();
@@ -326,8 +329,8 @@ public class AsyncTest extends TestHelper {
 
       database.async().waitCompletion(5_000);
 
-      Assertions.assertEquals(0, completeCallbackInvoked.get());
-      Assertions.assertEquals(1, errorCallbackInvoked.get());
+      assertThat(completeCallbackInvoked.get()).isEqualTo(0);
+      assertThat(errorCallbackInvoked.get()).isEqualTo(1);
 
     } finally {
       database.commit();
@@ -338,7 +341,7 @@ public class AsyncTest extends TestHelper {
   protected void beginTest() {
     database.begin();
 
-    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final AtomicLong okCallbackInvoked = new AtomicLong();
 
@@ -346,7 +349,7 @@ public class AsyncTest extends TestHelper {
     database.async().setParallelLevel(3);
     database.async().onOk(() -> okCallbackInvoked.incrementAndGet());
 
-    database.async().onError(exception -> Assertions.fail("Error on creating async record", exception));
+    database.async().onError(exception -> fail("Error on creating async record", exception));
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
@@ -358,7 +361,7 @@ public class AsyncTest extends TestHelper {
 
     populateDatabase();
 
-    Assertions.assertTrue(okCallbackInvoked.get() > 0);
+    assertThat(okCallbackInvoked.get() > 0).isTrue();
   }
 
   private void populateDatabase() {

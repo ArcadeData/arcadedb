@@ -23,10 +23,14 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
+import org.assertj.core.api.Assertions;
+
 
 import java.io.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public abstract class BaseGraphTest extends TestHelper {
   protected static final String VERTEX1_TYPE_NAME = "V1";
@@ -43,10 +47,10 @@ public abstract class BaseGraphTest extends TestHelper {
     FileUtils.deleteRecursively(new File(DB_PATH));
 
     database.transaction(() -> {
-      Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
+      assertThat(database.getSchema().existsType(VERTEX1_TYPE_NAME)).isFalse();
       database.getSchema().buildVertexType().withName(VERTEX1_TYPE_NAME).withTotalBuckets(3).create();
 
-      Assertions.assertFalse(database.getSchema().existsType(VERTEX2_TYPE_NAME));
+      assertThat(database.getSchema().existsType(VERTEX2_TYPE_NAME)).isFalse();
       database.getSchema().buildVertexType().withName(VERTEX2_TYPE_NAME).withTotalBuckets(3).create();
 
       database.getSchema().buildEdgeType().withName(EDGE1_TYPE_NAME).create();
@@ -66,24 +70,24 @@ public abstract class BaseGraphTest extends TestHelper {
 
     // CREATION OF EDGE PASSING PARAMS AS VARARGS
     final MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
-    Assertions.assertEquals(e1.getOut(), v1);
-    Assertions.assertEquals(e1.getIn(), v2);
+    assertThat(v1).isEqualTo(e1.getOut());
+    assertThat(v2).isEqualTo(e1.getIn());
 
     final MutableVertex v3 = db.newVertex(VERTEX2_TYPE_NAME);
     v3.set("name", "V3");
     v3.save();
 
-    Assertions.assertEquals(v3, v3.asVertex());
-    Assertions.assertEquals(v3, v3.asVertex(true));
+    assertThat(v3.asVertex()).isEqualTo(v3);
+    assertThat(v3.asVertex(true)).isEqualTo(v3);
     try {
-      Assertions.assertNotNull(v3.asEdge());
-      Assertions.fail();
+      assertThat(v3.asEdge()).isNotNull();
+      fail("");
     } catch (final ClassCastException e) {
       // EXPECTED
     }
     try {
-      Assertions.assertNotNull(v3.asEdge(true));
-      Assertions.fail();
+      assertThat(v3.asEdge(true)).isNotNull();
+      fail("");
     } catch (final ClassCastException e) {
       // EXPECTED
     }
@@ -93,28 +97,28 @@ public abstract class BaseGraphTest extends TestHelper {
 
     // CREATION OF EDGE PASSING PARAMS AS MAP
     final MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
-    Assertions.assertEquals(e2.getOut(), v2);
-    Assertions.assertEquals(e2.getIn(), v3);
+    assertThat(v2).isEqualTo(e2.getOut());
+    assertThat(v3).isEqualTo(e2.getIn());
 
-    Assertions.assertEquals(e2, e2.asEdge());
-    Assertions.assertEquals(e2, e2.asEdge(true));
+    assertThat(e2.asEdge()).isEqualTo(e2);
+    assertThat(e2.asEdge(true)).isEqualTo(e2);
 
     try {
-      Assertions.assertNotNull(e2.asVertex());
-      Assertions.fail();
+      assertThat(e2.asVertex()).isNotNull();
+      fail("");
     } catch (final ClassCastException e) {
       // EXPECTED
     }
     try {
-      Assertions.assertNotNull(e2.asVertex(true));
-      Assertions.fail();
+      assertThat(e2.asVertex(true)).isNotNull();
+      fail("");
     } catch (final ClassCastException e) {
       // EXPECTED
     }
 
     final ImmutableLightEdge e3 = v1.newLightEdge(EDGE2_TYPE_NAME, v3, true);
-    Assertions.assertEquals(e3.getOut(), v1);
-    Assertions.assertEquals(e3.getIn(), v3);
+    assertThat(v1).isEqualTo(e3.getOut());
+    assertThat(v3).isEqualTo(e3.getIn());
 
     db.commit();
 

@@ -21,9 +21,10 @@ package performance;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
 
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class PerformanceSQLSelect extends TestHelper {
   private static final String TYPE_NAME = "Person";
@@ -50,8 +51,8 @@ public class PerformanceSQLSelect extends TestHelper {
         final ResultSet rs = database.command("SQL", "select from " + TYPE_NAME + " where id < 1l");
         while (rs.hasNext()) {
           final Result record = rs.next();
-          Assertions.assertNotNull(record);
-          Assertions.assertTrue((long) record.getProperty("id") < 1);
+          assertThat(record).isNotNull();
+          assertThat((long) record.getProperty("id") < 1).isTrue();
           row.incrementAndGet();
         }
 

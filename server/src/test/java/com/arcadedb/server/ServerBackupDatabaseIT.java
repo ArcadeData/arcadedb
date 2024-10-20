@@ -19,10 +19,11 @@
 package com.arcadedb.server;
 
 import com.arcadedb.database.Database;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ServerBackupDatabaseIT extends BaseGraphServerTest {
 
@@ -40,7 +41,7 @@ public class ServerBackupDatabaseIT extends BaseGraphServerTest {
     final Database database = getServer(0).getDatabase(getDatabaseName());
     database.command("sql", "backup database file://" + backupFile.getName());
 
-    Assertions.assertTrue(backupFile.exists());
+    assertThat(backupFile.exists()).isTrue();
     backupFile.delete();
   }
 }

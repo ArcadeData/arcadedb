@@ -19,10 +19,11 @@
 package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.parser.InOperator;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -32,22 +33,22 @@ public class InOperatorTest {
   public void test() {
     final InOperator op = new InOperator(-1);
 
-    Assertions.assertFalse(op.execute(null, null, null));
-    Assertions.assertFalse(op.execute(null, null, "foo"));
-    Assertions.assertFalse(op.execute(null, "foo", null));
-    Assertions.assertFalse(op.execute(null, "foo", "foo"));
+    assertThat(op.execute(null, null, null)).isFalse();
+    assertThat(op.execute(null, null, "foo")).isFalse();
+    assertThat(op.execute(null, "foo", null)).isFalse();
+    assertThat(op.execute(null, "foo", "foo")).isFalse();
 
     final List<Object> list1 = new ArrayList<Object>();
-    Assertions.assertFalse(op.execute(null, "foo", list1));
-    Assertions.assertFalse(op.execute(null, null, list1));
-    Assertions.assertTrue(op.execute(null, list1, list1));
+    assertThat(op.execute(null, "foo", list1)).isFalse();
+    assertThat(op.execute(null, null, list1)).isFalse();
+    assertThat(op.execute(null, list1, list1)).isTrue();
 
     list1.add("a");
     list1.add(1);
 
-    Assertions.assertFalse(op.execute(null, "foo", list1));
-    Assertions.assertTrue(op.execute(null, "a", list1));
-    Assertions.assertTrue(op.execute(null, 1, list1));
+    assertThat(op.execute(null, "foo", list1)).isFalse();
+    assertThat(op.execute(null, "a", list1)).isTrue();
+    assertThat(op.execute(null, 1, list1)).isTrue();
 
     // TODO
   }

@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests the "asSet()" method implemented by the OSQLMethodAsSet class. Note that the only input to
@@ -51,14 +51,14 @@ public class SQLMethodAsSetTest {
     aSet.add(1);
     aSet.add("2");
     final Object result = function.execute(aSet, null, null, null);
-    assertEquals(result, aSet);
+    assertThat(aSet).isEqualTo(result);
   }
 
   @Test
   public void testNull() {
     // The expected behavior is to return an empty set.
     final Object result = function.execute(null, null, null, null);
-    assertEquals(result, new HashSet<Object>());
+    assertThat(new HashSet<Object>()).isEqualTo(result);
   }
 
   @Test
@@ -73,7 +73,7 @@ public class SQLMethodAsSetTest {
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(1);
     expected.add("2");
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -91,7 +91,7 @@ public class SQLMethodAsSetTest {
     expected.add(1);
     expected.add("2");
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -109,7 +109,7 @@ public class SQLMethodAsSetTest {
     expected.add(1);
     expected.add("2");
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -127,7 +127,7 @@ public class SQLMethodAsSetTest {
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(doc);
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -138,6 +138,6 @@ public class SQLMethodAsSetTest {
     final Object result = function.execute(Integer.valueOf(4), null, null, null);
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(Integer.valueOf(4));
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 }

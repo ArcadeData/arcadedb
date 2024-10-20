@@ -24,11 +24,14 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   public ServerRestoreDatabaseIT() {
@@ -65,25 +68,26 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
           database.newDocument("testDoc").set("prop", "value").save();
 
           // COUNT INSIDE TX
-          Assertions.assertEquals(1, database.countType("testDoc", true));
+          assertThat(database.countType("testDoc", true)).isEqualTo(1);
         });
 
         // COUNT OUTSIDE TX
-        Assertions.assertEquals(1, database.countType("testDoc", true));
+        assertThat(database.countType("testDoc", true)).isEqualTo(1);
 
-        Assertions.assertFalse(database.isTransactionActive());
+        assertThat(database.isTransactionActive()).isFalse();
 
       }
 
       try (final Database database2 = factory.open()) {
         final ResultSet result = database2.command("sql", "backup database file://" + backupFile.getName());
-        Assertions.assertTrue(result.hasNext());
-        Assertions.assertEquals("OK", result.next().getProperty("result"));
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().<String>getProperty("result")).isEqualTo("OK");
 
-        Assertions.assertTrue(backupFile.exists());
+        assertThat(backupFile.exists()).isTrue();
         database2.drop();
 
-        config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "graph[elon:musk:admin]{restore:file://" + backupFile.getPath() + "}");
+        config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES,
+            "graph[elon:musk:admin]{restore:file://" + backupFile.getPath() + "}");
       }
     }
   }
@@ -92,7 +96,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   public void defaultDatabases() {
     getServer(0).getSecurity().authenticate("elon", "musk", "graph");
     final Database database = getServer(0).getDatabase("graph");
-    Assertions.assertEquals(1, database.countType("testDoc", true));
+    assertThat(database.countType("testDoc", true)).isEqualTo(1);
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + "0/Movies"));
   }
 }

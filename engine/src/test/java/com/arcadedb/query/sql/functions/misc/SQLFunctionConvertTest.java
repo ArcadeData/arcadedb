@@ -21,12 +21,14 @@ package com.arcadedb.query.sql.functions.misc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -52,80 +54,80 @@ public class SQLFunctionConvertTest {
       db.command("sql", "update TestConversion set selfrid = 'foo" + doc.getIdentity() + "'");
 
       ResultSet results = db.query("sql", "select string.asString() as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       Object convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof String, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof String).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.asDate() as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Date, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Date).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select dateAsString.asDate(\"yyyy-MM-dd'T'HH:mm:ss.SSS\") as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Date, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Date).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.asDateTime() as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Date, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Date).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select dateAsString.asDateTime(\"yyyy-MM-dd'T'HH:mm:ss.SSS\") as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Date, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Date).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.asInteger() as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Integer, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Integer).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.asLong() as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Long, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Long).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.asFloat() as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Float, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Float).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.asDecimal() as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof BigDecimal, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof BigDecimal).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select \"100000.123\".asDecimal()*1000 as convert");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof BigDecimal, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof BigDecimal).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.convert('LONG') as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Long, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Long).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.convert('SHORT') as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Short, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Short).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.convert('DOUBLE') as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertTrue(convert instanceof Double, "Found " + convert.getClass() + " instead");
+      assertThat(convert instanceof Double).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select selfrid.substring(3).convert('LINK').string as convert from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertEquals(convert, "Jay");
+      assertThat(convert).isEqualTo("Jay");
 
       results = db.query("sql", "select list.transform('toLowerCase') as list from TestConversion");
-      assertNotNull(results);
+      assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("list");
       final List list = (List) convert;
-      assertTrue(list.containsAll(List.of("a", "b")));
+      assertThat(list.containsAll(List.of("a", "b"))).isTrue();
     }));
   }
 }

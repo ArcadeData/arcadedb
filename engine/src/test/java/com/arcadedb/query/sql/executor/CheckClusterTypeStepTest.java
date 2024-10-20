@@ -21,8 +21,12 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.fail;
 
 public class CheckClusterTypeStepTest {
 
@@ -39,7 +43,8 @@ public class CheckClusterTypeStepTest {
       final CheckClusterTypeStep step = new CheckClusterTypeStep(CLASS_CLUSTER_NAME, clazz.getName(), context);
 
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(0, result.stream().count());
+
+      assertThat(result.stream().count()).isEqualTo(0);
     });
   }
 
@@ -53,7 +58,7 @@ public class CheckClusterTypeStepTest {
 
         step.syncPull(context, 20);
       });
-      Assertions.fail("Expected CommandExecutionException");
+      fail("Expected CommandExecutionException");
     } catch (final CommandExecutionException e) {
       // OK
     }

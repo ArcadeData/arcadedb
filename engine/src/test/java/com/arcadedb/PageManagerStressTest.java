@@ -26,11 +26,12 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import performance.PerformanceTest;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class PageManagerStressTest {
   private static final int    TOT       = 1_000_000;
@@ -100,8 +101,8 @@ public class PageManagerStressTest {
       }
 
       final PageManager.PPageManagerStats stats = ((DatabaseInternal) database).getPageManager().getStats();
-      Assertions.assertTrue(stats.evictionRuns > 0);
-      Assertions.assertTrue(stats.pagesEvicted > 0);
+      assertThat(stats.evictionRuns > 0).isTrue();
+      assertThat(stats.pagesEvicted > 0).isTrue();
 
     } finally {
       database.close();

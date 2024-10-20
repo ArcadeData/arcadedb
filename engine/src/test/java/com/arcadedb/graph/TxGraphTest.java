@@ -22,8 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.util.Date;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TxGraphTest extends TestHelper {
   protected static final String DB_PATH = "target/databases/graph";
@@ -50,38 +55,38 @@ public class TxGraphTest extends TestHelper {
 
       commodore[0].asVertex(false).newEdge("SELLS", vic20, true).set("date", System.currentTimeMillis()).save();
 
-      Assertions.assertEquals(2, commodore[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "SELLS"));
+      assertThat(commodore[0].asVertex().countEdges(Vertex.DIRECTION.OUT,"SELLS")).isEqualTo(2);
 
       ResultSet result = database.query("sql", "select expand( in().include('name') ) from Good");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       while (result.hasNext()) {
         final Result next = result.next();
-        Assertions.assertNotNull(next.getProperty("name"));
-        Assertions.assertNull(next.getProperty("date"));
+        assertThat(next.<String>getProperty("name")).isNotNull();
+        assertThat(next.<String>getProperty("date")).isNull();
       }
 
       result = database.query("sql", "select expand( in().include('date') ) from Good");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       while (result.hasNext()) {
         final Result next = result.next();
-        Assertions.assertNotNull(next.getProperty("date"));
-        Assertions.assertNull(next.getProperty("name"));
+        assertThat(next.<Long>getProperty("date")).isNotNull();
+        assertThat(next.<String>getProperty("name")).isNull();
       }
 
       result = database.query("sql", "select expand( in().exclude('name') ) from Good");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       while (result.hasNext()) {
         final Result next = result.next();
-        Assertions.assertNotNull(next.getProperty("date"));
-        Assertions.assertNull(next.getProperty("name"));
+        assertThat(next.<Long>getProperty("date")).isNotNull();
+        assertThat(next.<String>getProperty("name")).isNull();
       }
 
       result = database.query("sql", "select expand( in().exclude('date') ) from Good");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       while (result.hasNext()) {
         final Result next = result.next();
-        Assertions.assertNotNull(next.getProperty("name"));
-        Assertions.assertNull(next.getProperty("date"));
+        assertThat(next.<Long>getProperty("date")).isNull();
+        assertThat(next.<String>getProperty("name")).isNotNull();
       }
     });
   }

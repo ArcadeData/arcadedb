@@ -32,11 +32,14 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
 
 import java.io.*;
 import java.util.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Fail.fail;
 
 public class PerformanceVertexIndexTest {
   private static final int    TOT               = 10_000_000;
@@ -59,7 +62,7 @@ public class PerformanceVertexIndexTest {
         try {
           compaction();
         } catch (final Exception e) {
-          Assertions.fail(e);
+          fail(e);
         }
       }
     }, 0);
@@ -70,7 +73,7 @@ public class PerformanceVertexIndexTest {
   private void compaction() throws IOException, InterruptedException {
     try (final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open()) {
       for (final Index index : database.getSchema().getIndexes())
-        Assertions.assertTrue(((IndexInternal) index).compact());
+        assertThat(((IndexInternal) index).compact()).isTrue();
     }
   }
 
@@ -133,7 +136,7 @@ public class PerformanceVertexIndexTest {
         public void call(final Throwable exception) {
           LogManager.instance().log(this, Level.INFO, "TEST: ERROR: " + exception);
           exception.printStackTrace();
-          Assertions.fail(exception);
+          fail(exception);
         }
       });
 
@@ -198,11 +201,12 @@ public class PerformanceVertexIndexTest {
 
       for (long id = 0; id < TOT; id += step) {
         final IndexCursor records = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { id });
-        Assertions.assertNotNull(records);
-        Assertions.assertTrue(records.hasNext(), "Wrong result for lookup of key " + id);
+        assertThat(records.hasNext())
+                .as("Wrong result for lookup of key " + id)
+                .isTrue();
 
         final Document record = (Document) records.next().getRecord();
-        Assertions.assertEquals("" + id, record.get("id"));
+        assertThat(record.get("id")).isEqualTo("" + id);
 
         checked++;
 

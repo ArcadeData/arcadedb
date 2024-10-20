@@ -20,10 +20,11 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.fail;
 
 public class BatchScriptTest {
 
@@ -99,14 +100,14 @@ public class BatchScriptTest {
       //        System.out.println(stm.toString()+";");
       //      }
       if (!isCorrect) {
-        fail();
+        fail("");
       }
 
       return result;
     } catch (final Exception e) {
       if (isCorrect) {
         e.printStackTrace();
-        fail();
+        fail("");
       }
     }
     return null;

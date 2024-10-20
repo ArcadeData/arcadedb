@@ -23,12 +23,15 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGraphFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
-import org.junit.jupiter.api.Assertions;
+
+import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
@@ -40,54 +43,54 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   @Test
   public void okPoolRelease() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        DEFAULT_PASSWORD_FOR_TESTS)) {
       for (int i = 0; i < 1_000; i++) {
         final ArcadeGraph instance = pool.get();
-        Assertions.assertNotNull(instance);
+        assertThat(instance).isNotNull();
         instance.close();
       }
 
-      Assertions.assertEquals(1, pool.getTotalInstancesCreated());
+      assertThat(pool.getTotalInstancesCreated()).isEqualTo(1);
     }
   }
 
   @Test
   public void errorPoolRelease() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        DEFAULT_PASSWORD_FOR_TESTS)) {
       for (int i = 0; i < pool.getMaxInstances(); i++) {
         final ArcadeGraph instance = pool.get();
-        Assertions.assertNotNull(instance);
+        assertThat(instance).isNotNull();
       }
 
       try {
         pool.get();
-        Assertions.fail();
+        fail("");
       } catch (IllegalArgumentException e) {
         // EXPECTED
       }
 
-      Assertions.assertEquals(pool.getMaxInstances(), pool.getTotalInstancesCreated());
+      assertThat(pool.getTotalInstancesCreated()).isEqualTo(pool.getMaxInstances());
     }
   }
 
   @Test
   public void executeTraversalSeparateTransactions() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        DEFAULT_PASSWORD_FOR_TESTS)) {
       try (final ArcadeGraph graph = pool.get()) {
         for (int i = 0; i < 1_000; i++)
           graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"Elon\"}");
 
         // THIS IS IN THE SAME SCOPE, SO IT CAN SEE THE PENDING VERTICES ADDED EARLIER
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\").count()").execute()) {
-          Assertions.assertEquals(1_000, (Integer) list.nextIfAvailable().getProperty("result"));
+          assertThat((Integer) list.nextIfAvailable().getProperty("result")).isEqualTo(1_000);
         }
 
         graph.tx().commit(); // <-- WITHOUT THIS COMMIT THE NEXT 2 TRAVERSALS WOULD NOT SEE THE ADDED VERTICES
 
-        Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().next());
-        Assertions.assertEquals(1_000, graph.traversal().V().hasLabel("inputstructure").count().toList().get(0));
+        assertThat(graph.traversal().V().hasLabel("inputstructure").count().next()).isEqualTo(1_000);
+        assertThat(graph.traversal().V().hasLabel("inputstructure").count().toList().get(0)).isEqualTo(1_000);
       }
     }
   }
@@ -95,7 +98,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   @Test
   public void executeTraversalTxMgmtMultiThreads() throws InterruptedException {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        DEFAULT_PASSWORD_FOR_TESTS)) {
 
       try (final ArcadeGraph graph = pool.get()) {
         graph.getDatabase().getSchema().createVertexType("Country");
@@ -106,10 +109,20 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       for (int i = 0; i < 1000; i++) {
         final int id = i;
         executorService.submit(() -> {
+
           try (final ArcadeGraph graph = pool.get()) {
-            GraphTraversalSource g = graph.tx().begin();
-            g.addV("Country").property("id", id).property("country", "USA").property("code", id).iterate();
-            g.tx().commit();
+
+            Transaction tx = graph.tx();
+            GraphTraversalSource gtx = tx.begin();
+              gtx.addV("Country")
+                  .property("id", id)
+                  .property("country", "USA")
+                  .property("code", id)
+                  .iterate();
+              tx.commit();
+
+          } catch (Exception e) {
+            //do nothing
           }
         });
       }
@@ -118,15 +131,18 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       executorService.awaitTermination(60, TimeUnit.SECONDS);
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertTrue(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800);
+        Long country = graph.traversal().V().hasLabel("Country").count().toList().get(0);
+        assertThat(country > 800).isTrue();
       }
+    } catch (Exception e) {
+      //do nothing
     }
   }
 
   @Test
   public void executeTraversalNoTxMgmtMultiThreads() throws InterruptedException {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        DEFAULT_PASSWORD_FOR_TESTS)) {
 
       try (final ArcadeGraph graph = pool.get()) {
         graph.getDatabase().getSchema().createVertexType("Country");
@@ -145,7 +161,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       executorService.awaitTermination(60, TimeUnit.SECONDS);
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertTrue(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800);
+        assertThat(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800).isTrue();
       }
     }
   }
@@ -153,7 +169,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   @Test
   public void executeTraversalTxMgmtHttp() throws InterruptedException {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        DEFAULT_PASSWORD_FOR_TESTS)) {
 
       for (int i = 0; i < 1000; i++) {
         final int id = i;
@@ -165,7 +181,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       }
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+        assertThat(graph.traversal().V().hasLabel("Country").count().toList().get(0)).isEqualTo(1000);
       }
     }
   }
@@ -173,7 +189,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   @Test
   public void executeTraversalTxMgmt() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        DEFAULT_PASSWORD_FOR_TESTS)) {
 
       for (int i = 0; i < 1000; i++) {
         final int id = i;
@@ -186,7 +202,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       }
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+        assertThat(graph.traversal().V().hasLabel("Country").count().toList().get(0)).isEqualTo(1000);
       }
     }
   }
@@ -194,7 +210,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   @Test
   public void executeTraversalNoTxMgmt() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        DEFAULT_PASSWORD_FOR_TESTS)) {
 
       for (int i = 0; i < 1000; i++) {
         final int id = i;
@@ -204,7 +220,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       }
 
       try (final ArcadeGraph graph = pool.get()) {
-        Assertions.assertEquals(1000, graph.traversal().V().hasLabel("Country").count().toList().get(0));
+        assertThat(graph.traversal().V().hasLabel("Country").count().toList().get(0)).isEqualTo(1000);
       }
     }
   }

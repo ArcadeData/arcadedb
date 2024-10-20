@@ -26,10 +26,11 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class JavaBinarySerializerTest extends TestHelper {
 
@@ -43,14 +44,14 @@ public class JavaBinarySerializerTest extends TestHelper {
       doc1.writeExternal(buffer);
       buffer.flush();
 
-      Assertions.assertTrue(arrayOut.size() > 0);
+      assertThat(arrayOut.size() > 0).isTrue();
 
       final MutableDocument doc2 = database.newDocument("Doc");
 
       try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
         doc2.readExternal(in);
-        Assertions.assertEquals(doc1, doc2);
-        Assertions.assertEquals(doc1.toMap(), doc2.toMap());
+        assertThat(doc2).isEqualTo(doc1);
+        assertThat(doc2.toMap()).isEqualTo(doc1.toMap());
       }
     }
   }
@@ -68,14 +69,14 @@ public class JavaBinarySerializerTest extends TestHelper {
       doc1.writeExternal(buffer);
       buffer.flush();
 
-      Assertions.assertTrue(arrayOut.size() > 0);
+      assertThat(arrayOut.size() > 0).isTrue();
 
       final MutableDocument doc2 = database.newDocument("Doc");
 
       try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
         doc2.readExternal(in);
-        Assertions.assertEquals(doc1, doc2);
-        Assertions.assertEquals(doc1.toMap(), doc2.toMap());
+        assertThat(doc2).isEqualTo(doc1);
+        assertThat(doc2.toMap()).isEqualTo(doc1.toMap());
       }
     }
   }
@@ -90,14 +91,14 @@ public class JavaBinarySerializerTest extends TestHelper {
       doc1.writeExternal(buffer);
       buffer.flush();
 
-      Assertions.assertTrue(arrayOut.size() > 0);
+      assertThat(arrayOut.size() > 0).isTrue();
 
       final MutableVertex docTest = database.newVertex("Doc");
 
       try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
         docTest.readExternal(in);
-        Assertions.assertEquals(doc1, docTest);
-        Assertions.assertEquals(doc1.toMap(), docTest.toMap());
+        assertThat(docTest).isEqualTo(doc1);
+        assertThat(docTest.toMap()).isEqualTo(doc1.toMap());
       }
     }
   }
@@ -119,16 +120,16 @@ public class JavaBinarySerializerTest extends TestHelper {
       v1.writeExternal(buffer);
       buffer.flush();
 
-      Assertions.assertTrue(arrayOut.size() > 0);
+      assertThat(arrayOut.size() > 0).isTrue();
 
       final MutableVertex vTest = database.newVertex("Doc");
 
       try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
         vTest.readExternal(in);
-        Assertions.assertEquals(v1, vTest);
-        Assertions.assertEquals(v1.toMap(), vTest.toMap());
-        Assertions.assertEquals(v1.getOutEdgesHeadChunk(), vTest.getOutEdgesHeadChunk());
-        Assertions.assertEquals(v1.getInEdgesHeadChunk(), vTest.getInEdgesHeadChunk());
+        assertThat(vTest).isEqualTo(v1);
+        assertThat(vTest.toMap()).isEqualTo(v1.toMap());
+        assertThat(vTest.getOutEdgesHeadChunk()).isEqualTo(v1.getOutEdgesHeadChunk());
+        assertThat(vTest.getInEdgesHeadChunk()).isEqualTo(v1.getInEdgesHeadChunk());
       }
     }
   }
@@ -149,16 +150,16 @@ public class JavaBinarySerializerTest extends TestHelper {
       edge1.writeExternal(buffer);
       buffer.flush();
 
-      Assertions.assertTrue(arrayOut.size() > 0);
+      assertThat(arrayOut.size() > 0).isTrue();
 
       final MutableEdge edgeTest = new MutableEdge(database, type, null);
 
       try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
         edgeTest.readExternal(in);
-        Assertions.assertEquals(edge1, edgeTest);
-        Assertions.assertEquals(edge1.toMap(), edgeTest.toMap());
-        Assertions.assertEquals(edge1.getOut(), edgeTest.getOut());
-        Assertions.assertEquals(edge1.getIn(), edgeTest.getIn());
+        assertThat(edgeTest).isEqualTo(edge1);
+        assertThat(edgeTest.toMap()).isEqualTo(edge1.toMap());
+        assertThat(edgeTest.getOut()).isEqualTo(edge1.getOut());
+        assertThat(edgeTest.getIn()).isEqualTo(edge1.getIn());
       }
     }
   }

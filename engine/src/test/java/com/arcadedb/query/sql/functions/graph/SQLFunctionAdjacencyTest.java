@@ -36,10 +36,13 @@ import com.arcadedb.query.sql.function.graph.SQLFunctionInV;
 import com.arcadedb.query.sql.function.graph.SQLFunctionOut;
 import com.arcadedb.query.sql.function.graph.SQLFunctionOutE;
 import com.arcadedb.query.sql.function.graph.SQLFunctionOutV;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class SQLFunctionAdjacencyTest {
 
@@ -57,14 +60,14 @@ public class SQLFunctionAdjacencyTest {
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
         final Edge edge = iterator.next().asEdge(true);
-        Assertions.assertNotNull(edge);
+        assertThat(edge).isNotNull();
         result.add(edge.getIdentity());
       }
 
-      Assertions.assertTrue(result.contains(edges.get(3).getIdentity()));
-      Assertions.assertTrue(result.contains(edges.get(4).getIdentity()));
+      assertThat(result.contains(edges.get(3).getIdentity())).isTrue();
+      assertThat(result.contains(edges.get(4).getIdentity())).isTrue();
 
-      Assertions.assertEquals(2, result.size());
+      assertThat(result).hasSize(2);
     });
   }
 
@@ -79,13 +82,13 @@ public class SQLFunctionAdjacencyTest {
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
         final Edge edge = iterator.next().asEdge(true);
-        Assertions.assertNotNull(edge);
+        assertThat(edge).isNotNull();
         result.add(edge.getIdentity());
       }
 
-      Assertions.assertTrue(result.contains(edges.get(2).getIdentity()));
+      assertThat(result.contains(edges.get(2).getIdentity())).isTrue();
 
-      Assertions.assertEquals(1, result.size());
+      assertThat(result).hasSize(1);
     });
   }
 
@@ -100,15 +103,15 @@ public class SQLFunctionAdjacencyTest {
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
         final Edge edge = iterator.next().asEdge(true);
-        Assertions.assertNotNull(edge);
+        assertThat(edge).isNotNull();
         result.add(edge.getIdentity());
       }
 
-      Assertions.assertTrue(result.contains(edges.get(2).getIdentity()));
-      Assertions.assertTrue(result.contains(edges.get(3).getIdentity()));
-      Assertions.assertTrue(result.contains(edges.get(4).getIdentity()));
+      assertThat(result.contains(edges.get(2).getIdentity())).isTrue();
+      assertThat(result.contains(edges.get(3).getIdentity())).isTrue();
+      assertThat(result.contains(edges.get(4).getIdentity())).isTrue();
 
-      Assertions.assertEquals(3, result.size());
+      assertThat(result).hasSize(3);
     });
   }
 
@@ -123,15 +126,15 @@ public class SQLFunctionAdjacencyTest {
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
         final Vertex vertex = iterator.next().asVertex(true);
-        Assertions.assertNotNull(vertex);
+        assertThat(vertex).isNotNull();
         result.add(vertex.getIdentity());
       }
 
-      Assertions.assertTrue(result.contains(vertices.get(2).getIdentity()));
-      Assertions.assertTrue(result.contains(vertices.get(1).getIdentity()));
-      Assertions.assertTrue(result.contains(vertices.get(4).getIdentity()));
+      assertThat(result.contains(vertices.get(2).getIdentity())).isTrue();
+      assertThat(result.contains(vertices.get(1).getIdentity())).isTrue();
+      assertThat(result.contains(vertices.get(4).getIdentity())).isTrue();
 
-      Assertions.assertEquals(3, result.size());
+      assertThat(result).hasSize(3);
     });
   }
 
@@ -146,14 +149,14 @@ public class SQLFunctionAdjacencyTest {
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
         final Vertex vertex = iterator.next().asVertex(true);
-        Assertions.assertNotNull(vertex);
+        assertThat(vertex).isNotNull();
         result.add(vertex.getIdentity());
       }
 
-      Assertions.assertTrue(result.contains(vertices.get(1).getIdentity()));
-      Assertions.assertTrue(result.contains(vertices.get(4).getIdentity()));
+      assertThat(result.contains(vertices.get(1).getIdentity())).isTrue();
+      assertThat(result.contains(vertices.get(4).getIdentity())).isTrue();
 
-      Assertions.assertEquals(2, result.size());
+      assertThat(result).hasSize(2);
     });
   }
 
@@ -168,13 +171,13 @@ public class SQLFunctionAdjacencyTest {
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
         final Vertex vertex = iterator.next().asVertex(true);
-        Assertions.assertNotNull(vertex);
+        assertThat(vertex).isNotNull();
         result.add(vertex.getIdentity());
       }
 
-      Assertions.assertTrue(result.contains(vertices.get(2).getIdentity()));
+      assertThat(result.contains(vertices.get(2).getIdentity())).isTrue();
 
-      Assertions.assertEquals(1, result.size());
+      assertThat(result).hasSize(1);
     });
   }
 
@@ -185,7 +188,7 @@ public class SQLFunctionAdjacencyTest {
 
       final Vertex v = (Vertex) new SQLFunctionOutV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext().setDatabase(graph));
 
-      Assertions.assertEquals(v.getIdentity(), vertices.get(3).getIdentity());
+      assertThat(vertices.get(3).getIdentity()).isEqualTo(v.getIdentity());
     });
   }
 
@@ -196,7 +199,7 @@ public class SQLFunctionAdjacencyTest {
 
       final Vertex v = (Vertex) new SQLFunctionInV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext().setDatabase(graph));
 
-      Assertions.assertEquals(v.getIdentity(), vertices.get(1).getIdentity());
+      assertThat(vertices.get(1).getIdentity()).isEqualTo(v.getIdentity());
     });
   }
 
@@ -208,10 +211,10 @@ public class SQLFunctionAdjacencyTest {
       final ArrayList<Identifiable> iterator = (ArrayList<Identifiable>) new SQLFunctionBothV().execute(edges.get(3), null, null, new Object[] {},
           new BasicCommandContext().setDatabase(graph));
 
-      Assertions.assertTrue(iterator.contains(vertices.get(3).getIdentity()));
-      Assertions.assertTrue(iterator.contains(vertices.get(1).getIdentity()));
+      assertThat(iterator.contains(vertices.get(3).getIdentity())).isTrue();
+      assertThat(iterator.contains(vertices.get(1).getIdentity())).isTrue();
 
-      Assertions.assertEquals(2, iterator.size());
+      assertThat(iterator).hasSize(2);
     });
   }
 

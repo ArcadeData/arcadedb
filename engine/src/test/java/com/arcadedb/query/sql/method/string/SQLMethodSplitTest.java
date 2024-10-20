@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.utility.CodeUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -85,7 +84,7 @@ class SQLMethodSplitTest {
     final String rid = "#12:23231";
     for (int i = 0; i < 10_000_000; i++) {
       final String[] parts = rid.split(":", 2);
-      Assertions.assertEquals(2, parts.length);
+      assertThat(parts.length).isEqualTo(2);
     }
   }
 
@@ -93,7 +92,7 @@ class SQLMethodSplitTest {
     final String rid = "#12:23231";
     for (int i = 0; i < 10_000_000; i++) {
       final List<String> parts = CodeUtils.split(rid, ':', 2);
-      Assertions.assertEquals(2, parts.size());
+      assertThat(parts.size()).isEqualTo(2);
     }
   }
 }

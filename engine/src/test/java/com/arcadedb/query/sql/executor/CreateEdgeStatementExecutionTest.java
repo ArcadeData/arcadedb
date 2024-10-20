@@ -22,8 +22,10 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -56,17 +58,17 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     int count = 0;
     while (result.hasNext()) {
       final Result r = result.next();
-      Assertions.assertTrue(r.isEdge());
+      assertThat(r.isEdge()).isTrue();
 
       Edge edge = r.getEdge().get();
 
-      Assertions.assertEquals(count, edge.getInteger("x"));
+      assertThat(edge.getInteger("x")).isEqualTo(count);
 
       ++count;
     }
     result.close();
 
-    Assertions.assertEquals(1, count);
+    assertThat(count).isEqualTo(1);
   }
 
   @Test
@@ -89,7 +91,7 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
 
     try {
       ResultSet result = database.command("sql", "create edge " + edgeClassName + " from ? to ? CONTENT " + array, v1, v2);
-      Assertions.fail();
+      fail("");
     } catch (CommandSQLParsingException e) {
       // EXPECTED
     }

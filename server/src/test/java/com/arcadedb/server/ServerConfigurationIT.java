@@ -20,23 +20,23 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
 import static com.arcadedb.GlobalConfiguration.TX_WAL;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ServerConfigurationIT extends BaseGraphServerTest {
   @Test
   public void testServerLoadConfiguration() throws IOException {
     final ContextConfiguration cfg = new ContextConfiguration();
 
-    Assertions.assertTrue(cfg.getValueAsBoolean(TX_WAL));
+    assertThat(cfg.getValueAsBoolean(TX_WAL)).isTrue();
 
     cfg.setValue(TX_WAL, false);
 
-    Assertions.assertFalse(cfg.getValueAsBoolean(TX_WAL));
+    assertThat(cfg.getValueAsBoolean(TX_WAL)).isFalse();
 
     final File file = new File(getServer(0).getRootPath() + File.separator + ArcadeDBServer.CONFIG_SERVER_CONFIGURATION_FILENAME);
     if (file.exists())
@@ -49,7 +49,7 @@ public class ServerConfigurationIT extends BaseGraphServerTest {
     try {
       server.start();
 
-      Assertions.assertFalse(server.getConfiguration().getValueAsBoolean(TX_WAL));
+      assertThat(server.getConfiguration().getValueAsBoolean(TX_WAL)).isFalse();
     } finally {
       if (file.exists())
         file.delete();

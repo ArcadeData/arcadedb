@@ -25,10 +25,13 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -47,8 +50,8 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     final DocumentType companyClass = database.getSchema().getType("testBasicCreateProperty");
     final Property nameProperty = companyClass.getProperty(PROP_NAME);
 
-    Assertions.assertEquals(nameProperty.getName(), PROP_NAME);
-    Assertions.assertEquals(nameProperty.getType(), Type.STRING);
+    assertThat(nameProperty.getName()).isEqualTo(PROP_NAME);
+    assertThat(nameProperty.getType()).isEqualTo(Type.STRING);
   }
 
   @Test
@@ -59,8 +62,8 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     final DocumentType companyClass = database.getSchema().getType("testCreateMandatoryPropertyWithEmbeddedType");
     final Property nameProperty = companyClass.getProperty(PROP_OFFICERS);
 
-    Assertions.assertEquals(nameProperty.getName(), PROP_OFFICERS);
-    Assertions.assertEquals(nameProperty.getType(), Type.LIST);
+    assertThat(nameProperty.getName()).isEqualTo(PROP_OFFICERS);
+    assertThat(nameProperty.getType()).isEqualTo(Type.LIST);
   }
 
   @Test
@@ -71,8 +74,8 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     final DocumentType companyClass = database.getSchema().getType("testCreateUnsafePropertyWithEmbeddedType");
     final Property nameProperty = companyClass.getProperty(PROP_OFFICERS);
 
-    Assertions.assertEquals(nameProperty.getName(), PROP_OFFICERS);
-    Assertions.assertEquals(nameProperty.getType(), Type.LIST);
+    assertThat(nameProperty.getName()).isEqualTo(PROP_OFFICERS);
+    assertThat(nameProperty.getType()).isEqualTo(Type.LIST);
   }
 
   @Test
@@ -83,8 +86,8 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     final DocumentType companyClass = database.getSchema().getType("testExtraSpaces");
     final Property idProperty = companyClass.getProperty(PROP_ID);
 
-    Assertions.assertEquals(idProperty.getName(), PROP_ID);
-    Assertions.assertEquals(idProperty.getType(), Type.INTEGER);
+    assertThat(idProperty.getName()).isEqualTo(PROP_ID);
+    assertThat(idProperty.getType()).isEqualTo(Type.INTEGER);
   }
 
   @Test
@@ -92,7 +95,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     try {
       database.command("sql", "create document type CommandExecutionException").close();
       database.command("sql", "CREATE PROPERTY CommandExecutionException.id INTEGER (MANDATORY, INVALID, NOTNULL)  UNSAFE").close();
-      Assertions.fail("Expected CommandSQLParsingException");
+      fail("Expected CommandSQLParsingException");
     } catch (final CommandSQLParsingException e) {
       // OK
     }
@@ -112,29 +115,29 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
 
     final DocumentType invoiceType = database.getSchema().getType("Invoice");
     final Property productsProperty = invoiceType.getProperty("products");
-    Assertions.assertEquals(productsProperty.getName(), "products");
-    Assertions.assertEquals(productsProperty.getType(), Type.LIST);
-    Assertions.assertEquals(productsProperty.getOfType(), "Product");
+    assertThat(productsProperty.getName()).isEqualTo("products");
+    assertThat(productsProperty.getType()).isEqualTo(Type.LIST);
+    assertThat(productsProperty.getOfType()).isEqualTo("Product");
 
     final Property tagsProperty = invoiceType.getProperty("tags");
-    Assertions.assertEquals(tagsProperty.getName(), "tags");
-    Assertions.assertEquals(tagsProperty.getType(), Type.LIST);
-    Assertions.assertEquals(tagsProperty.getOfType(), "STRING");
+    assertThat(tagsProperty.getName()).isEqualTo("tags");
+    assertThat(tagsProperty.getType()).isEqualTo(Type.LIST);
+    assertThat(tagsProperty.getOfType()).isEqualTo("STRING");
 
     final Property settingsProperty = invoiceType.getProperty("settings");
-    Assertions.assertEquals(settingsProperty.getName(), "settings");
-    Assertions.assertEquals(settingsProperty.getType(), Type.MAP);
-    Assertions.assertEquals(settingsProperty.getOfType(), "STRING");
+    assertThat(settingsProperty.getName()).isEqualTo("settings");
+    assertThat(settingsProperty.getType()).isEqualTo(Type.MAP);
+    assertThat(settingsProperty.getOfType()).isEqualTo("STRING");
 
     final Property mainProductProperty = invoiceType.getProperty("mainProduct");
-    Assertions.assertEquals(mainProductProperty.getName(), "mainProduct");
-    Assertions.assertEquals(mainProductProperty.getType(), Type.LINK);
-    Assertions.assertEquals(mainProductProperty.getOfType(), "Product");
+    assertThat(mainProductProperty.getName()).isEqualTo("mainProduct");
+    assertThat(mainProductProperty.getType()).isEqualTo(Type.LINK);
+    assertThat(mainProductProperty.getOfType()).isEqualTo("Product");
 
     final Property embeddedProperty = invoiceType.getProperty("embedded");
-    Assertions.assertEquals(embeddedProperty.getName(), "embedded");
-    Assertions.assertEquals(embeddedProperty.getType(), Type.EMBEDDED);
-    Assertions.assertEquals(embeddedProperty.getOfType(), "Product");
+    assertThat(embeddedProperty.getName()).isEqualTo("embedded");
+    assertThat(embeddedProperty.getType()).isEqualTo(Type.EMBEDDED);
+    assertThat(embeddedProperty.getOfType()).isEqualTo("Product");
 
     final MutableDocument[] validInvoice = new MutableDocument[1];
     database.transaction(() -> {
@@ -153,21 +156,21 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
         database.newDocument("Invoice").set("products",//
             List.of(database.newDocument("Invoice").save())).save();
       });
-      Assertions.fail();
+      fail("");
     } catch (ValidationException e) {
       // EXPECTED
     }
 
     try {
       validInvoice[0].set("tags", List.of(3, "hard to close")).save();
-      Assertions.fail();
+      fail("");
     } catch (ValidationException e) {
       // EXPECTED
     }
 
     try {
       validInvoice[0].set("settings", Map.of("test", 10F)).save();
-      Assertions.fail();
+      fail("");
     } catch (ValidationException e) {
       // EXPECTED
     }
@@ -176,7 +179,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
       database.transaction(() -> {
         validInvoice[0].set("mainProduct", database.newDocument("Invoice").save()).save();
       });
-      Assertions.fail();
+      fail("");
     } catch (ValidationException e) {
       // EXPECTED
     }
@@ -185,7 +188,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
       database.transaction(() -> {
         validInvoice[0].newEmbeddedDocument("Invoice", "embedded").save();
       });
-      Assertions.fail();
+      fail("");
     } catch (ValidationException e) {
       // EXPECTED
     }
@@ -199,15 +202,15 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     DocumentType clazz = database.getSchema().getType("testIfNotExists");
     Property nameProperty = clazz.getProperty(PROP_NAME);
 
-    Assertions.assertEquals(nameProperty.getName(), PROP_NAME);
-    Assertions.assertEquals(nameProperty.getType(), Type.STRING);
+    assertThat(nameProperty.getName()).isEqualTo(PROP_NAME);
+    assertThat(nameProperty.getType()).isEqualTo(Type.STRING);
 
     database.command("sql", "CREATE property testIfNotExists.name if not exists STRING").close();
 
     clazz = database.getSchema().getType("testIfNotExists");
     nameProperty = clazz.getProperty(PROP_NAME);
 
-    Assertions.assertEquals(nameProperty.getName(), PROP_NAME);
-    Assertions.assertEquals(nameProperty.getType(), Type.STRING);
+    assertThat(nameProperty.getName()).isEqualTo(PROP_NAME);
+    assertThat(nameProperty.getType()).isEqualTo(Type.STRING);
   }
 }

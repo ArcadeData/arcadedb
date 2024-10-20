@@ -24,11 +24,13 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class QueryAndIndexesTest extends TestHelper {
   private static final int TOT = 10000;
@@ -66,20 +68,20 @@ public class QueryAndIndexesTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
+        assertThat(record).isNotNull();
 
         final Set<String> prop = new HashSet<>();
           prop.addAll(record.getPropertyNames());
 
-        Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
-        Assertions.assertEquals(123, (int) record.getProperty("id"));
-        Assertions.assertEquals("Jay", record.getProperty("name"));
-        Assertions.assertEquals("Miner123", record.getProperty("surname"));
+        assertThat(record.getPropertyNames().size()).isEqualTo(3);
+        assertThat((int) record.getProperty("id")).isEqualTo(123);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Jay");
+        assertThat(record.<String>getProperty("surname")).isEqualTo("Miner123");
 
         total.incrementAndGet();
       }
 
-      Assertions.assertEquals(1, total.get());
+      assertThat(total.get()).isEqualTo(1);
     });
   }
 
@@ -95,17 +97,17 @@ public class QueryAndIndexesTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
+        assertThat(record).isNotNull();
 
         final Set<String> prop = new HashSet<>();
           prop.addAll(record.getPropertyNames());
 
-        Assertions.assertEquals("Jay", record.getProperty("name"));
+        assertThat(record.<String>getProperty("name")).isEqualTo("Jay");
 
         total.incrementAndGet();
       }
 
-      Assertions.assertEquals(TOT, total.get());
+      assertThat(total.get()).isEqualTo(TOT);
     });
   }
 }

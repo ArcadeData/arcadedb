@@ -22,8 +22,11 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class BLOBTest extends TestHelper {
   @Override
@@ -44,7 +47,7 @@ public class BLOBTest extends TestHelper {
 
     database.transaction(() -> {
       final Document blob = database.iterateType("Blob", false).next().asDocument();
-      Assertions.assertEquals("This is a test", new String( blob.getBinary("binary")));
+      assertThat(new String( blob.getBinary("binary"))).isEqualTo("This is a test");
     });
   }
 }

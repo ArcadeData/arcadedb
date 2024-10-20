@@ -23,10 +23,14 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
 
 public class DocumentTest extends TestHelper {
   @Override
@@ -68,37 +72,37 @@ public class DocumentTest extends TestHelper {
       doc.reload();
       doc.detach();
 
-      Assertions.assertEquals("Tim", detached.getString("name"));
-      Assertions.assertEquals(embeddedObj, detached.get("embeddedObj"));
-      Assertions.assertEquals(embeddedList, detached.get("embeddedList"));
-      Assertions.assertEquals(embeddedMap, detached.get("embeddedMap"));
-      Assertions.assertNull(detached.getString("lastname"));
+      assertThat(detached.getString("name")).isEqualTo("Tim");
+      assertThat(detached.get("embeddedObj")).isEqualTo(embeddedObj);
+      assertThat(detached.get("embeddedList")).isEqualTo(embeddedList);
+      assertThat(detached.get("embeddedMap")).isEqualTo(embeddedMap);
+      assertThat(detached.getString("lastname")).isNull();
 
       final Set<String> props = detached.getPropertyNames();
-      Assertions.assertEquals(4, props.size());
-      Assertions.assertTrue(props.contains("name"));
-      Assertions.assertTrue(props.contains("embeddedObj"));
-      Assertions.assertTrue(props.contains("embeddedList"));
-      Assertions.assertTrue(props.contains("embeddedMap"));
+      assertThat(props).hasSize(4);
+      assertThat(props.contains("name")).isTrue();
+      assertThat(props.contains("embeddedObj")).isTrue();
+      assertThat(props.contains("embeddedList")).isTrue();
+      assertThat(props.contains("embeddedMap")).isTrue();
 
       final Map<String, Object> map = detached.toMap();
-      Assertions.assertEquals(6, map.size());
+      assertThat(map).hasSize(6);
 
-      Assertions.assertEquals("Tim", map.get("name"));
-      Assertions.assertEquals(embeddedObj, map.get("embeddedObj"));
-      Assertions.assertTrue(((DetachedDocument) map.get("embeddedObj")).getBoolean("embeddedObj"));
-      Assertions.assertEquals(embeddedList, map.get("embeddedList"));
-      Assertions.assertTrue(((List<DetachedDocument>) map.get("embeddedList")).get(0).getBoolean("embeddedList"));
-      Assertions.assertEquals(embeddedMap, map.get("embeddedMap"));
-      Assertions.assertTrue(((Map<String, DetachedDocument>) map.get("embeddedMap")).get("first").getBoolean("embeddedMap"));
+      assertThat(map.get("name")).isEqualTo("Tim");
+      assertThat(map.get("embeddedObj")).isEqualTo(embeddedObj);
+      assertThat(((DetachedDocument) map.get("embeddedObj")).getBoolean("embeddedObj")).isTrue();
+      assertThat(map.get("embeddedList")).isEqualTo(embeddedList);
+      assertThat(((List<DetachedDocument>) map.get("embeddedList")).get(0).getBoolean("embeddedList")).isTrue();
+      assertThat(map.get("embeddedMap")).isEqualTo(embeddedMap);
+      assertThat(((Map<String, DetachedDocument>) map.get("embeddedMap")).get("first").getBoolean("embeddedMap")).isTrue();
 
-      Assertions.assertEquals("Tim", detached.toJSON().get("name"));
+      assertThat(detached.toJSON().get("name")).isEqualTo("Tim");
 
       detached.toString();
 
       try {
         detached.modify();
-        Assertions.fail("modify");
+        fail("modify");
       } catch (final UnsupportedOperationException e) {
       }
 
@@ -106,12 +110,12 @@ public class DocumentTest extends TestHelper {
 
       try {
         detached.setBuffer(null);
-        Assertions.fail("setBuffer");
+        fail("setBuffer");
       } catch (final UnsupportedOperationException e) {
       }
 
-      Assertions.assertNull(detached.getString("name"));
-      Assertions.assertNull(detached.getString("lastname"));
+      assertThat(detached.getString("name")).isNull();
+      assertThat(detached.getString("lastname")).isNull();
     });
   }
 }

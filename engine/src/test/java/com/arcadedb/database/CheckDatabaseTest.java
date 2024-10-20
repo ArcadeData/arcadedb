@@ -31,12 +31,15 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class CheckDatabaseTest extends TestHelper {
 
@@ -46,40 +49,40 @@ public class CheckDatabaseTest extends TestHelper {
   @Test
   public void checkDatabase() {
     final ResultSet result = database.command("sql", "check database");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveEdges"));
-      Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat(row.<Long>getProperty("totalActiveVertices")).isEqualTo(TOTAL);
+      assertThat(row.<Long>getProperty("totalActiveEdges")).isEqualTo(TOTAL - 1);
+      assertThat(row.<Long>getProperty("autoFix")).isEqualTo(0L);
     }
   }
 
   @Test
   public void checkTypes() {
     ResultSet result = database.command("sql", "check database type Person");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveRecords"));
-      Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat((Long) row.getProperty("totalActiveRecords")).isEqualTo(TOTAL);
+      assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(0);
     }
 
     result = database.command("sql", "check database type Person, Knows");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(TOTAL * 2 - 1, (Long) row.getProperty("totalActiveRecords"));
-      Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveEdges"));
-      Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat((Long) row.getProperty("totalActiveRecords")).isEqualTo(TOTAL * 2 - 1);
+      assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
+      assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(TOTAL - 1);
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(0);
     }
   }
 
@@ -88,20 +91,20 @@ public class CheckDatabaseTest extends TestHelper {
     database.transaction(() -> database.command("sql", "delete from Knows"));
 
     final ResultSet result = database.command("sql", "check database");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(0L, (Long) row.getProperty("autoFix"));
-      Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-      Assertions.assertEquals(0L, (Long) row.getProperty("totalActiveEdges"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalDeletedRecords"));
-      Assertions.assertEquals(0, ((Collection) row.getProperty("corruptedRecords")).size());
-      Assertions.assertEquals(0L, (Long) row.getProperty("missingReferenceBack"));
-      Assertions.assertEquals(0L, (Long) row.getProperty("invalidLinks"));
-      Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size());
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(0L);
+      assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
+      assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
+      assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(0L);
+      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(TOTAL - 1);
+      assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(0);
+      assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0L);
+      assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(0L);
+      assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(0);
     }
   }
 
@@ -111,76 +114,76 @@ public class CheckDatabaseTest extends TestHelper {
 
     database.transaction(() -> {
       final Iterator<Record> iter = database.iterateType("Knows", false);
-      Assertions.assertTrue(iter.hasNext());
+      assertThat(iter.hasNext()).isTrue();
 
       final Record edge = iter.next();
       deletedEdge.set(edge.getIdentity());
 
-      Assertions.assertEquals(root.getIdentity(), edge.asEdge().getOut());
+      assertThat(edge.asEdge().getOut()).isEqualTo(root.getIdentity());
 
       // DELETE THE EDGE AT LOW LEVEL
       database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
     });
 
     ResultSet result = database.command("sql", "check database");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
-      Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-      Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalActiveEdges"));
-      Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
-      Assertions.assertEquals(1, ((Collection) row.getProperty("corruptedRecords")).size());
-      Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
-      Assertions.assertEquals(2, (Long) row.getProperty("invalidLinks"));
-      Assertions.assertEquals(1, ((Collection) row.getProperty("warnings")).size());
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(0);
+      assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
+      assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
+      assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(TOTAL - 2);
+      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(1);
+      assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(1);
+      assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0);
+      assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(2);
+      assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(1);
     }
 
-    Assertions.assertEquals(TOTAL - 2, countEdges(root.getIdentity()));
-    Assertions.assertEquals(TOTAL - 1, countEdgesSegmentList(root.getIdentity()));
+    assertThat(countEdges(root.getIdentity())).isEqualTo(TOTAL - 2);
+    assertThat(countEdgesSegmentList(root.getIdentity())).isEqualTo(TOTAL - 1);
 
     result = database.command("sql", "check database fix");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(1, (Long) row.getProperty("autoFix"));
-      Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-      Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalActiveEdges"));
-      Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
-      Assertions.assertEquals(1, ((Collection) row.getProperty("corruptedRecords")).size());
-      Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
-      Assertions.assertEquals(2, (Long) row.getProperty("invalidLinks"));
-      Assertions.assertEquals(1, ((Collection) row.getProperty("warnings")).size());
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(1);
+      assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
+      assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
+      assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(TOTAL - 2);
+      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(1);
+      assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(1);
+      assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0);
+      assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(2);
+      assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(1);
     }
 
-    Assertions.assertEquals(TOTAL - 2, countEdges(root.getIdentity()));
-    Assertions.assertEquals(TOTAL - 2, countEdgesSegmentList(root.getIdentity()));
+    assertThat(countEdges(root.getIdentity())).isEqualTo(TOTAL - 2);
+    assertThat(countEdgesSegmentList(root.getIdentity())).isEqualTo(TOTAL - 2);
 
     result = database.command("sql", "check database fix");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
-      Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-      Assertions.assertEquals(TOTAL - 2, (Long) row.getProperty("totalActiveEdges"));
-      Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
-      Assertions.assertEquals(0, ((Collection) row.getProperty("corruptedRecords")).size());
-      Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
-      Assertions.assertEquals(0, (Long) row.getProperty("invalidLinks"));
-      Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size());
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(0);
+      assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
+      assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
+      assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(TOTAL - 2);
+      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(1);
+      assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(0);
+      assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0);
+      assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(0);
+      assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(0);
     }
 
-    Assertions.assertEquals(TOTAL - 2, countEdges(root.getIdentity()));
-    Assertions.assertEquals(TOTAL - 2, countEdgesSegmentList(root.getIdentity()));
+    assertThat(countEdges(root.getIdentity())).isEqualTo(TOTAL - 2);
+    assertThat(countEdgesSegmentList(root.getIdentity())).isEqualTo(TOTAL - 2);
   }
 
   @Test
@@ -191,52 +194,52 @@ public class CheckDatabaseTest extends TestHelper {
     });
 
     ResultSet result = database.command("sql", "check database");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
       final Result row = result.next();
 
-      Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveVertices"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-      Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveEdges"));
-      Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
-      Assertions.assertEquals(TOTAL, ((Collection) row.getProperty("corruptedRecords")).size()); // ALL THE EDGES + ROOT VERTEX
-      Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
-      Assertions.assertEquals((TOTAL - 1) * 2, (Long) row.getProperty("invalidLinks"));
-      Assertions.assertEquals(TOTAL - 1, ((Collection) row.getProperty("warnings")).size());
+      assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(0);
+      assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL - 1);
+      assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
+      assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(TOTAL - 1);
+      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(1);
+      assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(TOTAL); // ALL THE EDGES + ROOT VERTEX
+      assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0);
+      assertThat((Long) row.getProperty("invalidLinks")).isEqualTo((TOTAL - 1) * 2);
+      assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(TOTAL - 1);
     }
 
     result = database.command("sql", "check database fix");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result row = result.next();
 
-    Assertions.assertEquals("check database", row.getProperty("operation"));
-    Assertions.assertEquals((TOTAL - 1) * 2, (Long) row.getProperty("autoFix"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveVertices"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-    Assertions.assertEquals(0, (Long) row.getProperty("totalActiveEdges"));
-    Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalDeletedRecords"));
-    Assertions.assertEquals(TOTAL - 1, ((Collection) row.getProperty("corruptedRecords")).size());
-    Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
-    Assertions.assertEquals((TOTAL - 1) * 2, (Long) row.getProperty("invalidLinks"));
-    Assertions.assertEquals((TOTAL - 1) * 2, ((Collection) row.getProperty("warnings")).size());
+    assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+    assertThat((Long) row.getProperty("autoFix")).isEqualTo((TOTAL - 1) * 2);
+    assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL - 1);
+    assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
+    assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(0);
+    assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(TOTAL);
+    assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(TOTAL - 1);
+    assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0);
+    assertThat((Long) row.getProperty("invalidLinks")).isEqualTo((TOTAL - 1) * 2);
+    assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo((TOTAL - 1) * 2);
 
     result = database.command("sql", "check database");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
 
     row = result.next();
 
-    Assertions.assertEquals("check database", row.getProperty("operation"));
-    Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveVertices"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-    Assertions.assertEquals(0, (Long) row.getProperty("totalActiveEdges"));
-    Assertions.assertEquals(TOTAL, (Long) row.getProperty("totalDeletedRecords"));
-    Assertions.assertEquals(0, ((Collection) row.getProperty("corruptedRecords")).size());
-    Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
-    Assertions.assertEquals(0, (Long) row.getProperty("invalidLinks"));
-    Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size());
+    assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+    assertThat((Long) row.getProperty("autoFix")).isEqualTo(0);
+    assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL - 1);
+    assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
+    assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(0);
+    assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(TOTAL);
+    assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(0);
+    assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0);
+    assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(0);
+    assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(0);
   }
 
   @Test
@@ -256,48 +259,48 @@ public class CheckDatabaseTest extends TestHelper {
     });
 
     ResultSet result = database.command("sql", "check database");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
 
     Result row = result.next();
-    Assertions.assertEquals("check database", row.getProperty("operation"));
-    Assertions.assertTrue((Long) row.getProperty("totalErrors") > 0L);
-    Assertions.assertEquals(0L, (Long) row.getProperty("autoFix"));
-    Assertions.assertTrue((Long) row.getProperty("totalActiveVertices") < TOTAL);
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
-    Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalActiveEdges"));
-    Assertions.assertEquals(0L, (Long) row.getProperty("totalDeletedRecords"));
-    Assertions.assertEquals(0L, (Long) row.getProperty("missingReferenceBack"));
-    Assertions.assertTrue((Long) row.getProperty("invalidLinks") > 0L);
-    Assertions.assertTrue(((Collection) row.getProperty("warnings")).size() > 0L);
-    Assertions.assertEquals(1, ((Collection<String>) row.getProperty("rebuiltIndexes")).size());
-    Assertions.assertTrue(((Collection) row.getProperty("corruptedRecords")).size() > 0L);
+    assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+    assertThat((Long) row.getProperty("totalErrors") > 0L).isTrue();
+    assertThat((Long) row.getProperty("autoFix")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("totalActiveVertices") < TOTAL).isTrue();
+    assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
+    assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(TOTAL - 1);
+    assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("invalidLinks") > 0L).isTrue();
+    assertThat(((Collection) row.getProperty("warnings")).size() > 0L).isTrue();
+    assertThat(((Collection<String>) row.getProperty("rebuiltIndexes")).size()).isEqualTo(1);
+    assertThat(((Collection) row.getProperty("corruptedRecords")).size() > 0L).isTrue();
 
     result = database.command("sql", "check database fix");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     row = result.next();
-    Assertions.assertTrue((Long) row.getProperty("autoFix") > 0L);
-    Assertions.assertEquals(0L, (Long) row.getProperty("totalActiveEdges"));
-    Assertions.assertEquals(1, ((Collection<String>) row.getProperty("rebuiltIndexes")).size());
-    Assertions.assertTrue((Long) row.getProperty("totalActiveVertices") < TOTAL);
-    Assertions.assertTrue(((Collection) row.getProperty("corruptedRecords")).size() > 0L);
+    assertThat((Long) row.getProperty("autoFix") > 0L).isTrue();
+    assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(0L);
+    assertThat(((Collection<String>) row.getProperty("rebuiltIndexes")).size()).isEqualTo(1);
+    assertThat((Long) row.getProperty("totalActiveVertices") < TOTAL).isTrue();
+    assertThat(((Collection) row.getProperty("corruptedRecords")).size() > 0L).isTrue();
 
     result = database.command("sql", "check database");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     row = result.next();
-    Assertions.assertEquals(0L, (Long) row.getProperty("autoFix"));
-    Assertions.assertEquals(0L, (Long) row.getProperty("totalErrors"));
-    Assertions.assertEquals(0L, (Long) row.getProperty("autoFix"));
-    Assertions.assertEquals(0L, (Long) row.getProperty("missingReferenceBack"));
-    Assertions.assertEquals(0L, (Long) row.getProperty("invalidLinks"));
-    Assertions.assertEquals(0L, ((Collection) row.getProperty("warnings")).size());
-    Assertions.assertEquals(0, ((Collection<String>) row.getProperty("rebuiltIndexes")).size());
-    Assertions.assertEquals(0L, ((Collection) row.getProperty("corruptedRecords")).size());
+    assertThat((Long) row.getProperty("autoFix")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("totalErrors")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("autoFix")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(0L);
+    assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(0L);
+    assertThat(((Collection<String>) row.getProperty("rebuiltIndexes")).size()).isEqualTo(0);
+    assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(0L);
 
     // CHECK CORRUPTED RECORD ARE NOT INDEXED ANYMORE
     final List<TypeIndex> indexes = database.getSchema().getType("Person").getIndexesByProperties("id");
-    Assertions.assertEquals(1, indexes.size());
+    assertThat(indexes.size()).isEqualTo(1);
 
-    Assertions.assertEquals((Long) row.getProperty("totalActiveVertices"), indexes.get(0).countEntries());
+    assertThat(indexes.get(0).countEntries()).isEqualTo((Long) row.getProperty("totalActiveVertices"));
   }
 
   @Override

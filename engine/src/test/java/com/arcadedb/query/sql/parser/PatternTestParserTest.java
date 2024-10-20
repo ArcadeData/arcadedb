@@ -18,10 +18,13 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /** Created by luigidellaquila on 11/10/16. */
 public class PatternTestParserTest extends AbstractParserTest {
@@ -34,12 +37,12 @@ public class PatternTestParserTest extends AbstractParserTest {
       final MatchStatement stm = (MatchStatement) parser.Parse();
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
-      Assertions.assertEquals(0, pattern.getNumOfEdges());
-      Assertions.assertEquals(1, pattern.getAliasToNode().size());
-      Assertions.assertNotNull(pattern.getAliasToNode().get("a"));
-      Assertions.assertEquals(1, pattern.getDisjointPatterns().size());
+      assertThat(pattern.getNumOfEdges()).isEqualTo(0);
+      assertThat(pattern.getAliasToNode().size()).isEqualTo(1);
+      assertThat(pattern.getAliasToNode().get("a")).isNotNull();
+      assertThat(pattern.getDisjointPatterns().size()).isEqualTo(1);
     } catch (final ParseException e) {
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -51,25 +54,25 @@ public class PatternTestParserTest extends AbstractParserTest {
       final MatchStatement stm = (MatchStatement) parser.Parse();
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
-      Assertions.assertEquals(0, pattern.getNumOfEdges());
-      Assertions.assertEquals(2, pattern.getAliasToNode().size());
-      Assertions.assertNotNull(pattern.getAliasToNode().get("a"));
+      assertThat(pattern.getNumOfEdges()).isEqualTo(0);
+      assertThat(pattern.getAliasToNode().size()).isEqualTo(2);
+      assertThat(pattern.getAliasToNode().get("a")).isNotNull();
       final List<Pattern> subPatterns = pattern.getDisjointPatterns();
-      Assertions.assertEquals(2, subPatterns.size());
-      Assertions.assertEquals(0, subPatterns.get(0).getNumOfEdges());
-      Assertions.assertEquals(1, subPatterns.get(0).getAliasToNode().size());
-      Assertions.assertEquals(0, subPatterns.get(1).getNumOfEdges());
-      Assertions.assertEquals(1, subPatterns.get(1).getAliasToNode().size());
+      assertThat(subPatterns.size()).isEqualTo(2);
+      assertThat(subPatterns.get(0).getNumOfEdges()).isEqualTo(0);
+      assertThat(subPatterns.get(0).getAliasToNode().size()).isEqualTo(1);
+      assertThat(subPatterns.get(1).getNumOfEdges()).isEqualTo(0);
+      assertThat(subPatterns.get(1).getAliasToNode().size()).isEqualTo(1);
 
       final Set<String> aliases = new HashSet<>();
       aliases.add("a");
       aliases.add("b");
       aliases.remove(subPatterns.get(0).getAliasToNode().keySet().iterator().next());
       aliases.remove(subPatterns.get(1).getAliasToNode().keySet().iterator().next());
-      Assertions.assertEquals(0, aliases.size());
+      assertThat(aliases.size()).isEqualTo(0);
 
     } catch (final ParseException e) {
-      Assertions.fail();
+      fail("");
     }
   }
 
@@ -82,11 +85,11 @@ public class PatternTestParserTest extends AbstractParserTest {
       final MatchStatement stm = (MatchStatement) parser.Parse();
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
-      Assertions.assertEquals(4, pattern.getNumOfEdges());
-      Assertions.assertEquals(6, pattern.getAliasToNode().size());
-      Assertions.assertNotNull(pattern.getAliasToNode().get("a"));
+      assertThat(pattern.getNumOfEdges()).isEqualTo(4);
+      assertThat(pattern.getAliasToNode().size()).isEqualTo(6);
+      assertThat(pattern.getAliasToNode().get("a")).isNotNull();
       final List<Pattern> subPatterns = pattern.getDisjointPatterns();
-      Assertions.assertEquals(2, subPatterns.size());
+      assertThat(subPatterns.size()).isEqualTo(2);
 
       final Set<String> aliases = new HashSet<>();
       aliases.add("a");
@@ -97,10 +100,10 @@ public class PatternTestParserTest extends AbstractParserTest {
       aliases.add("f");
       aliases.removeAll(subPatterns.get(0).getAliasToNode().keySet());
       aliases.removeAll(subPatterns.get(1).getAliasToNode().keySet());
-      Assertions.assertEquals(0, aliases.size());
+      assertThat(aliases.size()).isEqualTo(0);
 
     } catch (final ParseException e) {
-      Assertions.fail();
+      fail("");
     }
   }
 }

@@ -19,8 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -51,11 +52,11 @@ public class WhileBlockExecutionTest extends TestHelper {
     int sum = 0;
     while (results.hasNext()) {
       final Result item = results.next();
-      sum += (Integer) item.getProperty("value");
+      sum +=  item.<Integer>getProperty("value");
       tot++;
     }
-    Assertions.assertEquals(3, tot);
-    Assertions.assertEquals(3, sum);
+    assertThat(tot).isEqualTo(3);
+    assertThat(sum).isEqualTo(3);
     results.close();
   }
 
@@ -83,11 +84,11 @@ public class WhileBlockExecutionTest extends TestHelper {
     int sum = 0;
     while (results.hasNext()) {
       final Result item = results.next();
-      sum += (Integer) item.getProperty("value");
+      sum +=  item.<Integer>getProperty("value");
       tot++;
     }
-    Assertions.assertEquals(2, tot);
-    Assertions.assertEquals(1, sum);
+    assertThat(tot).isEqualTo(2);
+    assertThat(sum).isEqualTo(1);
     results.close();
   }
 }

@@ -18,8 +18,7 @@
  */
 package com.arcadedb.database;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.assertj.core.api.Assertions.assertThat;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -84,13 +83,13 @@ class DataEncryptionTest extends TestHelper {
 
   private void verify(Vertex p1, Vertex p2, boolean isEquals) {
     if (isEquals) {
-      assertEquals("John", p1.get("name"));
-      assertEquals("Doe", p2.get("name"));
-      assertEquals(2024, p1.getEdges(DIRECTION.OUT, "Knows").iterator().next().get("since"));
+      assertThat(p1.get("name")).isEqualTo("John");
+      assertThat(p2.get("name")).isEqualTo("Doe");
+      assertThat(p1.getEdges(DIRECTION.OUT, "Knows").iterator().next().get("since")).isEqualTo(2024);
     } else {
-      assertFalse(((String) p1.get("name")).contains("John"));
-      assertFalse(((String) p2.get("name")).contains("Doe"));
-      assertFalse(p1.getEdges(DIRECTION.OUT, "Knows").iterator().next().get("since").toString().contains("2024"));
+      assertThat(((String) p1.get("name")).contains("John")).isFalse();
+      assertThat(((String) p2.get("name")).contains("Doe")).isFalse();
+      assertThat(p1.getEdges(DIRECTION.OUT, "Knows").iterator().next().get("since").toString().contains("2024")).isFalse();
     }
   }
 }

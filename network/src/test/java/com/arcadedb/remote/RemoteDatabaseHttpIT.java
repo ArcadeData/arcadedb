@@ -11,9 +11,8 @@ import java.net.*;
 import java.nio.charset.*;
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
@@ -58,7 +57,7 @@ class RemoteDatabaseHttpIT {
     verify(outputStream).write(payloadAsByteArray, 0, payloadAsByteArray.length);
 
     verify(connection).getHeaderField(RemoteDatabase.ARCADEDB_SESSION_ID);
-    assertTrue(database.isTransactionActive());
+    assertThat(database.isTransactionActive()).isTrue();
   }
 
   @Test
@@ -103,7 +102,7 @@ class RemoteDatabaseHttpIT {
     }, false, 1);
     verify(database).begin();
     verify(database).commit();
-    assertTrue(createdNewTx);
+    assertThat(createdNewTx).isTrue();
   }
 
   @Test
@@ -115,7 +114,7 @@ class RemoteDatabaseHttpIT {
     }, true, 1);
     verify(database, never()).begin();
     verify(database, never()).commit();
-    assertFalse(createdNewTx);
+    assertThat(createdNewTx).isFalse();
   }
 
   @Test
@@ -124,7 +123,7 @@ class RemoteDatabaseHttpIT {
     doNothing().when(database).begin();
     doThrow(new RuntimeException()).when(database).commit();
 
-    assertThrows(RuntimeException.class, () -> database.transaction(() -> {
+    assertThatExceptionOfType(RuntimeException.class).isThrownBy(() -> database.transaction(() -> {
     }, false, 1));
     verify(database).begin();
   }

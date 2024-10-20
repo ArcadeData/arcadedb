@@ -26,11 +26,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class GloVeImporterIT {
   @Test
@@ -50,12 +51,12 @@ public class GloVeImporterIT {
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );
 
-      Assertions.assertEquals(10, db.countType("Word", true));
+      assertThat(db.countType("Word", true)).isEqualTo(10);
 
       final float[] key = new float[100];
 
       ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", key, 10);
-      Assertions.assertTrue(resultSet.hasNext());
+      assertThat(resultSet.hasNext()).isTrue();
       final List<Pair<Identifiable, Float>> approximateResults = new ArrayList<>();
       while (resultSet.hasNext()) {
         final Result row = resultSet.next();

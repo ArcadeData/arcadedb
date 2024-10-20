@@ -8,11 +8,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.time.format.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestInsertAndSelectWithThreadBucketSelectionStrategy {
   @Test
@@ -54,12 +55,12 @@ public class TestInsertAndSelectWithThreadBucketSelectionStrategy {
             database.begin();
             String sqlString = "UPDATE Product SET name = ?, type = ?, start = ?, stop = ?, v = ? UPSERT WHERE name = ?";
             try (ResultSet resultSet = database.command("sql", sqlString, name1, type, validityStart, validityStop, version1, name1)) {
-              Assertions.assertTrue((long) resultSet.nextIfAvailable().getProperty("count", 0) == 1);
+              assertThat((long) resultSet.nextIfAvailable().getProperty("count", 0)).isEqualTo(1);
             }
 //            database.commit();
 //            database.begin();
             try (ResultSet resultSet = database.command("sql", sqlString, name2, type, validityStart, validityStop, version2, name2)) {
-              Assertions.assertTrue((long) resultSet.nextIfAvailable().getProperty("count", 0) == 1);
+              assertThat((long) resultSet.nextIfAvailable().getProperty("count", 0)).isEqualTo(1);
             }
             database.commit();
           } catch (Exception e) {
@@ -73,10 +74,10 @@ public class TestInsertAndSelectWithThreadBucketSelectionStrategy {
           String sqlString = "SELECT name, start, stop FROM Product WHERE type = ? AND start <= ? AND stop >= ? ORDER BY start DESC, stop DESC, v DESC LIMIT 1";
           int total = 0;
           try (ResultSet resultSet = database.query("sql", sqlString, type, queryStart, queryStop)) {
-            Assertions.assertTrue(resultSet.hasNext());
+            assertThat(resultSet.hasNext()).isTrue();
             ++total;
           }
-          Assertions.assertEquals(1, total);
+          assertThat(total).isEqualTo(1);
         } finally {
           database.drop();
         }

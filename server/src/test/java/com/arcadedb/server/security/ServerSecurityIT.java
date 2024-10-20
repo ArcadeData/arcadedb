@@ -23,14 +23,19 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.*;
+
+import static java.util.concurrent.TimeUnit.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 public class ServerSecurityIT {
 
@@ -47,14 +52,14 @@ public class ServerSecurityIT {
     final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
     final File securityConf = securityConfPath.toFile();
 
-    Assertions.assertTrue(securityConf.exists());
+    assertThat(securityConf.exists()).isTrue();
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final List<JSONObject> jsonl = repository.load();
 
-    Assertions.assertEquals(1, jsonl.size());
-    Assertions.assertEquals("root", jsonl.get(0).getString("name"));
+    assertThat(jsonl.size()).isEqualTo(1);
+    assertThat(jsonl.get(0).getString("name")).isEqualTo("root");
     passwordShouldMatch(security, PASSWORD, jsonl.get(0).getString("password"));
   }
 
@@ -78,14 +83,14 @@ public class ServerSecurityIT {
 
     final File securityConf = securityConfPath.toFile();
 
-    Assertions.assertTrue(securityConf.exists());
+    assertThat(securityConf.exists()).isTrue();
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final List<JSONObject> jsonl = repository.load();
 
-    Assertions.assertEquals(1, jsonl.size());
-    Assertions.assertEquals("root", jsonl.get(0).getString("name"));
+    assertThat(jsonl.size()).isEqualTo(1);
+    assertThat(jsonl.get(0).getString("name")).isEqualTo("root");
     passwordShouldMatch(security, PASSWORD, jsonl.get(0).getString("password"));
   }
 
@@ -106,8 +111,8 @@ public class ServerSecurityIT {
     security.startService();
     security.loadUsers();
 
-    Assertions.assertTrue(security.existsUser("providedUser"));
-    Assertions.assertFalse(security.existsUser("root"));
+    assertThat(security.existsUser("providedUser")).isTrue();
+    assertThat(security.existsUser("root")).isFalse();
     passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
   }
 
@@ -131,24 +136,19 @@ public class ServerSecurityIT {
     security.startService();
     security.loadUsers();
 
-    Assertions.assertTrue(security.existsUser("providedUser"));
+    assertThat(security.existsUser("providedUser")).isTrue();
 
     ServerSecurityUser user2 = security.getUser("providedUser");
-    Assertions.assertEquals("providedUser", user2.getName());
+    assertThat(user2.getName()).isEqualTo("providedUser");
 
-    Assertions.assertFalse(security.existsUser("root"));
+    assertThat(security.existsUser("root")).isFalse();
     passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
 
     // RESET USERS ACCESSING DIRECTLY TO THE FILE
     repository.save(SecurityUserFileRepository.createDefault());
 
-    try {
-      Thread.sleep(220);
-    } catch (final InterruptedException e) {
-      e.printStackTrace();
-    }
+    await().atMost(10, SECONDS).until(()-> !security.existsUser("providedUser"));
 
-    Assertions.assertFalse(security.existsUser("providedUser"));
   }
 
   @Test
@@ -156,20 +156,18 @@ public class ServerSecurityIT {
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
 
-    Assertions.assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=",
-        security.encodePassword("ThisIsATest", "ThisIsTheSalt"));
-    Assertions.assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=",
-        security.encodePassword("ThisIsATest", "ThisIsTheSalt"));
+    assertThat(security.encodePassword("ThisIsATest", "ThisIsTheSalt")).isEqualTo("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=");
+    assertThat(security.encodePassword("ThisIsATest", "ThisIsTheSalt")).isEqualTo("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=");
 
     for (int i = 0; i < 1000000; ++i) {
-      Assertions.assertFalse(ServerSecurity.generateRandomSalt().contains("$"));
+      assertThat(ServerSecurity.generateRandomSalt().contains("$")).isFalse();
     }
 
     security.stopService();
   }
 
   private void passwordShouldMatch(final ServerSecurity security, final String password, final String expectedHash) {
-    Assertions.assertTrue(security.passwordMatch(password, expectedHash));
+    assertThat(security.passwordMatch(password, expectedHash)).isTrue();
   }
 
   @BeforeEach

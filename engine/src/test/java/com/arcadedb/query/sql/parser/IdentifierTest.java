@@ -18,8 +18,9 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Created by luigidellaquila on 26/04/16.
@@ -30,8 +31,8 @@ public class IdentifierTest {
   public void testBackTickQuoted() {
     final Identifier identifier = new Identifier("foo`bar");
 
-    //Assertions.assertEquals(identifier.getStringValue(), "foo`bar");
-    Assertions.assertEquals("foo\\`bar", identifier.getStringValue());
-    Assertions.assertEquals("foo\\`bar", identifier.getValue());
+    //Assertions.assertThat("foo`bar").isEqualTo(identifier.getStringValue());
+    assertThat(identifier.getStringValue()).isEqualTo("foo\\`bar");
+    assertThat(identifier.getValue()).isEqualTo("foo\\`bar");
   }
 }

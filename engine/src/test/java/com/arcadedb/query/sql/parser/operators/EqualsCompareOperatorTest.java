@@ -20,11 +20,12 @@ package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -34,42 +35,42 @@ public class EqualsCompareOperatorTest {
   public void test() {
     final EqualsCompareOperator op = new EqualsCompareOperator(-1);
 
-    Assertions.assertFalse(op.execute(null, null, 1));
-    Assertions.assertFalse(op.execute(null, 1, null));
-    Assertions.assertFalse(op.execute(null, null, null));
+    assertThat(op.execute(null, null, 1)).isFalse();
+    assertThat(op.execute(null, 1, null)).isFalse();
+    assertThat(op.execute(null, null, null)).isFalse();
 
-    Assertions.assertTrue(op.execute(null, 1, 1));
-    Assertions.assertFalse(op.execute(null, 1, 0));
-    Assertions.assertFalse(op.execute(null, 0, 1));
+    assertThat(op.execute(null, 1, 1)).isTrue();
+    assertThat(op.execute(null, 1, 0)).isFalse();
+    assertThat(op.execute(null, 0, 1)).isFalse();
 
-    Assertions.assertFalse(op.execute(null, "aaa", "zzz"));
-    Assertions.assertFalse(op.execute(null, "zzz", "aaa"));
-    Assertions.assertTrue(op.execute(null, "aaa", "aaa"));
+    assertThat(op.execute(null, "aaa", "zzz")).isFalse();
+    assertThat(op.execute(null, "zzz", "aaa")).isFalse();
+    assertThat(op.execute(null, "aaa", "aaa")).isTrue();
 
-    Assertions.assertFalse(op.execute(null, 1, 1.1));
-    Assertions.assertFalse(op.execute(null, 1.1, 1));
+    assertThat(op.execute(null, 1, 1.1)).isFalse();
+    assertThat(op.execute(null, 1.1, 1)).isFalse();
 
-    Assertions.assertTrue(op.execute(null, BigDecimal.ONE, 1));
-    Assertions.assertTrue(op.execute(null, 1, BigDecimal.ONE));
+    assertThat(op.execute(null, BigDecimal.ONE, 1)).isTrue();
+    assertThat(op.execute(null, 1, BigDecimal.ONE)).isTrue();
 
-    Assertions.assertFalse(op.execute(null, 1.1, BigDecimal.ONE));
-    Assertions.assertFalse(op.execute(null, 2, BigDecimal.ONE));
+    assertThat(op.execute(null, 1.1, BigDecimal.ONE)).isFalse();
+    assertThat(op.execute(null, 2, BigDecimal.ONE)).isFalse();
 
-    Assertions.assertFalse(op.execute(null, BigDecimal.ONE, 0.999999));
-    Assertions.assertFalse(op.execute(null, BigDecimal.ONE, 0));
+    assertThat(op.execute(null, BigDecimal.ONE, 0.999999)).isFalse();
+    assertThat(op.execute(null, BigDecimal.ONE, 0)).isFalse();
 
-    Assertions.assertFalse(op.execute(null, BigDecimal.ONE, 2));
-    Assertions.assertFalse(op.execute(null, BigDecimal.ONE, 1.0001));
+    assertThat(op.execute(null, BigDecimal.ONE, 2)).isFalse();
+    assertThat(op.execute(null, BigDecimal.ONE, 1.0001)).isFalse();
 
-    Assertions.assertTrue(op.execute(null, new RID( 1, 10), new RID( (short) 1, 10)));
-    Assertions.assertFalse(op.execute(null, new RID( 1, 10), new RID( (short) 1, 20)));
+    assertThat(op.execute(null, new RID( 1, 10), new RID( (short) 1, 10))).isTrue();
+    assertThat(op.execute(null, new RID( 1, 10), new RID( (short) 1, 20))).isFalse();
 
-    Assertions.assertFalse(op.execute(null, new Object(), new Object()));
+    assertThat(op.execute(null, new Object(), new Object())).isFalse();
 
     // MAPS
-    Assertions.assertTrue(op.execute(null, Map.of("a", "b"), Map.of("a", "b")));
+    assertThat(op.execute(null, Map.of("a", "b"), Map.of("a", "b"))).isTrue();
 
-    Assertions.assertTrue(op.execute(null, Map.of("a", "b", "c", 3), Map.of("a", "b", "c", 3)));
-    Assertions.assertFalse(op.execute(null, Map.of("a", "b", "c", 3), Map.of("a", "b")));
+    assertThat(op.execute(null, Map.of("a", "b", "c", 3), Map.of("a", "b", "c", 3))).isTrue();
+    assertThat(op.execute(null, Map.of("a", "b", "c", 3), Map.of("a", "b"))).isFalse();
   }
 }

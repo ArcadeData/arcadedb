@@ -18,8 +18,10 @@
  */
 package com.arcadedb;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class GlobalConfigurationTest extends TestHelper {
   @Test
@@ -27,17 +29,17 @@ public class GlobalConfigurationTest extends TestHelper {
     final String original = GlobalConfiguration.SERVER_MODE.getValueAsString();
 
     GlobalConfiguration.SERVER_MODE.setValue("development");
-    Assertions.assertEquals("development", GlobalConfiguration.SERVER_MODE.getValueAsString());
+    assertThat(GlobalConfiguration.SERVER_MODE.getValueAsString()).isEqualTo("development");
 
     GlobalConfiguration.SERVER_MODE.setValue("test");
-    Assertions.assertEquals("test", GlobalConfiguration.SERVER_MODE.getValueAsString());
+    assertThat(GlobalConfiguration.SERVER_MODE.getValueAsString()).isEqualTo("test");
 
     GlobalConfiguration.SERVER_MODE.setValue("production");
-    Assertions.assertEquals("production", GlobalConfiguration.SERVER_MODE.getValueAsString());
+    assertThat(GlobalConfiguration.SERVER_MODE.getValueAsString()).isEqualTo("production");
 
     try {
       GlobalConfiguration.SERVER_MODE.setValue("notvalid");
-      Assertions.fail();
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
@@ -51,7 +53,7 @@ public class GlobalConfigurationTest extends TestHelper {
 
     try {
       GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue("notvalid");
-      Assertions.fail();
+      fail("");
     } catch (final NumberFormatException e) {
       // EXPECTED
     }
@@ -64,10 +66,10 @@ public class GlobalConfigurationTest extends TestHelper {
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.reset();
     final int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
 
-    Assertions.assertEquals(original, GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getDefValue());
-    Assertions.assertFalse(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.isChanged());
+    assertThat(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getDefValue()).isEqualTo(original);
+    assertThat(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.isChanged()).isFalse();
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue(0);
-    Assertions.assertTrue(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.isChanged());
+    assertThat(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.isChanged()).isTrue();
 
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue(original);
   }

@@ -21,10 +21,11 @@ package com.arcadedb;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class LoggerTest extends TestHelper {
   private boolean logged  = false;
@@ -54,11 +55,11 @@ public class LoggerTest extends TestHelper {
 
       LogManager.instance().log(this, Level.FINE, "This is a test");
 
-      Assertions.assertEquals(true, logged);
+      assertThat(logged).isTrue();
 
       LogManager.instance().flush();
 
-      Assertions.assertEquals(true, flushed);
+      assertThat(flushed).isTrue();
     } finally {
       LogManager.instance().setLogger(new DefaultLogger());
     }
