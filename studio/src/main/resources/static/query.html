@@ -368,8 +368,10 @@
 
     var limitPar = getURLParameter("limit");
     if (limitPar != null && limitPar != "null") {
-      if (limitPar != "25" && limitPar != "100" && limitPar != "500" && limitPar != "-1")
-        $("#inputLimit").append("<option value='" + limitPar + "' selected='selected'>" + limitPar + "</option>");
+      if (limitPar != "25" && limitPar != "100" && limitPar != "500" && limitPar != "-1") {
+        var sanitizedLimitPar = escapeHtml(limitPar);
+        $("#inputLimit").append("<option value='" + sanitizedLimitPar + "' selected='selected'>" + sanitizedLimitPar + "</option>");
+      }
       $("#inputLimit").val(escapeHtml(limitPar));
     }
 
