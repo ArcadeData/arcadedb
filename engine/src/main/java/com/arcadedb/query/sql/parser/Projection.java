@@ -41,6 +41,7 @@ public class Projection extends SimpleNode {
     super(-1);
     this.items = items;
     this.distinct = distinct;
+
     //TODO make the whole class immutable!
   }
 
@@ -94,10 +95,14 @@ public class Projection extends SimpleNode {
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
-    if (items.isEmpty() ||//
-        (items.size() == 1 && (items.get(0).isAll() || items.get(0).getExpression().toString().equals("@this")))//
-            && items.get(0).nestedProjection == null)
-      return iRecord;
+    if (items.size() == 1 && items.get(0).getExpression().toString().equals("@this"))
+      items.clear();
+
+    if (items.isEmpty()) {
+      final ProjectionItem star = new ProjectionItem(new Expression(new Identifier("*")),null,null);
+      star.setAll(true);
+      items.add(star);
+    }
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     for (final ProjectionItem item : items) {
@@ -106,10 +111,12 @@ public class Projection extends SimpleNode {
 
       if (item.isAll()) {
         result.setElement(iRecord.toElement());
+        final Document doc = iRecord.getElement().get();
         for (final String alias : iRecord.getPropertyNames()) {
-          if (this.excludes.contains(alias)) {
+          if (this.excludes.contains(alias) || doc.getType().getProperty(alias).isHidden()) {
             continue;
           }
+
           Object val = item.convert(iRecord.getProperty(alias));
           if (item.nestedProjection != null) {
             val = item.nestedProjection.apply(item.expression, val, context);
@@ -117,12 +124,11 @@ public class Projection extends SimpleNode {
           result.setProperty(alias, val);
         }
         if (iRecord.getElement().isPresent()) {
-          final Document x = iRecord.getElement().get();
           if (!this.excludes.contains("@rid")) {
-            result.setProperty("@rid", x.getIdentity());
+            result.setProperty("@rid", doc.getIdentity());
           }
           if (!this.excludes.contains("@type")) {
-            result.setProperty("@type", x.getType().getName());
+            result.setProperty("@type", doc.getType().getName());
           }
         }
       } else {

@@ -95,6 +95,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                   propRes.setProperty("readOnly", property.isReadonly());
                 if (property.isNotNull())
                   propRes.setProperty("notNull", property.isNotNull());
+                if (property.isHidden())
+                  propRes.setProperty("hidden", property.isHidden());
                 if (property.getMin() != null)
                   propRes.setProperty("min", property.getMin());
                 if (property.getMax() != null)
