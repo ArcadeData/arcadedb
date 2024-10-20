@@ -211,15 +211,15 @@ public class PaginatedComponentFile extends ComponentFile {
 
   private void doNotCloseOnInterrupt(final FileChannel fc) {
     try {
-      Field field = AbstractInterruptibleChannel.class.getDeclaredField("interruptor");
-      Class<?> interruptibleClass = field.getType();
+      final Field field = AbstractInterruptibleChannel.class.getDeclaredField("interruptor");
+      final Class<?> interruptibleClass = field.getType();
       field.setAccessible(true);
       field.set(fc, Proxy.newProxyInstance(
           interruptibleClass.getClassLoader(),
           new Class[] { interruptibleClass },
           new InterruptibleInvocationHandler()));
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Couldn't disable close on interrupt", e);
+      LogManager.instance().log(this, Level.WARNING, "Unable to disable channel close on interrupt: %s", e.getMessage());
     }
   }
 }
