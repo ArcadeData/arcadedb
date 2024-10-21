@@ -36,7 +36,7 @@ class SQLMethodAsRecordTest extends TestHelper {
 
   @Test
   void testNulIsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
@@ -45,7 +45,7 @@ class SQLMethodAsRecordTest extends TestHelper {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("Doc").save();
 
-      final Object result = method.execute(null, null, null, doc.getIdentity().toString(), null);
+      final Object result = method.execute(doc.getIdentity().toString(), null, null, null);
       assertThat(result).isInstanceOf(Record.class);
       assertThat(((Record) result).getIdentity()).isEqualTo(doc.getIdentity());
     });
@@ -56,7 +56,7 @@ class SQLMethodAsRecordTest extends TestHelper {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("Doc").save();
 
-      final Object result = method.execute(null, null, null, doc.getIdentity(), null);
+      final Object result = method.execute(doc.getIdentity(), null, null, null);
       assertThat(result).isInstanceOf(Record.class);
       assertThat(((Record) result).getIdentity()).isEqualTo(doc.getIdentity());
     });
@@ -64,13 +64,13 @@ class SQLMethodAsRecordTest extends TestHelper {
 
   @Test
   void testFromInvalidString() {
-    final Object result = method.execute(null, null, null, "INVALID", null);
+    final Object result = method.execute("INVALID", null, null, null);
     assertThat(result).isEqualTo(null);
   }
 
   @Test
   void testNotStringAsNull() {
-    final Object result = method.execute(null, null, null, 10, null);
+    final Object result = method.execute(10, null, null, null);
     assertThat(result).isEqualTo(null);
   }
 }

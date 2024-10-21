@@ -28,8 +28,8 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
   private final ProjectionItem item;
   private       boolean        executed = false;
 
-  public GuaranteeEmptyCountStep(final ProjectionItem oProjectionItem, final CommandContext context, final boolean enableProfiling) {
-    super(context, enableProfiling);
+  public GuaranteeEmptyCountStep(final ProjectionItem oProjectionItem, final CommandContext context) {
+    super(context);
     this.item = oProjectionItem;
   }
 
@@ -40,24 +40,22 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
     return new ResultSet() {
       @Override
       public boolean hasNext() {
-        if (!executed) {
+        if (!executed)
           return true;
-        }
 
         return upstream.hasNext();
       }
 
       @Override
       public Result next() {
-        if (!hasNext()) {
+        if (!hasNext())
           throw new NoSuchElementException();
-        }
 
         try {
-          if (upstream.hasNext()) {
+          if (upstream.hasNext())
             return upstream.next();
-          }
-          final ResultInternal result = new ResultInternal();
+
+          final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(item.getProjectionAliasAsString(), 0L);
           return result;
         } finally {
@@ -69,17 +67,12 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
       public void close() {
         prev.close();
       }
-
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
     };
   }
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new GuaranteeEmptyCountStep(item.copy(), context, profilingEnabled);
+    return new GuaranteeEmptyCountStep(item.copy(), context);
   }
 
   public boolean canBeCached() {

@@ -26,10 +26,11 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class InsertGraphIndexTest extends TestHelper {
   private static final int    VERTICES         = 1_000;
@@ -125,7 +126,7 @@ public class InsertGraphIndexTest extends TestHelper {
       }
     });
 
-    Assertions.assertEquals(VERTICES, cachedVertices.length);
+    assertThat(cachedVertices.length).isEqualTo(VERTICES);
 
     return cachedVertices;
   }
@@ -162,7 +163,7 @@ public class InsertGraphIndexTest extends TestHelper {
 
       database.async().waitCompletion();
 
-      Assertions.assertEquals(VERTICES, database.countType(VERTEX_TYPE_NAME, true));
+      assertThat(database.countType(VERTEX_TYPE_NAME, true)).isEqualTo(VERTICES);
 
     } finally {
       final long elapsed = System.currentTimeMillis() - startOfTest;
@@ -175,7 +176,7 @@ public class InsertGraphIndexTest extends TestHelper {
     vertex.createProperty("id", Integer.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
 
-    Assertions.assertEquals("round-robin", vertex.getBucketSelectionStrategy().getName());
+    assertThat(vertex.getBucketSelectionStrategy().getName()).isEqualTo("round-robin");
 
     database.getSchema().buildEdgeType().withName(EDGE_TYPE_NAME).withTotalBuckets(PARALLEL).create();
 
@@ -183,10 +184,10 @@ public class InsertGraphIndexTest extends TestHelper {
     vertexNotInUse.createProperty("id", Integer.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "NotInUse", "id");
 
-    Assertions.assertEquals("round-robin", vertexNotInUse.getBucketSelectionStrategy().getName());
+    assertThat(vertexNotInUse.getBucketSelectionStrategy().getName()).isEqualTo("round-robin");
 
     vertexNotInUse.setBucketSelectionStrategy("partitioned('id')");
-    Assertions.assertEquals("partitioned", vertexNotInUse.getBucketSelectionStrategy().getName());
+    assertThat(vertexNotInUse.getBucketSelectionStrategy().getName()).isEqualTo("partitioned");
 
   }
 
@@ -202,10 +203,10 @@ public class InsertGraphIndexTest extends TestHelper {
       for (; i < VERTICES; ++i) {
         int edges = 0;
         final long outEdges = cachedVertices[i].countEdges(Vertex.DIRECTION.OUT, EDGE_TYPE_NAME);
-        Assertions.assertEquals(expectedEdges, outEdges);
+        assertThat(outEdges).isEqualTo(expectedEdges);
 
         final long inEdges = cachedVertices[i].countEdges(Vertex.DIRECTION.IN, EDGE_TYPE_NAME);
-        Assertions.assertEquals(expectedEdges, inEdges);
+        assertThat(inEdges).isEqualTo(expectedEdges);
 
         if (++edges > EDGES_PER_VERTEX)
           break;

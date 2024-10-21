@@ -713,7 +713,7 @@ public class TransactionContext implements Transaction {
     txId = -1;
   }
 
-  public void removePagesOfFile(final int fileId) {
+  public void removeFile(final int fileId) {
     if (newPages != null)
       newPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
 
@@ -730,6 +730,10 @@ public class TransactionContext implements Transaction {
 
     if (lockedFiles != null)
       lockedFiles.remove(fileId);
+
+    if (updatedRecords != null)
+      // FILE DELETED: REMOVE ALL PENDING UPDATED OBJECTS
+      updatedRecords.entrySet().removeIf(entry -> entry.getKey().bucketId == fileId);
 
     final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
     if (component instanceof LSMTreeIndexAbstract)

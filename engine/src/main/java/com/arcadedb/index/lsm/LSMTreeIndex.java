@@ -414,7 +414,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     final Object[] convertedKeys = convertKeys(keys);
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
-// KEY ADDED AT COMMIT TIME (IN A LOCK)
+      // KEY ADDED AT COMMIT TIME (IN A LOCK)
       final TransactionContext tx = getDatabase().getTransaction();
       for (final RID rid : rids)
         tx.addIndexOperation(this, true, convertedKeys, rid);

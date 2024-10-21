@@ -69,27 +69,28 @@ public class TraverseStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(args);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context);
 
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentcontext,
+      final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
     if (parentcontext != null) {
       context.setParentWithoutOverridingChild(parentcontext);
     }
     context.setDatabase(db);
     context.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(context);
 
     return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
     final TraverseExecutionPlanner planner = new TraverseExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -137,6 +138,19 @@ public class TraverseStatement extends Statement {
       }
     }
 
+  }
+
+  public boolean refersToParent() {
+    if (projections != null && projections.stream().anyMatch(x -> x.refersToParent()))
+      return true;
+
+    if (this.target != null && this.target.refersToParent())
+      return true;
+
+    if (this.whileClause != null && this.whileClause.refersToParent())
+      return true;
+
+    return false;
   }
 
   @Override

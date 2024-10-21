@@ -75,6 +75,10 @@ public class JSONObject {
       put(entry.getKey(), entry.getValue());
   }
 
+  public JSONObject copy() {
+    return new JSONObject(object.deepCopy());
+  }
+
   public JSONObject put(final String name, final String value) {
     object.addProperty(name, value);
     return this;
@@ -127,12 +131,14 @@ public class JSONObject {
     } else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant) {
       if (dateFormat == null)
         // SAVE AS TIMESTAMP
-        object.addProperty(name, DateUtils.dateTimeToTimestamp(value, ChronoUnit.NANOS)); // ALWAYS USE NANOS TO AVOID PRECISION LOSS
+        object.addProperty(name,
+            DateUtils.dateTimeToTimestamp(value, ChronoUnit.NANOS)); // ALWAYS USE NANOS TO AVOID PRECISION LOSS
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format((TemporalAccessor) value));
     } else if (value instanceof Duration) {
-      object.addProperty(name, Double.valueOf(String.format("%d.%d", ((Duration) value).toSeconds(), ((Duration) value).toNanosPart())));
+      object.addProperty(name,
+          Double.valueOf(String.format("%d.%d", ((Duration) value).toSeconds(), ((Duration) value).toNanosPart())));
     } else if (value instanceof Identifiable) {
       object.addProperty(name, ((Identifiable) value).getIdentity().toString());
     } else if (value instanceof Map) {
@@ -361,5 +367,33 @@ public class JSONObject {
       throw new JSONException("JSONObject[" + name + "] not found");
 
     return value;
+  }
+
+  /**
+   * Checks recursively and replace NaN values with zero.
+   */
+  public void validate() {
+    for (String key : keySet()) {
+      Object value = get(key);
+      if (value instanceof Number) {
+        if (Double.isNaN(((Number) value).doubleValue()))
+          // FIX NAN NUMBERS
+          put(key, 0);
+      } else if (value instanceof JSONObject) {
+        ((JSONObject) value).validate();
+      } else if (value instanceof JSONArray) {
+        final JSONArray array = (JSONArray) value;
+        for (int i = 0; i < array.length(); i++) {
+          final Object arrayValue = array.get(i);
+          if (arrayValue instanceof Number) {
+            if (Double.isNaN(((Number) arrayValue).doubleValue()))
+              // FIX NAN NUMBERS
+              array.put(i, 0);
+          } else if (arrayValue instanceof JSONObject) {
+            ((JSONObject) arrayValue).validate();
+          }
+        }
+      }
+    }
   }
 }

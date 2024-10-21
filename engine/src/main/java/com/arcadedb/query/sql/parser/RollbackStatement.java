@@ -36,7 +36,7 @@ public class RollbackStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
     context.getDatabase().rollback();
     final InternalResultSet result = new InternalResultSet();
-    final ResultInternal item = new ResultInternal();
+    final ResultInternal item = new ResultInternal(context.getDatabase());
     item.setProperty("operation", "rollback");
     result.add(item);
     return result;

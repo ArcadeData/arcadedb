@@ -19,8 +19,9 @@
 package com.arcadedb.compression;
 
 import com.arcadedb.database.Binary;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class CompressionTest {
   @Test
@@ -30,7 +31,7 @@ public class CompressionTest {
     final Binary compressed = CompressionFactory.getDefault().compress(buffer);
     final Binary decompressed = CompressionFactory.getDefault().decompress(compressed, buffer.size());
 
-    Assertions.assertEquals(buffer, decompressed);
+    assertThat(decompressed).isEqualTo(buffer);
   }
 
   @Test
@@ -40,6 +41,6 @@ public class CompressionTest {
     final Binary compressed = CompressionFactory.getDefault().compress(buffer);
     final Binary decompressed = CompressionFactory.getDefault().decompress(compressed, buffer.size());
 
-    Assertions.assertEquals(buffer, decompressed);
+    assertThat(decompressed).isEqualTo(buffer);
   }
 }

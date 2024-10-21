@@ -71,7 +71,7 @@ public class DropBucketStatement extends DDLStatement {
     database.getSchema().dropBucket(bucketName);
 
     final InternalResultSet rs = new InternalResultSet();
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(database);
     result.setProperty("operation", "drop bucket");
     result.setProperty("bucketName", bucketName);
     result.setProperty("bucketId", fileId);

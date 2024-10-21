@@ -11,10 +11,13 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
@@ -54,7 +57,7 @@ public class ScriptExecutionTest extends TestHelper {
           "INSERT INTO " + className + " SET name = 'foo';INSERT INTO " + className + " SET name = 'bar';");
     });
     ResultSet rs = database.query("sql", "SELECT count(*) as count from " + className);
-    Assertions.assertEquals((Object) 2L, rs.next().getProperty("count"));
+    assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 2L);
   }
 
   @Test
@@ -76,7 +79,7 @@ public class ScriptExecutionTest extends TestHelper {
       database.command("sqlscript", script);
     });
     ResultSet rs = database.query("sql", "SELECT count(*) as count from " + className);
-    Assertions.assertEquals((Object) 2L, rs.next().getProperty("count"));
+    assertThat(rs.next().<Long>getProperty("count")).isEqualTo( 2L);
   }
 
   @Test
@@ -97,7 +100,7 @@ public class ScriptExecutionTest extends TestHelper {
     });
 
     final ResultSet rs = database.query("sql", "SELECT count(*) as count from " + className);
-    Assertions.assertEquals((Object) 2L, rs.next().getProperty("count"));
+    assertThat(rs.next().<Long>getProperty("count")).isEqualTo(2L);
   }
 
   @Test
@@ -117,7 +120,7 @@ public class ScriptExecutionTest extends TestHelper {
 
       Result item = result.next();
 
-      Assertions.assertEquals("OK", item.getProperty("value"));
+      assertThat(item.<String>getProperty("value")).isEqualTo("OK");
       result.close();
     });
   }
@@ -139,7 +142,7 @@ public class ScriptExecutionTest extends TestHelper {
 
       Result item = result.next();
 
-      Assertions.assertEquals("OK", item.getProperty("value"));
+      assertThat(item.<String>getProperty("value")).isEqualTo("OK");
       result.close();
     });
   }
@@ -158,7 +161,7 @@ public class ScriptExecutionTest extends TestHelper {
 
       Result item = result.next();
 
-      Assertions.assertEquals("OK", item.getProperty("value"));
+      assertThat(item.<String>getProperty("value")).isEqualTo("OK");
       result.close();
     });
   }
@@ -184,10 +187,10 @@ public class ScriptExecutionTest extends TestHelper {
     });
 
     ResultSet result = database.query("sql", "select from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertEquals(4, (int) item.getProperty("attempt"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat((int) item.getProperty("attempt")).isEqualTo(4);
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -215,10 +218,10 @@ public class ScriptExecutionTest extends TestHelper {
     database.async().waitCompletion();
 
     ResultSet result = database.query("sql", "select from " + className + " where id = 0");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    //Assertions.assertTrue((Integer) item.getProperty("attempt") < TOTAL);
-    Assertions.assertFalse(result.hasNext());
+    //Assertions.assertThat((Integer).isTrue() item.getProperty("attempt") < TOTAL);
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     // USE RETRY, EXPECTING NO MISS OF UPDATES
@@ -243,7 +246,7 @@ public class ScriptExecutionTest extends TestHelper {
     ImmutablePage page = ((LocalDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
         ((PaginatedComponentFile) ((LocalDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
-    Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
+    assertThat(page.getVersion()).as("Page v." + page.getVersion()).isEqualTo(TOTAL + 1);
   }
 
   @Test
@@ -270,10 +273,10 @@ public class ScriptExecutionTest extends TestHelper {
     database.async().waitCompletion();
 
     ResultSet result = database.query("sql", "select from " + className + " where id = 0");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertTrue((Integer) item.getProperty("attempt") < TOTAL, "Found attempts = " + item.getProperty("attempt"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat((Integer) item.getProperty("attempt") < TOTAL).as("Found attempts = " + item.getProperty("attempt")).isTrue();
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     // USE RETRY, EXPECTING NO MISS OF UPDATES
@@ -298,13 +301,13 @@ public class ScriptExecutionTest extends TestHelper {
     ImmutablePage page = ((LocalDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
         ((PaginatedComponentFile) ((LocalDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
-    Assertions.assertEquals(TOTAL + 1, page.getVersion(), "Page v." + page.getVersion());
+    assertThat(page.getVersion()).as("Page v." + page.getVersion()).isEqualTo(TOTAL + 1);
 
     result = database.query("sql", "select from " + className + " where id = 1");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
-    Assertions.assertEquals(TOTAL, (Integer) item.getProperty("attempt"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat((Integer) item.getProperty("attempt")).isEqualTo(TOTAL);
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -329,7 +332,7 @@ public class ScriptExecutionTest extends TestHelper {
       }
 
       ResultSet result = database.query("sql", "select from " + className);
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.hasNext()).isFalse();
       result.close();
     });
   }
@@ -354,10 +357,10 @@ public class ScriptExecutionTest extends TestHelper {
       database.command("sqlscript", script);
 
       ResultSet result = database.query("sql", "select from " + className);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Result item = result.next();
-      Assertions.assertEquals("foo", item.getProperty("name"));
-      Assertions.assertFalse(result.hasNext());
+      assertThat(item.<String>getProperty("name")).isEqualTo("foo");
+      assertThat(result.hasNext()).isFalse();
       result.close();
     });
   }
@@ -384,10 +387,10 @@ public class ScriptExecutionTest extends TestHelper {
     });
 
     ResultSet result = database.query("sql", "select from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertEquals("foo", item.getProperty("name"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("foo");
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -417,10 +420,10 @@ public class ScriptExecutionTest extends TestHelper {
     });
 
     ResultSet result = database.query("sql", "select from " + className);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertEquals("foo", item.getProperty("name"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("foo");
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -450,10 +453,10 @@ public class ScriptExecutionTest extends TestHelper {
       }
 
       ResultSet result = database.query("sql", "select from " + className);
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Result item = result.next();
-      Assertions.assertEquals("foo", item.getProperty("name"));
-      Assertions.assertFalse(result.hasNext());
+      assertThat(item.<String>getProperty("name")).isEqualTo("foo");
+      assertThat(result.hasNext()).isFalse();
       result.close();
     });
   }
@@ -471,10 +474,10 @@ public class ScriptExecutionTest extends TestHelper {
       }
 
       ResultSet rs = database.command("sqlscript", script);
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       Result item = rs.next();
-      Assertions.assertEquals(8, (Integer) item.getProperty("result"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat((Integer) item.getProperty("result")).isEqualTo(8);
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
     });
@@ -510,9 +513,9 @@ public class ScriptExecutionTest extends TestHelper {
     database.command("sqlscript", script).close();
 
     try (ResultSet rs = database.query("sql", "select from IndirectEdge")) {
-      Assertions.assertTrue(rs.hasNext());
-      Assertions.assertEquals("foo2", rs.next().getProperty("Source"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("Source")).isEqualTo("foo2");
+      assertThat(rs.hasNext()).isFalse();
     }
   }
 

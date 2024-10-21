@@ -37,13 +37,12 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
   private Iterator<Record> iterator;
 
-  public FetchFromClusterExecutionStep(final int bucketId, final CommandContext context, final boolean profilingEnabled) {
-    this(bucketId, null, context, profilingEnabled);
+  public FetchFromClusterExecutionStep(final int bucketId, final CommandContext context) {
+    this(bucketId, null, context);
   }
 
-  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final CommandContext context,
-      final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final CommandContext context) {
+    super(context);
     this.bucketId = bucketId;
     this.queryPlanning = queryPlanning;
   }
@@ -51,7 +50,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
         iterator = context.getDatabase().getSchema().getBucketById(bucketId).iterator();
@@ -70,7 +69,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
         @Override
         public boolean hasNext() {
-          final long begin1 = profilingEnabled ? System.nanoTime() : 0;
+          final long begin1 = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (nFetched >= nRecords)
               return false;
@@ -82,7 +81,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             return iterator.hasNext();
 //            }
           } finally {
-            if (profilingEnabled) {
+            if( context.isProfiling() ) {
               cost += (System.nanoTime() - begin1);
             }
           }
@@ -90,7 +89,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
         @Override
         public Result next() {
-          final long begin1 = profilingEnabled ? System.nanoTime() : 0;
+          final long begin1 = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (nFetched >= nRecords)
               throw new NoSuchElementException();
@@ -117,14 +116,14 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             return result;
 
           } finally {
-            if (profilingEnabled) {
+            if( context.isProfiling() ) {
               cost += (System.nanoTime() - begin1);
             }
           }
         }
       };
     } finally {
-      if (profilingEnabled) {
+      if( context.isProfiling() ) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -195,7 +194,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + context.getDatabase().getSchema().getBucketById(bucketId)
             .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC" + " = " + totalFetched + " RECORDS");
-    if (profilingEnabled)
+    if ( context.isProfiling() )
       result += " (" + getCostFormatted() + ")";
     return result;
   }
@@ -211,6 +210,6 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), context, profilingEnabled);
+    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), context);
   }
 }

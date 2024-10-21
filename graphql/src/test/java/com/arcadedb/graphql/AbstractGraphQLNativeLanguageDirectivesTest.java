@@ -20,10 +20,11 @@ package com.arcadedb.graphql;
 
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends AbstractGraphQLTest {
   protected int getExpectedPropertiesMetadata() {
@@ -35,22 +36,23 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
     executeTest((database) -> {
       defineTypes(database);
 
-      try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\")}")) {
-        Assertions.assertTrue(resultSet.hasNext());
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\")}")) {
+        assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
-        Assertions.assertEquals(4 + getExpectedPropertiesMetadata(), record.getPropertyNames().size());
-        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
-        Assertions.assertEquals("Harry Potter and the Philosopher's Stone", record.getProperty("name"));
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(record.getPropertyNames().size()).isEqualTo(4 + getExpectedPropertiesMetadata());
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Harry Potter and the Philosopher's Stone");
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Mr. brain\") }")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
-        Assertions.assertEquals(4 + getExpectedPropertiesMetadata(), record.getPropertyNames().size());
-        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
-        Assertions.assertEquals("Mr. brain", record.getProperty("name"));
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(record.getPropertyNames().size()).isEqualTo(4 + getExpectedPropertiesMetadata());
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Mr. brain");
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       return null;
@@ -64,19 +66,20 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
 
       try (final ResultSet resultSet = database.query("graphql",
           "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\"){ id name pageCount } }")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
-        Assertions.assertEquals(3 + getExpectedPropertiesMetadata(), record.getPropertyNames().size());
-        Assertions.assertEquals("Harry Potter and the Philosopher's Stone", record.getProperty("name"));
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(record.getPropertyNames().size()).isEqualTo(3 + getExpectedPropertiesMetadata());
+        assertThat(record.<String>getProperty("name")).isEqualTo("Harry Potter and the Philosopher's Stone");
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
-      try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Mr. brain\"){ id name pageCount } }")) {
-        Assertions.assertTrue(resultSet.hasNext());
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ bookByName(bookNameParameter: \"Mr. brain\"){ id name pageCount } }")) {
+        assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
-        Assertions.assertEquals(3 + getExpectedPropertiesMetadata(), record.getPropertyNames().size());
-        Assertions.assertEquals("Mr. brain", record.getProperty("name"));
-        Assertions.assertFalse(resultSet.hasNext());
+        assertThat(record.getPropertyNames().size()).isEqualTo(3 + getExpectedPropertiesMetadata());
+        assertThat(record.<String>getProperty("name")).isEqualTo("Mr. brain");
+        assertThat(resultSet.hasNext()).isFalse();
       }
 
       return null;

@@ -48,21 +48,20 @@ public class ProfileStatement extends Statement {
   @Override
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
+    if (parentcontext != null)
       context.setParentWithoutOverridingChild(parentcontext);
-    }
+
     context.setDatabase(db);
     context.setInputParameters(args);
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, true);
-    if (executionPlan instanceof UpdateExecutionPlan) {
+    context.setProfiling(true);
+
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
+    if (executionPlan instanceof UpdateExecutionPlan)
       ((UpdateExecutionPlan) executionPlan).executeInternal();
-    }
 
     final LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
-
-    while (rs.hasNext()) {
+    while (rs.hasNext())
       rs.next();
-    }
 
     final ExplainResultSet result = new ExplainResultSet(
         rs.getExecutionPlan().orElseThrow(() -> new CommandExecutionException("Cannot profile command: " + statement)));
@@ -72,21 +71,20 @@ public class ProfileStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map args, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
+    if (parentcontext != null)
       context.setParentWithoutOverridingChild(parentcontext);
-    }
-    context.setDatabase(db);
-    context.setInputParameters(args);
 
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(context, true);
+    context.setDatabase(db);
+    context.setInputParameters(params);
+    context.setProfiling(true);
+
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
 
     final LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
-
-    while (rs.hasNext()) {
+    while (rs.hasNext())
       rs.next();
-    }
 
     final ExplainResultSet result = new ExplainResultSet(
         rs.getExecutionPlan().orElseThrow(() -> new CommandExecutionException("Cannot profile command: " + statement)));
@@ -95,8 +93,8 @@ public class ProfileStatement extends Statement {
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean profile) {
-    return statement.createExecutionPlan(context, profile);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
+    return statement.createExecutionPlan(context);
   }
 
   @Override

@@ -34,8 +34,8 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
 
   private AtomicLong totalTime = new AtomicLong(0);
 
-  public AccumulatingTimeoutStep(final Timeout timeout, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public AccumulatingTimeoutStep(final Timeout timeout, final CommandContext context) {
+    super(context);
     this.timeout = timeout;
     this.timeoutMillis = this.timeout.getVal().longValue();
   }
@@ -104,7 +104,7 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new AccumulatingTimeoutStep(timeout.copy(), context, profilingEnabled);
+    return new AccumulatingTimeoutStep(timeout.copy(), context);
   }
 
   @Override

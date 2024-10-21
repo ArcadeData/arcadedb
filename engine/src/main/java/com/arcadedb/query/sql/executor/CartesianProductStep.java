@@ -39,8 +39,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   ResultInternal nextRecord;
 
-  public CartesianProductStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CartesianProductStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -127,13 +127,13 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   private void buildNextRecord() {
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (currentTuple == null) {
         nextRecord = null;
         return;
       }
-      nextRecord = new ResultInternal();
+      nextRecord = new ResultInternal(context.getDatabase());
 
       for (int i = 0; i < this.currentTuple.size(); i++) {
         final Result res = this.currentTuple.get(i);
@@ -148,7 +148,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
         }
       }
     } finally {
-      if (profilingEnabled) {
+      if( context.isProfiling() ) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -241,7 +241,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private String head(final int depth, final int indent) {
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     String result = ind + "+ CARTESIAN PRODUCT";
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

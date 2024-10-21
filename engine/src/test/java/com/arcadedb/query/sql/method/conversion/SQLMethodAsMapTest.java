@@ -20,12 +20,13 @@ package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.schema.LocalVertexType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests the "asMap()" method implemented by the OSQLMethodAsMap class. Note that the only input to
@@ -44,34 +45,35 @@ public class SQLMethodAsMapTest {
   }
 
   @Test
+  public void testNull() {
+    // The expected behavior is to return an empty map.
+    final Object result = function.execute(null, null, null, null);
+    assertThat(new HashMap<Object, Object>()).isEqualTo(result);
+  }
+
+  @Test
   public void testMap() {
     // The expected behavior is to return the map itself.
     final HashMap<Object, Object> aMap = new HashMap<Object, Object>();
     aMap.put("p1", 1);
     aMap.put("p2", 2);
-    final Object result = function.execute(null, null, null, aMap, null);
-    assertEquals(result, aMap);
+    final Object result = function.execute(aMap, null, null, null);
+    assertThat(aMap).isEqualTo(result);
   }
 
   @Test
-  public void testNull() {
-    // The expected behavior is to return an empty map.
-    final Object result = function.execute(null, null, null, null, null);
-    assertEquals(result, new HashMap<Object, Object>());
-  }
-
-  public void testODocument() {
+  public void testDocument() {
     // The expected behavior is to return a map that has the field names mapped
     // to the field values of the ODocument.
-    final MutableDocument doc = new MutableDocument(null, null, null) {
+    final MutableDocument doc = new MutableDocument(null, new LocalVertexType(null, "Test"), null) {
     };
 
     doc.set("f1", 1);
     doc.set("f2", 2);
 
-    final Object result = function.execute(null, null, null, doc, null);
+    final Object result = function.execute(doc, null, null, null);
 
-    assertEquals(result, doc.toMap());
+    assertThat(result).isEqualTo(doc.toMap(false));
   }
 
   @Test
@@ -85,12 +87,12 @@ public class SQLMethodAsMapTest {
     aCollection.add("p2");
     aCollection.add(2);
 
-    final Object result = function.execute(null, null, null, aCollection, null);
+    final Object result = function.execute(aCollection, null, null, null);
 
     final HashMap<Object, Object> expected = new HashMap<Object, Object>();
     expected.put("p1", 1);
     expected.put("p2", 2);
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -104,18 +106,18 @@ public class SQLMethodAsMapTest {
     aCollection.add("p2");
     aCollection.add(2);
 
-    final Object result = function.execute(null, null, null, aCollection.iterator(), null);
+    final Object result = function.execute(aCollection.iterator(), null, null, null);
 
     final HashMap<Object, Object> expected = new HashMap<Object, Object>();
     expected.put("p1", 1);
     expected.put("p2", 2);
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
   public void testOtherValue() {
     // The expected behavior is to return null.
-    final Object result = function.execute(null, null, null, Integer.valueOf(4), null);
-    assertEquals(result, null);
+    final Object result = function.execute(Integer.valueOf(4), null, null, null);
+    assertThat(result).isNull();
   }
 }

@@ -51,30 +51,35 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
     if (iParams.length == 0 || iParams[0] == null)
       date = LocalDateTime.now();
     else if (iParams[0] instanceof Number)
-      date = DateUtils.millisToLocalDateTime(((Number) iParams[0]).longValue());
+      date = DateUtils.millisToLocalDateTime(((Number) iParams[0]).longValue(), null);
     else if (iParams[0] instanceof String) {
-      final String dateAsString = (String) iParams[0];
-      final String format;
+      try {
+        final String dateAsString = (String) iParams[0];
+        final String format;
 
-      if (iParams.length > 1)
-        format = (String) iParams[1];
-      else {
-        final String databaseDateFormat = iContext.getDatabase().getSchema().getDateFormat();
-        if (dateAsString.length() == databaseDateFormat.length())
-          format = databaseDateFormat;
+        if (iParams.length > 1)
+          format = (String) iParams[1];
         else {
-          final String databaseDateTimeFormat = iContext.getDatabase().getSchema().getDateTimeFormat();
-          if (dateAsString.length() == databaseDateTimeFormat.length())
-            format = databaseDateTimeFormat;
-          else
-            return null;
+          final String databaseDateFormat = iContext.getDatabase().getSchema().getDateFormat();
+          if (dateAsString.length() == databaseDateFormat.length())
+            format = databaseDateFormat;
+          else {
+            final String databaseDateTimeFormat = iContext.getDatabase().getSchema().getDateTimeFormat();
+            if (dateAsString.length() == databaseDateTimeFormat.length())
+              format = databaseDateTimeFormat;
+            else
+              return null;
+          }
         }
+
+        final DateTimeFormatter formatter = DateUtils.getFormatter(format)
+            .withZone(iParams.length > 2 ? ZoneId.of(iParams[2].toString()) : iContext.getDatabase().getSchema().getZoneId());
+
+        date = LocalDateTime.parse(dateAsString, formatter);
+      } catch (DateTimeParseException e) {
+        // DATE FORMAT NOT CORRECT
+        return null;
       }
-
-      final DateTimeFormatter formatter = DateUtils.getFormatter(format)
-          .withZone(iParams.length > 2 ? ZoneId.of(iParams[2].toString()) : iContext.getDatabase().getSchema().getZoneId());
-
-      date = LocalDateTime.parse(dateAsString, formatter);
     } else
       return null;
 

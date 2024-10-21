@@ -48,9 +48,8 @@ public class CheckTypeTypeStep extends AbstractExecutionStep {
    * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckTypeTypeStep(final String targetClass, final String parentClass, final CommandContext context,
-      final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CheckTypeTypeStep(final String targetClass, final String parentClass, final CommandContext context) {
+    super(context);
     this.targetClass = targetClass;
     this.parentClass = parentClass;
   }
@@ -59,7 +58,7 @@ public class CheckTypeTypeStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
 
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (found) {
         return new InternalResultSet();
@@ -94,7 +93,7 @@ public class CheckTypeTypeStep extends AbstractExecutionStep {
       }
       return new InternalResultSet();
     } finally {
-      if (profilingEnabled) {
+      if( context.isProfiling() ) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -106,7 +105,7 @@ public class CheckTypeTypeStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK TYPE HIERARCHY");
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     result.append("\n");

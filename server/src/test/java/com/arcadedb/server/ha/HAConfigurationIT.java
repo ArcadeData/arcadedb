@@ -20,8 +20,10 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerException;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class HAConfigurationIT extends BaseGraphServerTest {
   protected int getServerCount() {
@@ -40,10 +42,10 @@ public class HAConfigurationIT extends BaseGraphServerTest {
   public void testReplication() {
     try {
       super.beginTest();
-      Assertions.fail();
+      fail("");
     } catch (ServerException e) {
       // EXPECTED
-      Assertions.assertTrue(e.getMessage().contains("Found a localhost"));
+      assertThat(e.getMessage().contains("Found a localhost")).isTrue();
     }
   }
 }

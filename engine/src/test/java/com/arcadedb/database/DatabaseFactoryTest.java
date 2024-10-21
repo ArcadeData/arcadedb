@@ -21,8 +21,11 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.security.SecurityManager;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -33,14 +36,14 @@ class DatabaseFactoryTest extends TestHelper {
   void invalidFactories() {
     try {
       new DatabaseFactory(null);
-      Assertions.fail();
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 
     try {
       new DatabaseFactory("");
-      Assertions.fail();
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
@@ -50,7 +53,7 @@ class DatabaseFactoryTest extends TestHelper {
   void testGetterSetter() {
     final DatabaseFactory f = new DatabaseFactory("test/");
     f.setAutoTransaction(true);
-    Assertions.assertNotNull(f.getContextConfiguration());
+    assertThat(f.getContextConfiguration()).isNotNull();
 
     final SecurityManager security = new SecurityManager() {
       @Override
@@ -58,7 +61,7 @@ class DatabaseFactoryTest extends TestHelper {
       }
     };
     f.setSecurity(security);
-    Assertions.assertEquals(security, f.getSecurity());
+    assertThat(f.getSecurity()).isEqualTo(security);
   }
 
   @Test
@@ -68,7 +71,7 @@ class DatabaseFactoryTest extends TestHelper {
 
     DatabaseFactory.getActiveDatabaseInstances().contains(db);
     DatabaseFactory.removeActiveDatabaseInstance(db.getDatabasePath());
-    Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(db.getDatabasePath()));
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(db.getDatabasePath())).isNull();
 
     db.drop();
     f.close();
@@ -79,10 +82,10 @@ class DatabaseFactoryTest extends TestHelper {
     final DatabaseFactory f = new DatabaseFactory("target/path/to/database");
     final Database db = f.exists() ? f.open() : f.create();
 
-    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("target/path/to/database"));
+    assertThat(DatabaseFactory.getActiveDatabaseInstance("target/path/to/database")).isEqualTo(db);
     if (System.getProperty("os.name").toLowerCase().contains("windows"))
-      Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("target\\path\\to\\database"));
-    Assertions.assertEquals(db, DatabaseFactory.getActiveDatabaseInstance("./target/path/../../target/path/to/database"));
+      assertThat(DatabaseFactory.getActiveDatabaseInstance("target\\path\\to\\database")).isEqualTo(db);
+    assertThat(DatabaseFactory.getActiveDatabaseInstance("./target/path/../../target/path/to/database")).isEqualTo(db);
 
     db.drop();
     f.close();
@@ -97,7 +100,7 @@ class DatabaseFactoryTest extends TestHelper {
     final Database db = f1.create();
 
     final DatabaseFactory f2 = new DatabaseFactory(".\\path\\to\\database");
-    Assertions.assertThrows(DatabaseOperationException.class, () -> f2.create());
+    assertThatExceptionOfType(DatabaseOperationException.class).isThrownBy(() -> f2.create());
 
     db.drop();
     f1.close();

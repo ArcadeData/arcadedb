@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BooleanExpression;
@@ -38,8 +39,8 @@ public class UpsertStep extends AbstractExecutionStep {
   private final WhereClause initialFilter;
   boolean applied = false;
 
-  public UpsertStep(final FromClause target, final WhereClause where, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public UpsertStep(final FromClause target, final WhereClause where, final CommandContext context) {
+    super(context);
     this.commandTarget = target;
     this.initialFilter = where;
   }
@@ -48,30 +49,31 @@ public class UpsertStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (applied)
       return getPrev().syncPull(context, nRecords);
-//
-//    boolean fetchFromIndexFound = false;
-//    ExecutionStepInternal p = prev;
-//
-//    if (p instanceof SubQueryStep) {
-//      for (ExecutionPlan ep : ((SubQueryStep) p).getSubExecutionPlans()) {
-//        for (ExecutionStep s : ep.getSteps()) {
-//          if (s instanceof FetchFromIndexStep) {
-//            fetchFromIndexFound = true;
-//            break;
-//          }
-//        }
-//      }
-//    } else {
-//      for (ExecutionStep step : p.getSubSteps()) {
-//        if (step instanceof FetchFromIndexStep) {
-//          fetchFromIndexFound = true;
-//          break;
-//        }
-//      }
-//    }
-//
-//    if (!fetchFromIndexFound)
-//      throw new CommandSQLParsingException("Upsert must involve an index to retrieve the records. Check the where condition is using the index for the upsert");
+
+    boolean fetchFromIndexFound = false;
+    ExecutionStepInternal p = prev;
+
+    if (p instanceof SubQueryStep) {
+      for (ExecutionPlan ep : p.getSubExecutionPlans()) {
+        for (ExecutionStep s : ep.getSteps()) {
+          if (s instanceof FetchFromIndexStep && ((FetchFromIndexStep) s).index.isUnique()) {
+            fetchFromIndexFound = true;
+            break;
+          }
+        }
+      }
+    } else {
+      for (ExecutionStep step : p.getSubSteps()) {
+        if (step instanceof FetchFromIndexStep) {
+          fetchFromIndexFound = true;
+          break;
+        }
+      }
+    }
+
+    if (!fetchFromIndexFound)
+      throw new CommandSQLParsingException(
+          "Upsert must involve an index to retrieve the records. Check the where condition is using the index for the upsert");
 
     applied = true;
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
@@ -101,7 +103,8 @@ public class UpsertStep extends AbstractExecutionStep {
     } else
       throw new CommandExecutionException("Cannot execute UPSERT on target '" + commandTarget + "'");
 
-    final MutableDocument doc = (MutableDocument) context.getDatabase().getRecordFactory().newMutableRecord(context.getDatabase(), type);
+    final MutableDocument doc = (MutableDocument) context.getDatabase().getRecordFactory()
+        .newMutableRecord(context.getDatabase(), type);
     final UpdatableResult result = new UpdatableResult(doc);
     if (initialFilter != null)
       setContent(result, initialFilter);
@@ -111,7 +114,7 @@ public class UpsertStep extends AbstractExecutionStep {
 
   private void setContent(final ResultInternal doc, final WhereClause initialFilter) {
     final List<AndBlock> flattened = initialFilter.flatten();
-    if (flattened.size() == 0)
+    if (flattened.isEmpty())
       return;
 
     if (flattened.size() > 1)
@@ -125,7 +128,7 @@ public class UpsertStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    final String result = spaces + "+ UPSERT (if needed)\n" + spaces + "  target: " + commandTarget + "\n" + spaces + "  content: " + initialFilter;
-    return result;
+    return spaces + "+ UPSERT (if needed)\n" + spaces + "  target: " + commandTarget + "\n" + spaces + "  content: "
+        + initialFilter;
   }
 }

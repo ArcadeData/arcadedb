@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.parser.BreakStatement;
 import com.arcadedb.query.sql.parser.SimpleExecStatement;
 
 import java.util.*;
@@ -45,9 +46,9 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     if (!executed) {
       executed = true;
       result = statement.executeSimple(this.context);
-      if (result instanceof InternalResultSet) {
+      if (result instanceof InternalResultSet)
         ((InternalResultSet) result).plan = this;
-      }
+
     }
     return new ResultSet() {
       int fetched = 0;
@@ -70,7 +71,6 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
       public void close() {
         result.close();
       }
-
     };
   }
 
@@ -84,14 +84,15 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
   }
 
   public ResultSet executeInternal() throws CommandExecutionException {
-    if (executed) {
+    if (executed)
       throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
-    }
+
     executed = true;
+
     result = statement.executeSimple(this.context);
-    if (result instanceof InternalResultSet) {
+    if (result instanceof InternalResultSet)
       ((InternalResultSet) result).plan = this;
-    }
+
     return result;
   }
 
@@ -108,7 +109,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public Result toResult() {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("type", "QueryExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("stmText", statement.toString());

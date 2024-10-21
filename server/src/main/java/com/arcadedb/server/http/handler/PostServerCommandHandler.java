@@ -78,7 +78,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (command == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Server command is null\"}");
 
-    final JSONObject response = createResult(user, null).put("result","ok");
+    final JSONObject response = createResult(user, null).put("result", "ok");
 
     final String command_lc = command.toLowerCase(Locale.ENGLISH);
 
@@ -111,7 +111,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else if (command_lc.startsWith(SET_SERVER_SETTING))
       setServerSetting(command.substring(SET_SERVER_SETTING.length()).trim());
     else if (command_lc.startsWith(GET_SERVER_EVENTS))
-      response.put("result",getServerEvents(command.substring(GET_SERVER_EVENTS.length()).trim()));
+      response.put("result", getServerEvents(command.substring(GET_SERVER_EVENTS.length()).trim()));
     else if (command_lc.startsWith(ALIGN_DATABASE))
       alignDatabase(command.substring(ALIGN_DATABASE.length()).trim());
     else {
@@ -132,9 +132,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);
 
-    final JSONObject response = createResult(user, null).put("result",new JSONArray(installedDatabases));
+    final JSONObject response = createResult(user, null).put("result", new JSONArray(installedDatabases));
 
-    return new ExecutionResponse(200,response.toString());
+    return new ExecutionResponse(200, response.toString());
   }
 
   private void shutdownServer(final String serverName) throws IOException {
@@ -142,7 +142,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     if (serverName.isEmpty()) {
       // SHUTDOWN CURRENT SERVER
-      httpServer.getServer().stop();
+      new Timer().schedule(new TimerTask() {
+        @Override
+        public void run() {
+          httpServer.getServer().stop();
+          System.exit(0);
+        }
+      }, 1000);
     } else {
       final HAServer ha = getHA();
       final Leader2ReplicaNetworkExecutor replica = ha.getReplica(serverName);
@@ -278,7 +284,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     server.getServerMetrics().meter("http.get-server-events").hit();
 
-    final JSONArray events = fileName.isEmpty() ? server.getEventLog().getCurrentEvents() : server.getEventLog().getEvents(fileName);
+    final JSONArray events = fileName.isEmpty() ?
+        server.getEventLog().getCurrentEvents() :
+        server.getEventLog().getEvents(fileName);
     final JSONArray files = server.getEventLog().getFiles();
 
     return "{ \"events\": " + events + ", \"files\": " + files + " }";

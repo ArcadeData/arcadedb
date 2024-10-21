@@ -40,32 +40,31 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof Map)
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+    if (value instanceof Map)
       // ALREADY A MAP
-      return ioResult;
-    else if (ioResult == null)
+      return value;
+    else if (value == null)
       // NULL VALUE, RETURN AN EMPTY MAP
       return Collections.emptyMap();
-    else if (ioResult instanceof Document)
+    else if (value instanceof Document)
       // CONVERT DOCUMENT TO MAP
-      return ((Document) ioResult).toMap(false);
+      return ((Document) value).toMap(false);
 
     final Iterator<Object> iter;
-    if (ioResult instanceof Iterator<?>)
-      iter = (Iterator<Object>) ioResult;
-    else if (ioResult instanceof Iterable<?>)
-      iter = ((Iterable<Object>) ioResult).iterator();
+    if (value instanceof Iterator<?>)
+      iter = (Iterator<Object>) value;
+    else if (value instanceof Iterable<?>)
+      iter = ((Iterable<Object>) value).iterator();
     else
       return null;
 
     final HashMap<String, Object> map = new HashMap<>();
     while (iter.hasNext()) {
       final Object key = iter.next();
-      if (iter.hasNext()) {
-        final Object value = iter.next();
-        map.put((String) key, value);
-      }
+      if (iter.hasNext())
+        map.put((String) key, iter.next());
     }
 
     return map;

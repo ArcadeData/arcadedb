@@ -25,6 +25,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ExecutionStepInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -227,14 +228,16 @@ public class Expression extends SimpleNode {
     return builder.toString();
   }
 
-  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (mathExpression != null) {
       return mathExpression.estimateIndexedFunction(target, context, operator, right);
     }
     return -1;
   }
 
-  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator,
       final Object right) {
     if (mathExpression != null) {
       return mathExpression.executeIndexedFunction(target, context, operator, right);
@@ -253,7 +256,8 @@ public class Expression extends SimpleNode {
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator,
       final Object right) {
     if (mathExpression != null) {
       return mathExpression.canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
@@ -271,7 +275,8 @@ public class Expression extends SimpleNode {
    *
    * @return true if current expression involves an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator,
       final Object right) {
     if (mathExpression != null) {
       return mathExpression.allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
@@ -290,7 +295,8 @@ public class Expression extends SimpleNode {
    * @return true if current expression involves an indexed function AND the function has also to be executed after the index
    * search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator,
       final Object right) {
     if (mathExpression != null) {
       return mathExpression.executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
@@ -476,6 +482,13 @@ public class Expression extends SimpleNode {
   @Override
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { mathExpression, arrayConcatExpression, json };
+  }
+
+  public String prettyPrint(final int depth, final int indent) {
+    if (mathExpression instanceof ParenthesisExpression && ((ParenthesisExpression) mathExpression).getExecutionPlan() != null)
+      return toString() + "\n" + ((ParenthesisExpression) mathExpression).getExecutionPlan().prettyPrint(depth + 1, indent);
+
+    return toString();
   }
 }
 /* JavaCC - OriginalChecksum=9c860224b121acdc89522ae97010be01 (do not edit this line) */

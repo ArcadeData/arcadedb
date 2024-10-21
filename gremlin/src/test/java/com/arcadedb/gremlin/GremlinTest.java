@@ -35,14 +35,18 @@ import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.math.*;
-import java.util.*;
+import java.io.File;
+import java.io.PrintStream;
+import java.math.BigInteger;
+import java.util.List;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Tests execution of gremlin queries as text.
@@ -74,14 +78,14 @@ public class GremlinTest {
       int lastAge = 0;
       for (; result.hasNext(); ++i) {
         final Result row = result.next();
-        Assertions.assertEquals("Jay", row.getProperty("p.name"));
-        Assertions.assertTrue(row.getProperty("p.age") instanceof Number);
-        Assertions.assertTrue((int) row.getProperty("p.age") > lastAge);
+        assertThat(row.<String>getProperty("p.name")).isEqualTo("Jay");
+        assertThat(row.getProperty("p.age") instanceof Number).isTrue();
+        assertThat((int) row.getProperty("p.age") > lastAge).isTrue();
 
         lastAge = row.getProperty("p.age");
       }
 
-      Assertions.assertEquals(25, i);
+      assertThat(i).isEqualTo(25);
 
     } finally {
       graph.drop();
@@ -120,13 +124,26 @@ public class GremlinTest {
       int total = 0;
       for (; result.hasNext(); ++total)
         result.next();
-      Assertions.assertEquals(10, total);
+      assertThat(total).isEqualTo(10);
 
       result = graph.gremlin("g.E().hasLabel('bucket:LinkedTo_1')").execute();
       total = 0;
       for (; result.hasNext(); ++total)
         result.next();
-      Assertions.assertEquals(9, total);
+      assertThat(total).isEqualTo(9);
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testGremlinCountNotDefinedTypes() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+      assertThat((Long) graph.gremlin("g.V().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable().getProperty("result")).isEqualTo(0);
+
+      assertThat((Long) graph.gremlin("g.E().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable().getProperty("result")).isEqualTo(0);
 
     } finally {
       graph.drop();
@@ -156,11 +173,11 @@ public class GremlinTest {
       int total = 0;
       for (; result.hasNext(); ++total) {
         EmbeddedDocument address = result.next().getProperty("residence");
-        Assertions.assertEquals("Via Roma, 10", address.getString("street"));
-        Assertions.assertEquals("Rome", address.getString("city"));
-        Assertions.assertEquals("Italy", address.getString("country"));
+        assertThat(address.getString("street")).isEqualTo("Via Roma, 10");
+        assertThat(address.getString("city")).isEqualTo("Rome");
+        assertThat(address.getString("country")).isEqualTo("Italy");
       }
-      Assertions.assertEquals(10, total);
+      assertThat(total).isEqualTo(10);
 
     } finally {
       graph.drop();
@@ -180,14 +197,14 @@ public class GremlinTest {
       graph.addVertex("vl3").property("vp1", 1);
 
       ResultSet result = graph.gremlin("g.V().has('vl1','vp1',lt(2)).count()").execute();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Result row = result.next();
-      Assertions.assertEquals(1L, (Long) row.getProperty("result"));
+      assertThat((Long) row.getProperty("result")).isEqualTo(1L);
 
       result = graph.gremlin("g.V().has('vl1','vp1',lt(2)).hasLabel('vl1','vl2','vl3').count()").execute();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       row = result.next();
-      Assertions.assertEquals(1L, (Long) row.getProperty("result"));
+      assertThat((Long) row.getProperty("result")).isEqualTo(1L);
 
     } finally {
       graph.drop();
@@ -203,15 +220,15 @@ public class GremlinTest {
       ArcadeVertex v2 = graph.addVertex("vl2");
 
       ResultSet result = graph.gremlin("g.V('" + v1.id() + "').addE('FriendOf').to( V('" + v2.id() + "') )").execute();
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Result row = result.next();
 
-      Assertions.assertTrue(row.isEdge());
+      assertThat(row.isEdge()).isTrue();
 
       final Edge edge = row.getEdge().get();
 
-      Assertions.assertEquals(v1.id(), edge.getOut().getIdentity().toString());
-      Assertions.assertEquals(v2.id(), edge.getIn().getIdentity().toString());
+      assertThat(edge.getOut().getIdentity().toString()).isEqualTo(v1.id());
+      assertThat(edge.getIn().getIdentity().toString()).isEqualTo(v2.id());
 
     } finally {
       graph.drop();
@@ -238,15 +255,15 @@ public class GremlinTest {
       int lastAge = 0;
       for (; result.hasNext(); ++i) {
         final Result row = result.next();
-        Assertions.assertFalse(row.isElement());
-        Assertions.assertEquals("Jay", row.getProperty("p.name"));
-        Assertions.assertTrue(row.getProperty("p.age") instanceof Number);
-        Assertions.assertTrue((int) row.getProperty("p.age") > lastAge);
+        assertThat(row.isElement()).isFalse();
+        assertThat(row.<String>getProperty("p.name")).isEqualTo("Jay");
+        assertThat(row.getProperty("p.age") instanceof Number).isTrue();
+        assertThat((int) row.getProperty("p.age") > lastAge).isTrue();
 
         lastAge = row.getProperty("p.age");
       }
 
-      Assertions.assertEquals(25, i);
+      assertThat(i).isEqualTo(25);
 
     } finally {
       if (database.isTransactionActive())
@@ -257,7 +274,7 @@ public class GremlinTest {
 
   @Test
   public void testCypherSyntaxError() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
       graph.getDatabase().getSchema().createVertexType("Person");
@@ -266,7 +283,7 @@ public class GremlinTest {
         graph.getDatabase().query("gremlin",
             "g.V().as('p').hasLabel22222('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
             "p1", 25);
-        Assertions.fail();
+        fail("");
       } catch (final CommandParsingException e) {
         // EXPECTED
       }
@@ -278,19 +295,19 @@ public class GremlinTest {
 
   @Test
   public void testGremlinParse() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
       final ArcadeGremlin gremlinReadOnly = graph.gremlin(
           "g.V().as('p').hasLabel('Person').where(__.choose(__.constant(25), __.constant(25), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)");
 
-      Assertions.assertTrue(gremlinReadOnly.parse().isIdempotent());
-      Assertions.assertFalse(gremlinReadOnly.parse().isDDL());
+      assertThat(gremlinReadOnly.parse().isIdempotent()).isTrue();
+      assertThat(gremlinReadOnly.parse().isDDL()).isFalse();
 
       final ArcadeGremlin gremlinWrite = graph.gremlin("g.V().addV('Person')");
 
-      Assertions.assertFalse(gremlinWrite.parse().isIdempotent());
-      Assertions.assertFalse(gremlinWrite.parse().isDDL());
+      assertThat(gremlinWrite.parse().isIdempotent()).isFalse();
+      assertThat(gremlinWrite.parse().isDDL()).isFalse();
 
     } finally {
       graph.drop();
@@ -299,17 +316,17 @@ public class GremlinTest {
 
   @Test
   public void testGremlinLists() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testlist");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final ResultSet result = graph.gremlin("g.addV('Person').property( 'list', ['a', 'b'] )").execute();
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result v = result.next();
-      Assertions.assertTrue(v.isVertex());
+      assertThat(v.isVertex()).isTrue();
       final List list = (List) v.getVertex().get().get("list");
-      Assertions.assertEquals(2, list.size());
-      Assertions.assertTrue(list.contains("a"));
-      Assertions.assertTrue(list.contains("b"));
+      assertThat(list.size()).isEqualTo(2);
+      assertThat(list.contains("a")).isTrue();
+      assertThat(list.contains("b")).isTrue();
 
     } finally {
       graph.drop();
@@ -318,7 +335,7 @@ public class GremlinTest {
 
   @Test
   public void testUseIndex() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING)
           .getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
@@ -330,7 +347,7 @@ public class GremlinTest {
       final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().as('p').hasLabel('Person').has( 'id', eq('" + uuid + "'))");
       final ResultSet result = gremlinReadOnly.execute();
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
     } finally {
       graph.drop();
     }
@@ -338,7 +355,7 @@ public class GremlinTest {
 
   @Test
   public void labelExists() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testLabel");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.traversal().V().hasLabel("Car").forEachRemaining(System.out::println);
     } finally {
@@ -350,7 +367,7 @@ public class GremlinTest {
   @Disabled
   @Test
   public void infinityValue() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testInfinite");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final Vertex alice = graph.addVertex("person");
       alice.property("hair", Double.POSITIVE_INFINITY);
@@ -361,7 +378,7 @@ public class GremlinTest {
       final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().has('hair', 500.00)");
       final ResultSet result = gremlinReadOnly.execute();
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
     } finally {
       graph.drop();
@@ -371,7 +388,7 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/690
   @Test
   public void testVertexConstraints() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testConstraints");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final VertexType type = graph.getDatabase().getSchema().getOrCreateVertexType("ChipID");
       type.getOrCreateProperty("name", Type.STRING).setMandatory(true).setNotNull(true).setReadonly(true);
@@ -380,7 +397,7 @@ public class GremlinTest {
       final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.addV('ChipID').property('name', 'a').property('uid', 'b')");
       final ResultSet result = gremlinReadOnly.execute();
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
     } finally {
       graph.drop();
@@ -390,7 +407,7 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/290
   @Test
   public void sort() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testOrder");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
       graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
@@ -406,7 +423,7 @@ public class GremlinTest {
       final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().order().by('name', asc)");
       final ResultSet result = gremlinReadOnly.execute();
 
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
     } finally {
       graph.drop();
@@ -416,17 +433,16 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/911
   @Test
   public void testLongOverflow() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testLongOverflow");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       Result value = graph.gremlin("g.inject(Long.MAX_VALUE, 0).sum()").execute().nextIfAvailable();
-      Assertions.assertEquals(Long.MAX_VALUE, (long) value.getProperty("result"));
+      assertThat((long) value.getProperty("result")).isEqualTo(Long.MAX_VALUE);
 
       value = graph.gremlin("g.inject(Long.MAX_VALUE, 1).sum()").execute().nextIfAvailable();
-      Assertions.assertEquals(Long.MAX_VALUE + 1, (long) value.getProperty("result"));
+      assertThat((long) value.getProperty("result")).isEqualTo(Long.MAX_VALUE + 1);
 
       value = graph.gremlin("g.inject(BigInteger.valueOf(Long.MAX_VALUE), 1).sum()").execute().nextIfAvailable();
-      Assertions.assertEquals(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)),
-          (BigInteger) value.getProperty("result"));
+      assertThat((BigInteger) value.getProperty("result")).isEqualTo(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)));
     } finally {
       graph.drop();
     }
@@ -435,10 +451,10 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/912
   @Test
   public void testNumberConversion() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testNumberConversion");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       Result value = graph.gremlin("g.inject(1).size()").execute().nextIfAvailable();
-      Assertions.assertEquals(1, (int) value.getProperty("result"));
+      assertThat((int) value.getProperty("result")).isEqualTo(1);
     } finally {
       graph.drop();
     }
@@ -446,7 +462,7 @@ public class GremlinTest {
 
   @Test
   public void testGroupBy() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testGroupBy");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
       graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
@@ -461,9 +477,9 @@ public class GremlinTest {
 
       ResultSet resultSet = graph.gremlin("g.V().hasLabel('Person').group().by('name')").execute();
       Result result = resultSet.nextIfAvailable();
-      Assertions.assertNotNull(result.getProperty("Alice"));
-      Assertions.assertNotNull(result.getProperty("Bob"));
-      Assertions.assertNotNull(result.getProperty("Steve"));
+      assertThat(result.<Object>getProperty("Alice")).isNotNull();
+      assertThat(result.<Object>getProperty("Bob")).isNotNull();
+      assertThat(result.<Object>getProperty("Steve")).isNotNull();
     } finally {
       graph.drop();
     }
@@ -472,7 +488,7 @@ public class GremlinTest {
   // Issue https://github.com/ArcadeData/arcadedb/issues/1301
   @Test
   public void testMerge() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testMerge");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.database.command("sqlscript",//
           "CREATE VERTEX TYPE TestMerge;" + //
@@ -481,6 +497,28 @@ public class GremlinTest {
 
       graph.cypher("CREATE (v:TestMerge{id: 0})").execute();
       graph.cypher("UNWIND range(0, 10) AS id MERGE (v:TestMerge{id: id}) RETURN v").execute();
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  // https://github.com/ArcadeData/arcadedb/issues/1674
+  @Test
+  public void testBooleanProperties() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+      graph.database.command("sqlscript",//
+          "CREATE VERTEX TYPE A;" + //
+              "CREATE PROPERTY A.b BOOLEAN;");
+
+      graph.gremlin("g.addV('A').property('b', true)").execute().nextIfAvailable();
+      graph.gremlin("g.addV('A').property('b', true)").execute().nextIfAvailable();
+      graph.gremlin("g.addV('A').property('b', false)").execute().nextIfAvailable();
+      graph.gremlin("g.addV('A')").execute().nextIfAvailable();
+      assertThat(graph.gremlin("g.V().hasLabel('A')").execute().toVertices().size()).isEqualTo(4);
+      assertThat(graph.gremlin("g.V().hasLabel('A').has('b',true)").execute().toVertices().size()).isEqualTo(2);
+      assertThat((Long) graph.gremlin("g.V().hasLabel('A').has('b',true).count()").execute().nextIfAvailable().getProperty("result")).isEqualTo(2);
 
     } finally {
       graph.drop();

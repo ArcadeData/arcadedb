@@ -193,12 +193,13 @@ public class DatabaseChecker {
           continue;
       }
 
-      if (fix)
+      final boolean startedNewTx = !database.isTransactionActive();
+      if (startedNewTx && fix)
         database.begin();
 
       final Map<String, Object> stats = bucket.check(verboseLevel, fix);
 
-      if (fix)
+      if (startedNewTx && fix)
         database.commit();
 
       updateStats(stats);

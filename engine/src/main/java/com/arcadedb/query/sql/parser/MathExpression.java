@@ -90,17 +90,17 @@ public class MathExpression extends SimpleNode {
     }, SLASH(10) {
       @Override
       public Number apply(final Integer left, final Integer right) {
-        if (left % right == 0) {
+        if (left % right == 0)
           return left / right;
-        }
+
         return ((double) left) / right;
       }
 
       @Override
       public Number apply(final Long left, final Long right) {
-        if (left % right == 0) {
+        if (left % right == 0)
           return left / right;
-        }
+
         return ((double) left) / right;
       }
 
@@ -654,7 +654,8 @@ public class MathExpression extends SimpleNode {
           return operation.apply((BigDecimal) a, (BigDecimal) b);
       }
 
-      throw new IllegalArgumentException("Cannot increment value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
+      throw new IllegalArgumentException(
+          "Cannot increment value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
 
     }
 
@@ -673,12 +674,11 @@ public class MathExpression extends SimpleNode {
   }
 
   public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
-    if (childExpressions.isEmpty()) {
+    if (childExpressions.isEmpty())
       return null;
-    }
-    if (childExpressions.size() == 1) {
+
+    if (childExpressions.size() == 1)
       return childExpressions.get(0).execute(iCurrentRecord, context);
-    }
 
     if (childExpressions.size() == 2) {
       final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, context);
@@ -868,14 +868,16 @@ public class MathExpression extends SimpleNode {
     return this.childExpressions.get(0).isIndexedFunctionCall(context);
   }
 
-  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return -1;
     }
     return this.childExpressions.get(0).estimateIndexedFunction(target, context, operator, right);
   }
 
-  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator,
       final Object right) {
     if (this.childExpressions.size() != 1) {
       return null;
@@ -892,7 +894,8 @@ public class MathExpression extends SimpleNode {
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator,
       final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
@@ -908,11 +911,12 @@ public class MathExpression extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator,
       final Object right) {
-    if (this.childExpressions.size() != 1) {
+    if (this.childExpressions.size() != 1)
       return false;
-    }
+
     return this.childExpressions.get(0).allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
   }
 
@@ -926,11 +930,12 @@ public class MathExpression extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator,
       final Object right) {
-    if (this.childExpressions.size() != 1) {
+    if (this.childExpressions.size() != 1)
       return false;
-    }
+
     return this.childExpressions.get(0).executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
   }
 
@@ -955,26 +960,24 @@ public class MathExpression extends SimpleNode {
 
   public boolean isEarlyCalculated(final CommandContext context) {
     for (final MathExpression exp : childExpressions) {
-      if (!exp.isEarlyCalculated(context)) {
+      if (!exp.isEarlyCalculated(context))
         return false;
-      }
     }
     return true;
   }
 
   public boolean isAggregate(CommandContext context) {
     for (final MathExpression expr : this.childExpressions) {
-      if (expr.isAggregate(context)) {
+      if (expr.isAggregate(context))
         return true;
-      }
     }
     return false;
   }
 
   public boolean isCount() {
-    if (this.childExpressions.size() != 1) {
+    if (this.childExpressions.size() != 1)
       return false;
-    }
+
     return this.childExpressions.get(0).isCount();
   }
 
@@ -1000,9 +1003,8 @@ public class MathExpression extends SimpleNode {
         i++;
       }
       return result;
-    } else {
+    } else
       return this;
-    }
   }
 
   public AggregationContext getAggregationContext(final CommandContext context) {
@@ -1022,15 +1024,13 @@ public class MathExpression extends SimpleNode {
   }
 
   public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
-    for (final MathExpression expr : this.childExpressions) {
+    for (final MathExpression expr : this.childExpressions)
       expr.extractSubQueries(letAlias, collector);
-    }
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
-    for (final MathExpression expr : this.childExpressions) {
+    for (final MathExpression expr : this.childExpressions)
       expr.extractSubQueries(collector);
-    }
   }
 
   protected Object[] getIdentityElements() {
@@ -1041,20 +1041,19 @@ public class MathExpression extends SimpleNode {
     final List<String> result = new ArrayList<String>();
     for (final MathExpression exp : childExpressions) {
       final List<String> x = exp.getMatchPatternInvolvedAliases();
-      if (x != null) {
+      if (x != null)
         result.addAll(x);
-      }
     }
-    if (result.isEmpty()) {
+    if (result.isEmpty())
       return null;
-    }
+
     return result;
   }
 
   public void applyRemove(final ResultInternal result, final CommandContext context) {
-    if (childExpressions.size() != 1) {
+    if (childExpressions.size() != 1)
       throw new CommandExecutionException("cannot apply REMOVE " + this);
-    }
+
     childExpressions.get(0).applyRemove(result, context);
   }
 }

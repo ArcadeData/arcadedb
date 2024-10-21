@@ -20,8 +20,9 @@ package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.parser.LikeOperator;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -30,18 +31,22 @@ public class LikeOperatorTest {
   @Test
   public void test() {
     final LikeOperator op = new LikeOperator(-1);
-    Assertions.assertTrue(op.execute(null, "foobar", "%ooba%"));
-    Assertions.assertTrue(op.execute(null, "foobar", "%oo%"));
-    Assertions.assertFalse(op.execute(null, "foobar", "oo%"));
-    Assertions.assertFalse(op.execute(null, "foobar", "%oo"));
-    Assertions.assertFalse(op.execute(null, "foobar", "%fff%"));
-    Assertions.assertTrue(op.execute(null, "foobar", "foobar"));
-    Assertions.assertTrue(op.execute(null, "100%", "100\\%"));
-    Assertions.assertTrue(op.execute(null, "100%", "100%"));
+    assertThat(op.execute(null, "foobar", "%ooba%")).isTrue();
+    assertThat(op.execute(null, "foobar", "%oo%")).isTrue();
+    assertThat(op.execute(null, "foobar", "oo%")).isFalse();
+    assertThat(op.execute(null, "foobar", "%oo")).isFalse();
+    assertThat(op.execute(null, "foobar", "%fff%")).isFalse();
+    assertThat(op.execute(null, "foobar", "foobar")).isTrue();
+    assertThat(op.execute(null, "100%", "100\\%")).isTrue();
+    assertThat(op.execute(null, "100%", "100%")).isTrue();
+    assertThat(op.execute(null, "", "")).isTrue();
+    assertThat(op.execute(null, "100?", "100\\?")).isTrue();
+    assertThat(op.execute(null, "100?", "100?")).isTrue();
+    assertThat(op.execute(null, "abc\ndef", "%e%")).isTrue();
   }
 
   @Test
   public void replaceSpecialCharacters() {
-    Assertions.assertEquals("\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*", QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%"));
+    assertThat(QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%")).isEqualTo("(?s)\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*");
   }
 }

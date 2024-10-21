@@ -20,9 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.fail;
 
 public class TraverseStatementTest {
 
@@ -45,7 +46,7 @@ public class TraverseStatementTest {
         //          System.out.println(result.toString());
         //          System.out.println("............");
         //        }
-        fail();
+        fail("");
       }
 
       return result;
@@ -53,7 +54,7 @@ public class TraverseStatementTest {
       if (isCorrect) {
         System.out.println(query);
         e.printStackTrace();
-        fail();
+        fail("");
       }
     }
     return null;

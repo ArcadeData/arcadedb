@@ -62,14 +62,13 @@ public class DocumentIndexer {
   }
 
   public void addToIndex(final Index entry, final RID rid, final Document record) {
-    final Index index = entry;
     final List<String> keyNames = entry.getPropertyNames();
 
     final Object[] keyValues = new Object[keyNames.size()];
     for (int i = 0; i < keyValues.length; ++i)
       keyValues[i] = getPropertyValue(record, keyNames.get(i));
 
-    index.put(keyValues, new RID[] { rid });
+    entry.put(keyValues, new RID[] { rid });
   }
 
   public void updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> indexes) {
@@ -97,7 +96,8 @@ public class DocumentIndexer {
         newKeyValues[i] = getPropertyValue(modifiedRecord, keyNames.get(i));
 
         if (!keyValuesAreModified &&//
-            ((newKeyValues[i] == null && oldKeyValues[i] != null) || (newKeyValues[i] != null && !newKeyValues[i].equals(oldKeyValues[i])))) {
+            ((newKeyValues[i] == null && oldKeyValues[i] != null) || (newKeyValues[i] != null && !newKeyValues[i].equals(
+                oldKeyValues[i])))) {
           keyValuesAreModified = true;
         }
       }
@@ -108,7 +108,8 @@ public class DocumentIndexer {
 
       final BucketSelectionStrategy bucketSelectionStrategy = modifiedRecord.getType().getBucketSelectionStrategy();
       if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy) {
-        if (!List.of(((PartitionedBucketSelectionStrategy) bucketSelectionStrategy).getProperties()).equals(index.getPropertyNames()))
+        if (!List.of(((PartitionedBucketSelectionStrategy) bucketSelectionStrategy).getProperties())
+            .equals(index.getPropertyNames()))
           throw new IndexException("Cannot modify primary key when the bucket selection is partitioned");
       }
 

@@ -33,14 +33,14 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
   private final InternalExecutionPlan subExecutionPlan;
   boolean executed = false;
 
-  public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext context) {
+    super(context);
     this.varName = varName;
 
     final BasicCommandContext subCtx = new BasicCommandContext();
     subCtx.setDatabase(context.getDatabase());
     subCtx.setParent(context);
-    subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
+    subExecutionPlan = query.createExecutionPlan(subCtx);
   }
 
   @Override
@@ -70,7 +70,8 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (once)\n" + spaces + "  " + varName + " = \n" + box(spaces + "    ", this.subExecutionPlan.prettyPrint(0, indent));
+    return spaces + "+ LET (once)\n" + spaces + "  " + varName + " = \n" + box(spaces + "    ",
+        this.subExecutionPlan.prettyPrint(0, indent));
   }
 
   @Override

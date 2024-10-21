@@ -1,10 +1,10 @@
-package com.arcadedb.query.sql;
+package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+import com.arcadedb.graph.Vertex;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class MatchInheritanceTest extends TestHelper {
   @Test
@@ -19,7 +19,7 @@ public class MatchInheritanceTest extends TestHelper {
       Result record = result.next();
       ++selectFromServices;
     }
-    Assertions.assertEquals(4, selectFromServices);
+    assertThat(selectFromServices).isEqualTo(4);
 
     sql = "SELECT FROM Attractions";
     result = database.command("SQL", sql);
@@ -28,7 +28,7 @@ public class MatchInheritanceTest extends TestHelper {
       Result record = result.next();
       ++selectFromAttractions;
     }
-    Assertions.assertEquals(4, selectFromAttractions);
+    assertThat(selectFromAttractions).isEqualTo(4);
 
     sql = "SELECT FROM Locations";
 
@@ -38,27 +38,27 @@ public class MatchInheritanceTest extends TestHelper {
       Result record = result.next();
       ++selectFromLocations;
     }
-    Assertions.assertEquals(8, selectFromLocations);
+    assertThat(selectFromLocations).isEqualTo(8);
 
     sql = "MATCH {type: Customers, as: customer, where: (OrderedId=1)}--{type: Monuments} " + "RETURN $pathelements";
     result = database.query("SQL", sql);
 
-    Assertions.assertEquals(2, result.stream().count());
+    assertThat(result.stream().count()).isEqualTo(2);
 
     sql = "MATCH {type: Customers, as: customer, where: (OrderedId=1)}--{type: Services} " + "RETURN $pathelements";
     result = database.query("SQL", sql);
 
-    Assertions.assertEquals(8, result.stream().count());
+    assertThat(result.stream().count()).isEqualTo(8);
 
     sql = "MATCH {type: Customers, as: customer, where: (OrderedId=1)}--{type: Attractions} " + "RETURN $pathelements";
     result = database.query("SQL", sql);
 
-    Assertions.assertEquals(8, result.stream().count());
+    assertThat(result.stream().count()).isEqualTo(8);
 
     sql = "MATCH {type: Customers, as: customer, where: (OrderedId=1)}--{type: Locations} " + "RETURN $pathelements";
     result = database.query("SQL", sql);
 
-    Assertions.assertEquals(16, result.stream().count());
+    assertThat(result.stream().count()).isEqualTo(16);
   }
 
   @Override

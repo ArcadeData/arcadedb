@@ -24,9 +24,11 @@ import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
 
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class PerformanceParsing {
   private static final String TYPE_NAME = "Person";
@@ -64,7 +66,7 @@ public class PerformanceParsing {
 
             while (rs.hasNext()) {
               final Result record = rs.next();
-              Assertions.assertNotNull(record);
+              assertThat(record).isNotNull();
             }
           }
 
@@ -80,8 +82,8 @@ public class PerformanceParsing {
     } finally {
       database.close();
 
-      Assertions.assertEquals(MAX_LOOPS, ok.get());
-      Assertions.assertEquals(0, error.get());
+      assertThat(ok.get()).isEqualTo(MAX_LOOPS);
+      assertThat(error.get()).isEqualTo(0);
     }
   }
 }

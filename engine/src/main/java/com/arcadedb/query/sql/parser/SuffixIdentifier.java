@@ -115,7 +115,8 @@ public class SuffixIdentifier extends SimpleNode {
         if (iCurrentRecord.getMetadataKeys().contains(varName)) {
           return iCurrentRecord.getMetadata(varName);
         }
-        if (iCurrentRecord instanceof ResultInternal && ((ResultInternal) iCurrentRecord).getTemporaryProperties().contains(varName)) {
+        if (iCurrentRecord instanceof ResultInternal && ((ResultInternal) iCurrentRecord).getTemporaryProperties()
+            .contains(varName)) {
           return ((ResultInternal) iCurrentRecord).getTemporaryProperty(varName);
         }
       }
@@ -131,7 +132,7 @@ public class SuffixIdentifier extends SimpleNode {
 
   public Object execute(final Map iCurrentRecord, final CommandContext context) {
     if (star) {
-      final ResultInternal result = new ResultInternal();
+      final ResultInternal result = new ResultInternal(context.getDatabase());
       if (iCurrentRecord != null) {
         for (final Map.Entry<String, Object> x : ((Map<String, Object>) iCurrentRecord).entrySet()) {
           result.setProperty("" + x.getKey(), x.getValue());
@@ -142,20 +143,20 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && varName.equalsIgnoreCase("$parent")) {
+      if (context != null && varName.equalsIgnoreCase("$parent"))
         return context.getParent();
-      }
-      if (context != null && context.getVariable(varName) != null) {
+
+      if (context != null && context.getVariable(varName) != null)
         return context.getVariable(varName);
-      }
-      if (iCurrentRecord != null) {
+
+      if (iCurrentRecord != null)
         return iCurrentRecord.get(varName);
-      }
+
       return null;
     }
-    if (recordAttribute != null) {
+    if (recordAttribute != null)
       return iCurrentRecord.get(recordAttribute.name);
-    }
+
     return null;
   }
 
@@ -246,8 +247,8 @@ public class SuffixIdentifier extends SimpleNode {
     return this;
   }
 
-  public boolean isEarlyCalculated() {
-    return identifier != null && identifier.internalAlias;
+  public boolean isEarlyCalculated(final CommandContext ctx) {
+    return (identifier != null && identifier.isEarlyCalculated(ctx));
   }
 
   public void aggregate(final Object value, final CommandContext context) {

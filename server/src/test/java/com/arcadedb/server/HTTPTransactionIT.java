@@ -20,7 +20,8 @@ package com.arcadedb.server;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -29,6 +30,8 @@ import java.util.*;
 import java.util.logging.*;
 
 import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class HTTPTransactionIT extends BaseGraphServerTest {
 
@@ -50,10 +53,10 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       try {
         final String response = readResponse(connection);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-        Assertions.assertEquals(204, connection.getResponseCode());
+        assertThat(connection.getResponseCode()).isEqualTo(204);
         sessionId = connection.getHeaderField(ARCADEDB_SESSION_ID).trim();
 
-        Assertions.assertNotNull(sessionId);
+        assertThat(sessionId).isNotNull();
 
       } finally {
         connection.disconnect();
@@ -75,13 +78,13 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       try {
         final String response = readResponse(connection);
 
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         final JSONObject responseAsJson = new JSONObject(response);
-        Assertions.assertTrue(responseAsJson.has("result"));
+        assertThat(responseAsJson.has("result")).isTrue();
         rid = responseAsJson.getJSONArray("result").getJSONObject(0).getString("@rid");
-        Assertions.assertTrue(rid.contains("#"));
+        assertThat(rid.contains("#")).isTrue();
       } finally {
         connection.disconnect();
       }
@@ -89,7 +92,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       // CANNOT RETRIEVE DOCUMENT OUTSIDE A TX
       try {
         checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, null);
-        Assertions.fail();
+        fail();
       } catch (final Exception e) {
         // EXPECTED
       }
@@ -110,9 +113,9 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       try {
         final String response = readResponse(connection);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
-        Assertions.assertTrue(response.contains("Person"));
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+        assertThat(response.contains("Person")).isTrue();
 
       } finally {
         connection.disconnect();
@@ -131,9 +134,9 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       try {
         final String response = readResponse(connection);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
-        Assertions.assertTrue(response.contains("Person"));
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+        assertThat(response.contains("Person")).isTrue();
       } finally {
         connection.disconnect();
       }
@@ -150,8 +153,8 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       try {
         final String response = readResponse(connection);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-        Assertions.assertEquals(204, connection.getResponseCode());
-        Assertions.assertNull(connection.getHeaderField(ARCADEDB_SESSION_ID));
+        assertThat(connection.getResponseCode()).isEqualTo(204);
+        assertThat(connection.getHeaderField(ARCADEDB_SESSION_ID)).isNull();
 
       } finally {
         connection.disconnect();
@@ -178,10 +181,10 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       try {
         final String response = readResponse(connection);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
-        Assertions.assertEquals(204, connection.getResponseCode());
+        assertThat(connection.getResponseCode()).isEqualTo(204);
         sessionId = connection.getHeaderField(ARCADEDB_SESSION_ID).trim();
 
-        Assertions.assertNotNull(sessionId);
+        assertThat(sessionId).isNotNull();
 
       } finally {
         connection.disconnect();
@@ -215,12 +218,12 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       String response = null;
       try {
         response = readResponse(connection);
-        Assertions.fail();
+        fail();
       } catch (final IOException e) {
         response = readError(connection);
-        Assertions.assertEquals(503, connection.getResponseCode());
+        assertThat(connection.getResponseCode()).isEqualTo(503);
         connection.disconnect();
-        Assertions.assertTrue(response.contains("DuplicatedKeyException"));
+        assertThat(response.contains("DuplicatedKeyException")).isTrue();
       }
     });
   }
@@ -243,16 +246,42 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     try {
       final String response = readResponse(connection);
       final JSONObject responseAsJson = new JSONObject(response);
-      Assertions.assertTrue(responseAsJson.has("result"));
+      assertThat(responseAsJson.has("result")).isTrue();
       final JSONObject object = responseAsJson.getJSONArray("result").getJSONObject(0);
-      Assertions.assertEquals(200, connection.getResponseCode());
-      Assertions.assertEquals("OK", connection.getResponseMessage());
-      Assertions.assertEquals(rid, object.remove("@rid").toString());
-      Assertions.assertEquals("d", object.remove("@cat"));
-      Assertions.assertEquals(payload.toMap(), object.toMap());
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      assertThat(connection.getResponseMessage()).isEqualTo("OK");
+      assertThat(object.remove("@rid").toString()).isEqualTo(rid);
+      assertThat(object.remove("@cat")).isEqualTo("d");
+      assertThat(object.toMap()).isEqualTo(payload.toMap());
 
     } finally {
       connection.disconnect();
     }
+  }
+
+  @Test
+  public void errorMissingIsolationLevel() throws Exception {
+    testEachServer((serverIndex) -> {
+      // BEGIN
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "select from V1 limit 1", null, new HashMap<>());
+      connection.connect();
+
+      try {
+        readResponse(connection);
+
+        fail();
+
+      } catch (Exception e) {
+        assertThat(e.getMessage().contains("400")).isTrue();
+      } finally {
+        connection.disconnect();
+      }
+    });
   }
 }

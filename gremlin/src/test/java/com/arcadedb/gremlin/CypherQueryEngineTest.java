@@ -30,10 +30,7 @@ import com.arcadedb.utility.FileUtils;
 import org.apache.commons.collections.IteratorUtils;
 import org.apache.commons.configuration2.BaseConfiguration;
 import org.apache.commons.configuration2.Configuration;
-import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
-import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -41,12 +38,8 @@ import java.io.*;
 import java.util.*;
 import java.util.stream.*;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsInAnyOrder;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.hasItems;
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.notNullValue;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 public class CypherQueryEngineTest {
   private static final String DB_PATH = "./target/testsql";
@@ -75,12 +68,12 @@ public class CypherQueryEngineTest {
 
           // Ensure that the result (set) has the desired format
           final List<Result> results = IteratorUtils.toList(query, 1);
-          assertThat(results, hasSize(1));
+          assertThat(results).hasSize(1);
 
           final Result result = results.get(0);
-          assertThat(result, notNullValue());
-          assertThat(result.isProjection(), equalTo(true));
-          assertThat(result.getPropertyNames(), hasItems("parent", "children"));
+          assertThat(result).isNotNull();
+          assertThat(result.isProjection()).isTrue();
+          assertThat(result.getPropertyNames()).contains("parent", "children");
 
           // Transform rid from result to string as in vertex
           final Result parentAsResult = result.getProperty("parent");
@@ -88,7 +81,7 @@ public class CypherQueryEngineTest {
           parent.computeIfPresent("@rid", (k, v) -> Objects.toString(v));
           parent.put("@cat", "v");
           final Map<String, Object> vertexMap = v1.toJSON().toMap();
-          assertThat(parent, equalTo(vertexMap));
+          assertThat(parent).isEqualTo(vertexMap);
 
           // Transform rid from result to string as in vertex
           final List<Result> childrenAsResult = result.getProperty("children");
@@ -97,7 +90,8 @@ public class CypherQueryEngineTest {
           children.forEach(c -> c.put("@cat", "v"));
           final List<Map<String, Object>> childVertices = Stream.of(v2, v3).map(MutableVertex::toJSON).map(JSONObject::toMap)
               .collect(Collectors.toList());
-          assertThat(children, containsInAnyOrder(childVertices.toArray()));
+
+          assertThat(children).containsExactlyInAnyOrderElementsOf(childVertices);
         }
       });
     }
@@ -114,19 +108,19 @@ public class CypherQueryEngineTest {
         database.command("cypher", "CREATE (n:Transaction {id:'T1'}) RETURN n");
         database.command("cypher", "CREATE (n:City {id:'C1'}) RETURN n");
         database.command("cypher",
-            "MATCH (t:Transaction), (c:City) WHERE t.id = 'T1' AND c.id = 'C1' CREATE path = (t)-[r:IS_IN]->(c) RETURN type(r)");
+                "MATCH (t:Transaction), (c:City) WHERE t.id = 'T1' AND c.id = 'C1' CREATE path = (t)-[r:IS_IN]->(c) RETURN type(r)");
 
         try (final ResultSet query = database.query("cypher",
-            "MATCH path = (t:City{id:'C1'})-[r]-(c:Transaction{id:'T1'}) RETURN path")) {
-          Assertions.assertTrue(query.hasNext());
+                "MATCH path = (t:City{id:'C1'})-[r]-(c:Transaction{id:'T1'}) RETURN path")) {
+          assertThat(query.hasNext()).isTrue();
           final Result r1 = query.next();
-          Assertions.assertTrue(query.hasNext());
+          assertThat(query.hasNext()).isTrue();
           final Result r2 = query.next();
-          Assertions.assertTrue(query.hasNext());
+          assertThat(query.hasNext()).isTrue();
           final Result r3 = query.next();
-          Assertions.assertFalse(query.hasNext());
-        }
+          assertThat(query.hasNext()).isFalse();
 
+        }
       });
     } finally {
       graph.drop();
@@ -146,12 +140,12 @@ public class CypherQueryEngineTest {
         database.command("sql", "INSERT INTO Transaction set id = 'A'");
 
         try (final ResultSet query = database.query("cypher", "MATCH (n:Transaction) WHERE n.id = 'A' RETURN n")) {
-          Assertions.assertTrue(query.hasNext());
+          assertThat(query.hasNext()).isTrue();
           final Result r1 = query.next();
         }
 
         try (final ResultSet query = database.query("cypher", "MATCH (n:Node) WHERE n.id = 'A' RETURN n")) {
-          Assertions.assertTrue(query.hasNext());
+          assertThat(query.hasNext()).isTrue();
           final Result r1 = query.next();
         }
       });
@@ -169,9 +163,9 @@ public class CypherQueryEngineTest {
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
         try (final ResultSet query = database.command("cypher", "CREATE (n:Person) return n.name")) {
-          Assertions.assertTrue(query.hasNext());
+          assertThat(query.hasNext()).isTrue();
           final Result r1 = query.next();
-          Assertions.assertNull(r1.getProperty("n.name"));
+          assertThat(r1.<String>getProperty("n.name")).isNull();;
         }
       });
     } finally {
@@ -189,13 +183,13 @@ public class CypherQueryEngineTest {
       database.transaction(() -> {
         database.command("cypher", "CREATE (foo:Order {name: \"hi\", field1: \"value1\", field2: \"value2\"}) RETURN foo;\n");
         try (final ResultSet query = database.command("cypher", "MATCH (foo:Order) RETURN foo.name, foo.field2, foo.field1;")) {
-          Assertions.assertTrue(query.hasNext());
+          assertThat(query.hasNext()).isTrue();
           final Result r1 = query.next();
 
           final List<String> columns = new ArrayList<>(r1.toMap().keySet());
-          Assertions.assertEquals("foo.name", columns.get(0));
-          Assertions.assertEquals("foo.field2", columns.get(1));
-          Assertions.assertEquals("foo.field1", columns.get(2));
+          assertThat(columns.get(0)).isEqualTo("foo.name");
+          assertThat(columns.get(1)).isEqualTo("foo.field2");
+          assertThat(columns.get(2)).isEqualTo("foo.field1");
         }
       });
     } finally {

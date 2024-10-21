@@ -22,8 +22,8 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 17/10/16.
  */
 public class OptionalMatchStep extends MatchStep {
-  public OptionalMatchStep(final CommandContext context, final EdgeTraversal edge, final boolean profilingEnabled) {
-    super(context, edge, profilingEnabled);
+  public OptionalMatchStep(final CommandContext context, final EdgeTraversal edge) {
+    super(context, edge);
   }
 
   @Override

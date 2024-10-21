@@ -24,8 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 public class SQLFunctionPercentileTest {
@@ -41,19 +40,19 @@ public class SQLFunctionPercentileTest {
   @Test
   public void testEmpty() {
     final Object result = percentile.getResult();
-    assertNull(result);
+    assertThat(result).isNull();
   }
 
   @Test
   public void testSingleValueLower() {
     percentile.execute(null, null, null, new Object[] {10, .25}, null);
-    assertEquals(10, percentile.getResult());
+    assertThat(percentile.getResult()).isEqualTo(10);
   }
 
   @Test
   public void testSingleValueUpper() {
     percentile.execute(null, null, null, new Object[] {10, .75}, null);
-    assertEquals(10, percentile.getResult());
+    assertThat(percentile.getResult()).isEqualTo(10);
   }
 
   @Test
@@ -65,7 +64,7 @@ public class SQLFunctionPercentileTest {
     }
 
     final Object result = percentile.getResult();
-    assertEquals(3.0, result);
+    assertThat(result).isEqualTo(3.0);
   }
 
   @Test
@@ -77,7 +76,7 @@ public class SQLFunctionPercentileTest {
     }
 
     final Object result = percentile.getResult();
-    assertEquals(3.0, result);
+    assertThat(result).isEqualTo(3.0);
   }
 
   @Test
@@ -89,7 +88,7 @@ public class SQLFunctionPercentileTest {
     }
 
     final Object result = percentile.getResult();
-    assertEquals(3.0, result);
+    assertThat(result).isEqualTo(3.0);
   }
 
   @Test
@@ -101,7 +100,7 @@ public class SQLFunctionPercentileTest {
     }
 
     final Object result = percentile.getResult();
-    assertEquals(1.5, result);
+    assertThat(result).isEqualTo(1.5);
   }
 
   @Test
@@ -113,7 +112,7 @@ public class SQLFunctionPercentileTest {
     }
 
     final Object result = percentile.getResult();
-    assertEquals(4.5, result);
+    assertThat(result).isEqualTo(4.5);
   }
 
   @Test
@@ -125,7 +124,7 @@ public class SQLFunctionPercentileTest {
     }
 
     final List<Number> result = (List<Number>) percentile.getResult();
-    assertEquals(1.5, result.get(0).doubleValue(), 0);
-    assertEquals(4.5, result.get(1).doubleValue(), 0);
+    assertThat(result.get(0).doubleValue()).isEqualTo(1.5);
+    assertThat(result.get(1).doubleValue()).isEqualTo(4.5);
   }
 }

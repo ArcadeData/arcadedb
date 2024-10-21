@@ -62,12 +62,11 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
   public void executeInternal() throws CommandExecutionException {
     while (true) {
       final ResultSet nextBlock = super.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
-      if (!nextBlock.hasNext()) {
+      if (!nextBlock.hasNext())
         return;
-      }
-      while (nextBlock.hasNext()) {
+
+      while (nextBlock.hasNext())
         result.add(nextBlock.next());
-      }
     }
   }
 

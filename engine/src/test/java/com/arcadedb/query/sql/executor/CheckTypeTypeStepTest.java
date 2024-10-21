@@ -21,8 +21,12 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.fail;
 
 public class CheckTypeTypeStepTest {
 
@@ -33,10 +37,10 @@ public class CheckTypeTypeStepTest {
       context.setDatabase(db);
       final DocumentType parentClass = TestHelper.createRandomType(db);
       final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
-      final CheckTypeTypeStep step = new CheckTypeTypeStep(childClass.getName(), parentClass.getName(), context, false);
+      final CheckTypeTypeStep step = new CheckTypeTypeStep(childClass.getName(), parentClass.getName(), context);
 
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(0, result.stream().count());
+      assertThat(result.stream().count()).isEqualTo(0);
     });
   }
 
@@ -46,10 +50,10 @@ public class CheckTypeTypeStepTest {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final String className = TestHelper.createRandomType(db).getName();
-      final CheckTypeTypeStep step = new CheckTypeTypeStep(className, className, context, false);
+      final CheckTypeTypeStep step = new CheckTypeTypeStep(className, className, context);
 
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(0, result.stream().count());
+      assertThat(result.stream().count()).isEqualTo(0);
     });
   }
 
@@ -60,11 +64,11 @@ public class CheckTypeTypeStepTest {
         final BasicCommandContext context = new BasicCommandContext();
         context.setDatabase(db);
         final CheckTypeTypeStep step = new CheckTypeTypeStep(TestHelper.createRandomType(db).getName(),
-            TestHelper.createRandomType(db).getName(), context, false);
+            TestHelper.createRandomType(db).getName(), context);
 
         step.syncPull(context, 20);
       });
-      Assertions.fail("Expected CommandExecutionException");
+      fail("Expected CommandExecutionException");
     } catch (final CommandExecutionException e) {
       // OK
     }

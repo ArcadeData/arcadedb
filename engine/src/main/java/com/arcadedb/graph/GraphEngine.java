@@ -314,29 +314,31 @@ public class GraphEngine {
 
     final Database database = edge.getDatabase();
 
-    try {
-      final VertexInternal vOut = (VertexInternal) edge.getOutVertex();
-      if (vOut != null) {
-        final EdgeLinkedList outEdges = getEdgeHeadChunk(vOut, Vertex.DIRECTION.OUT);
-        if (outEdges != null)
-          outEdges.removeEdge(edge);
+    if (database.existsRecord(edge.getOut()))
+      try {
+        final VertexInternal vOut = (VertexInternal) edge.getOutVertex();
+        if (vOut != null) {
+          final EdgeLinkedList outEdges = getEdgeHeadChunk(vOut, Vertex.DIRECTION.OUT);
+          if (outEdges != null)
+            outEdges.removeEdge(edge);
+        }
+      } catch (final SchemaException | RecordNotFoundException e) {
+        LogManager.instance()
+            .log(this, Level.FINE, "Error on loading outgoing vertex %s from edge %s", e, edge.getOut(), edge.getIdentity());
       }
-    } catch (final SchemaException | RecordNotFoundException e) {
-      LogManager.instance()
-          .log(this, Level.FINE, "Error on loading outgoing vertex %s from edge %s", e, edge.getOut(), edge.getIdentity());
-    }
 
-    try {
-      final VertexInternal vIn = (VertexInternal) edge.getInVertex();
-      if (vIn != null) {
-        final EdgeLinkedList inEdges = getEdgeHeadChunk(vIn, Vertex.DIRECTION.IN);
-        if (inEdges != null)
-          inEdges.removeEdge(edge);
+    if (database.existsRecord(edge.getIn()))
+      try {
+        final VertexInternal vIn = (VertexInternal) edge.getInVertex();
+        if (vIn != null) {
+          final EdgeLinkedList inEdges = getEdgeHeadChunk(vIn, Vertex.DIRECTION.IN);
+          if (inEdges != null)
+            inEdges.removeEdge(edge);
+        }
+      } catch (final SchemaException | RecordNotFoundException e) {
+        LogManager.instance()
+            .log(this, Level.FINE, "Error on loading incoming vertex %s from edge %s", e, edge.getIn(), edge.getIdentity());
       }
-    } catch (final SchemaException | RecordNotFoundException e) {
-      LogManager.instance()
-          .log(this, Level.FINE, "Error on loading incoming vertex %s from edge %s", e, edge.getIn(), edge.getIdentity());
-    }
 
     final RID edgeRID = edge.getIdentity();
     if (edgeRID != null && !(edge instanceof LightEdge))
@@ -349,16 +351,22 @@ public class GraphEngine {
   }
 
   public void deleteVertex(final VertexInternal vertex) {
+    // RETRIEVE ALL THE EDGES TO DELETE AT THE END
+    final Set<RID> edgeChunkToDelete = new HashSet<>();
+    final List<Identifiable> edgesToDelete = new ArrayList<>();
+
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
     if (outEdges != null) {
-      final Iterator<Edge> outIterator = outEdges.edgeIterator();
+      final EdgeIterator outIterator = (EdgeIterator) outEdges.edgeIterator();
 
       while (outIterator.hasNext()) {
+        edgeChunkToDelete.add(outIterator.currentContainer.getIdentity());
+
         RID inV = null;
         try {
           final Edge nextEdge = outIterator.next();
           inV = nextEdge.getIn();
-          nextEdge.delete();
+          edgesToDelete.add(nextEdge);
         } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance()
@@ -366,31 +374,33 @@ public class GraphEngine {
                   vertex.getIdentity());
         }
       }
-
-      final RID outRID = vertex.getOutEdgesHeadChunk();
-      outRID.getRecord(false).delete();
     }
 
     final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
     if (inEdges != null) {
-      final Iterator<Edge> inIterator = inEdges.edgeIterator();
+      final EdgeIterator inIterator = (EdgeIterator) inEdges.edgeIterator();
 
       while (inIterator.hasNext()) {
+        edgeChunkToDelete.add(inIterator.currentContainer.getIdentity());
+
         RID outV = null;
         try {
           final Edge nextEdge = inIterator.next();
           outV = nextEdge.getOut();
-          nextEdge.delete();
+          edgesToDelete.add(nextEdge);
         } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance()
-              .log(this, Level.WARNING, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
+              .log(this, Level.FINE, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
         }
       }
-
-      final RID inRID = vertex.getInEdgesHeadChunk();
-      inRID.getRecord(false).delete();
     }
+
+    for (Identifiable edge : edgesToDelete)
+      edge.asEdge().delete();
+
+    for (Identifiable chunk : edgeChunkToDelete)
+      chunk.getRecord().delete();
 
     // DELETE VERTEX RECORD
     vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
@@ -581,7 +591,7 @@ public class GraphEngine {
     throw new IllegalArgumentException("Invalid direction");
   }
 
-  public static void setProperties(final MutableDocument edge, final Object[] properties) {
+  public static void setProperties(final MutableEdge edge, final Object[] properties) {
     if (properties != null)
       if (properties.length == 1 && properties[0] instanceof Map) {
         // GET PROPERTIES FROM THE MAP
@@ -965,4 +975,74 @@ public class GraphEngine {
     return stats;
   }
 
+  protected RID moveToType(final Vertex vertex, final String typeName) {
+    return moveTo(vertex, typeName, null);
+  }
+
+  protected RID moveToBucket(final Vertex vertex, final String bucketName) {
+    return moveTo(vertex, vertex.getTypeName(), bucketName);
+  }
+
+  protected RID moveTo(final Vertex vertex, final String typeName, final String bucketName) {
+    final Database db = vertex.getDatabase();
+    boolean moveTx = !db.isTransactionActive();
+    try {
+      if (moveTx)
+        db.begin();
+
+      // SAVE OLD VERTEX PROPERTIES AND EDGES
+      final Map<String, Object> properties = vertex.propertiesAsMap();
+      final List<Edge> outEdges = new ArrayList<>();
+      for (Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
+        outEdges.add(edge.asEdge(true));
+      final List<Edge> inEdges = new ArrayList<>();
+      for (Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+        inEdges.add(edge.asEdge(true));
+
+      // DELETE THE OLD RECORD FIRST TO AVOID ISSUES WITH UNIQUE CONSTRAINTS
+      vertex.delete();
+
+      final MutableVertex newVertex = (MutableVertex) db.newVertex(typeName).set(properties);
+      if (bucketName != null)
+        newVertex.save(bucketName);
+      else
+        newVertex.save();
+      final RID newIdentity = newVertex.getIdentity();
+
+      for (Edge oe : outEdges) {
+        final RID inV = oe.getIn();
+        if (oe instanceof LightEdge)
+          newVertex.newLightEdge(oe.getTypeName(), inV, true);
+        else {
+          final MutableEdge e = newVertex.newEdge(oe.getTypeName(), inV, true);
+          final Map<String, Object> edgeProperties = oe.propertiesAsMap();
+          if (!edgeProperties.isEmpty())
+            e.set(edgeProperties).save();
+        }
+      }
+
+      for (Edge ie : inEdges) {
+        final RID outV = ie.getOut();
+        if (ie instanceof LightEdge)
+          newVertex.newLightEdge(ie.getTypeName(), outV, true);
+        else {
+          final MutableEdge e = newVertex.newEdge(ie.getTypeName(), outV, true);
+          final Map<String, Object> edgeProperties = ie.propertiesAsMap();
+          if (!edgeProperties.isEmpty())
+            e.set(edgeProperties).save();
+        }
+      }
+
+      if (moveTx)
+        db.commit();
+
+      return newIdentity;
+
+    } catch (RuntimeException ex) {
+      if (moveTx)
+        db.rollback();
+
+      throw ex;
+    }
+  }
 }

@@ -3,22 +3,24 @@ package com.arcadedb.function.polyglot;
 import com.arcadedb.TestHelper;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class SQLDefinedJavascriptFunctionTest extends TestHelper {
   @Test
   public void testEmbeddedFunction() {
     registerFunctions();
     final Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
-    Assertions.assertEquals(8, result);
+    assertThat(result).isEqualTo(8);
   }
 
   @Test
   public void testCallFromSQL() {
     registerFunctions();
     final ResultSet result = database.command("sql", "select `math.sum`(?,?) as result", 3, 5);
-    Assertions.assertEquals(8, (Integer) result.next().getProperty("result"));
+    assertThat((Integer) result.next().getProperty("result")).isEqualTo(8);
   }
 
   @Test
@@ -26,16 +28,16 @@ public class SQLDefinedJavascriptFunctionTest extends TestHelper {
     registerFunctions();
 
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
-    Assertions.assertEquals(8, result);
+    assertThat(result).isEqualTo(8);
 
     result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
-    Assertions.assertEquals(8, result);
+    assertThat(result).isEqualTo(8);
 
     result = (Integer) database.getSchema().getFunction("util", "sum").execute(3, 5);
-    Assertions.assertEquals(8, result);
+    assertThat(result).isEqualTo(8);
 
     result = (Integer) database.getSchema().getFunction("util", "sum").execute(3, 5);
-    Assertions.assertEquals(8, result);
+    assertThat(result).isEqualTo(8);
   }
 
   @Test
@@ -43,11 +45,11 @@ public class SQLDefinedJavascriptFunctionTest extends TestHelper {
     registerFunctions();
 
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(100, 50);
-    Assertions.assertEquals(150, result);
+    assertThat(result).isEqualTo(150);
 
     try {
       database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
-      Assertions.fail();
+      fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
@@ -56,7 +58,7 @@ public class SQLDefinedJavascriptFunctionTest extends TestHelper {
     database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
 
     result = (Integer) database.getSchema().getFunction("math", "sum").execute(50, 100);
-    Assertions.assertEquals(-50, result);
+    assertThat(result).isEqualTo(-50);
   }
 
   private void registerFunctions() {
@@ -64,6 +66,6 @@ public class SQLDefinedJavascriptFunctionTest extends TestHelper {
     database.command("sql", "define function util.sum \"return a + b\" parameters [a,b] language js");
 
     final FunctionLibraryDefinition flib = database.getSchema().getFunctionLibrary("math");
-    Assertions.assertNotNull(flib);
+    assertThat(flib).isNotNull();
   }
 }

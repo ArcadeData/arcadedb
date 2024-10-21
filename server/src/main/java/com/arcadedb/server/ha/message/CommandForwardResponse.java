@@ -71,7 +71,7 @@ public class CommandForwardResponse extends HAAbstractCommand {
       } else {
         // PROJECTION
         stream.putString(""); // NO RID
-        stream.putString(next.toJSON());
+        stream.putString(next.toJSON().toString());
       }
 
     }

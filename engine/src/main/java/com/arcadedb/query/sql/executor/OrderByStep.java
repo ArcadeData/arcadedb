@@ -36,12 +36,12 @@ public class OrderByStep extends AbstractExecutionStep {
   List<Result> cachedResult = null;
   int          nextElement  = 0;
 
-  public OrderByStep(final OrderBy orderBy, final CommandContext context, final long timeoutMillis, final boolean profilingEnabled) {
-    this(orderBy, null, context, timeoutMillis, profilingEnabled);
+  public OrderByStep(final OrderBy orderBy, final CommandContext context, final long timeoutMillis) {
+    this(orderBy, null, context, timeoutMillis);
   }
 
-  public OrderByStep(final OrderBy orderBy, final Integer maxResults, final CommandContext context, final long timeoutMillis, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public OrderByStep(final OrderBy orderBy, final Integer maxResults, final CommandContext context, final long timeoutMillis) {
+    super(context);
     this.orderBy = orderBy;
     this.maxResults = maxResults;
     if (this.maxResults != null && this.maxResults < 0) {
@@ -72,7 +72,7 @@ public class OrderByStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (currentBatchReturned >= nRecords) {
             throw new NoSuchElementException();
@@ -85,7 +85,7 @@ public class OrderByStep extends AbstractExecutionStep {
           currentBatchReturned++;
           return result;
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -116,7 +116,7 @@ public class OrderByStep extends AbstractExecutionStep {
           break;
 
         final Result item = lastBatch.next();
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           cachedResult.add(item);
           if (maxElementsAllowed >= 0 && cachedResult.size() > maxElementsAllowed) {
@@ -136,7 +136,7 @@ public class OrderByStep extends AbstractExecutionStep {
             }
           }
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -144,7 +144,7 @@ public class OrderByStep extends AbstractExecutionStep {
       if (timedOut) {
         break;
       }
-      final long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         // compact at each batch, if needed
         if (!sorted && this.maxResults != null && maxResults < cachedResult.size()) {
@@ -153,18 +153,18 @@ public class OrderByStep extends AbstractExecutionStep {
           sorted = true;
         }
       } finally {
-        if (profilingEnabled) {
+        if( context.isProfiling() ) {
           cost += (System.nanoTime() - begin);
         }
       }
     } while (true);
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (!sorted) {
         cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
       }
     } finally {
-      if (profilingEnabled) {
+      if( context.isProfiling() ) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -173,7 +173,7 @@ public class OrderByStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ " + orderBy;
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     result += (maxResults != null ? "\n  (buffer size: " + maxResults + ")" : "");

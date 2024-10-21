@@ -22,11 +22,15 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -35,39 +39,40 @@ public class AlterPropertyExecutionTest extends TestHelper {
   @Test
   public void sqlAlterPropertyCustom() {
     database.command("sql", "CREATE VERTEX TYPE Car");
-    Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().isEmpty());
+    assertThat(database.getSchema().getType("Car").getSuperTypes().isEmpty()).isTrue();
 
     database.command("sql", "CREATE PROPERTY Car.name STRING");
-    Assertions.assertTrue(database.getSchema().getType("Car").existsProperty("name"));
-    Assertions.assertEquals(Type.STRING, database.getSchema().getType("Car").getProperty("name").getType());
+    assertThat(database.getSchema().getType("Car").existsProperty("name")).isTrue();
+    assertThat(database.getSchema().getType("Car").getProperty("name").getType()).isEqualTo(Type.STRING);
 
     database.command("sql", "ALTER PROPERTY Car.name CUSTOM description = 'test'");
-    Assertions.assertEquals("test", database.getSchema().getType("Car").getProperty("name").getCustomValue("description"));
+    assertThat(database.getSchema().getType("Car").getProperty("name").getCustomValue("description")).isEqualTo("test");
 
     database.command("sql", "ALTER PROPERTY Car.name CUSTOM age = 3");
-    Assertions.assertEquals(3, database.getSchema().getType("Car").getProperty("name").getCustomValue("age"));
+    assertThat(database.getSchema().getType("Car").getProperty("name").getCustomValue("age")).isEqualTo(3);
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
-    final JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getJSONObject("custom");
-    Assertions.assertEquals("test", customMap.getString("description"));
-    Assertions.assertEquals(3, customMap.getInt("age"));
+    final JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name")
+        .getJSONObject("custom");
+    assertThat(customMap.getString("description")).isEqualTo("test");
+    assertThat(customMap.getInt("age")).isEqualTo(3);
 
     database.close();
     database = factory.open();
 
-    Assertions.assertEquals("test", database.getSchema().getType("Car").getProperty("name").getCustomValue("description"));
-    Assertions.assertEquals(3, ((Number) database.getSchema().getType("Car").getProperty("name").getCustomValue("age")).intValue());
+    assertThat(database.getSchema().getType("Car").getProperty("name").getCustomValue("description")).isEqualTo("test");
+    assertThat(((Number) database.getSchema().getType("Car").getProperty("name").getCustomValue("age")).intValue()).isEqualTo(3);
 
     database.command("sql", "ALTER PROPERTY Car.name CUSTOM age = null");
-    Assertions.assertNull(database.getSchema().getType("Car").getProperty("name").getCustomValue("age"));
-    Assertions.assertFalse(database.getSchema().getType("Car").getProperty("name").getCustomKeys().contains("age"));
+    assertThat(database.getSchema().getType("Car").getProperty("name").getCustomValue("age")).isNull();
+    assertThat(database.getSchema().getType("Car").getProperty("name").getCustomKeys().contains("age")).isFalse();
 
     final ResultSet resultset = database.query("sql", "SELECT properties FROM schema:types");
     while (resultset.hasNext()) {
       final Result result = resultset.next();
       final Object custom = ((Result) ((List) result.getProperty("properties")).get(0)).getProperty("custom");
-      Assertions.assertTrue(custom instanceof Map);
-      Assertions.assertFalse(((Map<?, ?>) custom).isEmpty());
+      assertThat(custom instanceof Map).isTrue();
+      assertThat(((Map<?, ?>) custom).isEmpty()).isFalse();
     }
   }
 
@@ -76,71 +81,73 @@ public class AlterPropertyExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE Vehicle");
     database.command("sql", "CREATE PROPERTY Vehicle.id STRING");
     database.command("sql", "ALTER PROPERTY Vehicle.id DEFAULT \"12345\"");
-    Assertions.assertTrue(database.getSchema().getType("Vehicle").getSuperTypes().isEmpty());
+    assertThat(database.getSchema().getType("Vehicle").getSuperTypes().isEmpty()).isTrue();
 
     database.command("sql", "CREATE VERTEX TYPE Car EXTENDS Vehicle");
-    Assertions.assertTrue(!database.getSchema().getType("Car").getSuperTypes().isEmpty());
+    assertThat(database.getSchema().getType("Car").getSuperTypes().isEmpty()).isFalse();
 
     database.command("sql", "CREATE PROPERTY Car.name STRING");
-    Assertions.assertTrue(database.getSchema().getType("Car").existsProperty("name"));
-    Assertions.assertEquals(Type.STRING, database.getSchema().getType("Car").getProperty("name").getType());
+    assertThat(database.getSchema().getType("Car").existsProperty("name")).isTrue();
+    assertThat(database.getSchema().getType("Car").getProperty("name").getType()).isEqualTo(Type.STRING);
 
     database.command("sql", "ALTER PROPERTY Car.name DEFAULT \"test\"");
-    Assertions.assertEquals("test", database.getSchema().getType("Car").getProperty("name").getDefaultValue());
+    assertThat(database.getSchema().getType("Car").getProperty("name").getDefaultValue()).isEqualTo("test");
 
     database.command("sql", "CREATE VERTEX TYPE Suv EXTENDS Car");
-    Assertions.assertFalse(database.getSchema().getType("Suv").getSuperTypes().isEmpty());
+    assertThat(database.getSchema().getType("Suv").getSuperTypes().isEmpty()).isFalse();
 
     database.command("sql", "CREATE PROPERTY Suv.weight float");
-    Assertions.assertTrue(database.getSchema().getType("Suv").existsProperty("weight"));
-    Assertions.assertEquals(Type.FLOAT, database.getSchema().getType("Suv").getProperty("weight").getType());
+    assertThat(database.getSchema().getType("Suv").existsProperty("weight")).isTrue();
+    assertThat(database.getSchema().getType("Suv").getProperty("weight").getType()).isEqualTo(Type.FLOAT);
 
     database.command("sql", "ALTER PROPERTY Suv.weight DEFAULT 1");
-    Assertions.assertEquals(1.0F, database.getSchema().getType("Suv").getProperty("weight").getDefaultValue());
+    assertThat(database.getSchema().getType("Suv").getProperty("weight").getDefaultValue()).isEqualTo(1.0F);
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
-    final String def1 = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getString("default");
-    Assertions.assertEquals("\"test\"", def1);
-    final Float def2 = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("properties").getJSONObject("weight").getFloat("default");
-    Assertions.assertEquals(1, def2);
+    final String def1 = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name")
+        .getString("default");
+    assertThat(def1).isEqualTo("\"test\"");
+    final Float def2 = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("properties").getJSONObject("weight")
+        .getFloat("default");
+    assertThat(def2).isEqualTo(1);
 
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX Car");
       final ResultSet result = database.command("sql", "SELECT FROM Car");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
       final Vertex v = result.next().getVertex().get();
-      Assertions.assertEquals("test", v.get("name"));
+      assertThat(v.get("name")).isEqualTo("test");
     });
 
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX Suv");
       final ResultSet result = database.command("sql", "SELECT FROM Suv");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
       final Vertex v = result.next().getVertex().get();
-      Assertions.assertEquals("12345", v.get("id"));
-      Assertions.assertEquals("test", v.get("name"));
-      Assertions.assertEquals(1.0F, v.get("weight"));
+      assertThat(v.get("id")).isEqualTo("12345");
+      assertThat(v.get("name")).isEqualTo("test");
+      assertThat(v.get("weight")).isEqualTo(1.0F);
     });
 
     database.close();
     database = factory.open();
 
-    Assertions.assertEquals("test", database.getSchema().getType("Car").getProperty("name").getDefaultValue());
+    assertThat(database.getSchema().getType("Car").getProperty("name").getDefaultValue()).isEqualTo("test");
 
     database.command("sql", "ALTER PROPERTY Car.name DEFAULT null");
-    Assertions.assertNull(database.getSchema().getType("Car").getProperty("name").getDefaultValue());
+    assertThat(database.getSchema().getType("Car").getProperty("name").getDefaultValue()).isNull();
   }
 
   @Test
   public void sqlAlterPropertyDefaultFunctions() {
     database.command("sql", "CREATE VERTEX TYPE Log");
-    Assertions.assertTrue(database.getSchema().getType("Log").getSuperTypes().isEmpty());
+    assertThat(database.getSchema().getType("Log").getSuperTypes().isEmpty()).isTrue();
 
     database.command("sql", "CREATE PROPERTY Log.createdOn DATETIME_MICROS");
-    Assertions.assertTrue(database.getSchema().getType("Log").existsProperty("createdOn"));
-    Assertions.assertEquals(Type.DATETIME_MICROS, database.getSchema().getType("Log").getProperty("createdOn").getType());
+    assertThat(database.getSchema().getType("Log").existsProperty("createdOn")).isTrue();
+    assertThat(database.getSchema().getType("Log").getProperty("createdOn").getType()).isEqualTo(Type.DATETIME_MICROS);
 
     database.command("sql", "ALTER PROPERTY Log.createdOn DEFAULT sysDate()");
 
@@ -156,25 +163,25 @@ public class AlterPropertyExecutionTest extends TestHelper {
       database.command("sql", "CREATE VERTEX Log");
 
       ResultSet result = database.command("sql", "SELECT FROM Log");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
       Vertex v = result.next().getVertex().get();
       final LocalDateTime createdOn1 = v.getLocalDateTime("createdOn");
-      Assertions.assertNotNull(createdOn1);
+      assertThat(createdOn1).isNotNull();
 
       v = result.next().getVertex().get();
       final LocalDateTime createdOn2 = v.getLocalDateTime("createdOn");
-      Assertions.assertNotNull(createdOn2);
+      assertThat(createdOn2).isNotNull();
 
-      Assertions.assertNotEquals(createdOn1, createdOn2);
+      assertThat(createdOn1).isNotEqualTo(createdOn2);
 
       v.modify().set("lastUpdateOn", LocalDateTime.now()).save();
 
       result = database.command("sql", "SELECT FROM Log");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
 
       v = result.next().getVertex().get();
-      Assertions.assertEquals(createdOn1, v.getLocalDateTime("createdOn"));
+      assertThat(v.getLocalDateTime("createdOn")).isEqualTo(createdOn1);
     });
   }
 }

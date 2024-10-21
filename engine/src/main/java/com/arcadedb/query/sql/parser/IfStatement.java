@@ -68,14 +68,14 @@ public class IfStatement extends Statement {
     context.setInputParameters(args);
     final IfExecutionPlan executionPlan;
     if (usePlanCache) {
-      executionPlan = createExecutionPlan(context, false);
+      executionPlan = createExecutionPlan(context);
     } else {
-      executionPlan = (IfExecutionPlan) createExecutionPlanNoCache(context, false);
+      executionPlan = (IfExecutionPlan) createExecutionPlanNoCache(context);
     }
 
     ExecutionStepInternal last = executionPlan.executeUntilReturn();
     if (last == null) {
-      last = new EmptyStep(context, false);
+      last = new EmptyStep(context);
     }
     if (isIdempotent()) {
       final SelectExecutionPlan finalPlan = new SelectExecutionPlan(context);
@@ -100,14 +100,14 @@ public class IfStatement extends Statement {
 
     final IfExecutionPlan executionPlan;
     if (usePlanCache) {
-      executionPlan = createExecutionPlan(context, false);
+      executionPlan = createExecutionPlan(context);
     } else {
-      executionPlan = (IfExecutionPlan) createExecutionPlanNoCache(context, false);
+      executionPlan = (IfExecutionPlan) createExecutionPlanNoCache(context);
     }
 
     ExecutionStepInternal last = executionPlan.executeUntilReturn();
     if (last == null) {
-      last = new EmptyStep(context, false);
+      last = new EmptyStep(context);
     }
     if (isIdempotent()) {
       final SelectExecutionPlan finalPlan = new SelectExecutionPlan(context);
@@ -122,10 +122,10 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public IfExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public IfExecutionPlan createExecutionPlan(final CommandContext context) {
     final IfExecutionPlan plan = new IfExecutionPlan(context);
 
-    final IfStep step = new IfStep(context, enableProfiling);
+    final IfStep step = new IfStep(context);
     step.setCondition(this.expression);
     plan.chain(step);
 
@@ -159,7 +159,8 @@ public class IfStatement extends Statement {
     final IfStatement result = new IfStatement(-1);
     result.expression = expression == null ? null : expression.copy();
     result.statements = statements == null ? null : statements.stream().map(Statement::copy).collect(Collectors.toList());
-    result.elseStatements = elseStatements == null ? null : elseStatements.stream().map(Statement::copy).collect(Collectors.toList());
+    result.elseStatements =
+        elseStatements == null ? null : elseStatements.stream().map(Statement::copy).collect(Collectors.toList());
     return result;
   }
 

@@ -54,6 +54,7 @@ public class RemoteDocumentType implements DocumentType {
   private         String                      bucketSelectionStrategy;
   private         List<String>                parentTypes;
   private         Map<String, RemoteProperty> properties;
+  private         Map<String, Object>         custom = new HashMap<>();
 
   RemoteDocumentType(final RemoteDatabase remoteDatabase, final Result record) {
     this.remoteDatabase = remoteDatabase;
@@ -83,6 +84,8 @@ public class RemoteDocumentType implements DocumentType {
         p.reload(entry);
     }
 
+    if (record.hasProperty("custom"))
+      custom = record.getProperty("custom");
 //
 //  final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName))
 //      .map(typeIndex -> {
@@ -492,26 +495,22 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public Set<String> getCustomKeys() {
-    throw new UnsupportedOperationException();
+    return custom.keySet();
   }
 
   @Override
-  public Object getCustomValue(String key) {
-    throw new UnsupportedOperationException();
+  public Object getCustomValue(final String key) {
+    return custom.get(key);
   }
 
   @Override
-  public Object setCustomValue(String key, Object value) {
-    throw new UnsupportedOperationException();
+  public Object setCustomValue(final String key, Object value) {
+    remoteDatabase.command("sql", "alter type `" + name + "` custom " + key + " = ?", value);
+    return custom.put(key, value);
   }
 
   @Override
   public JSONObject toJSON() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Property createProperty(String propName, JSONObject prop) {
     throw new UnsupportedOperationException();
   }
 }

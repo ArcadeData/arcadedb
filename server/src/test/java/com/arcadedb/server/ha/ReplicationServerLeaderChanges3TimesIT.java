@@ -33,13 +33,14 @@ import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.Pair;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT {
   private final AtomicInteger                       messagesInTotal    = new AtomicInteger();
@@ -82,15 +83,15 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
                 "distributed-test");
 
-            Assertions.assertTrue(resultSet.hasNext());
+            assertThat(resultSet.hasNext()).isTrue();
             final Result result = resultSet.next();
-            Assertions.assertNotNull(result);
+            assertThat(result).isNotNull();
             final Set<String> props = result.getPropertyNames();
-            Assertions.assertEquals(2, props.size(), "Found the following properties " + props);
-            Assertions.assertTrue(props.contains("id"));
-            Assertions.assertEquals(counter, (int) result.getProperty("id"));
-            Assertions.assertTrue(props.contains("name"));
-            Assertions.assertEquals("distributed-test", result.getProperty("name"));
+            assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
+            assertThat(props.contains("id")).isTrue();
+            assertThat((int) result.getProperty("id")).isEqualTo(counter);
+            assertThat(props.contains("name")).isTrue();
+            assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
 
             if (counter % 100 == 0) {
               LogManager.instance().log(this, Level.SEVERE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
@@ -135,7 +136,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
     onAfterTest();
 
     LogManager.instance().log(this, Level.FINE, "TEST Restart = %d", null, restarts);
-    Assertions.assertTrue(restarts.get() >= getServerCount(), "Restarted " + restarts.get() + " times");
+    assertThat(restarts.get() >= getServerCount()).as("Restarted " + restarts.get() + " times").isTrue();
   }
 
   @Override

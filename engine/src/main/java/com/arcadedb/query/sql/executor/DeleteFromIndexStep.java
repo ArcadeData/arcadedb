@@ -56,14 +56,16 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   private boolean     inited = false;
   private IndexCursor cursor;
 
-  public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
-      final BooleanExpression ridCondition, final CommandContext context, final boolean profilingEnabled) {
-    this(index, condition, additionalRangeCondition, ridCondition, true, context, profilingEnabled);
+  public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition,
+      final BinaryCondition additionalRangeCondition,
+      final BooleanExpression ridCondition, final CommandContext context) {
+    this(index, condition, additionalRangeCondition, ridCondition, true, context);
   }
 
-  public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
-      final BooleanExpression ridCondition, final boolean orderAsc, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition,
+      final BinaryCondition additionalRangeCondition,
+      final BooleanExpression ridCondition, final boolean orderAsc, final CommandContext context) {
+    super(context);
     this.index = index;
     this.condition = condition;
     this.additional = additionalRangeCondition;
@@ -87,13 +89,13 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          if (!hasNext()) {
+          if (!hasNext())
             throw new NoSuchElementException();
-          }
+
           final Pair<Object, Identifiable> entry = nextEntry;
-          final ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal(context.getDatabase());
           final Identifiable value = entry.getSecond();
 
           index.remove(new Object[] { entry.getFirst() }, value);
@@ -101,9 +103,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
           nextEntry = loadNextEntry(context);
           return result;
         } finally {
-          if (profilingEnabled) {
+          if (context.isProfiling())
             cost += (System.nanoTime() - begin);
-          }
         }
       }
 
@@ -115,14 +116,14 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       return;
     }
     inited = true;
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       init(condition);
       nextEntry = loadNextEntry(context);
     } catch (final IOException e) {
       e.printStackTrace();
     } finally {
-      if (profilingEnabled) {
+      if (context.isProfiling()) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -133,14 +134,14 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       final Object value = cursor.next();
 
       final Pair<Object, Identifiable> result = new Pair(cursor.getKeys(), value);
-      if (ridCondition == null) {
+      if (ridCondition == null)
         return result;
-      }
-      final ResultInternal res = new ResultInternal();
+
+      final ResultInternal res = new ResultInternal(context.getDatabase());
       res.setProperty("rid", result.getSecond());
-      if (ridCondition.evaluate(res, commandContext)) {
+      if (ridCondition.evaluate(res, commandContext))
         return result;
-      }
+
     }
     return null;
   }
@@ -174,7 +175,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     cursor = index.iterator(isOrderAsc());
   }
 
-  private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey, final boolean toKeyIncluded) {
+  private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
+      final boolean toKeyIncluded) {
     final Object secondValue = fromKey.execute((Result) null, context);
     final Object thirdValue = toKey.execute((Result) null, context);
 
@@ -347,12 +349,14 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ DELETE FROM INDEX " + index.getName();
-    if (profilingEnabled) {
+    if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
     result += (condition == null ?
         "" :
-        ("\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additional == null ? "" : " and " + additional)));
+        ("\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additional == null ?
+            "" :
+            " and " + additional)));
     return result;
   }
 

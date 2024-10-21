@@ -18,6 +18,7 @@ import com.arcadedb.function.FunctionExecutionException;
 import org.graalvm.polyglot.Value;
 
 import java.io.*;
+import java.util.*;
 
 /**
  * Javascript implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
@@ -104,9 +105,21 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
   public static Object getValue(final Value result) {
     if (result == null)
       return null;
-    else if (result.isHostObject())
-      return result.asHostObject();
-    else if (result.isString())
+    else if (result.isHostObject()) {
+      Object v = result.asHostObject();
+      if (v instanceof Value)
+        v = getValue((Value) v);
+      else if (v instanceof List) {
+        for (int i = 0; i < ((List<?>) v).size(); ++i) {
+          Object elem = ((List) v).get(i);
+          if (elem instanceof Value)
+            ((List) v).set(i, getValue((Value) elem));
+          else if (elem instanceof Map && !(elem instanceof HashMap))
+            ((List) v).set(i, new HashMap((Map) elem));
+        }
+      }
+      return v;
+    } else if (result.isString())
       return result.asString();
     else if (result.isBoolean())
       return result.asBoolean();
@@ -118,11 +131,21 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       else if (result.fitsInFloat())
         return result.asFloat();
       else
-        return result.asFloat();
+        return result.asDouble();
+    } else if (result.hasArrayElements()) {
+      final long size = result.getArraySize();
+      final List<Object> array = new ArrayList<>();
+      for (int i = 0; i < size; i++) {
+        final Object elem = getValue(result.getArrayElement(i));
+        array.add(elem);
+      }
+      return array;
     } else if (result.isNull())
       return null;
-
-    // UNKNOWN OR NOT SUPPORTED
-    return null;
+    else if (result.hasMembers())
+      return new HashMap<>(result.as(Map.class));
+    else
+      // UNKNOWN OR NOT SUPPORTED
+      return null;
   }
 }

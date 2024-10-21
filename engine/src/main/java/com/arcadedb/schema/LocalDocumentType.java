@@ -287,34 +287,6 @@ public class LocalDocumentType implements DocumentType {
     return createProperty(propertyName, Type.getTypeByClass(propertyType));
   }
 
-  @Override
-  public Property createProperty(final String propName, final JSONObject prop) {
-    final LocalProperty p = createProperty(propName, prop.getString("type"));
-
-    if (prop.has("of"))
-      p.setOfType(prop.getString("of"));
-    if (prop.has("default"))
-      p.setDefaultValue(prop.get("default"));
-    if (prop.has("readonly"))
-      p.setReadonly(prop.getBoolean("readonly"));
-    if (prop.has("mandatory"))
-      p.setMandatory(prop.getBoolean("mandatory"));
-    if (prop.has("notNull"))
-      p.setNotNull(prop.getBoolean("notNull"));
-    if (prop.has("max"))
-      p.setMax(prop.getString("max"));
-    if (prop.has("min"))
-      p.setMin(prop.getString("min"));
-    if (prop.has("regexp"))
-      p.setRegexp(prop.getString("regexp"));
-
-    p.custom.clear();
-    if (prop.has("custom"))
-      p.custom.putAll(prop.getJSONObject("custom").toMap());
-
-    return p;
-  }
-
   /**
    * Creates a new property with type `propertyType`.
    *
@@ -411,7 +383,7 @@ public class LocalDocumentType implements DocumentType {
   public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
     final Property p = getPolymorphicPropertyIfExists(propertyName);
     if (p != null) {
-      if (p.getType().equals(propertyType))
+      if (p.getType().equals(propertyType) && Objects.equals(p.getOfType(), ofType))
         return p;
 
       // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE
@@ -606,12 +578,12 @@ public class LocalDocumentType implements DocumentType {
     if (!polymorphic || superTypes.isEmpty())
       return Collections.unmodifiableCollection(indexesByProperties.values());
 
-    final List<TypeIndex> list = new ArrayList<>(indexesByProperties.values());
+    final Set<TypeIndex> set = new HashSet<>(indexesByProperties.values());
 
     for (final DocumentType t : superTypes)
-      list.addAll(t.getAllIndexes(true));
+      set.addAll(t.getAllIndexes(true));
 
-    return Collections.unmodifiableCollection(list);
+    return Collections.unmodifiableSet(set);
   }
 
   @Override
@@ -1052,11 +1024,11 @@ public class LocalDocumentType implements DocumentType {
       return this;
 
     // CHECK FOR CONFLICT WITH PROPERTIES NAMES
-    final Set<String> allProperties = getPolymorphicPropertyNames();
+    final Set<String> allProperties = getPropertyNames();
     for (final String p : superType.getPolymorphicPropertyNames())
       if (allProperties.contains(p)) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or any super types");
+            .log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or one of the super types");
         //throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any super types");
       }
 
@@ -1083,10 +1055,20 @@ public class LocalDocumentType implements DocumentType {
               } else {
                 for (int i = 0; i < buckets.size(); i++) {
                   final Bucket bucket = buckets.get(i);
-                  schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
-                      LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
-                      index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
-                      IndexBuilder.BUILD_BATCH_SIZE);
+
+                  boolean alreadyCreated = false;
+                  for (IndexInternal idx : getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
+                    if (idx.getTypeIndex().equals(index)) {
+                      alreadyCreated = true;
+                      break;
+                    }
+                  }
+
+                  if (!alreadyCreated)
+                    schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
+                        LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
+                        index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
+                        IndexBuilder.BUILD_BATCH_SIZE);
                 }
               }
             }

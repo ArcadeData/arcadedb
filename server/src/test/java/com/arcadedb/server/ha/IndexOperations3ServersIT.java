@@ -28,6 +28,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
+
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 

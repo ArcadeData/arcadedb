@@ -42,8 +42,8 @@ public class CountFromTypeStep extends AbstractExecutionStep {
    * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromTypeStep(final String targetClass, final String alias, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CountFromTypeStep(final String targetClass, final String alias, final CommandContext context) {
+    super(context);
     this.target = targetClass;
     this.alias = alias;
   }
@@ -63,7 +63,7 @@ public class CountFromTypeStep extends AbstractExecutionStep {
         if (executed) {
           throw new NoSuchElementException();
         }
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           String targetName = target;
           if (targetName.startsWith("$"))
@@ -78,12 +78,12 @@ public class CountFromTypeStep extends AbstractExecutionStep {
 
           final long size = context.getDatabase().countType(targetName, true);
           executed = true;
-          final ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(alias, size);
           return result;
 
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -105,7 +105,7 @@ public class CountFromTypeStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE USERTYPE SIZE: " + target;
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

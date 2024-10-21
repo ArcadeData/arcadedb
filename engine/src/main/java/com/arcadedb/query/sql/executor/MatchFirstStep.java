@@ -33,12 +33,12 @@ public class MatchFirstStep extends AbstractExecutionStep {
   Iterator<Result> iterator;
   ResultSet        subResultSet;
 
-  public MatchFirstStep(final CommandContext context, final PatternNode node, final boolean profilingEnabled) {
-    this(context, node, null, profilingEnabled);
+  public MatchFirstStep(final CommandContext context, final PatternNode node) {
+    this(context, node, null);
   }
 
-  public MatchFirstStep(final CommandContext context, final PatternNode node, final InternalExecutionPlan subPlan, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public MatchFirstStep(final CommandContext context, final PatternNode node, final InternalExecutionPlan subPlan) {
+    super(context);
     this.node = node;
     this.executionPlan = subPlan;
   }
@@ -75,15 +75,15 @@ public class MatchFirstStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        if (currentCount >= nRecords) {
+        if (currentCount >= nRecords)
           throw new NoSuchElementException();
-        }
-        final ResultInternal result = new ResultInternal();
-        if (iterator != null) {
+
+        final ResultInternal result = new ResultInternal(context.getDatabase());
+        if (iterator != null)
           result.setProperty(getAlias(), iterator.next());
-        } else {
+        else
           result.setProperty(getAlias(), subResultSet.next());
-        }
+
         context.setVariable("matched", result);
         currentCount++;
         return result;

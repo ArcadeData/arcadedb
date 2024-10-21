@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DataEncryption;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -44,6 +45,7 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.*;
@@ -62,8 +64,9 @@ import java.util.logging.*;
  */
 public class BinarySerializer {
   private final BinaryComparator comparator = new BinaryComparator();
-  private       Class            dateImplementation;
-  private       Class            dateTimeImplementation;
+  private       Class<?>         dateImplementation;
+  private       Class<?>         dateTimeImplementation;
+  private       DataEncryption   dataEncryption;
 
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
@@ -182,141 +185,159 @@ public class BinarySerializer {
     return record.getContent();
   }
 
-  public Set<String> getPropertyNames(final Database database, final Binary buffer) {
-    buffer.getInt(); // HEADER-SIZE
-    final int properties = (int) buffer.getUnsignedNumber();
-    final Set<String> result = new LinkedHashSet<>(properties);
+  public Set<String> getPropertyNames(final Database database, final Binary buffer, final RID rid) {
+    try {
+      buffer.getInt(); // HEADER-SIZE
+      final int properties = (int) buffer.getUnsignedNumber();
+      final Set<String> result = new LinkedHashSet<>(properties);
 
-    for (int i = 0; i < properties; ++i) {
-      final int nameId = (int) buffer.getUnsignedNumber();
-      buffer.getUnsignedNumber(); //contentPosition
-      final String name = database.getSchema().getDictionary().getNameById(nameId);
-      result.add(name);
+      for (int i = 0; i < properties; ++i) {
+        final int nameId = (int) buffer.getUnsignedNumber();
+        buffer.getUnsignedNumber(); //contentPosition
+        final String name = database.getSchema().getDictionary().getNameById(nameId);
+        result.add(name);
+      }
+
+      return result;
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
-
-    return result;
+    return null;
   }
 
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
-      final EmbeddedModifier embeddedModifier, final DocumentType documentType, final String... fieldNames) {
-    final int headerEndOffset = buffer.getInt();
-    final int properties = (int) buffer.getUnsignedNumber();
+      final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
+    try {
+      final int headerEndOffset = buffer.getInt();
+      final int properties = (int) buffer.getUnsignedNumber();
 
-    if (properties < 0)
-      throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-    else if (properties == 0)
-      // EMPTY: NOT FOUND
-      return new LinkedHashMap<>();
+      if (properties < 0)
+        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+      else if (properties == 0)
+        // EMPTY: NOT FOUND
+        return new LinkedHashMap<>();
 
-    final Map<String, Object> values = new LinkedHashMap<>(properties);
+      final Map<String, Object> values = new LinkedHashMap<>(properties);
 
-    int lastHeaderPosition;
+      int lastHeaderPosition;
 
-    final int[] fieldIds = new int[fieldNames.length];
+      final int[] fieldIds = new int[fieldNames.length];
 
-    final Dictionary dictionary = database.getSchema().getDictionary();
-    for (int i = 0; i < fieldNames.length; ++i)
-      fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
+      final Dictionary dictionary = database.getSchema().getDictionary();
+      for (int i = 0; i < fieldNames.length; ++i)
+        fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
 
-    for (int i = 0; i < properties; ++i) {
-      final int nameId = (int) buffer.getUnsignedNumber();
-      final int contentPosition = (int) buffer.getUnsignedNumber();
+      for (int i = 0; i < properties; ++i) {
+        final int nameId = (int) buffer.getUnsignedNumber();
+        final int contentPosition = (int) buffer.getUnsignedNumber();
 
-      lastHeaderPosition = buffer.position();
+        lastHeaderPosition = buffer.position();
 
-      if (fieldIds.length > 0) {
-        boolean found = false;
-        // FILTER BY FIELD
-        for (final int f : fieldIds)
-          if (f == nameId) {
-            found = true;
-            break;
-          }
+        if (fieldIds.length > 0) {
+          boolean found = false;
+          // FILTER BY FIELD
+          for (final int f : fieldIds)
+            if (f == nameId) {
+              found = true;
+              break;
+            }
 
-        if (!found)
-          continue;
+          if (!found)
+            continue;
+        }
+
+        final String propertyName = dictionary.getNameById(nameId);
+
+        buffer.position(headerEndOffset + contentPosition);
+
+        final byte type = buffer.getByte();
+
+        final EmbeddedModifierProperty propertyModifier =
+            embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
+
+        final Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+
+        values.put(propertyName, propertyValue);
+
+        buffer.position(lastHeaderPosition);
+
+        if (fieldIds.length > 0 && values.size() >= fieldIds.length)
+          // ALL REQUESTED PROPERTIES ALREADY FOUND
+          break;
       }
 
-      final String propertyName = dictionary.getNameById(nameId);
-
-      buffer.position(headerEndOffset + contentPosition);
-
-      final byte type = buffer.getByte();
-
-      final EmbeddedModifierProperty propertyModifier =
-          embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
-
-      final Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
-
-      values.put(propertyName, propertyValue);
-
-      buffer.position(lastHeaderPosition);
-
-      if (fieldIds.length > 0 && values.size() >= fieldIds.length)
-        // ALL REQUESTED PROPERTIES ALREADY FOUND
-        break;
+      return values;
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
-
-    return values;
+    return Collections.emptyMap();
   }
 
-  public boolean hasProperty(final Database database, final Binary buffer, final String fieldName) {
-    buffer.getInt(); // headerEndOffset
-    final int properties = (int) buffer.getUnsignedNumber();
-    if (properties < 0)
-      throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-    else if (properties == 0)
-      // EMPTY: NOT FOUND
-      return false;
+  public boolean hasProperty(final Database database, final Binary buffer, final String fieldName, final RID rid) {
+    try {
+      buffer.getInt(); // headerEndOffset
+      final int properties = (int) buffer.getUnsignedNumber();
+      if (properties < 0)
+        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+      else if (properties == 0)
+        // EMPTY: NOT FOUND
+        return false;
 
-    final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
+      final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
 
-    for (int i = 0; i < properties; ++i) {
-      if (fieldId == (int) buffer.getUnsignedNumber())
-        return true;
-      buffer.getUnsignedNumber(); // contentPosition
+      for (int i = 0; i < properties; ++i) {
+        if (fieldId == (int) buffer.getUnsignedNumber())
+          return true;
+        buffer.getUnsignedNumber(); // contentPosition
+      }
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
 
     return false;
   }
 
   public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier,
-      final String fieldName, final DocumentType documentType) {
-    final int headerEndOffset = buffer.getInt();
-    final int properties = (int) buffer.getUnsignedNumber();
+      final String fieldName, final RID rid) {
+    try {
+      final int headerEndOffset = buffer.getInt();
+      final int properties = (int) buffer.getUnsignedNumber();
 
-    if (properties < 0)
-      throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-    else if (properties == 0)
-      // EMPTY: NOT FOUND
-      return null;
+      if (properties < 0)
+        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+      else if (properties == 0)
+        // EMPTY: NOT FOUND
+        return null;
 
-    final Dictionary dictionary = database.getSchema().getDictionary();
-    final int fieldId = dictionary.getIdByName(fieldName, false);
+      final Dictionary dictionary = database.getSchema().getDictionary();
+      final int fieldId = dictionary.getIdByName(fieldName, false);
 
-    for (int i = 0; i < properties; ++i) {
-      final int nameId = (int) buffer.getUnsignedNumber();
-      final int contentPosition = (int) buffer.getUnsignedNumber();
+      for (int i = 0; i < properties; ++i) {
+        final int nameId = (int) buffer.getUnsignedNumber();
+        final int contentPosition = (int) buffer.getUnsignedNumber();
 
-      if (fieldId != nameId)
-        continue;
+        if (fieldId != nameId)
+          continue;
 
-      buffer.position(headerEndOffset + contentPosition);
+        buffer.position(headerEndOffset + contentPosition);
 
-      final byte type = buffer.getByte();
+        final byte type = buffer.getByte();
 
-      final EmbeddedModifierProperty propertyModifier =
-          embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
+        final EmbeddedModifierProperty propertyModifier =
+            embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
 
-      return deserializeValue(database, buffer, type, propertyModifier);
+        return deserializeValue(database, buffer, type, propertyModifier);
+      }
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
-
     return null;
   }
 
-  public void serializeValue(final Database database, final Binary content, final byte type, Object value) {
+  public void serializeValue(final Database database, final Binary serialized, final byte type, Object value) {
     if (value == null)
       return;
+    Binary content = dataEncryption != null ? new Binary() : serialized;
 
     switch (type) {
     case BinaryTypes.TYPE_NULL:
@@ -375,8 +396,8 @@ public class BinarySerializer {
       break;
     case BinaryTypes.TYPE_COMPRESSED_RID: {
       final RID rid = ((Identifiable) value).getIdentity();
-      content.putNumber(rid.getBucketId());
-      content.putNumber(rid.getPosition());
+      serialized.putNumber(rid.getBucketId());
+      serialized.putNumber(rid.getPosition());
       break;
     }
     case BinaryTypes.TYPE_RID: {
@@ -385,8 +406,8 @@ public class BinarySerializer {
         value = ((Result) value).getElement().get();
 
       final RID rid = ((Identifiable) value).getIdentity();
-      content.putInt(rid.getBucketId());
-      content.putLong(rid.getPosition());
+      serialized.putInt(rid.getBucketId());
+      serialized.putLong(rid.getPosition());
       break;
     }
     case BinaryTypes.TYPE_UUID: {
@@ -397,9 +418,9 @@ public class BinarySerializer {
     }
     case BinaryTypes.TYPE_LIST: {
       if (value instanceof Collection) {
-        final Collection list = (Collection) value;
+        final Collection<Object> list = (Collection<Object>) value;
         content.putUnsignedNumber(list.size());
-        for (final Iterator it = list.iterator(); it.hasNext(); ) {
+        for (final Iterator<Object> it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
@@ -434,9 +455,16 @@ public class BinarySerializer {
         content.putUnsignedNumber(length);
         for (int i = 0; i < length; ++i) {
           final Object entryValue = Array.get(value, i);
-          final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
-          content.putByte(entryType);
-          serializeValue(database, content, entryType, entryValue);
+          try {
+            final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
+            content.putByte(entryType);
+            serializeValue(database, content, entryType, entryValue);
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on serializing array value for element %d = '%s'",
+                i, entryValue);
+            throw new SerializationException(
+                "Error on serializing array value for element " + i + " = '" + entryValue + "'");
+          }
         }
       }
       break;
@@ -444,30 +472,40 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_MAP: {
       final Dictionary dictionary = database.getSchema().getDictionary();
 
+      if (value instanceof JSONObject)
+        value = ((JSONObject) value).toMap();
+
       final Map<Object, Object> map = (Map<Object, Object>) value;
       content.putUnsignedNumber(map.size());
       for (final Map.Entry<Object, Object> entry : map.entrySet()) {
-        // WRITE THE KEY
-        Object entryKey = entry.getKey();
-        byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey);
+        try {
+          // WRITE THE KEY
+          Object entryKey = entry.getKey();
+          byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey);
 
-        if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
-          final int id = dictionary.getIdByName((String) entryKey, false);
-          if (id > -1) {
-            // WRITE THE COMPRESSED STRING AS MAP KEY
-            entryKeyType = BinaryTypes.TYPE_COMPRESSED_STRING;
-            entryKey = id;
+          if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
+            final int id = dictionary.getIdByName((String) entryKey, false);
+            if (id > -1) {
+              // WRITE THE COMPRESSED STRING AS MAP KEY
+              entryKeyType = BinaryTypes.TYPE_COMPRESSED_STRING;
+              entryKey = id;
+            }
           }
+
+          content.putByte(entryKeyType);
+          serializeValue(database, content, entryKeyType, entryKey);
+
+          // WRITE THE VALUE
+          final Object entryValue = entry.getValue();
+          final byte entryValueType = BinaryTypes.getTypeFromValue(entryValue);
+          content.putByte(entryValueType);
+          serializeValue(database, content, entryValueType, entryValue);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on serializing map value for key '%s' = '%s'",
+              entry.getKey(), entry.getValue());
+          throw new SerializationException(
+              "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'");
         }
-
-        content.putByte(entryKeyType);
-        serializeValue(database, content, entryKeyType, entryKey);
-
-        // WRITE THE VALUE
-        final Object entryValue = entry.getValue();
-        final byte entryValueType = BinaryTypes.getTypeFromValue(entryValue);
-        content.putByte(entryValueType);
-        serializeValue(database, content, entryValueType, entryValue);
       }
       break;
     }
@@ -528,10 +566,26 @@ public class BinarySerializer {
     default:
       LogManager.instance().log(this, Level.INFO, "Error on serializing value '" + value + "', type not supported");
     }
+
+    if (dataEncryption != null) {
+      switch (type) {
+        case BinaryTypes.TYPE_NULL:
+        case BinaryTypes.TYPE_COMPRESSED_RID:
+        case BinaryTypes.TYPE_RID:
+          break;
+        default:
+          serialized.putBytes(dataEncryption.encrypt(content.toByteArray()));
+      }
+    }
   }
 
-  public Object deserializeValue(final Database database, final Binary content, final byte type,
+  public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
       final EmbeddedModifier embeddedModifier) {
+    Binary content = dataEncryption != null &&
+        type != BinaryTypes.TYPE_NULL &&
+        type != BinaryTypes.TYPE_COMPRESSED_RID &&
+        type != BinaryTypes.TYPE_RID ? new Binary(dataEncryption.decrypt(deserialized.getBytes())) : deserialized;
+
     final Object value;
     switch (type) {
     case BinaryTypes.TYPE_NULL:
@@ -591,17 +645,17 @@ public class BinarySerializer {
       value = new BigDecimal(new BigInteger(unscaledValue), scale);
       break;
     case BinaryTypes.TYPE_COMPRESSED_RID:
-      value = new RID(database, (int) content.getNumber(), content.getNumber());
+      value = new RID(database, (int) deserialized.getNumber(), deserialized.getNumber());
       break;
     case BinaryTypes.TYPE_RID:
-      value = new RID(database, content.getInt(), content.getLong());
+      value = new RID(database, deserialized.getInt(), deserialized.getLong());
       break;
     case BinaryTypes.TYPE_UUID:
       value = new UUID(content.getNumber(), content.getNumber());
       break;
     case BinaryTypes.TYPE_LIST: {
       final int count = (int) content.getUnsignedNumber();
-      final List list = new ArrayList(count);
+      final List<Object> list = new ArrayList<>(count);
       for (int i = 0; i < count; ++i) {
         final byte entryType = content.getByte();
         list.add(deserializeValue(database, content, entryType, embeddedModifier));
@@ -752,7 +806,7 @@ public class BinarySerializer {
 
   public void setDateTimeImplementation(final Object dateTimeImplementation) throws ClassNotFoundException {
     this.dateTimeImplementation = dateTimeImplementation instanceof Class ?
-        (Class) dateTimeImplementation :
+        (Class<?>) dateTimeImplementation :
         Class.forName(dateTimeImplementation.toString());
   }
 
@@ -762,6 +816,10 @@ public class BinarySerializer {
 
   private void serializeDateTime(final Binary content, final Object value, final byte type) {
     content.putUnsignedNumber(DateUtils.dateTimeToTimestamp(value, DateUtils.getPrecisionFromBinaryType(type)));
+  }
+
+  public void setDataEncryption(final DataEncryption dataEncryption) {
+    this.dataEncryption = dataEncryption;
   }
 
 }

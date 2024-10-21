@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.lang.reflect.*;
 import java.util.*;
 
 public class JsonSerializer {
@@ -92,6 +93,8 @@ public class JsonSerializer {
         value = serializeCollection(database, (Collection<?>) value);
       else if (value instanceof Map)
         value = serializeMap(database, (Map<Object, Object>) value);
+      else if (value.getClass().isArray())
+        value = serializeCollection(database, List.of((Object[]) value));
 
       value = convertNonNumbers(value);
 

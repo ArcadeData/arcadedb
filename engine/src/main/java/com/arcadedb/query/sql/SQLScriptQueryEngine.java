@@ -98,7 +98,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
+  public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();
@@ -109,7 +109,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   }
 
   @Override
-  public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
+  public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
 
     final BasicCommandContext context = new BasicCommandContext();
@@ -179,7 +179,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
       if (nestedTxLevel <= 0) {
         final InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
-        plan.chain(sub, false);
+        plan.chain(sub);
       } else
         lastRetryBlock.add(stm);
 
@@ -193,16 +193,17 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
               if (nRetries <= 0)
                 throw new CommandExecutionException("Invalid retry number " + nRetries);
 
-              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(), ((CommitStatement) stm).getElseFail(),
+              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(),
+                  ((CommitStatement) stm).getElseFail(),
                   scriptContext, false);
               final RetryExecutionPlan retryPlan = new RetryExecutionPlan(scriptContext);
               retryPlan.chain(step);
-              plan.chain(retryPlan, false);
+              plan.chain(retryPlan);
               lastRetryBlock = new ArrayList<>();
             } else {
               for (final Statement statement : lastRetryBlock) {
                 final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
-                plan.chain(sub, false);
+                plan.chain(sub);
               }
             }
           }

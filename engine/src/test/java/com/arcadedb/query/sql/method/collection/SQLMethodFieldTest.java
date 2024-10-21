@@ -40,7 +40,7 @@ class SQLMethodFieldTest {
 
   @Test
   void testNulIParamsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, new Object[] { null });
+    final Object result = method.execute(null, null, null, new Object[] { null });
     assertThat(result).isNull();
   }
 

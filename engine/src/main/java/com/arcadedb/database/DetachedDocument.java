@@ -22,6 +22,11 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
+/**
+ * Detached document instances are generated from a document and can be accessed outside a transaction.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class DetachedDocument extends ImmutableDocument {
   private Map<String, Object> map;
 
@@ -60,7 +65,8 @@ public class DetachedDocument extends ImmutableDocument {
 
   @Override
   public synchronized MutableDocument modify() {
-    throw new UnsupportedOperationException("Detached document cannot be modified. Get a new regular object from the database by its id to modify it");
+    throw new UnsupportedOperationException(
+        "Detached document cannot be modified. Get a new regular object from the database by its id to modify it");
   }
 
   @Override
@@ -77,7 +83,7 @@ public class DetachedDocument extends ImmutableDocument {
 
   @Override
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map);
+    final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", type.getName());

@@ -28,12 +28,13 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
@@ -73,15 +74,15 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
             final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
                 "distributed-test");
 
-            Assertions.assertTrue(resultSet.hasNext());
+            assertThat(resultSet.hasNext()).isTrue();
             final Result result = resultSet.next();
-            Assertions.assertNotNull(result);
+            assertThat(result).isNotNull();
             final Set<String> props = result.getPropertyNames();
-            Assertions.assertEquals(2, props.size(), "Found the following properties " + props);
-            Assertions.assertTrue(props.contains("id"));
-            Assertions.assertEquals(counter, (int) result.getProperty("id"));
-            Assertions.assertTrue(props.contains("name"));
-            Assertions.assertEquals("distributed-test", result.getProperty("name"));
+            assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
+            assertThat(props.contains("id")).isTrue();
+            assertThat((int) result.getProperty("id")).isEqualTo(counter);
+            assertThat(props.contains("name")).isTrue();
+            assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
             break;
           } catch (final RemoteException e) {
             // IGNORE IT

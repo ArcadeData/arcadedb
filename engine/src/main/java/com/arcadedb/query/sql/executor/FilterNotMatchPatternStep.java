@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Vertex;
 
 import java.util.*;
 
@@ -28,8 +29,8 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   private ResultSet prevResult = null;
 
-  public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext context, final boolean enableProfiling) {
-    super(context, enableProfiling);
+  public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext context) {
+    super(context);
     this.subSteps = steps;
   }
 
@@ -41,7 +42,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
       public boolean finished = false;
 
       private Result nextItem = null;
-      private int fetched = 0;
+      private int    fetched  = 0;
 
       private void fetchNextItem() {
         nextItem = null;
@@ -64,7 +65,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
-          final long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (!matchesPattern(nextItem, context)) {
               break;
@@ -72,7 +73,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
             nextItem = null;
           } finally {
-            if (profilingEnabled) {
+            if (context.isProfiling()) {
               cost += (System.nanoTime() - begin);
             }
           }
@@ -125,7 +126,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   private SelectExecutionPlan createExecutionPlan(final Result nextItem, final CommandContext context) {
     final SelectExecutionPlan plan = new SelectExecutionPlan(context);
-    plan.chain(new AbstractExecutionStep(context, profilingEnabled) {
+    plan.chain(new AbstractExecutionStep(context) {
       private boolean executed = false;
 
       @Override
@@ -139,13 +140,13 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
       }
 
       private Result copy(final Result nextItem) {
-        final ResultInternal result = new ResultInternal();
-        for (final String prop : nextItem.getPropertyNames()) {
+        final ResultInternal result = new ResultInternal(context.getDatabase());
+        for (final String prop : nextItem.getPropertyNames())
           result.setProperty(prop, nextItem.getProperty(prop));
-        }
-        for (final String md : nextItem.getMetadataKeys()) {
+
+        for (final String md : nextItem.getMetadataKeys())
           result.setMetadata(md, nextItem.getMetadata(md));
-        }
+
         return result;
       }
     });

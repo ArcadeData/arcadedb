@@ -16,26 +16,22 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql;
+package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.*;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.executor.MatchPrefetchStep;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class MatchStatementExecutionTest extends TestHelper {
   public MatchStatementExecutionTest() {
@@ -240,11 +236,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     for (int i = 0; i < 6; i++) {
       final Result item = qResult.next();
-      Assertions.assertEquals(1, item.getPropertyNames().size());
+      assertThat(item.getPropertyNames().size()).isEqualTo(1);
       final Document person = item.getProperty("person");
 
       final String name = person.getString("name");
-      Assertions.assertTrue(name.startsWith("n"));
+      assertThat(name.startsWith("n")).isTrue();
     }
     qResult.close();
   }
@@ -256,12 +252,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     for (int i = 0; i < 2; i++) {
       final Result item = qResult.next();
-      Assertions.assertTrue(item.getPropertyNames().size() == 1);
+      assertThat(item.getPropertyNames().size()).isEqualTo(1);
       final Document personId = item.getProperty("person");
 
       final MutableDocument person = personId.getRecord().asVertex().modify();
       final String name = person.getString("name");
-      Assertions.assertTrue(name.equals("n1") || name.equals("n2"));
+      assertThat(name.equals("n1") || name.equals("n2")).isTrue();
     }
     qResult.close();
   }
@@ -270,9 +266,9 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testSimpleLimit() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 1");
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     qResult.next();
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -281,7 +277,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit -1");
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(qResult.hasNext());
+      assertThat(qResult.hasNext()).isTrue();
       qResult.next();
     }
     qResult.close();
@@ -293,7 +289,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 3");
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(qResult.hasNext());
+      assertThat(qResult.hasNext()).isTrue();
       qResult.next();
     }
     qResult.close();
@@ -307,11 +303,11 @@ public class MatchStatementExecutionTest extends TestHelper {
     for (int i = 0; i < 2; i++) {
 
       final Result item = qResult.next();
-      Assertions.assertEquals(1, item.getPropertyNames().size());
+      assertThat(item.getPropertyNames().size()).isEqualTo(1);
       final Document person = item.getProperty("person");
 
       final String name = person.getString("name");
-      Assertions.assertTrue(name.equals("n1") || name.equals("n2"));
+      assertThat(name.equals("n1") || name.equals("n2")).isTrue();
     }
     qResult.close();
   }
@@ -322,10 +318,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -335,10 +331,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $patterns)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -347,11 +343,11 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $patterns");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals(1, item.getPropertyNames().size());
-    Assertions.assertEquals("friend", item.getPropertyNames().iterator().next());
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.getPropertyNames().size()).isEqualTo(1);
+    assertThat(item.getPropertyNames().iterator().next()).isEqualTo("friend");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -360,10 +356,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $paths");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals(3, item.getPropertyNames().size());
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.getPropertyNames().size()).isEqualTo(3);
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -372,10 +368,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $elements");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -389,12 +385,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     expected.add("n2");
     expected.add("n4");
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(qResult.hasNext());
+      assertThat(qResult.hasNext()).isTrue();
       final Result item = qResult.next();
-      expected.remove(item.getProperty("name"));
+      expected.remove(item.<String>getProperty("name"));
     }
-    Assertions.assertFalse(qResult.hasNext());
-    Assertions.assertTrue(expected.isEmpty());
+    assertThat(qResult.hasNext()).isFalse();
+    assertThat(expected.isEmpty()).isTrue();
     qResult.close();
   }
 
@@ -404,10 +400,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $matches)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -417,10 +413,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -430,10 +426,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return $patterns)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -443,10 +439,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name as name");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -456,10 +452,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name as name");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -467,10 +463,10 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testReturnMethod() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name.toUpperCase(Locale.ENGLISH) as name");
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("N2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("N2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -478,10 +474,10 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testReturnMethodArrows() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name.toUpperCase(Locale.ENGLISH) as name");
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("N2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("N2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -490,10 +486,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name + ' ' +friend.name as name");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2 n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2 n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -502,10 +498,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name + ' ' +friend.name as name");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2 n2", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n2 n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -514,10 +510,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("friend.name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("friend.name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -526,10 +522,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n2", item.getProperty("friend.name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("friend.name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -538,10 +534,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend').out('Friend'){as:friend} return $matches)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n4", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n4");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -550,10 +546,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{}-Friend->{as:friend} return $matches)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertEquals("n4", item.getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(item.<String>getProperty("name")).isEqualTo("n4");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -562,10 +558,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1'), as: me}.both('Friend').both('Friend'){as:friend, where: ($matched.me != $currentMatch)} return $matches)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     while (qResult.hasNext()) {
       final Result item = qResult.next();
-      Assertions.assertNotEquals("n1", item.getProperty("name"));
+      assertThat(item.<String>getProperty("name")).isNotEqualTo("n1");
     }
     qResult.close();
   }
@@ -575,9 +571,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1'), as: me}-Friend-{}-Friend-{as:friend, where: ($matched.me != $currentMatch)} return $matches)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     while (qResult.hasNext()) {
-      Assertions.assertNotEquals("n1", qResult.next().getProperty("name"));
+      assertThat(qResult.next().<String>getProperty("name")).isNotEqualTo("n1");
     }
     qResult.close();
   }
@@ -587,9 +583,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)} return friend)");
 
-    Assertions.assertTrue(qResult.hasNext());
-    Assertions.assertEquals("n2", qResult.next().getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
+    assertThat(qResult.next().<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -597,9 +593,9 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testFriendsWithNameArrows() {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1' and 1 + 1 = 2)}-Friend->{as:friend, where:(name = 'n2' and 1 + 1 = 2)} return friend)");
-    Assertions.assertTrue(qResult.hasNext());
-    Assertions.assertEquals("n2", qResult.next().getProperty("name"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
+    assertThat(qResult.next().<String>getProperty("name")).isEqualTo("n2");
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
   }
 
@@ -608,32 +604,32 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, while: ($depth < 1)} return friend)");
-    Assertions.assertEquals(3, size(qResult));
+    assertThat(size(qResult)).isEqualTo(3);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, while: ($depth < 2), where: ($depth=1) } return friend)");
-    Assertions.assertEquals(2, size(qResult));
+    assertThat(size(qResult)).isEqualTo(2);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, while: ($depth < 4), where: ($depth=1) } return friend)");
-    Assertions.assertEquals(2, size(qResult));
+    assertThat(size(qResult)).isEqualTo(2);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, while: (true) } return friend)");
-    Assertions.assertEquals(6, size(qResult));
+    assertThat(size(qResult)).isEqualTo(6);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, while: (true) } return friend limit 3)");
-    Assertions.assertEquals(3, size(qResult));
+    assertThat(size(qResult)).isEqualTo(3);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, while: (true) } return friend) limit 3");
-    Assertions.assertEquals(3, size(qResult));
+    assertThat(size(qResult)).isEqualTo(3);
     qResult.close();
   }
 
@@ -650,22 +646,22 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testWhileArrows() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, while: ($depth < 1)} return friend)");
-    Assertions.assertEquals(3, size(qResult));
+    assertThat(size(qResult)).isEqualTo(3);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, while: ($depth < 2), where: ($depth=1) } return friend)");
-    Assertions.assertEquals(2, size(qResult));
+    assertThat(size(qResult)).isEqualTo(2);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, while: ($depth < 4), where: ($depth=1) } return friend)");
-    Assertions.assertEquals(2, size(qResult));
+    assertThat(size(qResult)).isEqualTo(2);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, while: (true) } return friend)");
-    Assertions.assertEquals(6, size(qResult));
+    assertThat(size(qResult)).isEqualTo(6);
     qResult.close();
   }
 
@@ -673,22 +669,22 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testMaxDepth() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, maxDepth: 1, where: ($depth=1) } return friend)");
-    Assertions.assertEquals(2, size(qResult));
+    assertThat(size(qResult)).isEqualTo(2);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, maxDepth: 1 } return friend)");
-    Assertions.assertEquals(3, size(qResult));
+    assertThat(size(qResult)).isEqualTo(3);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, maxDepth: 0 } return friend)");
-    Assertions.assertEquals(1, size(qResult));
+    assertThat(size(qResult)).isEqualTo(1);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, maxDepth: 1, where: ($depth > 0) } return friend)");
-    Assertions.assertEquals(2, size(qResult));
+    assertThat(size(qResult)).isEqualTo(2);
     qResult.close();
   }
 
@@ -696,22 +692,22 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testMaxDepthArrow() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, maxDepth: 1, where: ($depth=1) } return friend)");
-    Assertions.assertEquals(2, size(qResult));
+    assertThat(size(qResult)).isEqualTo(2);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, maxDepth: 1 } return friend)");
-    Assertions.assertEquals(3, size(qResult));
+    assertThat(size(qResult)).isEqualTo(3);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, maxDepth: 0 } return friend)");
-    Assertions.assertEquals(1, size(qResult));
+    assertThat(size(qResult)).isEqualTo(1);
     qResult.close();
 
     qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, maxDepth: 1, where: ($depth > 0) } return friend)");
-    Assertions.assertEquals(2, size(qResult));
+    assertThat(size(qResult)).isEqualTo(2);
     qResult.close();
   }
 
@@ -719,15 +715,15 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testManager() {
     // the manager of a person is the manager of the department that person belongs to.
     // if that department does not have a direct manager, climb up the hierarchy until you find one
-    Assertions.assertEquals("c", getManager("p10").get("name"));
-    Assertions.assertEquals("c", getManager("p12").get("name"));
-    Assertions.assertEquals("b", getManager("p6").get("name"));
-    Assertions.assertEquals("b", getManager("p11").get("name"));
+    assertThat(getManager("p10").get("name")).isEqualTo("c");
+    assertThat(getManager("p12").get("name")).isEqualTo("c");
+    assertThat(getManager("p6").get("name")).isEqualTo("b");
+    assertThat(getManager("p11").get("name")).isEqualTo("b");
 
-    Assertions.assertEquals("c", getManagerArrows("p10").get("name"));
-    Assertions.assertEquals("c", getManagerArrows("p12").get("name"));
-    Assertions.assertEquals("b", getManagerArrows("p6").get("name"));
-    Assertions.assertEquals("b", getManagerArrows("p11").get("name"));
+    assertThat(getManagerArrows("p10").get("name")).isEqualTo("c");
+    assertThat(getManagerArrows("p12").get("name")).isEqualTo("c");
+    assertThat(getManagerArrows("p6").get("name")).isEqualTo("b");
+    assertThat(getManagerArrows("p11").get("name")).isEqualTo("b");
   }
 
   @Test
@@ -747,12 +743,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append(")");
 
     final ResultSet qResult = database.query("sql", query.toString());
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
 
-    Assertions.assertEquals("Employee", item.getProperty("@type"));
+    assertThat(item.<String>getProperty("@type")).isEqualTo("Employee");
   }
 
   private Document getManager(final String personName) {
@@ -769,9 +765,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append(")");
 
     final ResultSet qResult = database.query("sql", query.toString());
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
     return item.getElement().get().getRecord().asVertex();
   }
@@ -789,9 +785,9 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet qResult = database.query("sql", query.toString());
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
     return item.getElement().get().getRecord().asVertex();
   }
@@ -801,15 +797,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     // the manager of a person is the manager of the department that person belongs to.
     // if that department does not have a direct manager, climb up the hierarchy until you find one
 
-    Assertions.assertEquals("c", getManager2("p10").getProperty("name"));
-    Assertions.assertEquals("c", getManager2("p12").getProperty("name"));
-    Assertions.assertEquals("b", getManager2("p6").getProperty("name"));
-    Assertions.assertEquals("b", getManager2("p11").getProperty("name"));
+    assertThat(getManager2("p10").<String>getProperty("name")).isEqualTo("c");
+    assertThat(getManager2("p12").<String>getProperty("name")).isEqualTo("c");
+    assertThat(getManager2("p6").<String>getProperty("name")).isEqualTo("b");
+    assertThat(getManager2("p11").<String>getProperty("name")).isEqualTo("b");
 
-    Assertions.assertEquals("c", getManager2Arrows("p10").getProperty("name"));
-    Assertions.assertEquals("c", getManager2Arrows("p12").getProperty("name"));
-    Assertions.assertEquals("b", getManager2Arrows("p6").getProperty("name"));
-    Assertions.assertEquals("b", getManager2Arrows("p11").getProperty("name"));
+    assertThat(getManager2Arrows("p10").<String>getProperty("name")).isEqualTo("c");
+    assertThat(getManager2Arrows("p12").<String>getProperty("name")).isEqualTo("c");
+    assertThat(getManager2Arrows("p6").<String>getProperty("name")).isEqualTo("b");
+    assertThat(getManager2Arrows("p11").<String>getProperty("name")).isEqualTo("b");
   }
 
   private Result getManager2(final String personName) {
@@ -827,9 +823,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append(")");
 
     final ResultSet qResult = database.query("sql", query.toString());
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
     return item;
   }
@@ -847,9 +843,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append(")");
 
     final ResultSet qResult = database.query("sql", query.toString());
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result item = qResult.next();
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(qResult.hasNext()).isFalse();
     qResult.close();
     return item;
   }
@@ -859,10 +855,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
     final ResultSet managedByA = getManagedBy("a");
-    Assertions.assertTrue(managedByA.hasNext());
+    assertThat(managedByA.hasNext()).isTrue();
     final Result item = managedByA.next();
-    Assertions.assertFalse(managedByA.hasNext());
-    Assertions.assertEquals("p1", item.getProperty("name"));
+    assertThat(managedByA.hasNext()).isFalse();
+    assertThat(item.<String>getProperty("name")).isEqualTo("p1");
     managedByA.close();
 
     final ResultSet managedByB = getManagedBy("b");
@@ -875,12 +871,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     expectedNames.add("p11");
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
-      Assertions.assertTrue(managedByB.hasNext());
+      assertThat(managedByB.hasNext()).isTrue();
       final Result id = managedByB.next();
       final String name = id.getProperty("name");
       names.add(name);
     }
-    Assertions.assertEquals(expectedNames, names);
+    assertThat(names).isEqualTo(expectedNames);
     managedByB.close();
   }
 
@@ -905,10 +901,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
     final ResultSet managedByA = getManagedByArrows("a");
-    Assertions.assertTrue(managedByA.hasNext());
+    assertThat(managedByA.hasNext()).isTrue();
     final Result item = managedByA.next();
-    Assertions.assertFalse(managedByA.hasNext());
-    Assertions.assertEquals("p1", item.getProperty("name"));
+    assertThat(managedByA.hasNext()).isFalse();
+    assertThat(item.<String>getProperty("name")).isEqualTo("p1");
     managedByA.close();
     final ResultSet managedByB = getManagedByArrows("b");
 
@@ -920,12 +916,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     expectedNames.add("p11");
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
-      Assertions.assertTrue(managedByB.hasNext());
+      assertThat(managedByB.hasNext()).isTrue();
       final Result id = managedByB.next();
       final String name = id.getProperty("name");
       names.add(name);
     }
-    Assertions.assertEquals(expectedNames, names);
+    assertThat(names).isEqualTo(expectedNames);
     managedByB.close();
   }
 
@@ -948,10 +944,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
     final ResultSet managedByA = getManagedBy2("a");
-    Assertions.assertTrue(managedByA.hasNext());
+    assertThat(managedByA.hasNext()).isTrue();
     final Result item = managedByA.next();
-    Assertions.assertFalse(managedByA.hasNext());
-    Assertions.assertEquals("p1", item.getProperty("name"));
+    assertThat(managedByA.hasNext()).isFalse();
+    assertThat(item.<String>getProperty("name")).isEqualTo("p1");
     managedByA.close();
     final ResultSet managedByB = getManagedBy2("b");
 
@@ -963,12 +959,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     expectedNames.add("p11");
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
-      Assertions.assertTrue(managedByB.hasNext());
+      assertThat(managedByB.hasNext()).isTrue();
       final Result id = managedByB.next();
       final String name = id.getProperty("name");
       names.add(name);
     }
-    Assertions.assertEquals(expectedNames, names);
+    assertThat(names).isEqualTo(expectedNames);
     managedByB.close();
   }
 
@@ -993,10 +989,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
     final ResultSet managedByA = getManagedBy2Arrows("a");
-    Assertions.assertTrue(managedByA.hasNext());
+    assertThat(managedByA.hasNext()).isTrue();
     final Result item = managedByA.next();
-    Assertions.assertFalse(managedByA.hasNext());
-    Assertions.assertEquals("p1", item.getProperty("name"));
+    assertThat(managedByA.hasNext()).isFalse();
+    assertThat(item.<String>getProperty("name")).isEqualTo("p1");
     managedByA.close();
     final ResultSet managedByB = getManagedBy2Arrows("b");
 
@@ -1008,12 +1004,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     expectedNames.add("p11");
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
-      Assertions.assertTrue(managedByB.hasNext());
+      assertThat(managedByB.hasNext()).isTrue();
       final Result id = managedByB.next();
       final String name = id.getProperty("name");
       names.add(name);
     }
-    Assertions.assertEquals(expectedNames, names);
+    assertThat(names).isEqualTo(expectedNames);
     managedByB.close();
   }
 
@@ -1045,9 +1041,9 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query.toString());
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1060,9 +1056,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return $matches");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1079,14 +1075,14 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query.toString());
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     final Document friend1 = doc.getProperty("friend1");
     final Document friend2 = doc.getProperty("friend2");
     final Document friend3 = doc.getProperty("friend3");
-    Assertions.assertEquals(0, friend1.getInteger("uid"));
-    Assertions.assertEquals(1, friend2.getInteger("uid"));
-    Assertions.assertEquals(2, friend3.getInteger("uid"));
+    assertThat(friend1.getInteger("uid")).isEqualTo(0);
+    assertThat(friend2.getInteger("uid")).isEqualTo(1);
+    assertThat(friend3.getInteger("uid")).isEqualTo(2);
     result.close();
   }
 
@@ -1102,15 +1098,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return $patterns");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final Document friend1 = doc.getProperty("friend1");
     final Document friend2 = doc.getProperty("friend2");
     final Document friend3 = doc.getProperty("friend3");
-    Assertions.assertEquals(0, friend1.getInteger("uid"));
-    Assertions.assertEquals(1, friend2.getInteger("uid"));
-    Assertions.assertEquals(2, friend3.getInteger("uid"));
+    assertThat(friend1.getInteger("uid")).isEqualTo(0);
+    assertThat(friend2.getInteger("uid")).isEqualTo(1);
+    assertThat(friend3.getInteger("uid")).isEqualTo(2);
     result.close();
   }
 
@@ -1126,15 +1122,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return $matches");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final Document friend1 = doc.getProperty("friend1");
     final Document friend2 = doc.getProperty("friend2");
     final Document friend3 = doc.getProperty("friend3");
-    Assertions.assertEquals(0, friend1.getInteger("uid"));
-    Assertions.assertEquals(1, friend2.getInteger("uid"));
-    Assertions.assertEquals(2, friend3.getInteger("uid"));
+    assertThat(friend1.getInteger("uid")).isEqualTo(0);
+    assertThat(friend2.getInteger("uid")).isEqualTo(1);
+    assertThat(friend3.getInteger("uid")).isEqualTo(2);
     result.close();
   }
 
@@ -1150,9 +1146,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return $matches");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1168,9 +1164,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return $matches");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1186,9 +1182,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return $matches");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1205,9 +1201,9 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query.toString());
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1222,12 +1218,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", query.toString());
 
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result doc = result.next();
       final Vertex friend1 = doc.getProperty("friend1");
-      Assertions.assertEquals(friend1.getInteger("uid"), 1);
+      assertThat(friend1.getInteger("uid")).isEqualTo(1);
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1244,10 +1240,10 @@ public class MatchStatementExecutionTest extends TestHelper {
         .ifPresent(x -> x.getSteps().stream().filter(y -> y instanceof MatchPrefetchStep).forEach(prefetchStepFound -> fail()));
 
     for (int i = 0; i < 1000; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1261,11 +1257,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query.toString());
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result d = result.next();
     final Document friend1 = d.getProperty("friend1");
-    Assertions.assertEquals(friend1.getInteger("uid"), 1);
-    Assertions.assertFalse(result.hasNext());
+    assertThat(friend1.getInteger("uid")).isEqualTo(1);
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1278,12 +1274,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query.toString());
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
 
     final Result doc = result.next();
     final Object foo = doc.getProperty("foo");
-    Assertions.assertNotNull(foo);
-    Assertions.assertTrue(foo instanceof Vertex);
+    assertThat(foo).isNotNull();
+    assertThat(foo instanceof Vertex).isTrue();
     result.close();
   }
 
@@ -1295,13 +1291,13 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return friend1.out('TriangleE')[0,1] as foo");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     final Object foo = doc.getProperty("foo");
-    Assertions.assertNotNull(foo);
-    Assertions.assertTrue(foo instanceof List);
-    Assertions.assertEquals(2, ((List) foo).size());
+    assertThat(foo).isNotNull();
+    assertThat(foo instanceof List).isTrue();
+    assertThat(((List) foo).size()).isEqualTo(2);
     result.close();
   }
 
@@ -1313,14 +1309,14 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return friend1.out('TriangleE')[0..1] as foo");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Object foo = doc.getProperty("foo");
-    Assertions.assertNotNull(foo);
-    Assertions.assertTrue(foo instanceof List);
-    Assertions.assertEquals(1, ((List) foo).size());
+    assertThat(foo).isNotNull();
+    assertThat(foo instanceof List).isTrue();
+    assertThat(((List) foo).size()).isEqualTo(1);
     result.close();
   }
 
@@ -1332,14 +1328,14 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return friend1.out('TriangleE')[0..2] as foo");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Object foo = doc.getProperty("foo");
-    Assertions.assertNotNull(foo);
-    Assertions.assertTrue(foo instanceof List);
-    Assertions.assertEquals(2, ((List) foo).size());
+    assertThat(foo).isNotNull();
+    assertThat(foo instanceof List).isTrue();
+    assertThat(((List) foo).size()).isEqualTo(2);
     result.close();
   }
 
@@ -1351,14 +1347,14 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return friend1.out('TriangleE')[0..3] as foo");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Object foo = doc.getProperty("foo");
-    Assertions.assertNotNull(foo);
-    Assertions.assertTrue(foo instanceof List);
-    Assertions.assertEquals(2, ((List) foo).size());
+    assertThat(foo).isNotNull();
+    assertThat(foo instanceof List).isTrue();
+    assertThat(((List) foo).size()).isEqualTo(2);
     result.close();
   }
 
@@ -1370,16 +1366,16 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return friend1.out('TriangleE')[uid = 2] as foo");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     final Object foo = doc.getProperty("foo");
-    Assertions.assertNotNull(foo);
-    Assertions.assertTrue(foo instanceof List);
-    Assertions.assertEquals(1, ((List) foo).size());
+    assertThat(foo).isNotNull();
+    assertThat(foo instanceof List).isTrue();
+    assertThat(((List) foo).size()).isEqualTo(1);
     final Vertex resultVertex = (Vertex) ((List) foo).get(0);
-    Assertions.assertEquals(2, resultVertex.getInteger("uid"));
+    assertThat(resultVertex.getInteger("uid")).isEqualTo(2);
     result.close();
   }
 
@@ -1393,9 +1389,9 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query.toString());
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1408,9 +1404,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return one, two");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1422,9 +1418,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return {'name':'foo', 'uuid':one.uid}");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     //    Document doc = result.get(0);
     //    assertEquals("foo", doc.set("name");
@@ -1440,9 +1436,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return {'name':'foo', 'sub': {'uuid':one.uid}}");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     //    Document doc = result.get(0);
     //    assertEquals("foo", doc.set("name");
     //    assertEquals(0, doc.set("sub.uuid");
@@ -1457,9 +1453,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return {'name':'foo', 'sub': [{'uuid':one.uid}]}");
 
     final ResultSet result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     //    Document doc = result.get(0);
     //    assertEquals("foo", doc.set("name");
     //    assertEquals(0, doc.set("sub[0].uuid");
@@ -1476,9 +1472,9 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     ResultSet result = database.query("sql", query.toString());
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     query = new StringBuilder();
     query.append("match ");
@@ -1488,9 +1484,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     result.close();
 
     result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
     //    Document doc = result.get(0);
     //    assertEquals("foo", doc.set("name");
@@ -1506,11 +1502,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     ResultSet result = database.query("sql", query.toString());
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result doc = result.next();
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     query = new StringBuilder();
@@ -1519,11 +1515,11 @@ public class MatchStatementExecutionTest extends TestHelper {
     query.append("return one.uid, two.uid");
 
     result = database.query("sql", query.toString());
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     doc = result.next();
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     doc = result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
     //    Document doc = result.get(0);
     //    assertEquals("foo", doc.set("name");
@@ -1543,13 +1539,13 @@ public class MatchStatementExecutionTest extends TestHelper {
     expectedNames.add("p11");
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 6; i++) {
-      Assertions.assertTrue(managedByB.hasNext());
+      assertThat(managedByB.hasNext()).isTrue();
       final Result doc = managedByB.next();
       final String name = doc.getProperty("name");
       names.add(name);
     }
-    Assertions.assertFalse(managedByB.hasNext());
-    Assertions.assertEquals(expectedNames, names);
+    assertThat(managedByB.hasNext()).isFalse();
+    assertThat(names).isEqualTo(expectedNames);
     managedByB.close();
   }
 
@@ -1582,13 +1578,13 @@ public class MatchStatementExecutionTest extends TestHelper {
     expectedNames.add("p11");
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 10; i++) {
-      Assertions.assertTrue(managedByB.hasNext());
+      assertThat(managedByB.hasNext()).isTrue();
       final Result doc = managedByB.next();
       final String name = doc.getProperty("name");
       names.add(name);
     }
-    Assertions.assertFalse(managedByB.hasNext());
-    Assertions.assertEquals(expectedNames, names);
+    assertThat(managedByB.hasNext()).isFalse();
+    assertThat(names).isEqualTo(expectedNames);
     managedByB.close();
   }
 
@@ -1598,13 +1594,13 @@ public class MatchStatementExecutionTest extends TestHelper {
         "match {type:Person, as: person} -NonExistingEdge-> {as:b, optional:true} return person, b.name");
 
     for (int i = 0; i < 6; i++) {
-      Assertions.assertTrue(qResult.hasNext());
+      assertThat(qResult.hasNext()).isTrue();
       final Result doc = qResult.next();
-      Assertions.assertTrue(doc.getPropertyNames().size() == 2);
+      assertThat(doc.getPropertyNames().size()).isEqualTo(2);
       final Vertex person = doc.getProperty("person");
 
       final String name = person.getString("name");
-      Assertions.assertTrue(name.startsWith("n"));
+      assertThat(name.startsWith("n")).isTrue();
     }
   }
 
@@ -1614,13 +1610,13 @@ public class MatchStatementExecutionTest extends TestHelper {
         "match {type:Person, as: person} --> {as:b, optional:true, where:(nonExisting = 12)} return person, b.name");
 
     for (int i = 0; i < 6; i++) {
-      Assertions.assertTrue(qResult.hasNext());
+      assertThat(qResult.hasNext()).isTrue();
       final Result doc = qResult.next();
-      Assertions.assertTrue(doc.getPropertyNames().size() == 2);
+      assertThat(doc.getPropertyNames().size()).isEqualTo(2);
       final Vertex person = doc.getProperty("person");
 
       final String name = person.getString("name");
-      Assertions.assertTrue(name.startsWith("n"));
+      assertThat(name.startsWith("n")).isTrue();
     }
   }
 
@@ -1631,11 +1627,11 @@ public class MatchStatementExecutionTest extends TestHelper {
         + "{as:a}.out(){as:b, where:(nonExisting = 12), optional:true}," + "{as:friend}.out(){as:b, optional:true}"
         + " return friend, b)");
 
-    Assertions.assertTrue(qResult.hasNext());
+    assertThat(qResult.hasNext()).isTrue();
     final Result doc = qResult.next();
-    Assertions.assertEquals("n2", doc.getProperty("name"));
-    Assertions.assertNull(doc.getProperty("b"));
-    Assertions.assertFalse(qResult.hasNext());
+    assertThat(doc.<String>getProperty("name")).isEqualTo("n2");
+    assertThat(doc.<String>getProperty("b")).isNull();
+    assertThat(qResult.hasNext()).isFalse();
   }
 
   @Test
@@ -1650,15 +1646,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     final String query = "MATCH { type: testOrderByAsc, as:a} RETURN a.name as name order by name asc";
 
     final ResultSet result = database.query("sql", query);
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("aaa", result.next().getProperty("name"));
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("bbb", result.next().getProperty("name"));
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("ccc", result.next().getProperty("name"));
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("zzz", result.next().getProperty("name"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("aaa");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("bbb");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("ccc");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("zzz");
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
@@ -1673,15 +1669,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     final String query = "MATCH { type: testOrderByDesc, as:a} RETURN a.name as name order by name desc";
 
     final ResultSet result = database.query("sql", query);
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("zzz", result.next().getProperty("name"));
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("ccc", result.next().getProperty("name"));
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("bbb", result.next().getProperty("name"));
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("aaa", result.next().getProperty("name"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("zzz");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("ccc");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("bbb");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("aaa");
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1695,12 +1691,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     final String query = "MATCH { type: " + clazz + ", as:a} RETURN a:{name}, 'x' ";
 
     final ResultSet result = database.query("sql", query);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
     final Result a = item.getProperty("a");
-    Assertions.assertEquals("bbb", a.getProperty("name"));
-    Assertions.assertNull(a.getProperty("surname"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(a.<String>getProperty("name")).isEqualTo("bbb");
+    assertThat(a.<String>getProperty("surname")).isNull();
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1719,14 +1715,14 @@ public class MatchStatementExecutionTest extends TestHelper {
     final String query = "MATCH { type: " + clazz + ", as:a} RETURN a:{*, @rid}, 'x' ";
 
     final ResultSet result = database.query("sql", query);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
     final Result a = item.getProperty("a");
-    Assertions.assertEquals("bbb", a.getProperty("name"));
-    Assertions.assertEquals("ccc", a.getProperty("surname"));
-    Assertions.assertNotNull(a.getProperty("@rid"));
-    Assertions.assertEquals(4, a.getPropertyNames().size());
-    Assertions.assertFalse(result.hasNext());
+    assertThat(a.<String>getProperty("name")).isEqualTo("bbb");
+    assertThat(a.<String>getProperty("surname")).isEqualTo("ccc");
+    assertThat(a.<RID>getProperty("@rid")).isNotNull();
+    assertThat(a.getPropertyNames().size()).isEqualTo(4);
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1745,11 +1741,11 @@ public class MatchStatementExecutionTest extends TestHelper {
     final String query = "MATCH { type: " + clazz + ", as:a} RETURN expand(a) ";
 
     final ResultSet result = database.query("sql", query);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result a = result.next();
-    Assertions.assertEquals("bbb", a.getProperty("name"));
-    Assertions.assertEquals("ccc", a.getProperty("surname"));
-    Assertions.assertFalse(result.hasNext());
+    assertThat(a.<String>getProperty("name")).isEqualTo("bbb");
+    assertThat(a.<String>getProperty("surname")).isEqualTo("ccc");
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1769,17 +1765,17 @@ public class MatchStatementExecutionTest extends TestHelper {
         "MATCH { type: " + clazz + ", as:a} RETURN a.name as a, max(a.num) as maxNum group by a.name order by a.name";
 
     final ResultSet result = database.query("sql", query);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertEquals("aaa", item.getProperty("a"));
-    Assertions.assertEquals(3, (int) item.getProperty("maxNum"));
+    assertThat(item.<String>getProperty("a")).isEqualTo("aaa");
+    assertThat((int) item.getProperty("maxNum")).isEqualTo(3);
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
-    Assertions.assertEquals("bbb", item.getProperty("a"));
-    Assertions.assertEquals(6, (int) item.getProperty("maxNum"));
+    assertThat(item.<String>getProperty("a")).isEqualTo("bbb");
+    assertThat((int) item.getProperty("maxNum")).isEqualTo(6);
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1796,13 +1792,13 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query);
     for (int i = 0; i < 3; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertEquals("aaa", item.getProperty("name"));
-      Assertions.assertEquals(i, (int) item.getProperty("num"));
+      assertThat(item.<String>getProperty("name")).isEqualTo("aaa");
+      assertThat((int) item.getProperty("num")).isEqualTo(i);
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1820,13 +1816,13 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", query);
 
     for (int i = 2; i >= 0; i--) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      Assertions.assertEquals("aaa", item.getProperty("name"));
-      Assertions.assertEquals(i, (int) item.getProperty("num"));
+      assertThat(item.<String>getProperty("name")).isEqualTo("aaa");
+      assertThat((int) item.getProperty("num")).isEqualTo(i);
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -1843,15 +1839,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     int sum = 0;
     final ResultSet result = database.query("sql", query);
     for (int i = 0; i < 4; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      sum += (Integer) item.getProperty("num");
+      sum +=  item.<Integer>getProperty("num");
     }
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
-    Assertions.assertEquals(10, sum);
+    assertThat(sum).isEqualTo(10);
   }
 
   @Test
@@ -1868,15 +1864,15 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", query);
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertEquals("bbb", item.getProperty("name"));
+    assertThat(item.<String>getProperty("name")).isEqualTo("bbb");
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
-    Assertions.assertEquals("ccc", item.getProperty("name"));
+    assertThat(item.<String>getProperty("name")).isEqualTo("ccc");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -1905,31 +1901,31 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     int sum = 0;
     for (int i = 0; i < 4; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       final Object depth = item.getProperty("xy");
-      Assertions.assertTrue(depth instanceof Integer);
-      Assertions.assertEquals("aaa", item.getProperty("name"));
+      assertThat(depth instanceof Integer).isTrue();
+      assertThat(item.<String>getProperty("name")).isEqualTo("aaa");
       switch ((int) depth) {
       case 0:
-        Assertions.assertEquals("aaa", item.getProperty("bname"));
+        assertThat(item.<String>getProperty("bname")).isEqualTo("aaa");
         break;
       case 1:
-        Assertions.assertEquals("bbb", item.getProperty("bname"));
+        assertThat(item.<String>getProperty("bname")).isEqualTo("bbb");
         break;
       case 2:
-        Assertions.assertEquals("ccc", item.getProperty("bname"));
+        assertThat(item.<String>getProperty("bname")).isEqualTo("ccc");
         break;
       case 3:
-        Assertions.assertEquals("ddd", item.getProperty("bname"));
+        assertThat(item.<String>getProperty("bname")).isEqualTo("ddd");
         break;
       default:
-        fail();
+        fail("");
       }
       sum += (int) depth;
     }
-    Assertions.assertEquals(sum, 6);
-    Assertions.assertFalse(result.hasNext());
+    assertThat(sum).isEqualTo(6);
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -1957,30 +1953,30 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", query);
 
     for (int i = 0; i < 4; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       final Object path = item.getProperty("xy");
-      Assertions.assertTrue(path instanceof List);
+      assertThat(path instanceof List).isTrue();
       final List<Identifiable> thePath = (List<Identifiable>) path;
 
       final String bname = item.getProperty("bname");
       if (bname.equals("aaa")) {
-        Assertions.assertEquals(0, thePath.size());
+        assertThat(thePath.size()).isEqualTo(0);
       } else if (bname.equals("aaa")) {
-        Assertions.assertEquals(1, thePath.size());
-        Assertions.assertEquals("bbb", ((Document) thePath.get(0).getRecord()).getString("name"));
+        assertThat(thePath.size()).isEqualTo(1);
+        assertThat(((Document) thePath.get(0).getRecord()).getString("name")).isEqualTo("bbb");
       } else if (bname.equals("ccc")) {
-        Assertions.assertEquals(2, thePath.size());
-        Assertions.assertEquals("bbb", ((Document) thePath.get(0).getRecord()).getString("name"));
-        Assertions.assertEquals("ccc", ((Document) thePath.get(1).getRecord()).getString("name"));
+        assertThat(thePath.size()).isEqualTo(2);
+        assertThat(((Document) thePath.get(0).getRecord()).getString("name")).isEqualTo("bbb");
+        assertThat(((Document) thePath.get(1).getRecord()).getString("name")).isEqualTo("ccc");
       } else if (bname.equals("ddd")) {
-        Assertions.assertEquals(3, thePath.size());
-        Assertions.assertEquals("bbb", ((Document) thePath.get(0).getRecord()).getString("name"));
-        Assertions.assertEquals("ccc", ((Document) thePath.get(1).getRecord()).getString("name"));
-        Assertions.assertEquals("ddd", ((Document) thePath.get(2).getRecord()).getString("name"));
+        assertThat(thePath.size()).isEqualTo(3);
+        assertThat(((Document) thePath.get(0).getRecord()).getString("name")).isEqualTo("bbb");
+        assertThat(((Document) thePath.get(1).getRecord()).getString("name")).isEqualTo("ccc");
+        assertThat(((Document) thePath.get(2).getRecord()).getString("name")).isEqualTo("ddd");
       }
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -2021,59 +2017,56 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("SQL", query);
 
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
-    Assertions.assertEquals("one", item.getProperty("aname"));
-    Assertions.assertEquals("two", item.getProperty("bname"));
+    assertThat(item.<String>getProperty("aname")).isEqualTo("one");
+    assertThat(item.<String>getProperty("bname")).isEqualTo("two");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
-    Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "one" }).hasNext());
-    Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "onex" }).hasNext());
-    Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "two" }).hasNext());
-    Assertions.assertTrue(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "three" }).hasNext());
+    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[]{"one"}).hasNext()).isTrue();
+    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[]{"onex"}).hasNext()).isTrue();
+    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[]{"two"}).hasNext()).isTrue();
+    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[]{"three"}).hasNext()).isTrue();
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
-    Assertions.assertTrue(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-        .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-        .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId()));
+    assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+      .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId())).isTrue();
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_one").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
-    Assertions.assertFalse(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-            .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-            .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId()));
+    assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+      .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId())).isFalse();
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
-    Assertions.assertTrue(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-        .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-        .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId()));
+    assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+      .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId())).isTrue();
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_two").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
-    Assertions.assertFalse(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-            .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-            .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId()));
+    assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+      .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId())).isFalse();
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
-    Assertions.assertTrue(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-        .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-        .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId()));
+    assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+      .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId())).isTrue();
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_three").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
-    Assertions.assertFalse(
-        Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-            .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-            .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId()));
+    assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
+      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
+      .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId())).isFalse();
 
     result.close();
   }
@@ -2103,9 +2096,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query += " RETURN $patterns";
 
     final ResultSet result = database.query("SQL", query);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -2136,7 +2129,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     query += " RETURN $patterns";
 
     final ResultSet result = database.query("SQL", query);
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -2167,9 +2160,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     query += " RETURN $patterns";
 
     final ResultSet result = database.query("SQL", query);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -2201,12 +2194,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     query += " RETURN a.name as a, b.name as b";
 
     ResultSet result = database.query("SQL", query);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    Assertions.assertEquals("a", item.getProperty("a"));
-    Assertions.assertEquals("b", item.getProperty("b"));
+    assertThat(item.<String>getProperty("a")).isEqualTo("a");
+    assertThat(item.<String>getProperty("b")).isEqualTo("b");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
 
@@ -2214,12 +2207,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     query += " RETURN a.name as a, b.name as b";
 
     result = database.query("SQL", query);
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     item = result.next();
-    Assertions.assertEquals("a", item.getProperty("a"));
-    Assertions.assertEquals("b", item.getProperty("b"));
+    assertThat(item.<String>getProperty("a")).isEqualTo("a");
+    assertThat(item.<String>getProperty("b")).isEqualTo("b");
 
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
 
     result.close();
   }
@@ -2245,7 +2238,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     final String query = "MATCH {type: `" + className + "`, as:foo} RETURN $elements";
 
     try (final ResultSet rs = database.query("SQL", query)) {
-      Assertions.assertEquals(1L, rs.stream().count());
+      assertThat(rs.stream().count()).isEqualTo(1L);
     }
   }
 
@@ -2253,7 +2246,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void testMatchInSubQuery() {
     try (final ResultSet rs = database.query("SQL",
         "SELECT $a LET $a=(MATCH{type:Person,as:Person_0}RETURN expand(Person_0))")) {
-      Assertions.assertEquals(1L, rs.stream().count());
+      assertThat(rs.stream().count()).isEqualTo(1L);
     }
   }
 }

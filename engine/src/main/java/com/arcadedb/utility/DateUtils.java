@@ -102,6 +102,8 @@ public class DateUtils {
       ((Calendar) value).setTimeInMillis(timestamp * MS_IN_A_DAY);
     } else if (dateImplementation.equals(LocalDate.class)) {
       value = LocalDate.ofEpochDay(timestamp);
+    } else if (dateImplementation.equals(LocalDateTime.class)) {
+      value = LocalDateTime.ofEpochSecond(timestamp / 1000, (int) ((timestamp % 1000) * 1000), ZoneOffset.UTC);
     } else
       throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
     return value;
@@ -130,6 +132,19 @@ public class DateUtils {
       else if (precisionToUse.equals(ChronoUnit.NANOS))
         timestamp =
             TimeUnit.NANOSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getNano();
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
+    } else if (value instanceof LocalDate) {
+      final LocalDate localDate = (LocalDate) value;
+      if (precisionToUse.equals(ChronoUnit.SECONDS))
+        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() / 1_000L;
+      else if (precisionToUse.equals(ChronoUnit.MILLIS))
+        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
+        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() * 1_000_000L;
+      else if (precisionToUse.equals(ChronoUnit.NANOS))
+        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() * 1_000_000_000L;
       else
         // NOT SUPPORTED
         timestamp = 0;
@@ -308,8 +323,8 @@ public class DateUtils {
   public static boolean isDate(final Object obj) {
     if (obj == null)
       return false;
-    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDateTime || obj instanceof ZonedDateTime
-        || obj instanceof Instant;
+    return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDate || obj instanceof LocalDateTime
+        || obj instanceof ZonedDateTime || obj instanceof Instant;
   }
 
   public static ChronoUnit getHigherPrecision(final Object... objs) {
@@ -333,8 +348,10 @@ public class DateUtils {
     return highestPrecision;
   }
 
-  public static LocalDateTime millisToLocalDateTime(final long millis) {
-    return Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDateTime();
+  public static LocalDateTime millisToLocalDateTime(final long millis, final String timeZone) {
+    if (timeZone == null)
+      return Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDateTime();
+    return Instant.ofEpochMilli(millis).atZone(ZoneId.of(timeZone)).toLocalDateTime();
   }
 
   public static LocalDate millisToLocalDate(final long millis) {
@@ -342,11 +359,22 @@ public class DateUtils {
   }
 
   public static String format(final Object obj, final String format) {
-    if (obj instanceof Date)
-      return getFormatter(format).format(millisToLocalDateTime(((Date) obj).getTime()));
+    return format(obj, format, null);
+  }
+
+  public static String format(final Object obj, final String format, final String timeZone) {
+    if (obj instanceof Number)
+      return getFormatter(format).format(millisToLocalDateTime(((Number) obj).longValue(), timeZone));
+    else if (obj instanceof Date)
+      return getFormatter(format).format(millisToLocalDateTime(((Date) obj).getTime(), timeZone));
     else if (obj instanceof Calendar)
-      return getFormatter(format).format(millisToLocalDateTime(((Calendar) obj).getTimeInMillis()));
-    else if (obj instanceof TemporalAccessor)
+      return getFormatter(format).format(millisToLocalDateTime(((Calendar) obj).getTimeInMillis(), timeZone));
+    else if (obj instanceof LocalDateTime) {
+      if (timeZone != null)
+        return ((LocalDateTime) obj).atZone(ZoneId.of(timeZone)).format(getFormatter(format));
+      else
+        return getFormatter(format).format(((LocalDateTime) obj));
+    } else if (obj instanceof TemporalAccessor)
       return getFormatter(format).format((TemporalAccessor) obj);
     return null;
   }

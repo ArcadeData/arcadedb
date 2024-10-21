@@ -23,10 +23,11 @@ import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -54,14 +55,14 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
     database.newDocument(testClass.getName()).set("name", "y").set("data", Arrays.asList(8, 9, -1)).save();
 
     final ResultSet result = database.query("sql", "SElect from test_class");
-    //    Assertions.assertEquals(result.size(), 2);
+    //    Assertions.assertThat(2).isEqualTo(result.size());
 
     final Set<Integer> set = new HashSet<Integer>();
     while (result.hasNext()) {
       set.addAll(result.next().getProperty("data"));
     }
     result.close();
-    Assertions.assertTrue(set.containsAll(Arrays.asList(5, 6, 7, 8, 9, -1)));
+    assertThat(set.containsAll(Arrays.asList(5, 6, 7, 8, 9, -1))).isTrue();
 
     schema.dropType("test_class");
     database.commit();
@@ -79,22 +80,22 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
 
     ResultSet result = database.query("sql", "SElect from TestTruncateVertexClassSuperclass");
     for (int i = 0; i < 2; i++) {
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       result.next();
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     database.command("sql", "truncate type TestTruncateVertexClassSuperclass ");
     result = database.query("sql", "SElect from TestTruncateVertexClassSubclass");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     result.next();
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
 
     database.command("sql", "truncate type TestTruncateVertexClassSuperclass polymorphic");
     result = database.query("sql", "SElect from TestTruncateVertexClassSubclass");
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
     database.commit();
   }
@@ -130,13 +131,13 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
     database.newDocument(testClass.getName()).set("name", "y").set("data", Arrays.asList(3, 0)).save();
 
     ResultSet result = database.query("sql", "SElect from test_class");
-    Assertions.assertEquals(toList(result).size(), 2);
+    assertThat(toList(result).size()).isEqualTo(2);
 
     result.close();
     database.command("sql", "truncate type test_class");
 
     result = database.query("sql", "SElect from test_class");
-    Assertions.assertEquals(toList(result).size(), 0);
+    assertThat(toList(result).size()).isEqualTo(0);
     result.close();
 
     schema.dropType("test_class");

@@ -20,8 +20,11 @@ package com.arcadedb.query.sql.functions.misc;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -35,8 +38,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc0.bool boolean;");
       database.command("sql", "insert into doc0 set bool = null;");
       ResultSet result = database.query("sql","select bool_or(bool) as bool_or from doc0;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isFalse();
     });
   }
 
@@ -47,8 +50,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc1.bool boolean;");
       database.command("sql", "insert into doc1 set bool = true;");
       ResultSet result = database.query("sql","select bool_or(bool) as bool_or from doc1;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isTrue();
     });
   }
 
@@ -59,8 +62,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc2.bool boolean;");
       database.command("sql", "insert into doc2 set bool = false;");
       ResultSet result = database.query("sql","select bool_or(bool) as bool_or from doc2;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isFalse();
     });
   }
 
@@ -71,8 +74,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc3.bool boolean;");
       database.command("sql", "insert into doc3 (bool) values (null), (null), (null);");
       ResultSet result = database.query("sql","select bool_or(bool) as bool_or from doc3;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isFalse();
     });
   }
 
@@ -83,8 +86,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc4.bool boolean;");
       database.command("sql", "insert into doc4 (bool) values (false), (false), (true);");
       ResultSet result = database.query("sql","select bool_or(bool) as bool_or from doc4;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isTrue();
     });
   }
 
@@ -95,8 +98,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc5.bool boolean;");
       database.command("sql", "insert into doc5 (bool) values (false), (false), (false);");
       ResultSet result = database.query("sql","select bool_or(bool) as bool_or from doc5;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isFalse();
     });
   }
 
@@ -107,8 +110,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc6.bool boolean;");
       database.command("sql", "insert into doc6 (bool) values (false), (null), (true);");
       ResultSet result = database.query("sql","select bool_or(bool) as bool_or from doc6;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isTrue();
     });
   }
 
@@ -119,8 +122,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc7.bool boolean;");
       database.command("sql", "insert into doc7 (bool) values (false), (null), (false);");
       ResultSet result = database.query("sql","select bool_or(bool) as bool_or from doc7;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isFalse();
     });
   }
 
@@ -131,8 +134,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc8.bool boolean;");
       database.command("sql", "insert into doc8 (bool) values (null), (null), (null);");
       ResultSet result = database.query("sql","select bool_or((bool is not null)) as bool_or from doc8;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isFalse();
     });
   }
 
@@ -143,8 +146,8 @@ public class SQLFunctionBoolOrTest extends TestHelper {
       database.command("sql", "create property doc9.bool boolean;");
       database.command("sql", "insert into doc9 (bool) values (true), (null), (false);");
       ResultSet result = database.query("sql","select bool_or((bool is null)) as bool_or from doc9;");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("bool_or"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("bool_or")).isTrue();
     });
   }
 }

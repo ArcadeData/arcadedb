@@ -26,8 +26,12 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class NullValuesIndexTest extends TestHelper {
   private static final int    TOT       = 10;
@@ -36,14 +40,16 @@ public class NullValuesIndexTest extends TestHelper {
 
   @Test
   public void testNullStrategyError() {
-    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
-    final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final Index indexes = database.getSchema()
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index indexes2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
 
     try {
       database.transaction(() -> {
@@ -63,26 +69,28 @@ public class NullValuesIndexTest extends TestHelper {
         database.begin();
 
         for (final Index index : ((TypeIndex) indexes).getIndexesOnBuckets()) {
-          Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
+          assertThat(((IndexInternal) index).getStats().get("pages") > 1).isTrue();
         }
       });
-      Assertions.fail();
+      fail("");
     } catch (final TransactionException e) {
-      Assertions.assertTrue(e.getCause() instanceof IllegalArgumentException);
-      Assertions.assertTrue(e.getCause().getMessage().startsWith("Indexed key V[name] cannot be NULL"));
+      assertThat(e.getCause() instanceof IllegalArgumentException).isTrue();
+      assertThat(e.getCause().getMessage().startsWith("Indexed key V[name] cannot be NULL")).isTrue();
     }
   }
 
   @Test
   public void testNullStrategySkip() {
-    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
-    final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final Index indexes = database.getSchema()
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index indexes2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {
@@ -101,14 +109,16 @@ public class NullValuesIndexTest extends TestHelper {
       database.begin();
     });
 
-    database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + 1));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 1));
 
     database.close();
     database = factory.open();
 
     // TRY AGAIN WITH A RE-OPEN DATABASE
     database.transaction(() -> {
-      Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
+      assertThat(database.getSchema().existsType(TYPE_NAME)).isTrue();
+
+      assertThat(database.getSchema().existsType(TYPE_NAME)).isTrue();
 
       for (int i = TOT + 2; i < TOT + TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);
@@ -125,20 +135,22 @@ public class NullValuesIndexTest extends TestHelper {
       database.commit();
       database.begin();
     });
-
-    database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + TOT));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + TOT));
   }
 
   @Test
   public void testNullStrategySkipUnique() {
-    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
+
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final VertexType type = database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("absent", String.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "absent" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "absent" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {
@@ -153,14 +165,14 @@ public class NullValuesIndexTest extends TestHelper {
       database.begin();
     });
 
-    database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT));
 
     database.close();
     database = factory.open();
 
     // TRY AGAIN WITH A RE-OPEN DATABASE
     database.transaction(() -> {
-      Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
+      assertThat(database.getSchema().existsType(TYPE_NAME)).isTrue();
 
       for (int i = TOT; i < TOT + TOT; ++i) {
         final MutableVertex v = database.newVertex(TYPE_NAME);
@@ -174,6 +186,6 @@ public class NullValuesIndexTest extends TestHelper {
       database.begin();
     });
 
-    database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + TOT));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + TOT));
   }
 }

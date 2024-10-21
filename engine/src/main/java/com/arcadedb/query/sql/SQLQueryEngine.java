@@ -99,8 +99,11 @@ public class SQLQueryEngine implements QueryEngine {
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
+
     final CommandContext context = new BasicCommandContext();
+    context.setInputParameters(parameters);
     context.setConfiguration(configuration);
+
     return statement.execute(database, parameters, context);
   }
 
@@ -213,11 +216,13 @@ public class SQLQueryEngine implements QueryEngine {
     return database.getStatementCache().get(query);
   }
 
-  public static void validateVariableName(String varName) {
+  public static String validateVariableName(String varName) {
     if (varName.startsWith("$"))
       varName = varName.substring(1);
 
     if (SQLQueryEngine.RESERVED_VARIABLE_NAMES.contains(varName))
       throw new CommandSQLParsingException(varName + " is a reserved variable");
+
+    return varName;
   }
 }

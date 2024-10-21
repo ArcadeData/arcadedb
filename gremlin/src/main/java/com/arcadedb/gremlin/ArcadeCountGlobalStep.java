@@ -42,9 +42,10 @@ public final class ArcadeCountGlobalStep<S extends Element> extends AbstractStep
         graph.database.begin();
 
       try {
-        if (typeName != null)
-          total += graph.database.countType(typeName, false);
-        else if (Vertex.class.isAssignableFrom(this.elementClass)) {
+        if (typeName != null) {
+          if (graph.database.getSchema().existsType(typeName))
+            total += graph.database.countType(typeName, false);
+        } else if (Vertex.class.isAssignableFrom(this.elementClass)) {
           for (DocumentType type : graph.database.getSchema().getTypes()) {
             if (type instanceof VertexType)
               total += graph.database.countType(type.getName(), false);

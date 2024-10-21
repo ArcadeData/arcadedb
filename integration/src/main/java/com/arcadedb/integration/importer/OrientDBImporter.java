@@ -1018,7 +1018,7 @@ public class OrientDBImporter {
       if (!type.existsPolymorphicProperty(fieldName)) {
         if (keyType == null) {
           logger.logLine(2, "- Skipped %s index creation on %s%s because the property is not defined and the key type is unknown",
-              unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));
+              unique ? "UNIQUE" : "NOTUNIQUE", className, Arrays.toString(properties));
           ++warnings;
           continue;
         }
@@ -1037,7 +1037,7 @@ public class OrientDBImporter {
           .getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
               nullStrategy, null);
 
-      logger.logLine(2, "- Created index %s on %s%s", unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));
+      logger.logLine(2, "- Created index %s on %s%s", unique ? "UNIQUE" : "NOTUNIQUE", className, Arrays.toString(properties));
     }
   }
 

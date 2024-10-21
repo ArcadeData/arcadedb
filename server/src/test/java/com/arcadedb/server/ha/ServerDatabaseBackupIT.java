@@ -25,10 +25,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   @Override
@@ -57,14 +58,14 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 
       final ResultSet result = database.command("sql", "backup database");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result response = result.next();
 
       final String backupFile = response.getProperty("backupFile");
-      Assertions.assertNotNull(backupFile);
+      assertThat(backupFile).isNotNull();
 
       final File file = new File("target/backups/graph/" + backupFile);
-      Assertions.assertTrue(file.exists());
+      assertThat(file.exists()).isTrue();
       file.delete();
     }
   }
@@ -75,14 +76,14 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 
       final ResultSet result = database.command("sqlscript", "backup database");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       final Result response = result.next();
 
       final String backupFile = response.getProperty("backupFile");
-      Assertions.assertNotNull(backupFile);
+      assertThat(backupFile).isNotNull();
 
       final File file = new File("target/backups/graph/" + backupFile);
-      Assertions.assertTrue(file.exists());
+      assertThat(file.exists()).isTrue();
       file.delete();
     }
   }

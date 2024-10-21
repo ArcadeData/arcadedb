@@ -22,8 +22,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.fail;
 
 public class CheckRecordTypeStepTest {
 
@@ -33,8 +37,8 @@ public class CheckRecordTypeStepTest {
       final String className = TestHelper.createRandomType(db).getName();
 
       final CommandContext context = new BasicCommandContext();
-      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, className, false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, className);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override
@@ -54,8 +58,8 @@ public class CheckRecordTypeStepTest {
 
       step.setPrevious(previous);
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(10, result.stream().count());
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.stream().count()).isEqualTo(10);
+      assertThat(result.hasNext()).isFalse();
     });
   }
 
@@ -65,8 +69,8 @@ public class CheckRecordTypeStepTest {
       final CommandContext context = new BasicCommandContext();
       final DocumentType parentClass = TestHelper.createRandomType(db);
       final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
-      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, parentClass.getName(), false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, parentClass.getName());
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override
@@ -86,8 +90,8 @@ public class CheckRecordTypeStepTest {
 
       step.setPrevious(previous);
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(10, result.stream().count());
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.stream().count()).isEqualTo(10);
+      assertThat(result.hasNext()).isFalse();
     });
   }
 
@@ -98,8 +102,8 @@ public class CheckRecordTypeStepTest {
         final CommandContext context = new BasicCommandContext();
         final String firstClassName = TestHelper.createRandomType(db).getName();
         final String secondClassName = TestHelper.createRandomType(db).getName();
-        final CheckRecordTypeStep step = new CheckRecordTypeStep(context, firstClassName, false);
-        final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+        final CheckRecordTypeStep step = new CheckRecordTypeStep(context, firstClassName);
+        final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
           boolean done = false;
 
           @Override
@@ -123,7 +127,7 @@ public class CheckRecordTypeStepTest {
           result.next();
         }
       });
-      Assertions.fail("Expected CommandExecutionException");
+      fail("Expected CommandExecutionException");
 
     } catch (final CommandExecutionException e) {
       // OK

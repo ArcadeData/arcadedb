@@ -34,8 +34,8 @@ public class MatchStep extends AbstractExecutionStep {
   private         MatchEdgeTraverser traverser;
   private         Result             nextResult;
 
-  public MatchStep(final CommandContext context, final EdgeTraversal edge, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public MatchStep(final CommandContext context, final EdgeTraversal edge) {
+    super(context);
     this.edge = edge;
   }
 

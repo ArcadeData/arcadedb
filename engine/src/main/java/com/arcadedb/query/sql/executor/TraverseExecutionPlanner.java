@@ -71,87 +71,86 @@ public class TraverseExecutionPlanner {
     this.limit = statement.getLimit();
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
     final SelectExecutionPlan result = new SelectExecutionPlan(context);
 
-    handleFetchFromTarget(result, context, enableProfiling);
+    handleFetchFromTarget(result, context);
 
-    handleTraversal(result, context, enableProfiling);
+    handleTraversal(result, context);
 
     if (skip != null) {
-      result.chain(new SkipExecutionStep(skip, context, enableProfiling));
+      result.chain(new SkipExecutionStep(skip, context));
     }
     if (limit != null) {
-      result.chain(new LimitExecutionStep(limit, context, enableProfiling));
+      result.chain(new LimitExecutionStep(limit, context));
     }
 
     return result;
   }
 
-  private void handleTraversal(final SelectExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
+  private void handleTraversal(final SelectExecutionPlan result, final CommandContext context) {
     switch (strategy) {
     case BREADTH_FIRST:
-      result.chain(new BreadthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context, profilingEnabled));
+      result.chain(new BreadthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context));
       break;
     case DEPTH_FIRST:
-      result.chain(new DepthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context, profilingEnabled));
+      result.chain(new DepthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context));
       break;
     }
     //TODO
   }
 
-  private void handleFetchFromTarget(final SelectExecutionPlan result, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleFetchFromTarget(final SelectExecutionPlan result, final CommandContext context) {
 
     final FromItem target = this.target == null ? null : this.target.getItem();
     if (target == null) {
-      handleNoTarget(result, context, profilingEnabled);
+      handleNoTarget(result, context);
     } else if (target.getIdentifier() != null) {
-      handleClassAsTarget(result, this.target, context, profilingEnabled);
+      handleClassAsTarget(result, this.target, context);
     } else if (target.getBucket() != null) {
-      handleClustersAsTarget(result, Collections.singletonList(target.getBucket()), context, profilingEnabled);
+      handleClustersAsTarget(result, Collections.singletonList(target.getBucket()), context);
     } else if (target.getBucketList() != null) {
-      handleClustersAsTarget(result, target.getBucketList().toListOfClusters(), context, profilingEnabled);
+      handleClustersAsTarget(result, target.getBucketList().toListOfClusters(), context);
     } else if (target.getStatement() != null) {
-      handleSubqueryAsTarget(result, target.getStatement(), context, profilingEnabled);
+      handleSubqueryAsTarget(result, target.getStatement(), context);
     } else if (target.getFunctionCall() != null) {
       //        handleFunctionCallAsTarget(result, target.getFunctionCall(), context);//TODO
       throw new CommandExecutionException("function call as target is not supported yet");
     } else if (target.getInputParam() != null) {
-      handleInputParamAsTarget(result, target.getInputParam(), context, profilingEnabled);
+      handleInputParamAsTarget(result, target.getInputParam(), context);
     } else if (target.getIndex() != null) {
-      handleIndexAsTarget(result, target.getIndex(), context, profilingEnabled);
+      handleIndexAsTarget(result, target.getIndex(), context);
     } else if (target.getRids() != null && target.getRids().size() > 0) {
-      handleRidsAsTarget(result, target.getRids(), context, profilingEnabled);
+      handleRidsAsTarget(result, target.getRids(), context);
     } else if (target.getResultSet() != null) {
-      result.chain(new FetchFromResultsetStep(target.getResultSet(), context, profilingEnabled));
+      result.chain(new FetchFromResultsetStep(target.getResultSet(), context));
     } else {
       throw new UnsupportedOperationException();
     }
   }
 
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final InputParameter inputParam,
-      final CommandContext context, final boolean profilingEnabled) {
+      final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
 
     if (paramValue instanceof String && RID.is(paramValue))
       paramValue = new RID(context.getDatabase(), (String) paramValue);
 
     if (paramValue == null) {
-      result.chain(new EmptyStep(context, profilingEnabled));//nothing to return
+      result.chain(new EmptyStep(context));//nothing to return
     } else if (paramValue instanceof LocalDocumentType) {
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);
       item.setIdentifier(new Identifier(((DocumentType) paramValue).getName()));
-      handleClassAsTarget(result, from, context, profilingEnabled);
+      handleClassAsTarget(result, from, context);
     } else if (paramValue instanceof String) {
       //strings are treated as classes
       final FromClause from = new FromClause(-1);
       final FromItem item = new FromItem(-1);
       from.setItem(item);
       item.setIdentifier(new Identifier((String) paramValue));
-      handleClassAsTarget(result, from, context, profilingEnabled);
+      handleClassAsTarget(result, from, context);
     } else if (paramValue instanceof Identifiable) {
       final RID orid = ((Identifiable) paramValue).getIdentity();
       final Rid rid = new Rid(-1);
@@ -163,7 +162,7 @@ public class TraverseExecutionPlanner {
       rid.setBucket(bucket);
       rid.setPosition(position);
 
-      handleRidsAsTarget(result, Collections.singletonList(rid), context, profilingEnabled);
+      handleRidsAsTarget(result, Collections.singletonList(rid), context);
     } else if (paramValue instanceof Iterable) {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
@@ -183,17 +182,17 @@ public class TraverseExecutionPlanner {
 
         rids.add(rid);
       }
-      handleRidsAsTarget(result, rids, context, profilingEnabled);
+      handleRidsAsTarget(result, rids, context);
     } else
       throw new CommandExecutionException("Invalid target: " + paramValue);
   }
 
-  private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
-    result.chain(new EmptyDataGeneratorStep(1, context, profilingEnabled));
+  private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context) {
+    result.chain(new EmptyDataGeneratorStep(1, context));
   }
 
   private void handleIndexAsTarget(final SelectExecutionPlan result, final IndexIdentifier indexIdentifier,
-      final CommandContext context, final boolean profilingEnabled) {
+      final CommandContext context) {
     final String indexName = indexIdentifier.getIndexName();
     final RangeIndex index = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
@@ -205,48 +204,45 @@ public class TraverseExecutionPlanner {
       if (!index.supportsOrderedIterations()) {
         throw new CommandExecutionException("Index " + indexName + " does not allow iteration without a condition");
       }
-      result.chain(new FetchFromIndexStep(index, null, null, context, profilingEnabled));
-      result.chain(new GetValueFromIndexEntryStep(context, null, profilingEnabled));
+      result.chain(new FetchFromIndexStep(index, null, null, context));
+      result.chain(new GetValueFromIndexEntryStep(context, null));
       break;
     case VALUES:
     case VALUESASC:
       if (!index.supportsOrderedIterations()) {
         throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
       }
-      result.chain(new FetchFromIndexValuesStep(index, true, context, profilingEnabled));
-      result.chain(new GetValueFromIndexEntryStep(context, null, profilingEnabled));
+      result.chain(new FetchFromIndexValuesStep(index, true, context));
+      result.chain(new GetValueFromIndexEntryStep(context, null));
       break;
     case VALUESDESC:
       if (!index.supportsOrderedIterations()) {
         throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
       }
-      result.chain(new FetchFromIndexValuesStep(index, false, context, profilingEnabled));
-      result.chain(new GetValueFromIndexEntryStep(context, null, profilingEnabled));
+      result.chain(new FetchFromIndexValuesStep(index, false, context));
+      result.chain(new GetValueFromIndexEntryStep(context, null));
       break;
     }
   }
 
-  private void handleRidsAsTarget(final SelectExecutionPlan plan, final List<Rid> rids, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleRidsAsTarget(final SelectExecutionPlan plan, final List<Rid> rids, final CommandContext context) {
     final List<RID> actualRids = new ArrayList<>();
     for (final Rid rid : rids) {
       actualRids.add(rid.toRecordId((Result) null, context));
     }
-    plan.chain(new FetchFromRidsStep(actualRids, context, profilingEnabled));
+    plan.chain(new FetchFromRidsStep(actualRids, context));
   }
 
-  private void handleClassAsTarget(final SelectExecutionPlan plan, final FromClause queryTarget, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleClassAsTarget(final SelectExecutionPlan plan, final FromClause queryTarget, final CommandContext context) {
     final Identifier identifier = queryTarget.getItem().getIdentifier();
 
     final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), null, context,
-        orderByRidAsc, profilingEnabled);
+        orderByRidAsc);
     plan.chain(fetcher);
   }
 
-  private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext context) {
     final Database db = context.getDatabase();
     if (clusters.size() == 1) {
       final Bucket bucket = clusters.get(0);
@@ -254,7 +250,7 @@ public class TraverseExecutionPlanner {
       if (bucketId == null)
         bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
 
-      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context, profilingEnabled);
+      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context);
       plan.chain(step);
     } else {
       final int[] bucketIds = new int[clusters.size()];
@@ -266,17 +262,16 @@ public class TraverseExecutionPlanner {
 
         bucketIds[i] = bucketId;
       }
-      final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, null, profilingEnabled);
+      final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, null);
       plan.chain(step);
     }
   }
 
-  private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context) {
     final BasicCommandContext subCtx = new BasicCommandContext();
     subCtx.setDatabase(context.getDatabase());
     subCtx.setParent(context);
-    final InternalExecutionPlan subExecutionPlan = subQuery.createExecutionPlan(subCtx, profilingEnabled);
-    plan.chain(new SubQueryStep(subExecutionPlan, context, subCtx, profilingEnabled));
+    final InternalExecutionPlan subExecutionPlan = subQuery.createExecutionPlan(subCtx);
+    plan.chain(new SubQueryStep(subExecutionPlan, context, subCtx));
   }
 }

@@ -21,15 +21,16 @@ package com.arcadedb.postgres;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
 import java.sql.*;
-import java.util.*;
+import java.time.LocalDate;
+import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class PostgresWJdbcTest extends BaseGraphServerTest {
   @Override
@@ -52,7 +53,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
       try (final Statement st = conn.createStatement()) {
         try {
           st.executeQuery("SELECT * FROM V");
-          Assertions.fail("The query should go in error");
+          fail("The query should go in error");
         } catch (final PSQLException e) {
         }
       }
@@ -65,9 +66,9 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
       try (final Statement st = conn.createStatement()) {
         try {
           st.executeQuery("SELECT 'abc \\u30 def';");
-          Assertions.fail("The query should go in error");
+          fail("The query should go in error");
         } catch (final PSQLException e) {
-          Assertions.assertTrue(e.toString().contains("Syntax error"));
+          assertThat(e.toString().contains("Syntax error")).isTrue();
         }
       }
     }
@@ -91,6 +92,8 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   @Test
   public void queryVertices() throws Exception {
     final int TOTAL = 1000;
+    final long now = System.currentTimeMillis();
+
     try (final Connection conn = getConnection()) {
       try (final Statement st = conn.createStatement()) {
         st.execute("create vertex type V");
@@ -99,7 +102,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         }
 
         final PreparedStatement pst = conn.prepareStatement(
-            "create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?");
+            "create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?, date = ?, timestamp = ?");
         pst.setString(1, "Rocky");
         pst.setString(2, "Balboa");
         pst.setShort(3, (short) 3);
@@ -108,54 +111,59 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         pst.setFloat(6, 6F);
         pst.setDouble(7, 7D);
         pst.setBoolean(8, false);
+        pst.setDate(9, new java.sql.Date(now));
+        pst.setTimestamp(10, new java.sql.Timestamp(now));
         pst.execute();
         pst.close();
 
-        ResultSet rs = st.executeQuery("SELECT name, lastName, short, int, long, float, double, boolean FROM V order by id");
+        ResultSet rs = st.executeQuery(
+            "SELECT name, lastName, short, int, long, float, double, boolean, date, timestamp FROM V order by id");
 
-        Assertions.assertTrue(!rs.isAfterLast());
+        assertThat(rs.isAfterLast()).isFalse();
 
         int i = 0;
         while (rs.next()) {
           if (rs.getString(1).equalsIgnoreCase("Jay")) {
-            Assertions.assertEquals("Jay", rs.getString(1));
-            Assertions.assertEquals("Miner", rs.getString(2));
+            assertThat(rs.getString(1)).isEqualTo("Jay");
+            assertThat(rs.getString(2)).isEqualTo("Miner");
             ++i;
           } else if (rs.getString(1).equalsIgnoreCase("Rocky")) {
-            Assertions.assertEquals("Balboa", rs.getString(2));
-            Assertions.assertEquals((short) 3, rs.getShort(3));
-            Assertions.assertEquals(4, rs.getInt(4));
-            Assertions.assertEquals(5L, rs.getLong(5));
-            Assertions.assertEquals(6F, rs.getFloat(6));
-            Assertions.assertEquals(7D, rs.getDouble(7));
-            Assertions.assertEquals(false, rs.getBoolean(8));
+            assertThat(rs.getString(2)).isEqualTo("Balboa");
+            assertThat(rs.getShort(3)).isEqualTo((short) 3);
+            assertThat(rs.getInt(4)).isEqualTo(4);
+            assertThat(rs.getLong(5)).isEqualTo(5L);
+            assertThat(rs.getFloat(6)).isEqualTo(6F);
+            assertThat(rs.getDouble(7)).isEqualTo(7D);
+            assertThat(rs.getBoolean(8)).isFalse();
+            assertThat(rs.getDate(9).toLocalDate()).isEqualTo(LocalDate.now());
+            assertThat(rs.getTimestamp(10).getTime()).isEqualTo(now);
             ++i;
           } else
-            Assertions.fail("Unknown value");
+            fail("Unknown value");
         }
 
-        Assertions.assertEquals(TOTAL + 1, i);
+        assertThat(i).isEqualTo(TOTAL + 1);
 
         rs.close();
 
         rs = st.executeQuery("SELECT FROM V order by id");
 
-        Assertions.assertTrue(!rs.isAfterLast());
+        assertThat(rs.isAfterLast()).isFalse();
 
         i = 0;
         while (rs.next()) {
-          Assertions.assertTrue(rs.findColumn("@rid") > -1);
-          Assertions.assertTrue(rs.findColumn("@type") > -1);
-          Assertions.assertTrue(rs.findColumn("@cat") > -1);
+          assertThat(rs.findColumn("@rid") > -1).isTrue();
+          assertThat(rs.findColumn("@type") > -1).isTrue();
+          assertThat(rs.findColumn("@cat") > -1).isTrue();
 
-          Assertions.assertTrue(rs.getString(rs.findColumn("@rid")).startsWith("#"));
-          Assertions.assertEquals("V", rs.getString(rs.findColumn("@type")));
-          Assertions.assertEquals("v", rs.getString(rs.findColumn("@cat")));
+          assertThat(rs.getString(rs.findColumn("@rid")).startsWith("#")).isTrue();
+          assertThat(rs.getString(rs.findColumn("@type"))).isEqualTo("V");
+          assertThat(rs.getString(rs.findColumn("@cat"))).isEqualTo("v");
 
           ++i;
         }
 
-        Assertions.assertEquals(TOTAL + 1, i);
+        assertThat(i).isEqualTo(TOTAL + 1);
 
       }
     }
@@ -178,25 +186,25 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
         final ResultSet rs = st.executeQuery("SELECT * FROM V");
 
-        Assertions.assertTrue(!rs.isAfterLast());
+        assertThat(rs.isAfterLast()).isFalse();
 
         int i = 0;
         while (rs.next()) {
           if (rs.getString(1).equalsIgnoreCase("Jay")) {
-            Assertions.assertEquals("Jay", rs.getString(1));
-            Assertions.assertEquals("Miner", rs.getString(2));
+            assertThat(rs.getString(1)).isEqualTo("Jay");
+            assertThat(rs.getString(2)).isEqualTo("Miner");
             ++i;
           } else if (rs.getString(1).equalsIgnoreCase("Rocky")) {
-            Assertions.assertEquals("Rocky", rs.getString(1));
-            Assertions.assertEquals("Balboa", rs.getString(2));
+            assertThat(rs.getString(1)).isEqualTo("Rocky");
+            assertThat(rs.getString(2)).isEqualTo("Balboa");
             ++i;
           } else
-            Assertions.fail("Unknown value");
+            fail("Unknown value");
         }
 
         st.execute("commit");
 
-        Assertions.assertEquals(2, i);
+        assertThat(i).isEqualTo(2);
 
         rs.close();
       }
@@ -220,19 +228,19 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
           int numberOfPeople = 0;
           while (rs.next()) {
-            Assertions.assertNotNull(rs.getString(1));
+            assertThat(rs.getString(1)).isNotNull();
 
             if (rs.getString(1).equals("James"))
-              Assertions.assertEquals(1.9F, rs.getFloat(2));
+              assertThat(rs.getFloat(2)).isEqualTo(1.9F);
             else if (rs.getString(1).equals("Henry"))
-              Assertions.assertNull(rs.getString(2));
+              assertThat(rs.getString(2)).isNull();
             else
-              Assertions.fail();
+              fail("");
 
             ++numberOfPeople;
           }
 
-          Assertions.assertEquals(2, numberOfPeople);
+          assertThat(numberOfPeople).isEqualTo(2);
           st.execute("commit");
         }
       }

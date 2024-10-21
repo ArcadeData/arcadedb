@@ -43,6 +43,8 @@ public class IteratorResultSet implements ResultSet {
     if (val instanceof Result)
       return (Result) val;
 
-    return val instanceof Document ? new ResultInternal((Document) val) : new ResultInternal().setProperty("value", val);
+    return val instanceof Document ?
+        new ResultInternal((Document) val) :
+        new ResultInternal().setProperty("value", val);
   }
 }

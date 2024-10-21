@@ -25,10 +25,13 @@ import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class CountFromIndexStepTest {
 
@@ -72,11 +75,11 @@ public class CountFromIndexStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final CountFromIndexStep step = new CountFromIndexStep(identifier, ALIAS, context, false);
+      final CountFromIndexStep step = new CountFromIndexStep(identifier, ALIAS, context);
 
       final ResultSet result = step.syncPull(context, 20);
-      Assertions.assertEquals(20, (long) result.next().getProperty(ALIAS));
-      Assertions.assertFalse(result.hasNext());
+      assertThat((long) result.next().getProperty(ALIAS)).isEqualTo(20);
+      assertThat(result.hasNext()).isFalse();
     });
   }
 }

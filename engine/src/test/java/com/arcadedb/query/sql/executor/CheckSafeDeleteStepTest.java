@@ -20,8 +20,10 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.TimeoutException;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class CheckSafeDeleteStepTest {
 
@@ -29,8 +31,8 @@ public class CheckSafeDeleteStepTest {
   public void shouldSafelyDeleteRecord() throws Exception {
     TestHelper.executeInNewDatabase((database) -> {
       final CommandContext context = new BasicCommandContext();
-      final CheckSafeDeleteStep step = new CheckSafeDeleteStep(context, false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CheckSafeDeleteStep step = new CheckSafeDeleteStep(context);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override
@@ -50,8 +52,8 @@ public class CheckSafeDeleteStepTest {
 
       step.setPrevious(previous);
       final ResultSet result = step.syncPull(context, 10);
-      Assertions.assertEquals(10, result.stream().count());
-      Assertions.assertFalse(result.hasNext());
+      assertThat(result.stream().count()).isEqualTo(10);
+      assertThat(result.hasNext()).isFalse();
     });
   }
 }

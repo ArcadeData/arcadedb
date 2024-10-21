@@ -29,8 +29,8 @@ public class LetExpressionStep extends AbstractExecutionStep {
   private final Identifier varName;
   private final Expression expression;
 
-  public LetExpressionStep(final Identifier varName, final Expression expression, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public LetExpressionStep(final Identifier varName, final Expression expression, final CommandContext context) {
+    super(context);
     this.varName = varName;
     this.expression = expression;
   }
@@ -51,13 +51,19 @@ public class LetExpressionStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final long beginTime = System.nanoTime();
-        final ResultInternal result = (ResultInternal) source.next();
-        final Object value = expression.execute(result, context);
-        result.setMetadata(varName.getStringValue(), value);
-        context.setVariable(varName.getStringValue(), value);
-        cost += System.nanoTime() - beginTime;
-        return result;
+        final long beginTime = context.isProfiling() ? System.nanoTime() : 0;
+        try {
+
+          final ResultInternal result = (ResultInternal) source.next();
+          final Object value = expression.execute(result, context);
+          result.setMetadata(varName.getStringValue(), value);
+          context.setVariable(varName.getStringValue(), value);
+          return result;
+
+        } finally {
+          if (context.isProfiling())
+            cost += System.nanoTime() - beginTime;
+        }
       }
 
       @Override
@@ -72,8 +78,9 @@ public class LetExpressionStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
 
     final StringBuilder result = new StringBuilder();
-    result.append(spaces).append("+ LET (for each record)\n").append(spaces).append("  ").append(varName).append(" = (").append(expression).append(")");
-    if (profilingEnabled)
+    result.append(spaces).append("+ LET (for each record)\n").append(spaces).append("  ").append(varName).append(" = (")
+        .append(expression).append(")");
+    if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
     return result.toString();
   }

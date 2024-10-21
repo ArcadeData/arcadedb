@@ -36,9 +36,9 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   //runtime0
   Iterator<Record> fullResult = null;
 
-  public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final CommandContext context,
-      final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget,
+      final CommandContext context) {
+    super(context);
     this.functionCondition = functionCondition;
     this.queryTarget = queryTarget;
   }
@@ -61,7 +61,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (localCount >= nRecords) {
             throw new NoSuchElementException();
@@ -73,9 +73,8 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
           localCount++;
           return result;
         } finally {
-          if (profilingEnabled) {
+          if (context.isProfiling())
             cost += (System.nanoTime() - begin);
-          }
         }
       }
 
@@ -84,11 +83,11 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
   private void init(final CommandContext context) {
     if (fullResult == null) {
-      final long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         fullResult = functionCondition.executeIndexedFunction(queryTarget, context).iterator();
       } finally {
-        if (profilingEnabled) {
+        if (context.isProfiling()) {
           cost += (System.nanoTime() - begin);
         }
       }
@@ -97,8 +96,9 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
-    if (profilingEnabled) {
+    String result =
+        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
+    if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

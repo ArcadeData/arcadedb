@@ -25,7 +25,6 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodAsDoubleTest {
-
   private SQLMethod method;
 
   @BeforeEach
@@ -35,36 +34,35 @@ class SQLMethodAsDoubleTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    final Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testStringToDouble() {
-    final Object result = method.execute(null, null, null, "10.0", null);
+    final Object result = method.execute("10.0", null, null, null);
     assertThat(result).isInstanceOf(Double.class);
     assertThat(result).isEqualTo(10.0D);
   }
 
   @Test
   void testLongToDouble() {
-    final Object result = method.execute(null, null, null, 10l, null);
+    final Object result = method.execute(10l, null, null, null);
     assertThat(result).isInstanceOf(Double.class);
     assertThat(result).isEqualTo(10.0D);
   }
 
   @Test
   void testDoubleToDouble() {
-    final Object result = method.execute(null, null, null, 10.0D, null);
+    final Object result = method.execute(10.0D, null, null, null);
     assertThat(result).isInstanceOf(Double.class);
     assertThat(result).isEqualTo(10.0D);
   }
 
   @Test
   void testIntegerToDouble() {
-    final Object result = method.execute(null, null, null, 10, null);
+    final Object result = method.execute(10, null, null, null);
     assertThat(result).isInstanceOf(Double.class);
     assertThat(result).isEqualTo(10.0D);
   }
-
 }

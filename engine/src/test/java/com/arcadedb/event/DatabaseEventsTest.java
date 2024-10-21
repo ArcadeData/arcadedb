@@ -22,10 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * TODO: ADD TESTS FOR DOCUMENTS AND EDGES
@@ -53,16 +56,16 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
         v1.save();
-        Assertions.assertEquals(1, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(1);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
 
         final MutableVertex v2 = database.newVertex("Vertex").set("id", "test2");
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
         v2.save();
-        Assertions.assertEquals(2, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(2);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
       });
 
     } finally {
@@ -80,16 +83,16 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
         v1.save();
-        Assertions.assertEquals(1, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(1);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
 
         final MutableVertex v2 = database.newVertex("Vertex").set("id", "test2");
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
         v2.save();
-        Assertions.assertEquals(2, counter.get());
-        Assertions.assertEquals(2, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(2);
+        assertThat(database.countType("Vertex", true)).isEqualTo(2);
       });
 
     } finally {
@@ -110,16 +113,16 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
         v1.save();
-        Assertions.assertEquals(0, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(0);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
       });
 
       database.transaction(() -> {
         final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
         v1.set("modified2", true);
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
       });
 
     } finally {
@@ -140,28 +143,28 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
         v1.save();
-        Assertions.assertEquals(0, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(0);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
 
         v1.set("modified", true);
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
 
         v1.save();
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
       });
 
       database.transaction(() -> {
         final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
         v1.set("modified2", true);
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
 
         v1.save();
-        Assertions.assertEquals(2, counter.get());
+        assertThat(counter.get()).isEqualTo(2);
       });
 
-      Assertions.assertFalse(database.iterateType("Vertex", true).next().asVertex().has("modified2"));
+      assertThat(database.iterateType("Vertex", true).next().asVertex().has("modified2")).isFalse();
 
     } finally {
       database.getEvents().unregisterListener(listener);
@@ -181,16 +184,16 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
         v1.save();
-        Assertions.assertEquals(0, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(0);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
       });
 
       database.transaction(() -> {
         final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
         v1.set("modified2", true);
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
       });
 
     } finally {
@@ -208,16 +211,16 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
         v1.save();
-        Assertions.assertEquals(0, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(0);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
 
         v1.set("modified", true);
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
 
         v1.save();
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
       });
 
     } finally {
@@ -238,29 +241,29 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
         v1.save();
-        Assertions.assertEquals(0, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(0);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
 
         v1.set("modified", true);
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
 
         v1.save();
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
       });
 
       database.transaction(() -> {
         final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
         v1.delete();
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
 
         final MutableVertex v2 = database.newVertex("Vertex").set("id", "test2").save();
         v2.delete();
-        Assertions.assertEquals(2, counter.get());
+        assertThat(counter.get()).isEqualTo(2);
       });
 
-      Assertions.assertEquals(1, database.countType("Vertex", true));
+      assertThat(database.countType("Vertex", true)).isEqualTo(1);
 
     } finally {
       database.getEvents().unregisterListener(listener);
@@ -277,29 +280,29 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
         v1.save();
-        Assertions.assertEquals(0, counter.get());
-        Assertions.assertEquals(1, database.countType("Vertex", true));
+        assertThat(counter.get()).isEqualTo(0);
+        assertThat(database.countType("Vertex", true)).isEqualTo(1);
 
         v1.set("modified", true);
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
 
         v1.save();
-        Assertions.assertEquals(0, counter.get());
+        assertThat(counter.get()).isEqualTo(0);
       });
 
       database.transaction(() -> {
         final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
         v1.delete();
-        Assertions.assertEquals(1, counter.get());
+        assertThat(counter.get()).isEqualTo(1);
 
         final MutableVertex v2 = database.newVertex("Vertex").set("id", "test2").save();
         v2.delete();
-        Assertions.assertEquals(2, counter.get());
+        assertThat(counter.get()).isEqualTo(2);
       });
 
-      Assertions.assertEquals(0, database.countType("Vertex", true));
+      assertThat(database.countType("Vertex", true)).isEqualTo(0);
 
     } finally {
       database.getEvents().unregisterListener(listener);
@@ -321,21 +324,21 @@ public class DatabaseEventsTest extends TestHelper {
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("IndexedVertex").set("id", "test");
-        Assertions.assertFalse(v1.has("counter"));
+        assertThat(v1.has("counter")).isFalse();
         v1.save();
-        Assertions.assertEquals(1, v1.get("counter"));
-        Assertions.assertEquals(1, database.countType("IndexedVertex", true));
+        assertThat(v1.get("counter")).isEqualTo(1);
+        assertThat(database.countType("IndexedVertex", true)).isEqualTo(1);
 
         // SHOULD OVERWRITE THIS
         database.newVertex("IndexedVertex").set("id", "test2").set("counter", 1).save();
 
         final MutableVertex v2 = database.newVertex("IndexedVertex").set("id", "test3");
-        Assertions.assertFalse(v2.has("counter"));
+        assertThat(v2.has("counter")).isFalse();
         v2.save();
-        Assertions.assertEquals(3, v2.get("counter"));
-        Assertions.assertEquals(3, database.countType("IndexedVertex", true));
+        assertThat(v2.get("counter")).isEqualTo(3);
+        assertThat(database.countType("IndexedVertex", true)).isEqualTo(3);
 
-        Assertions.assertEquals("test2", database.query("SQL", "select from `IndexedVertex` where counter= 2").nextIfAvailable().getProperty("id"));
+        assertThat(database.query("SQL", "select from `IndexedVertex` where counter= 2").nextIfAvailable().<String>getProperty("id")).isEqualTo("test2");
       });
 
     } finally {

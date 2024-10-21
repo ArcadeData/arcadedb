@@ -27,11 +27,12 @@ import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSo
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.WithOptions;
 import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Manual test against a Gremlin Server.
@@ -47,7 +48,7 @@ public class ConnectRemoteGremlinServerIT {
     final List<Map<Object, Object>> vertices = g.V().valueMap().with(WithOptions.tokens)
         .toList(); // verifies that the vertex created with properties is returned
 
-    Assertions.assertFalse(vertices.isEmpty());
+    assertThat(vertices.isEmpty()).isFalse();
   }
 
   private Cluster createCluster() {

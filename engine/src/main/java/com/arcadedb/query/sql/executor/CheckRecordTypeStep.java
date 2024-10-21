@@ -29,8 +29,8 @@ import com.arcadedb.exception.TimeoutException;
 public class CheckRecordTypeStep extends AbstractExecutionStep {
   private final String typez;
 
-  public CheckRecordTypeStep(final CommandContext context, final String className, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CheckRecordTypeStep(final CommandContext context, final String className) {
+    super(context);
     this.typez = className;
   }
 
@@ -49,24 +49,22 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
       public Result next() {
         final Result result = upstream.next();
 
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          if (!result.isElement()) {
-            throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
-          }
-          final Document record = result.getElement().get();
-          if (record == null) {
-            throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
-          }
+          if (!result.isElement())
+            throw new CommandExecutionException("Record " + result + " is not an instance of " + typez);
 
-          if (!record.getType().isSubTypeOf(typez)) {
-            throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
-          }
+          final Document record = result.getElement().get();
+          if (record == null)
+            throw new CommandExecutionException("Record " + result + " is not an instance of " + typez);
+
+          if (!record.getType().isSubTypeOf(typez))
+            throw new CommandExecutionException("Record " + result + " is not an instance of " + typez);
+
           return result;
         } finally {
-          if (profilingEnabled) {
+          if (context.isProfiling())
             cost += (System.nanoTime() - begin);
-          }
         }
       }
 
@@ -80,9 +78,9 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CHECK RECORD TYPE";
-    if (profilingEnabled) {
+    if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
-    }
+
     result += (ExecutionStepInternal.getIndent(depth, indent) + "  " + typez);
     return result;
   }

@@ -85,7 +85,8 @@ public class Statement extends SimpleNode {
     return execute(db, args, null, usePlanCache);
   }
 
-  public ResultSet execute(final Database db, final Map<String, Object> args, final CommandContext parentContext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> args, final CommandContext parentContext,
+      final boolean usePlanCache) {
     throw new UnsupportedOperationException();
   }
 
@@ -97,23 +98,11 @@ public class Statement extends SimpleNode {
    * @return an execution plan
    */
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
-    return createExecutionPlan(context, false);
+    return createExecutionPlan(context);
   }
 
-  /**
-   * creates an execution plan for current statement
-   *
-   * @param context     the context that will be used to execute the statement
-   * @param profile true to enable profiling, false to disable it
-   *
-   * @return an execution plan
-   */
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean profile) {
-    throw new UnsupportedOperationException();
-  }
-
-  public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context, final boolean profile) {
-    return createExecutionPlan(context, profile);
+  public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context) {
+    return createExecutionPlan(context);
   }
 
   public Statement copy() {

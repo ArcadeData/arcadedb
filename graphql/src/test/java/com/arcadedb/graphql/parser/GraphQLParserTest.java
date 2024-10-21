@@ -18,8 +18,9 @@
  */
 package com.arcadedb.graphql.parser;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class GraphQLParserTest {
   @Test
@@ -40,7 +41,7 @@ public class GraphQLParserTest {
         "}" +//
         "}");
 
-    Assertions.assertTrue(ast.children.length > 0);
+    assertThat(ast.children.length > 0).isTrue();
 
     //ast.dump("-");
   }

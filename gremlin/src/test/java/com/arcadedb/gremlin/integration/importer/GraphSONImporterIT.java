@@ -27,7 +27,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +35,8 @@ import java.net.*;
 import java.util.*;
 import java.util.stream.*;
 import java.util.zip.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class GraphSONImporterIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
@@ -53,14 +54,12 @@ public class GraphSONImporterIT {
       final Importer importer = new Importer(database, inputFile.getFile());
       importer.load();
 
-      Assertions.assertTrue(databaseDirectory.exists());
+      assertThat(databaseDirectory.exists()).isTrue();
 
-      Assertions.assertEquals(//
-          new HashSet<>(Arrays.asList("Friend", "Person")),//
-          database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
+      assertThat(database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet())).isEqualTo(new HashSet<>(Arrays.asList("Friend", "Person")));
 
       for (final DocumentType type : database.getSchema().getTypes()) {
-        Assertions.assertTrue(database.countType(type.getName(), true) > 0);
+        assertThat(database.countType(type.getName(), true) > 0).isTrue();
       }
     }
   }
@@ -83,14 +82,12 @@ public class GraphSONImporterIT {
       final Importer importer = new Importer(database, UNCOMPRESSED_FILE);
       importer.load();
 
-      Assertions.assertTrue(databaseDirectory.exists());
+      assertThat(databaseDirectory.exists()).isTrue();
 
-      Assertions.assertEquals(//
-          new HashSet<>(Arrays.asList("Friend", "Person")),//
-          database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
+      assertThat(database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet())).isEqualTo(new HashSet<>(Arrays.asList("Friend", "Person")));
 
       for (final DocumentType type : database.getSchema().getTypes()) {
-        Assertions.assertTrue(database.countType(type.getName(), true) > 0);
+        assertThat(database.countType(type.getName(), true) > 0).isTrue();
       }
     }
   }
@@ -103,17 +100,15 @@ public class GraphSONImporterIT {
 
       database.command("sql", "import database file://" + inputFile.getFile() + " WITH commitEvery = 1000");
 
-      Assertions.assertTrue(databaseDirectory.exists());
+      assertThat(databaseDirectory.exists()).isTrue();
 
-      Assertions.assertEquals(//
-          new HashSet<>(Arrays.asList("Friend", "Person")),//
-          database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
+      assertThat(database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet())).isEqualTo(new HashSet<>(Arrays.asList("Friend", "Person")));
 
       for (final DocumentType type : database.getSchema().getTypes()) {
-        Assertions.assertTrue(database.countType(type.getName(), true) > 0);
+        assertThat(database.countType(type.getName(), true) > 0).isTrue();
       }
     }
-    Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(DATABASE_PATH));
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(DATABASE_PATH)).isNull();
   }
 
   @BeforeEach

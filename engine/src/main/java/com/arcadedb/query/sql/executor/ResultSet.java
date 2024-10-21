@@ -95,7 +95,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
    * @return
    */
   default Stream<Result> stream() {
-    return StreamSupport.stream(this, false);
+    return StreamSupport.stream(this, false).onClose(() -> this.close());
   }
 
   /**
@@ -106,7 +106,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
    */
 
   default Stream<Record> elementStream() {
-    return StreamSupport.stream(new Spliterator<>() {
+    return StreamSupport.stream(new Spliterator<Record>() {
       @Override
       public boolean tryAdvance(final Consumer<? super Record> action) {
         while (hasNext()) {
@@ -133,7 +133,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
       public int characteristics() {
         return ORDERED;
       }
-    }, false);
+    }, false).onClose(() -> this.close());
   }
 
   /**
@@ -144,7 +144,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
    */
 
   default Stream<Vertex> vertexStream() {
-    return StreamSupport.stream(new Spliterator<>() {
+    return StreamSupport.stream(new Spliterator<Vertex>() {
       @Override
       public boolean tryAdvance(final Consumer<? super Vertex> action) {
         while (hasNext()) {
@@ -171,7 +171,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
       public int characteristics() {
         return ORDERED;
       }
-    }, false);
+    }, false).onClose(() -> this.close());
   }
 
   /**
@@ -182,7 +182,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
    */
 
   default Stream<Edge> edgeStream() {
-    return StreamSupport.stream(new Spliterator<>() {
+    return StreamSupport.stream(new Spliterator<Edge>() {
       @Override
       public boolean tryAdvance(final Consumer<? super Edge> action) {
         while (hasNext()) {
@@ -209,7 +209,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
       public int characteristics() {
         return ORDERED;
       }
-    }, false);
+    }, false).onClose(() -> this.close());
   }
 
   /**

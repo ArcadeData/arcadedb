@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.BreakStatement;
 import com.arcadedb.query.sql.parser.IfStatement;
 import com.arcadedb.query.sql.parser.ReturnStatement;
 import com.arcadedb.query.sql.parser.Statement;
@@ -35,55 +36,54 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public ScriptLineStep(final InternalExecutionPlan nextPlan, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ScriptLineStep(final InternalExecutionPlan nextPlan, final CommandContext context) {
+    super(context);
     this.plan = nextPlan;
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (!executed) {
-      if (plan instanceof InsertExecutionPlan) {
+      if (plan instanceof InsertExecutionPlan)
         ((InsertExecutionPlan) plan).executeInternal();
-      } else if (plan instanceof DeleteExecutionPlan) {
+      else if (plan instanceof DeleteExecutionPlan)
         ((DeleteExecutionPlan) plan).executeInternal();
-      } else if (plan instanceof UpdateExecutionPlan) {
+      else if (plan instanceof UpdateExecutionPlan)
         ((UpdateExecutionPlan) plan).executeInternal();
-      } else if (plan instanceof DDLExecutionPlan) {
+      else if (plan instanceof DDLExecutionPlan)
         ((DDLExecutionPlan) plan).executeInternal();
-      } else if (plan instanceof SingleOpExecutionPlan) {
-        ((SingleOpExecutionPlan) plan).executeInternal();
+      else if (plan instanceof SingleOpExecutionPlan) {
+        final ResultSet res = ((SingleOpExecutionPlan) plan).executeInternal();
+        if (res == BreakStatement.BREAK_RESULTSET)
+          return res;
       }
+
       executed = true;
     }
     return plan.fetchNext(nRecords);
   }
 
   public boolean containsReturn() {
-    if (plan instanceof ScriptExecutionPlan) {
+    if (plan instanceof ScriptExecutionPlan)
       return ((ScriptExecutionPlan) plan).containsReturn();
-    }
-    if (plan instanceof SingleOpExecutionPlan) {
-      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement) {
+
+    else if (plan instanceof SingleOpExecutionPlan) {
+      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement)
         return true;
-      }
-    }
-    if (plan instanceof IfExecutionPlan) {
+
+    } else if (plan instanceof IfExecutionPlan) {
       final IfStep step = (IfStep) plan.getSteps().get(0);
-      if (step.positivePlan != null && step.positivePlan.containsReturn()) {
+      if (step.positivePlan != null && step.positivePlan.containsReturn())
         return true;
-      } else if (step.positiveStatements != null) {
+      else if (step.positiveStatements != null) {
         for (final Statement stm : step.positiveStatements) {
-          if (containsReturn(stm)) {
+          if (containsReturn(stm))
             return true;
-          }
         }
       }
-    }
-
-    if (plan instanceof ForEachExecutionPlan) {
+    } else if (plan instanceof ForEachExecutionPlan)
       return ((ForEachExecutionPlan) plan).containsReturn();
-    }
+
     return false;
   }
 
@@ -93,9 +93,8 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
     if (stm instanceof IfStatement) {
       for (final Statement o : ((IfStatement) stm).getStatements()) {
-        if (containsReturn(o)) {
+        if (containsReturn(o))
           return true;
-        }
       }
     }
     return false;
@@ -104,23 +103,21 @@ public class ScriptLineStep extends AbstractExecutionStep {
   public ExecutionStepInternal executeUntilReturn(final CommandContext context) {
     if (plan instanceof ScriptExecutionPlan)
       return ((ScriptExecutionPlan) plan).executeUntilReturn();
-
-    if (plan instanceof SingleOpExecutionPlan) {
-      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement) {
-        return new ReturnStep(((SingleOpExecutionPlan) plan).statement, context, profilingEnabled);
-      }
-    }
-    if (plan instanceof IfExecutionPlan)
+    else if (plan instanceof SingleOpExecutionPlan) {
+      if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement)
+        return new ReturnStep(((SingleOpExecutionPlan) plan).statement, context);
+    } else if (plan instanceof IfExecutionPlan)
       return ((IfExecutionPlan) plan).executeUntilReturn();
+    else if (plan instanceof BreakStatement)
+      return new BreakStep(context);
 
     throw new NoSuchElementException();
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    if (plan == null) {
+  public String prettyPrint(final int depth, final int indent) {
+    if (plan == null)
       return "Script Line";
-    }
     return plan.prettyPrint(depth, indent);
   }
 }

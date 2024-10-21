@@ -40,13 +40,13 @@ public class SQLMethodValues extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof Map)
-      return ((Map<?, ?>) ioResult).values();
-    else if (ioResult instanceof Document)
-      return List.of(((Document) ioResult).toMap().values());
-    else if (ioResult instanceof Result) {
-      final Result res = (Result) ioResult;
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value instanceof Map)
+      return ((Map<?, ?>) value).values();
+    else if (value instanceof Document)
+      return List.of(((Document) value).toMap().values());
+    else if (value instanceof Result) {
+      final Result res = (Result) value;
       return res.toMap().values();
     }
     return null;

@@ -25,8 +25,8 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class ReturnMatchPathsStep extends AbstractExecutionStep {
 
-  public ReturnMatchPathsStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public ReturnMatchPathsStep(final CommandContext context) {
+    super(context);
   }
 
   @Override

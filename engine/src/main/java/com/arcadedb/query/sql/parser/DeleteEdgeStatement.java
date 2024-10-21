@@ -52,7 +52,7 @@ public class DeleteEdgeStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(params);
-    final DeleteExecutionPlan executionPlan = createExecutionPlan(context, false);
+    final DeleteExecutionPlan executionPlan = createExecutionPlan(context);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
@@ -68,9 +68,9 @@ public class DeleteEdgeStatement extends Statement {
     return execute(db, params, parentcontext);
   }
 
-  public DeleteExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public DeleteExecutionPlan createExecutionPlan(final CommandContext context) {
     final DeleteEdgeExecutionPlanner planner = new DeleteEdgeExecutionPlanner(this);
-    return planner.createExecutionPlan(context, enableProfiling);
+    return planner.createExecutionPlan(context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

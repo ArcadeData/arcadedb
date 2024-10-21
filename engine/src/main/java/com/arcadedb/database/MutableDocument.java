@@ -111,7 +111,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
-    final JSONObject result = new JSONSerializer(database).map2json(map);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type, null);
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", type.getName());
@@ -385,7 +385,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return;
 
       buffer.position(propertiesStartingPosition);
-      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this), type);
+      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this), rid);
     }
   }
 

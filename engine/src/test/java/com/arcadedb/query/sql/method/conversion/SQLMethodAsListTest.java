@@ -20,13 +20,14 @@ package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.schema.LocalVertexType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests the "asList()" method implemented by the OSQLMethodAsList class. Note that the only input
@@ -45,20 +46,20 @@ public class SQLMethodAsListTest {
   }
 
   @Test
+  public void testNull() {
+    // The expected behavior is to return an empty list.
+    final Object result = function.execute(null, null, null, null);
+    assertThat(new ArrayList<Object>()).isEqualTo(result);
+  }
+
+  @Test
   public void testList() {
     // The expected behavior is to return the list itself.
     final ArrayList<Object> aList = new ArrayList<Object>();
     aList.add(1);
     aList.add("2");
-    final Object result = function.execute(null, null, null, aList, null);
-    assertEquals(result, aList);
-  }
-
-  @Test
-  public void testNull() {
-    // The expected behavior is to return an empty list.
-    final Object result = function.execute(null, null, null, null, null);
-    assertEquals(result, new ArrayList<Object>());
+    final Object result = function.execute(aList, null, null, null);
+    assertThat(aList).isEqualTo(result);
   }
 
   @Test
@@ -68,12 +69,12 @@ public class SQLMethodAsListTest {
     final Set<Object> aCollection = new LinkedHashSet<Object>();
     aCollection.add(1);
     aCollection.add("2");
-    final Object result = function.execute(null, null, null, aCollection, null);
+    final Object result = function.execute(aCollection, null, null, null);
 
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(1);
     expected.add("2");
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -85,9 +86,9 @@ public class SQLMethodAsListTest {
     expected.add("2");
 
     final TestIterable<Object> anIterable = new TestIterable<Object>(expected);
-    final Object result = function.execute(null, null, null, anIterable, null);
+    final Object result = function.execute(anIterable, null, null, null);
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -99,29 +100,28 @@ public class SQLMethodAsListTest {
     expected.add("2");
 
     final TestIterable<Object> anIterable = new TestIterable<Object>(expected);
-    final Object result = function.execute(null, null, null, anIterable.iterator(), null);
+    final Object result = function.execute(anIterable.iterator(), null, null, null);
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
-  @Disabled
   public void testDocument() {
     // The expected behavior is to return a list with only the single
     // Document in it.
 
-    final MutableDocument doc = new MutableDocument(null, null, null) {
+    final MutableDocument doc = new MutableDocument(null, new LocalVertexType(null, "Test"), null) {
     };
 
     doc.set("f1", 1);
     doc.set("f2", 2);
 
-    final Object result = function.execute(null, null, null, doc, null);
+    final Object result = function.execute(doc, null, null, null);
 
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(doc);
 
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 
   @Test
@@ -129,9 +129,9 @@ public class SQLMethodAsListTest {
     // The expected behavior is to return a list with only the single
     // element in it.
 
-    final Object result = function.execute(null, null, null, Integer.valueOf(4), null);
+    final Object result = function.execute(Integer.valueOf(4), null, null, null);
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(Integer.valueOf(4));
-    assertEquals(result, expected);
+    assertThat(expected).isEqualTo(result);
   }
 }

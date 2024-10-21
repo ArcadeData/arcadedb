@@ -28,8 +28,8 @@ public class SkipExecutionStep extends AbstractExecutionStep {
   private       int     skipped = 0;
   private       boolean finished;
 
-  public SkipExecutionStep(final Skip skip, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public SkipExecutionStep(final Skip skip, final CommandContext context) {
+    super(context);
     this.skip = skip;
   }
 

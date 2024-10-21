@@ -36,8 +36,8 @@ public class SubQueryStep extends AbstractExecutionStep {
    * @param context          the context of the current execution plan
    * @param subCtx           the context of the subquery execution plan
    */
-  public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext context, final CommandContext subCtx, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext context, final CommandContext subCtx) {
+    super(context);
     this.subExecutionPlan = subExecutionPlan;
     this.sameContextAsParent = (context == subCtx);
   }
@@ -79,7 +79,7 @@ public class SubQueryStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(CommandContext context) {
-    return new SubQueryStep(subExecutionPlan.copy(context), context, context, profilingEnabled);
+    return new SubQueryStep(subExecutionPlan.copy(context), context, context);
   }
 
   @Override

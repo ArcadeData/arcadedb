@@ -20,11 +20,10 @@
  */
 package com.arcadedb.query.sql.method.string;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests the "asList()" method implemented by the OSQLMethodAsList class. Note that the only input
@@ -45,50 +44,50 @@ public class SQLMethodSubStringTest {
   @Test
   public void testRange() {
 
-    Object result = function.execute("foobar", null, null, null, new Object[] { 1, 3 });
-    assertEquals(result, "foobar".substring(1, 3));
+    Object result = function.execute("foobar", null, null, new Object[] { 1, 3 });
+    assertThat("foobar".substring(1, 3)).isEqualTo(result);
 
-    result = function.execute("foobar", null, null, null, new Object[] { 0, 0 });
-    assertEquals(result, "foobar".substring(0, 0));
+    result = function.execute("foobar", null, null, new Object[] { 0, 0 });
+    assertThat("foobar".substring(0, 0)).isEqualTo(result);
 
-    result = function.execute("foobar", null, null, null, new Object[] { 0, 1000 });
-    assertEquals(result, "foobar");
+    result = function.execute("foobar", null, null, new Object[] { 0, 1000 });
+    assertThat(result).isEqualTo("foobar");
 
-    result = function.execute("foobar", null, null, null, new Object[] { 0, -1 });
-    assertEquals(result, "");
+    result = function.execute("foobar", null, null, new Object[] { 0, -1 });
+    assertThat(result).isEqualTo("");
 
-    result = function.execute("foobar", null, null, null, new Object[] { 6, 6 });
-    assertEquals(result, "foobar".substring(6, 6));
+    result = function.execute("foobar", null, null, new Object[] { 6, 6 });
+    assertThat("foobar".substring(6, 6)).isEqualTo(result);
 
-    result = function.execute("foobar", null, null, null, new Object[] { 1, 9 });
-    assertEquals(result, "foobar".substring(1, 6));
+    result = function.execute("foobar", null, null, new Object[] { 1, 9 });
+    assertThat("foobar".substring(1, 6)).isEqualTo(result);
 
-    result = function.execute("foobar", null, null, null, new Object[] { -7, 4 });
-    assertEquals(result, "foobar".substring(0, 4));
+    result = function.execute("foobar", null, null, new Object[] { -7, 4 });
+    assertThat("foobar".substring(0, 4)).isEqualTo(result);
   }
 
   @Test
   public void testFrom() {
-    Object result = function.execute("foobar", null, null, null, new Object[] { 1 });
-    assertEquals(result, "foobar".substring(1));
+    Object result = function.execute("foobar", null, null, new Object[] { 1 });
+    assertThat("foobar".substring(1)).isEqualTo(result);
 
-    result = function.execute("foobar", null, null, null, new Object[] { 0 });
-    assertEquals(result, "foobar");
+    result = function.execute("foobar", null, null, new Object[] { 0 });
+    assertThat(result).isEqualTo("foobar");
 
-    result = function.execute("foobar", null, null, null, new Object[] { 6 });
-    assertEquals(result, "foobar".substring(6));
+    result = function.execute("foobar", null, null, new Object[] { 6 });
+    assertThat("foobar".substring(6)).isEqualTo(result);
 
-    result = function.execute("foobar", null, null, null, new Object[] { 12 });
-    assertEquals(result, "");
+    result = function.execute("foobar", null, null, new Object[] { 12 });
+    assertThat(result).isEqualTo("");
 
-    result = function.execute("foobar", null, null, null, new Object[] { -7 });
-    assertEquals(result, "foobar");
+    result = function.execute("foobar", null, null, new Object[] { -7 });
+    assertThat(result).isEqualTo("foobar");
   }
 
   @Test
   public void testNull() {
 
-    final Object result = function.execute(null, null, null, null, null);
-    Assertions.assertNull(result);
+    final Object result = function.execute(null, null, null, null);
+    assertThat(result).isNull();
   }
 }

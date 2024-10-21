@@ -32,8 +32,8 @@ import com.arcadedb.query.sql.parser.Identifier;
 public class SetDocumentStepStep extends AbstractExecutionStep {
   private final String targetClass;
 
-  public SetDocumentStepStep(final Identifier targetClass, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public SetDocumentStepStep(final Identifier targetClass, final CommandContext context) {
+    super(context);
     this.targetClass = targetClass.getStringValue();
   }
 

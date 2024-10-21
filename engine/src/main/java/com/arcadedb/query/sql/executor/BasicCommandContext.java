@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
 
 /**
  * Basic implementation of OCommandContext interface that stores variables in a map. Supports parent/child context to build a tree
@@ -41,7 +40,7 @@ public class BasicCommandContext implements CommandContext {
   protected       Map<String, Object>  inputParameters;
   protected       ContextConfiguration configuration           = new ContextConfiguration();
   protected final Set<String>          declaredScriptVariables = new HashSet<>();
-  protected final AtomicLong           resultsProcessed        = new AtomicLong(0);
+  protected       boolean              profiling               = false;
 
   @Override
   public Object getVariablePath(final String name) {
@@ -162,9 +161,13 @@ public class BasicCommandContext implements CommandContext {
     if (name.startsWith("$"))
       name = name.substring(1);
 
-    init();
-
-    variables.put(name, value);
+    if (value == null) {
+      if (variables != null)
+        variables.remove(name);
+    } else {
+      init();
+      variables.put(name, value);
+    }
 
     return this;
   }
@@ -248,16 +251,68 @@ public class BasicCommandContext implements CommandContext {
     return this;
   }
 
+  /**
+   * Recursively checks if profiling is enabled up to the context root.
+   */
+  @Override
+  public boolean isProfiling() {
+    if (profiling)
+      return true;
+
+    if (parent != null)
+      return parent.isProfiling();
+
+    return false;
+  }
+
+  @Override
+  public BasicCommandContext setProfiling(final boolean profiling) {
+    this.profiling = profiling;
+    return this;
+  }
+
   public CommandContext setParentWithoutOverridingChild(final CommandContext iParentContext) {
-    if (parent != iParentContext) {
+    if (parent != iParentContext)
       parent = iParentContext;
-    }
     return this;
   }
 
   @Override
   public String toString() {
-    return getVariables().toString();
+    return toString(0);
+  }
+
+  public String toString(final int depth) {
+    final StringBuilder buffer = new StringBuilder();
+
+    if (inputParameters != null) {
+      dumpDepth(buffer, depth).append("PARAMETERS:");
+      for (Map.Entry<String, Object> entry : inputParameters.entrySet()) {
+        dumpDepth(buffer, depth + 1).append(entry.getKey()).append(" = ");
+        printValue(buffer, entry.getValue());
+      }
+    }
+
+    if (variables != null) {
+      dumpDepth(buffer, depth).append("VARIABLES:");
+      for (Map.Entry<String, Object> entry : variables.entrySet()) {
+        dumpDepth(buffer, depth + 1).append(entry.getKey()).append(" = ");
+        printValue(buffer, entry.getValue());
+      }
+    }
+
+    if (configuration != null)
+      dumpDepth(buffer, depth).append("CONFIGURATION: ").append(configuration.toJSON());
+
+    if (!declaredScriptVariables.isEmpty())
+      dumpDepth(buffer, depth).append("SCRIPT VARIABLES: ").append(declaredScriptVariables);
+
+    if (child != null) {
+      dumpDepth(buffer, depth).append("CHILD:");
+      buffer.append(((BasicCommandContext) child).toString(depth + 1));
+    }
+
+    return buffer.toString();
   }
 
   @Override
@@ -271,6 +326,7 @@ public class BasicCommandContext implements CommandContext {
     copy.recordMetrics = recordMetrics;
     copy.parent = parent;
     copy.child = child;
+    copy.profiling = profiling;
     return copy;
   }
 
@@ -288,6 +344,9 @@ public class BasicCommandContext implements CommandContext {
 
   public void setInputParameters(final Map<String, Object> inputParameters) {
     this.inputParameters = inputParameters;
+    this.profiling = inputParameters != null && inputParameters.containsKey("$profileExecution") ?
+        (Boolean) inputParameters.remove("$profileExecution") :
+        false;
   }
 
   public void setInputParameters(final Object[] args) {
@@ -321,7 +380,7 @@ public class BasicCommandContext implements CommandContext {
 
   @Override
   public boolean isScriptVariableDeclared(String varName) {
-    if (varName == null || varName.length() == 0)
+    if (varName == null || varName.isEmpty())
       return false;
 
     String dollarVar = varName;
@@ -332,7 +391,8 @@ public class BasicCommandContext implements CommandContext {
     if (variables != null && (variables.containsKey(varName) || variables.containsKey(dollarVar)))
       return true;
 
-    return declaredScriptVariables.contains(varName) || declaredScriptVariables.contains(dollarVar) || (parent != null && parent.isScriptVariableDeclared(
+    return declaredScriptVariables.contains(varName) || declaredScriptVariables.contains(dollarVar) || (parent != null
+        && parent.isScriptVariableDeclared(
         varName));
   }
 
@@ -344,5 +404,35 @@ public class BasicCommandContext implements CommandContext {
   @Override
   public void setConfiguration(final ContextConfiguration configuration) {
     this.configuration = configuration;
+  }
+
+  @Override
+  public CommandContext getContextDeclaredVariable(final String varName) {
+    if (variables != null && variables.containsKey(varName))
+      return this;
+
+    if (parent != null)
+      // SEARCH RECURSIVELY IN THE PARENT
+      return parent.getContextDeclaredVariable(varName);
+
+    return null;
+  }
+
+  private StringBuilder dumpDepth(final StringBuilder buffer, final int depth) {
+    buffer.append('\n');
+    for (int i = 0; i < depth; i++)
+      buffer.append("  ");
+    return buffer;
+  }
+
+  private StringBuilder printValue(final StringBuilder buffer, final Object value) {
+    if (value == null)
+      buffer.append("null");
+    else if (value instanceof InternalResultSet)
+      buffer.append("resultset ").append(((InternalResultSet) value).countEntries()).append(" entries");
+    else
+      buffer.append(value);
+
+    return buffer;
   }
 }

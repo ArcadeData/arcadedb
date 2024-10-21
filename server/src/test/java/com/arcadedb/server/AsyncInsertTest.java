@@ -35,7 +35,6 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -44,6 +43,7 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/1126
@@ -78,8 +78,7 @@ public class AsyncInsertTest {
 
     database.async().onError(exception -> errCount.incrementAndGet());
 
-    Assertions.assertNotEquals(database.async().getParallelLevel(),
-        database.getSchema().getType("Product").getBuckets(false).size());
+    assertThat(database.getSchema().getType("Product").getBuckets(false).size()).isNotEqualTo(database.async().getParallelLevel());
     for (int i = 0; i < N; i++) {
       name = UUID.randomUUID().toString();
       database.async().command("sql", sqlString, new AsyncResultsetCallback() {
@@ -95,14 +94,14 @@ public class AsyncInsertTest {
       }, name, name);
     }
 
-    Assertions.assertTrue(database.async().waitCompletion(3000));
+    assertThat(database.async().waitCompletion(3000)).isTrue();
 
-    Assertions.assertEquals(N, okCount.get());
-    Assertions.assertNotEquals(0, errCount.get());
+    assertThat(okCount.get()).isEqualTo(N);
+    assertThat(errCount.get()).isNotEqualTo(0);
 
     try (ResultSet resultSet = database.query("sql", "SELECT count(*) as total FROM Product")) {
       Result result = resultSet.next();
-      Assertions.assertNotEquals(N, (Long) result.getProperty("total"));
+      assertThat((Long) result.getProperty("total")).isNotEqualTo(N);
     }
   }
 
@@ -131,7 +130,7 @@ public class AsyncInsertTest {
     database.async().setParallelLevel(4);
     database.async().onError(exception -> errCount.incrementAndGet());
 
-    Assertions.assertEquals(database.async().getParallelLevel(), database.getSchema().getType("Product").getBuckets(false).size());
+    assertThat(database.getSchema().getType("Product").getBuckets(false).size()).isEqualTo(database.async().getParallelLevel());
     for (int i = 0; i < N; i++) {
       name = UUID.randomUUID().toString();
       database.async().command("sql", sqlString, new AsyncResultsetCallback() {
@@ -147,14 +146,14 @@ public class AsyncInsertTest {
       }, name, name);
     }
 
-    Assertions.assertTrue(database.async().waitCompletion(3000));
+    assertThat(database.async().waitCompletion(3000)).isTrue();
 
-    Assertions.assertEquals(N, okCount.get());
-    Assertions.assertEquals(0, errCount.get());
+    assertThat(okCount.get()).isEqualTo(N);
+    assertThat(errCount.get()).isEqualTo(0);
 
     try (ResultSet resultSet = database.query("sql", "SELECT count(*) as total FROM Product")) {
       Result result = resultSet.next();
-      Assertions.assertEquals(N, (Long) result.getProperty("total"));
+      assertThat((Long) result.getProperty("total")).isEqualTo(N);
     }
   }
 

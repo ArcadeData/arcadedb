@@ -33,8 +33,8 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
 
-  public CopyRecordContentBeforeUpdateStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CopyRecordContentBeforeUpdateStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -49,26 +49,26 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result result = lastFetched.next();
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
 
           if (result instanceof UpdatableResult) {
-            final ResultInternal prevValue = new ResultInternal();
+            final ResultInternal prevValue = new ResultInternal(context.getDatabase());
             final Record rec = result.getElement().get().getRecord();
             prevValue.setProperty("@rid", rec.getIdentity());
-            if (rec instanceof Document) {
+            if (rec instanceof Document)
               prevValue.setProperty("@type", ((Document) rec).getTypeName());
-            }
-            for (final String propName : result.getPropertyNames()) {
+
+            for (final String propName : result.getPropertyNames())
               prevValue.setProperty(propName, result.getProperty(propName));
-            }
+
             ((UpdatableResult) result).previousValue = prevValue;
           } else {
             throw new CommandExecutionException("Cannot fetch previous value: " + result);
           }
           return result;
         } finally {
-          if (profilingEnabled) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -87,7 +87,7 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COPY RECORD CONTENT BEFORE UPDATE");
-    if (profilingEnabled) {
+    if (context.isProfiling()) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();

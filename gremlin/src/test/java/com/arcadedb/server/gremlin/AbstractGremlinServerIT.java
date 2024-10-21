@@ -21,21 +21,19 @@
 package com.arcadedb.server.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.gremlin.ArcadeGraph;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
 
-import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.in;
-import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.select;
+import static org.assertj.core.api.Assertions.fail;
+import java.io.IOException;
+
+import static org.assertj.core.api.Assertions.fail;
 
 public abstract class AbstractGremlinServerIT extends BaseGraphServerTest {
 
@@ -59,7 +57,7 @@ public abstract class AbstractGremlinServerIT extends BaseGraphServerTest {
       GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
 
     } catch (final IOException e) {
-      Assertions.fail(e);
+      fail("", e);
     }
   }
 

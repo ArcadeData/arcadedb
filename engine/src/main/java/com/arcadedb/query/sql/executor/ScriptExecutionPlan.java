@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 08/08/16.
  */
 
+import com.arcadedb.query.sql.parser.BreakStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.*;
@@ -59,6 +60,10 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   @Override
   public ResultSet fetchNext(final int n) {
     doExecute(n);
+
+    if (lastStep instanceof BreakStep)
+      return BreakStatement.BREAK_RESULTSET;
+
     return new ResultSet() {
 
       @Override
@@ -69,9 +74,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
       @Override
       public Result next() {
-        if (!hasNext()) {
+        if (!hasNext())
           throw new NoSuchElementException();
-        }
+
         return finalResult.next();
       }
 
@@ -84,7 +89,6 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       public Optional<ExecutionPlan> getExecutionPlan() {
         return finalResult == null ? Optional.empty() : finalResult.getExecutionPlan();
       }
-
     };
   }
 
@@ -95,15 +99,21 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       finalResult = new InternalResultSet();
       if (lastStep != null) {
         ResultSet partial = lastStep.syncPull(context, n);
+
+        if (partial == BreakStatement.BREAK_RESULTSET) {
+          lastStep = new BreakStep(context);
+          return;
+        }
+
         while (partial.hasNext()) {
           while (partial.hasNext()) {
             ((InternalResultSet) finalResult).add(partial.next());
           }
           partial = lastStep.syncPull(context, n);
         }
-        if (lastStep instanceof ScriptLineStep) {
+
+        if (lastStep instanceof ScriptLineStep)
           ((InternalResultSet) finalResult).setPlan(((ScriptLineStep) lastStep).plan);
-        }
       }
     }
   }
@@ -114,16 +124,15 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     for (int i = 0; i < steps.size(); i++) {
       final ExecutionStepInternal step = steps.get(i);
       result.append(step.prettyPrint(depth, indent));
-      if (i < steps.size() - 1) {
+      if (i < steps.size() - 1)
         result.append("\n");
-      }
     }
     return result.toString();
   }
 
-  public void chain(final InternalExecutionPlan nextPlan, final boolean profilingEnabled) {
+  public void chain(final InternalExecutionPlan nextPlan) {
     final ScriptLineStep lastStep = steps.isEmpty() ? null : steps.get(steps.size() - 1);
-    final ScriptLineStep nextStep = new ScriptLineStep(nextPlan, context, profilingEnabled);
+    final ScriptLineStep nextStep = new ScriptLineStep(nextPlan, context);
     if (lastStep != null)
       nextStep.setPrevious(lastStep);
 
@@ -143,7 +152,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public Result toResult() {
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("type", "ScriptExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("cost", getCost());
@@ -159,12 +168,11 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
   public boolean containsReturn() {
     for (final ExecutionStepInternal step : steps) {
-      if (step instanceof ReturnStep) {
+      if (step instanceof ReturnStep)
         return true;
-      }
-      if (step instanceof ScriptLineStep) {
+
+      if (step instanceof ScriptLineStep)
         return ((ScriptLineStep) step).containsReturn();
-      }
     }
 
     return false;
@@ -177,7 +185,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    * @return
    */
   public ExecutionStepInternal executeUntilReturn() {
-    if (steps.size() > 0) {
+    if (!steps.isEmpty()) {
       lastStep = steps.get(steps.size() - 1);
       for (int i = 0; i < steps.size() - 1; i++) {
         final ScriptLineStep step = steps.get(i);
@@ -190,10 +198,15 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
         }
         ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
 
+        if (lastResult == BreakStatement.BREAK_RESULTSET) {
+          lastStep = new BreakStep(context);
+          return lastStep;
+        }
+
         while (lastResult.hasNext()) {
-          while (lastResult.hasNext()) {
+          while (lastResult.hasNext())
             lastResult.next();
-          }
+
           lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
         }
       }
@@ -212,16 +225,19 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     for (final ScriptLineStep step : steps) {
       if (step.containsReturn()) {
         final ExecutionStepInternal returnStep = step.executeUntilReturn(context);
-        if (returnStep != null) {
+        if (returnStep != null)
           return returnStep;
-        }
       }
+
       ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
 
+      if (lastResult == BreakStatement.BREAK_RESULTSET)
+        return new BreakStep(context);
+
       while (lastResult.hasNext()) {
-        while (lastResult.hasNext()) {
+        while (lastResult.hasNext())
           lastResult.next();
-        }
+
         lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       }
     }

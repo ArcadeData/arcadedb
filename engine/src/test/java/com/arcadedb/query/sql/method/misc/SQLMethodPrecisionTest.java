@@ -21,16 +21,17 @@ package com.arcadedb.query.sql.method.misc;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.NanoClock;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.time.*;
-import java.time.temporal.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.Date;
+import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class SQLMethodPrecisionTest {
   private SQLMethod method;
@@ -43,8 +44,8 @@ class SQLMethodPrecisionTest {
   @Test
   void testRequiredArgs() {
     try {
-      method.execute(null, null, null, null, new Object[] { null });
-      Assertions.fail();
+      method.execute(null, null, null, new Object[] { null });
+      fail("");
     } catch (IllegalArgumentException e) {
       // EXPECTED
     }
@@ -72,9 +73,9 @@ class SQLMethodPrecisionTest {
   @Test
   void testDate() {
     final Date now = new Date();
-    Object result = method.execute(null, null, null, now, new String[] { "millisecond" });
+    Object result = method.execute(now, null, null, new String[] { "millisecond" });
     assertThat(result).isInstanceOf(Date.class);
-    Assertions.assertEquals(now, result);
+    assertThat(result).isEqualTo(now);
   }
 
   private void testPrecision(final String precisionAsString, final Callable<Object> getNow) throws Exception {
@@ -85,12 +86,12 @@ class SQLMethodPrecisionTest {
     for (int retry = 0; retry < 10; retry++) {
       final Object now = getNow.call();
 
-      result = method.execute(null, null, null, now, new String[] { precisionAsString });
+      result = method.execute(now, null, null, new String[] { precisionAsString });
       assertThat(result).isInstanceOf(now.getClass());
 
       if (DateUtils.getPrecision(DateUtils.getNanos(result)) == precision)
         break;
     }
-    Assertions.assertEquals(precision, DateUtils.getPrecision(DateUtils.getNanos(result)));
+    assertThat(DateUtils.getPrecision(DateUtils.getNanos(result))).isEqualTo(precision);
   }
 }

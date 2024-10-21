@@ -22,8 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class BatchTest extends TestHelper {
   @Test
@@ -31,16 +36,16 @@ public class BatchTest extends TestHelper {
     database.transaction(() -> {
       final ResultSet rs = database.command("SQLSCRIPT", "let a = select 1 as result;let b = select 2 as result;return [$a,$b];");
 
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       Result record = rs.next();
-      Assertions.assertNotNull(record);
-      Assertions.assertEquals("{\"value\": [{\"result\": 1}]}", record.toJSON());
+      assertThat(record).isNotNull();
+      assertThat(record.toJSON().toString()).isEqualTo("{\"value\":[{\"result\":1}]}");
 
       record = rs.next();
-      Assertions.assertEquals("{\"value\": [{\"result\": 2}]}", record.toJSON());
-      Assertions.assertNotNull(record);
+      assertThat(record.toJSON().toString()).isEqualTo("{\"value\":[{\"result\":2}]}");
+      assertThat(record).isNotNull();
 
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
     });
   }
 
@@ -49,16 +54,16 @@ public class BatchTest extends TestHelper {
     database.transaction(() -> {
       final ResultSet rs = database.command("SQLScript", "let a = select 1 as result;let b = select 2 as result;return [$a,$b];");
 
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       Result record = rs.next();
-      Assertions.assertNotNull(record);
-      Assertions.assertEquals("{\"value\": [{\"result\": 1}]}", record.toJSON());
+      assertThat(record).isNotNull();
+      assertThat(record.toJSON().toString()).isEqualTo("{\"value\":[{\"result\":1}]}");
 
       record = rs.next();
-      Assertions.assertEquals("{\"value\": [{\"result\": 2}]}", record.toJSON());
-      Assertions.assertNotNull(record);
+      assertThat(record.toJSON().toString()).isEqualTo("{\"value\":[{\"result\":2}]}");
+      assertThat(record).isNotNull();
 
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
     });
   }
 
@@ -79,7 +84,7 @@ public class BatchTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from TestWhile order by id");
     for (int i = 0; i < 10; i++) {
       final Result record = result.next();
-      Assertions.assertEquals(i, (int) record.getProperty("id"));
+      assertThat((int) record.getProperty("id")).isEqualTo(i);
     }
   }
 
@@ -103,9 +108,9 @@ public class BatchTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from TestWhileWithReturn order by id");
     for (int i = 0; i < 5; i++) {
       final Result record = result.next();
-      Assertions.assertEquals(i, (int) record.getProperty("id"));
+      assertThat((int) record.getProperty("id")).isEqualTo(i);
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
@@ -123,7 +128,7 @@ public class BatchTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from TestForeach order by id");
     for (int i = 1; i <= 3; i++) {
       final Result record = result.next();
-      Assertions.assertEquals(i, (int) record.getProperty("id"));
+      assertThat((int) record.getProperty("id")).isEqualTo(i);
     }
   }
 
@@ -145,23 +150,120 @@ public class BatchTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from TestForeachWithReturn order by id");
     for (int i = 1; i <= 1; i++) {
       final Result record = result.next();
-      Assertions.assertEquals(i, (int) record.getProperty("id"));
+      assertThat((int) record.getProperty("id")).isEqualTo(i);
     }
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1646
+   */
+  @Test
+  public void testLetUSeRightScope() {
+    String script = "LET $list = [];\n"
+        + "\n"
+        + "FOREACH ($i IN [1, 2, 3]) {\n"
+        + "    IF ($i = 3) {\n"
+        + "        LET $list = ['HELLO'];\n"
+        + "    }\n"
+        + "    \n"
+        + "}\n"
+        + "\n"
+        + "IF ($list.size() > 0) {\n"
+        + "  RETURN \"List element detected\";\n"
+        + "}\n"
+        + "\n"
+        + "RETURN \"List is empty\";";
+
+    final ResultSet result = database.command("sqlscript", script);
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("value")).isEqualTo("List element detected");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1647
+   */
+  @Test
+  public void testBreakInsideForeach() {
+    final String script = "LET result = \"Return statement 0\";\n"
+        + "FOREACH ($i IN [1, 2, 3]) {\n"
+        + "\tLET result = \"Return statement \" + $i;\n"
+        + "\tIF( $i = 2 ) {\n"
+        + "\t\tBREAK;\n"
+        + "\t}\n"
+        + "}\n"
+        + "\n"
+        + "RETURN $result;";
+
+    final ResultSet result = database.command("sqlscript", script);
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("value")).isEqualTo("Return statement 2");
+  }
+
+  // Isue https://github.com/ArcadeData/arcadedb/issues/1673
+  @Test
+  public void testNestedBreak() {
+    final String script = "LET $numbers = [1, 2, 3];\n"
+        + "LET $letters = ['A', 'B', 'C'];\n"
+        + "\n"
+        + "LET $counter = 0;\n"
+        + "\n"
+        + "FOREACH ($number IN $numbers) {\n"
+        + "  FOREACH ($letter IN $letters) {\n"
+        + "    IF ($number = 2) {\n"
+        + "      IF ($letter = 'B') {\n"
+        + "        BREAK;\n"
+        + "      }\n"
+        + "      \n"
+        + "      IF ($letter = 'B') {\n"
+        + "        CONSOLE.`error` map('ERROR', 'THIS SHOULD NEVER HAPPEN!!!');\n"
+        + "      }\n"
+        + "    }\n"
+        + "    \n"
+        + "    LET counter = $counter + 1;"
+        + "  }\n"
+        + "}\n"
+        + "\n"
+        + "RETURN $counter;";
+
+    final ResultSet result = database.command("sqlscript", script);
+    assertThat(result.hasNext()).isTrue();
+    assertThat((Integer) result.next().getProperty("value")).isEqualTo(7);
+  }
+
+  @Test
+  public void testForeachResultSet() {
+    database.command("sql", "CREATE DOCUMENT TYPE DocumentType");
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.command("sql", "INSERT INTO DocumentType set a = " + i);
+    });
+
+    final String script = "LET counter = 0;\n "
+        + "\n"
+        + "FOREACH( $row IN (select from DocumentType) ) {\n"
+        + "  LET counter = $counter + 1;\n"
+        + "}\n"
+        + "\n"
+        + "RETURN $counter;";
+
+    final ResultSet result = database.command("sqlscript", script);
+    assertThat(result.hasNext()).isTrue();
+    assertThat((Integer) result.next().getProperty("value")).isEqualTo(100);
   }
 
   @Test
   public void testUsingReservedVariableNames() {
     try {
       database.command("sqlscript", "FOREACH ($parent IN [1, 2, 3]){\nRETURN;\n}");
-      Assertions.fail();
+      fail("");
     } catch (CommandSQLParsingException e) {
       // EXPECTED
     }
 
     try {
       database.command("sqlscript", "LET parent = 33;");
-      Assertions.fail();
+      fail("");
     } catch (CommandSQLParsingException e) {
       // EXPECTED
     }

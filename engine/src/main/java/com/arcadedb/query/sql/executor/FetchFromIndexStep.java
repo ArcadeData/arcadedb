@@ -62,14 +62,16 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private         Iterator                                       nullKeyIterator;
   private         Pair<Object, Identifiable>                     nextEntry   = null;
 
-  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition,
-      final CommandContext context, final boolean profilingEnabled) {
-    this(index, condition, additionalRangeCondition, true, context, profilingEnabled);
+  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition,
+      final BinaryCondition additionalRangeCondition,
+      final CommandContext context) {
+    this(index, condition, additionalRangeCondition, true, context);
   }
 
-  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final boolean orderAsc,
-      final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition,
+      final BinaryCondition additionalRangeCondition, final boolean orderAsc,
+      final CommandContext context) {
+    super(context);
     this.index = index;
     this.indexName = index.getName();
     this.condition = condition;
@@ -102,7 +104,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         if (!hasNext())
           throw new NoSuchElementException();
 
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final Object key = nextEntry.getFirst();
           final Identifiable value = nextEntry.getSecond();
@@ -116,7 +118,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           context.setVariable("current", result);
           return result;
         } finally {
-          if (profilingEnabled)
+          if (context.isProfiling())
             cost += (System.nanoTime() - begin);
         }
       }
@@ -195,7 +197,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private void init(final BooleanExpression condition, final Database db) {
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     if (index == null) {
       index = (RangeIndex) db.getSchema().getIndexByName(indexName);
     }
@@ -215,7 +217,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
       }
     } finally {
-      if (profilingEnabled) {
+      if (context.isProfiling()) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -311,7 +313,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 //    }
   }
 
-  private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey, final boolean toKeyIncluded) {
+  private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
+      final boolean toKeyIncluded) {
     final List<PCollection> secondValueCombinations = cartesianProduct(fromKey);
     final List<PCollection> thirdValueCombinations = cartesianProduct(toKey);
 
@@ -331,7 +334,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (convertedTo.length == 0)
         convertedTo = null;
 
-      if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded && index.getPropertyNames().size() == convertedFrom.length)
+      if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded
+          && index.getPropertyNames().size() == convertedFrom.length)
         cursor = index.get(convertedFrom);
       else if (index.supportsOrderedIterations()) {
         if (orderAsc)
@@ -370,18 +374,18 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private List<PCollection> cartesianProduct(final PCollection head, final PCollection key) {
-    if (key.getExpressions().size() == 0) {
+    if (key.getExpressions().isEmpty())
       return Collections.singletonList(head);
-    }
+
     final Expression nextElementInKey = key.getExpressions().get(0);
-    final Object value = nextElementInKey.execute(new ResultInternal(), context);
+    final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
     if (value instanceof Iterable && !(value instanceof Identifiable)) {
       final List<PCollection> result = new ArrayList<>();
       for (final Object elemInKey : (Iterable<?>) value) {
         final PCollection newHead = new PCollection(-1);
-        for (final Expression exp : head.getExpressions()) {
+        for (final Expression exp : head.getExpressions())
           newHead.add(exp.copy());
-        }
+
         newHead.add(toExpression(elemInKey));
         final PCollection tail = key.copy();
         tail.getExpressions().remove(0);
@@ -390,9 +394,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return result;
     } else {
       final PCollection newHead = new PCollection(-1);
-      for (final Expression exp : head.getExpressions()) {
+      for (final Expression exp : head.getExpressions())
         newHead.add(exp.copy());
-      }
+
       newHead.add(nextElementInKey);
       final PCollection tail = key.copy();
       tail.getExpressions().remove(0);
@@ -610,7 +614,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX " + indexName;
-    if (profilingEnabled)
+    if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
     if (condition != null) {
       result += ("\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additionalRangeCondition == null ?
@@ -645,6 +649,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   @Override
   public ExecutionStep copy(final CommandContext context) {
     return new FetchFromIndexStep(index, this.condition == null ? null : this.condition.copy(),
-        this.additionalRangeCondition == null ? null : this.additionalRangeCondition.copy(), this.orderAsc, context, this.profilingEnabled);
+        this.additionalRangeCondition == null ? null : this.additionalRangeCondition.copy(), this.orderAsc, context);
   }
 }

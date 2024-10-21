@@ -26,13 +26,16 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.locationtech.spatial4j.io.GeohashUtils;
 import org.locationtech.spatial4j.shape.Circle;
 import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
+
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -43,9 +46,9 @@ public class SQLGeoFunctionsTest {
   public void testPoint() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select point(11,11) as point");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Point point = result.next().getProperty("point");
-      Assertions.assertNotNull(point);
+      assertThat(point).isNotNull();
     });
   }
 
@@ -53,9 +56,9 @@ public class SQLGeoFunctionsTest {
   public void testRectangle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select rectangle(10,10,20,20) as shape");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Rectangle rectangle = result.next().getProperty("shape");
-      Assertions.assertNotNull(rectangle);
+      assertThat(rectangle).isNotNull();
     });
   }
 
@@ -63,24 +66,25 @@ public class SQLGeoFunctionsTest {
   public void testCircle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select circle(10,10,10) as circle");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       Circle circle = result.next().getProperty("circle");
-      Assertions.assertNotNull(circle);
+      assertThat(circle).isNotNull();
     });
   }
 
   @Test
   public void testPolygon() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select polygon( [ point(10,10), point(20,10), point(20,20), point(10,20), point(10,10) ] ) as polygon");
-      Assertions.assertTrue(result.hasNext());
+      ResultSet result = db.query("sql",
+          "select polygon( [ point(10,10), point(20,10), point(20,20), point(10,20), point(10,10) ] ) as polygon");
+      assertThat(result.hasNext()).isTrue();
       Shape polygon = result.next().getProperty("polygon");
-      Assertions.assertNotNull(polygon);
+      assertThat(polygon).isNotNull();
 
       result = db.query("sql", "select polygon( [ [10,10], [20,10], [20,20], [10,20], [10,10] ] ) as polygon");
-      Assertions.assertTrue(result.hasNext());
+      assertThat(result.hasNext()).isTrue();
       polygon = result.next().getProperty("polygon");
-      Assertions.assertNotNull(polygon);
+      assertThat(polygon).isNotNull();
     });
   }
 
@@ -88,12 +92,12 @@ public class SQLGeoFunctionsTest {
   public void testPointIsWithinRectangle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select point(11,11).isWithin( rectangle(10,10,20,20) ) as isWithin");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("isWithin"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("isWithin")).isTrue();
 
       result = db.query("sql", "select point(11,21).isWithin( rectangle(10,10,20,20) ) as isWithin");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("isWithin"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("isWithin")).isFalse();
     });
   }
 
@@ -101,12 +105,12 @@ public class SQLGeoFunctionsTest {
   public void testPointIsWithinCircle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select point(11,11).isWithin( circle(10,10,10) ) as isWithin");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("isWithin"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("isWithin")).isTrue();
 
       result = db.query("sql", "select point(10,21).isWithin( circle(10,10,10) ) as isWithin");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("isWithin"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("isWithin")).isFalse();
     });
   }
 
@@ -114,12 +118,12 @@ public class SQLGeoFunctionsTest {
   public void testPointIntersectWithRectangle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select rectangle(9,9,11,11).intersectsWith( rectangle(10,10,20,20) ) as intersectsWith");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("intersectsWith"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("intersectsWith")).isTrue();
 
       result = db.query("sql", "select rectangle(9,9,9.9,9.9).intersectsWith( rectangle(10,10,20,20) ) as intersectsWith");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("intersectsWith"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("intersectsWith")).isFalse();
     });
   }
 
@@ -128,12 +132,13 @@ public class SQLGeoFunctionsTest {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
           "select polygon( [ [10,10], [20,10], [20,20], [10,20], [10,10] ] ).intersectsWith( rectangle(10,10,20,20) ) as intersectsWith");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("intersectsWith"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("intersectsWith")).isTrue();
 
-      result = db.query("sql", "select polygon( [ [10,10], [20,10], [20,20], [10,20], [10,10] ] ).intersectsWith( rectangle(21,21,22,22) ) as intersectsWith");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("intersectsWith"));
+      result = db.query("sql",
+          "select polygon( [ [10,10], [20,10], [20,20], [10,20], [10,10] ] ).intersectsWith( rectangle(21,21,22,22) ) as intersectsWith");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("intersectsWith")).isFalse();
     });
   }
 
@@ -142,13 +147,13 @@ public class SQLGeoFunctionsTest {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
           "select linestring( [ [10,10], [20,10], [20,20], [10,20], [10,10] ] ).intersectsWith( rectangle(10,10,20,20) ) as intersectsWith");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertTrue((Boolean) result.next().getProperty("intersectsWith"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("intersectsWith")).isTrue();
 
       result = db.query("sql",
           "select linestring( [ [10,10], [20,10], [20,20], [10,20], [10,10] ] ).intersectsWith( rectangle(21,21,22,22) ) as intersectsWith");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertFalse((Boolean) result.next().getProperty("intersectsWith"));
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("intersectsWith")).isFalse();
     });
   }
 
@@ -183,12 +188,12 @@ public class SQLGeoFunctionsTest {
 
         begin = System.currentTimeMillis();
 
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         int returned = 0;
         while (result.hasNext()) {
           final Document record = result.next().toElement();
-          Assertions.assertTrue(record.getDouble("lat") >= 10.5);
-          Assertions.assertTrue(record.getDouble("long") <= 10.55);
+          assertThat(record.getDouble("lat")).isGreaterThanOrEqualTo(10.5);
+          assertThat(record.getDouble("long")).isLessThanOrEqualTo(10.55);
 //          System.out.println(record.toJSON());
 
           ++returned;
@@ -196,7 +201,7 @@ public class SQLGeoFunctionsTest {
 
         //System.out.println("Elapsed browsing: " + (System.currentTimeMillis() - begin));
 
-        Assertions.assertEquals(6, returned);
+        assertThat(returned).isEqualTo(6);
       });
     });
   }
@@ -226,7 +231,7 @@ public class SQLGeoFunctionsTest {
         }
 
         for (Index idx : type.getAllIndexes(false)) {
-          Assertions.assertEquals(TOTAL, idx.countEntries());
+          assertThat(idx.countEntries()).isEqualTo(TOTAL);
         }
 
         //System.out.println("Elapsed insert: " + (System.currentTimeMillis() - begin));
@@ -243,14 +248,14 @@ public class SQLGeoFunctionsTest {
 
         begin = System.currentTimeMillis();
 
-        Assertions.assertTrue(result.hasNext());
+        assertThat(result.hasNext()).isTrue();
         int returned = 0;
         while (result.hasNext()) {
           final Document record = result.next().toElement();
-          Assertions.assertTrue(record.getDouble("x1") >= 10.0001D, "x1: " + record.getDouble("x1"));
-          Assertions.assertTrue(record.getDouble("y1") >= 10.0001D, "y1: " + record.getDouble("y1"));
-          Assertions.assertTrue(record.getDouble("x2") <= 10.020D, "x2: " + record.getDouble("x2"));
-          Assertions.assertTrue(record.getDouble("y2") <= 10.020D, "y2: " + record.getDouble("y2"));
+          assertThat(record.getDouble("x1")).isGreaterThanOrEqualTo(10.0001D).withFailMessage("x1: " + record.getDouble("x1"));
+          assertThat(record.getDouble("y1")).isGreaterThanOrEqualTo(10.0001D).withFailMessage("y1: " + record.getDouble("y1"));
+          assertThat(record.getDouble("x2")).isLessThanOrEqualTo(10.020D).withFailMessage("x2: " + record.getDouble("x2"));
+          assertThat(record.getDouble("y2")).isLessThanOrEqualTo(10.020D).withFailMessage("y2: " + record.getDouble("y2"));
           //System.out.println(record.toJSON());
 
           ++returned;
@@ -258,7 +263,7 @@ public class SQLGeoFunctionsTest {
 
         //System.out.println("Elapsed browsing: " + (System.currentTimeMillis() - begin));
 
-        Assertions.assertEquals(20, returned);
+        assertThat(returned).isEqualTo(20);
       });
     });
   }

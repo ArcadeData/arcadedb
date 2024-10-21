@@ -23,8 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -35,18 +34,18 @@ public class ContainsKeyOperatorTest {
     public void test() {
         final ContainsKeyOperator op = new ContainsKeyOperator(-1);
 
-        assertFalse(op.execute(null, null, null));
-        assertFalse(op.execute(null, null, "foo"));
+      assertThat(op.execute(null, null, null)).isFalse();
+      assertThat(op.execute(null, null, "foo")).isFalse();
 
         final Map<Object, Object> originMap = new HashMap<Object, Object>();
-        assertFalse(op.execute(null, originMap, "foo"));
-        assertFalse(op.execute(null, originMap, null));
+      assertThat(op.execute(null, originMap, "foo")).isFalse();
+      assertThat(op.execute(null, originMap, null)).isFalse();
 
         originMap.put("foo", "bar");
         originMap.put(1, "baz");
 
-        assertTrue(op.execute(null, originMap, "foo"));
-        assertTrue(op.execute(null, originMap, 1));
-        assertFalse(op.execute(null, originMap, "fooz"));
+      assertThat(op.execute(null, originMap, "foo")).isTrue();
+      assertThat(op.execute(null, originMap, 1)).isTrue();
+      assertThat(op.execute(null, originMap, "fooz")).isFalse();
     }
 }

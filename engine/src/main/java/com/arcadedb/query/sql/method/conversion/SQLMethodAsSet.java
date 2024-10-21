@@ -39,31 +39,31 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
-    if (ioResult instanceof Set)
+  public Object execute(Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value instanceof Set)
       // ALREADY A SET
-      return ioResult;
+      return value;
 
-    if (ioResult == null)
+    if (value == null)
       // NULL VALUE, RETURN AN EMPTY SET
       return Collections.emptySet();
 
-    if (ioResult instanceof Collection<?>) {
-      return new HashSet<>((Collection<Object>) ioResult);
-    } else if (ioResult instanceof Iterable<?>) {
-      ioResult = ((Iterable<?>) ioResult).iterator();
+    if (value instanceof Collection<?>) {
+      return new HashSet<>((Collection<Object>) value);
+    } else if (value instanceof Iterable<?>) {
+      value = ((Iterable<?>) value).iterator();
     }
 
-    if (ioResult instanceof Iterator<?>) {
+    if (value instanceof Iterator<?>) {
       final Set<Object> set = new HashSet<>();
 
-      for (final Iterator<Object> iter = (Iterator<Object>) ioResult; iter.hasNext(); )
+      for (final Iterator<Object> iter = (Iterator<Object>) value; iter.hasNext(); )
         set.add(iter.next());
 
       return set;
     }
 
     // SINGLE ITEM: ADD IT AS UNIQUE ITEM
-    return Collections.singleton(ioResult);
+    return Collections.singleton(value);
   }
 }

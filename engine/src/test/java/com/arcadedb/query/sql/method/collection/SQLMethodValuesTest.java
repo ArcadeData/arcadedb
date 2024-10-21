@@ -25,10 +25,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLMethodValuesTest {
-
   private SQLMethod function;
 
   @BeforeEach
@@ -43,7 +42,7 @@ public class SQLMethodValuesTest {
     resultInternal.setProperty("name", "Foo");
     resultInternal.setProperty("surname", "Bar");
 
-    final Object result = function.execute(null, null, null, resultInternal, null);
-    assertEquals(Arrays.asList("Foo", "Bar"), new ArrayList<>((Collection<String>) result));
+    final Object result = function.execute(resultInternal, null, null, null);
+    assertThat(new ArrayList<>((Collection<String>) result)).isEqualTo(Arrays.asList("Foo", "Bar"));
   }
 }

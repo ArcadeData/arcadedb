@@ -42,8 +42,8 @@ public class CountFromIndexStep extends AbstractExecutionStep {
    * @param context          the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromIndexStep(final IndexIdentifier targetIndex, final String alias, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CountFromIndexStep(final IndexIdentifier targetIndex, final String alias, final CommandContext context) {
+    super(context);
     this.target = targetIndex;
     this.alias = alias;
   }
@@ -60,15 +60,15 @@ public class CountFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        if (executed) {
+        if (executed)
           throw new NoSuchElementException();
-        }
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final Index idx = context.getDatabase().getSchema().getIndexByName(target.getIndexName());
           final long size = idx.countEntries();
           executed = true;
-          final ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(alias, size);
           return result;
         } finally {

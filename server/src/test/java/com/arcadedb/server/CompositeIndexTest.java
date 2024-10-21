@@ -34,7 +34,6 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +42,7 @@ import java.time.*;
 import java.time.format.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/741
@@ -67,6 +67,7 @@ public class CompositeIndexTest {
           dtOrders.createProperty("node", Type.STRING);
           dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
           dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
           dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
         });
       }
@@ -90,14 +91,14 @@ public class CompositeIndexTest {
       vstop = LocalDateTime.parse("2019-05-05T00:07:57.423797", DateTimeFormatter.ofPattern(dateTimePattern));
       try (ResultSet resultSet = database.command("sql", sqlString, 1, processor, vstart, vstop, status, processor, vstart,
           vstop)) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         resultSet.next().toJSON();
       }
       vstart = LocalDateTime.parse("2019-05-05T00:10:37.288211", DateTimeFormatter.ofPattern(dateTimePattern));
       vstop = LocalDateTime.parse("2019-05-05T00:12:38.236835", DateTimeFormatter.ofPattern(dateTimePattern));
       try (ResultSet resultSet = database.command("sql", sqlString, 2, processor, vstart, vstop, status, processor, vstart,
           vstop)) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         resultSet.next().toJSON();
       }
       database.commit();
@@ -112,17 +113,17 @@ public class CompositeIndexTest {
       // select orders
       sqlString = "SELECT FROM Order WHERE status = ?";
       try (ResultSet resultSet = database.query("sql", sqlString, "COMPLETED")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         resultSet.next().toJSON();
       }
       try (ResultSet resultSet = database.query("sql", "SELECT FROM Order WHERE id = 2")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         Result result = resultSet.next();
-        Assertions.assertTrue(result.getProperty("status").equals("PENDING"));
+        assertThat(result.<String>getProperty("status")).isEqualTo("PENDING");
         result.toJSON();
       }
       try (ResultSet resultSet = database.query("sql", sqlString, "PENDING")) {
-        Assertions.assertTrue(resultSet.hasNext());
+        assertThat(resultSet.hasNext()).isTrue();
         resultSet.next().toJSON();
       }
     } catch (Exception e) {

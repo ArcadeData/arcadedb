@@ -77,7 +77,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     }
     checkSuperTypes(schema, context);
 
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", commandType());
     result.setProperty("typeName", name.getStringValue());
 

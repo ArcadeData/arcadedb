@@ -23,12 +23,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Simulates a split brain on 5 nodes, by isolating nodes 4th and 5th in a separate network. After 10 seconds, allows the 2 networks to see
@@ -55,7 +56,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
   @Override
   protected void onAfterTest() {
     timer.cancel();
-    Assertions.assertEquals(firstLeader, getLeaderServer().getServerName());
+    assertThat(getLeaderServer().getServerName()).isEqualTo(firstLeader);
   }
 
   @Override

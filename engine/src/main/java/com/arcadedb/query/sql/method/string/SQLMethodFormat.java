@@ -39,7 +39,7 @@ public class SQLMethodFormat extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iRecord, final CommandContext iContext, final Object[] iParams) {
 
     // TRY TO RESOLVE AS DYNAMIC VALUE
     String format = (String) getParameterValue(iRecord, iParams[0].toString());
@@ -50,24 +50,24 @@ public class SQLMethodFormat extends AbstractSQLMethod {
     if (format == null)
       throw new IllegalArgumentException("Format was null");
 
-    if (isCollectionOfDates(ioResult)) {
+    if (isCollectionOfDates(value)) {
       final List<String> result = new ArrayList<String>();
-      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
+      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(value);
 
       while (iterator.hasNext())
         result.add(DateUtils.format(iterator.next(), format));
 
       return result;
 
-    } else if (DateUtils.isDate(ioResult)) {
-      return DateUtils.format(ioResult, format);
+    } else if (DateUtils.isDate(value)) {
+      return DateUtils.format(value, format, iParams.length > 1 ? (String) iParams[1] : null);
     }
-    return ioResult != null ? String.format(format, ioResult) : null;
+    return value != null ? String.format(format, value) : null;
   }
 
-  private boolean isCollectionOfDates(final Object ioResult) {
-    if (MultiValue.isMultiValue(ioResult)) {
-      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
+  private boolean isCollectionOfDates(final Object value) {
+    if (MultiValue.isMultiValue(value)) {
+      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(value);
       while (iterator.hasNext()) {
         final Object item = iterator.next();
         if (item != null && !DateUtils.isDate(item)) {

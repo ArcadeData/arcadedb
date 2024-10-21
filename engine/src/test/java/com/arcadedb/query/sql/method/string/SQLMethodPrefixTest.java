@@ -35,17 +35,17 @@ class SQLMethodPrefixTest {
     @Test
     void testNull() {
         //null ithis
-        Object result = method.execute(null, null, null, null, new Object[]{"prefix"});
+        Object result = method.execute(null, null, null, new Object[]{"prefix"});
         assertThat(result).isNull();
 
         //null prefix
-        result = method.execute("suffix", null, null, null, null);
+        result = method.execute("suffix", null, null, null);
         assertThat(result).isEqualTo("suffix");
     }
 
     @Test
     void testPrefix() {
-        final Object result = method.execute("suffix", null, null, null, new Object[]{"prefix"});
+        final Object result = method.execute("suffix", null, null, new Object[]{"prefix"});
         assertThat(result).isEqualTo("prefixsuffix");
 
     }

@@ -27,39 +27,34 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodTypeTest {
-    private SQLMethod method;
+  private SQLMethod method;
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodType();
-    }
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodType();
+  }
 
-    @Test
-    void testNulIsReturnedAsNull() {
-        final Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isNull();
-    }
+  @Test
+  void testNulIsReturnedAsNull() {
+    final Object result = method.execute(null, null, null, null);
+    assertThat(result).isNull();
+  }
 
-    @Test
-    void testUnknownTypesReturnedAsNull() {
-        final Object result = method.execute(null, null, null, new SQLMethodType(), null);
-        assertThat(result).isNull();
-    }
+  @Test
+  void testUnknownTypesReturnedAsNull() {
+    final Object result = method.execute(new SQLMethodType(), null, null, null);
+    assertThat(result).isNull();
+  }
 
-    @Test
-    void testTypeName() {
+  @Test
+  void testTypeName() {
+    final Object result = method.execute("string", null, null, null);
+    assertThat(result).isEqualTo("STRING");
+  }
 
-        final Object result = method.execute(null, null, null, "string", null);
-        assertThat(result).isEqualTo("STRING");
-
-    }
-
-    @Test
-    void testTypeNameOfList() {
-
-        final Object result = method.execute(null, null, null, new ArrayList<>(), null);
-        assertThat(result).isEqualTo("LIST");
-
-    }
-
+  @Test
+  void testTypeNameOfList() {
+    final Object result = method.execute(new ArrayList<>(), null, null, null);
+    assertThat(result).isEqualTo("LIST");
+  }
 }

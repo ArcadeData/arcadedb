@@ -19,8 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 public class CountStepTest {
@@ -32,10 +33,10 @@ public class CountStepTest {
   @Test
   public void shouldCountRecords() {
     final CommandContext context = new BasicCommandContext();
-    final CountStep step = new CountStep(context, false);
+    final CountStep step = new CountStep(context);
 
     final AbstractExecutionStep previous =
-        new AbstractExecutionStep(context, false) {
+        new AbstractExecutionStep(context) {
           boolean done = false;
 
           @Override
@@ -55,7 +56,7 @@ public class CountStepTest {
 
     step.setPrevious(previous);
     final ResultSet result = step.syncPull(context, 100);
-    Assertions.assertEquals(100, (long) result.next().getProperty(COUNT_PROPERTY_NAME));
-    Assertions.assertFalse(result.hasNext());
+    assertThat((long) result.next().getProperty(COUNT_PROPERTY_NAME)).isEqualTo(100);
+    assertThat(result.hasNext()).isFalse();
   }
 }

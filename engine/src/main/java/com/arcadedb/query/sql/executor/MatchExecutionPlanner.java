@@ -103,7 +103,7 @@ public class MatchExecutionPlanner {
     this.unwind = stm.getUnwind() == null ? null : stm.getUnwind().copy();
   }
 
-  public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
 
     buildPatterns(context);
     splitDisjointPatterns(context);
@@ -113,37 +113,36 @@ public class MatchExecutionPlanner {
     final Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream().filter(x -> x.getValue() < threshold)
         .map(x -> x.getKey()).collect(Collectors.toSet());
     if (estimatedRootEntries.containsValue(0L)) {
-      result.chain(new EmptyStep(context, enableProfiling));
+      result.chain(new EmptyStep(context));
       return result;
     }
 
-    addPrefetchSteps(result, aliasesToPrefetch, context, enableProfiling);
+    addPrefetchSteps(result, aliasesToPrefetch, context);
 
     if (subPatterns.size() > 1) {
-      final CartesianProductStep step = new CartesianProductStep(context, enableProfiling);
+      final CartesianProductStep step = new CartesianProductStep(context);
       for (final Pattern subPattern : subPatterns) {
-        step.addSubPlan(createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch, enableProfiling));
+        step.addSubPlan(createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch));
       }
       result.chain(step);
     } else {
-      final InternalExecutionPlan plan = createPlanForPattern(pattern, context, estimatedRootEntries, aliasesToPrefetch,
-          enableProfiling);
+      final InternalExecutionPlan plan = createPlanForPattern(pattern, context, estimatedRootEntries, aliasesToPrefetch);
       for (final ExecutionStep step : plan.getSteps()) {
         result.chain((ExecutionStepInternal) step);
       }
     }
 
-    manageNotPatterns(result, pattern, notMatchExpressions, context, enableProfiling);
+    manageNotPatterns(result, pattern, notMatchExpressions, context);
 
     if (foundOptional) {
-      result.chain(new RemoveEmptyOptionalsStep(context, enableProfiling));
+      result.chain(new RemoveEmptyOptionalsStep(context));
     }
 
     if (returnElements || returnPaths || returnPatterns || returnPathElements) {
-      addReturnStep(result, context, enableProfiling);
+      addReturnStep(result, context);
 
       if (this.returnDistinct) {
-        result.chain(new DistinctExecutionStep(context, enableProfiling));
+        result.chain(new DistinctExecutionStep(context));
       }
       if (groupBy != null) {
         throw new CommandExecutionException(
@@ -151,18 +150,18 @@ public class MatchExecutionPlanner {
       }
 
       if (this.orderBy != null) {
-        result.chain(new OrderByStep(orderBy, context, -1, enableProfiling));
+        result.chain(new OrderByStep(orderBy, context, -1));
       }
 
       if (this.unwind != null) {
-        result.chain(new UnwindStep(unwind, context, enableProfiling));
+        result.chain(new UnwindStep(unwind, context));
       }
 
       if (this.skip != null && skip.getValue(context) >= 0) {
-        result.chain(new SkipExecutionStep(skip, context, enableProfiling));
+        result.chain(new SkipExecutionStep(skip, context));
       }
       if (this.limit != null && limit.getValue(context) >= 0) {
-        result.chain(new LimitExecutionStep(limit, context, enableProfiling));
+        result.chain(new LimitExecutionStep(limit, context));
       }
     } else {
       final QueryPlanningInfo info = new QueryPlanningInfo();
@@ -187,7 +186,7 @@ public class MatchExecutionPlanner {
       info.limit = this.limit;
 
       SelectExecutionPlanner.optimizeQuery(info, context);
-      SelectExecutionPlanner.handleProjectionsBlock(result, info, context, enableProfiling);
+      SelectExecutionPlanner.handleProjectionsBlock(result, info, context);
     }
 
     return result;
@@ -195,7 +194,7 @@ public class MatchExecutionPlanner {
   }
 
   private void manageNotPatterns(final SelectExecutionPlan result, final Pattern pattern,
-      final List<MatchExpression> notMatchExpressions, final CommandContext context, final boolean enableProfiling) {
+      final List<MatchExpression> notMatchExpressions, final CommandContext context) {
     for (final MatchExpression exp : notMatchExpressions) {
       if (pattern.aliasToNode.get(exp.getOrigin().getAlias()) == null) {
         throw new CommandExecutionException("This kind of NOT expression is not supported (yet). "
@@ -221,23 +220,23 @@ public class MatchExecutionPlanner {
         edge.in = new PatternNode();
         edge.in.alias = item.getFilter().getAlias();
         final EdgeTraversal traversal = new EdgeTraversal(edge, true);
-        final MatchStep step = new MatchStep(context, traversal, enableProfiling);
+        final MatchStep step = new MatchStep(context, traversal);
         steps.add(step);
         lastFilter = item.getFilter();
       }
-      result.chain(new FilterNotMatchPatternStep(steps, context, enableProfiling));
+      result.chain(new FilterNotMatchPatternStep(steps, context));
     }
   }
 
-  private void addReturnStep(final SelectExecutionPlan result, final CommandContext context, final boolean profilingEnabled) {
+  private void addReturnStep(final SelectExecutionPlan result, final CommandContext context) {
     if (returnElements) {
-      result.chain(new ReturnMatchElementsStep(context, profilingEnabled));
+      result.chain(new ReturnMatchElementsStep(context));
     } else if (returnPaths) {
-      result.chain(new ReturnMatchPathsStep(context, profilingEnabled));
+      result.chain(new ReturnMatchPathsStep(context));
     } else if (returnPatterns) {
-      result.chain(new ReturnMatchPatternsStep(context, profilingEnabled));
+      result.chain(new ReturnMatchPatternsStep(context));
     } else if (returnPathElements) {
-      result.chain(new ReturnMatchPathElementsStep(context, profilingEnabled));
+      result.chain(new ReturnMatchPathElementsStep(context));
     } else {
       final Projection projection = new Projection(-1);
       projection.setItems(new ArrayList<>());
@@ -248,12 +247,12 @@ public class MatchExecutionPlanner {
         item.setNestedProjection(returnNestedProjections.get(i));
         projection.getItems().add(item);
       }
-      result.chain(new ProjectionCalculationStep(projection, context, profilingEnabled));
+      result.chain(new ProjectionCalculationStep(projection, context));
     }
   }
 
   private InternalExecutionPlan createPlanForPattern(final Pattern pattern, final CommandContext context,
-      final Map<String, Long> estimatedRootEntries, final Set<String> prefetchedAliases, final boolean profilingEnabled) {
+      final Map<String, Long> estimatedRootEntries, final Set<String> prefetchedAliases) {
     final SelectExecutionPlan plan = new SelectExecutionPlan(context);
     final List<EdgeTraversal> sortedEdges = getTopologicalSortedSchedule(estimatedRootEntries, pattern);
 
@@ -267,14 +266,14 @@ public class MatchExecutionPlanner {
           edge.setLeftClass(aliasTypes.get(edge.edge.out.alias));
           edge.setLeftFilter(aliasFilters.get(edge.edge.out.alias));
         }
-        addStepsFor(plan, edge, context, first, profilingEnabled);
+        addStepsFor(plan, edge, context, first);
         first = false;
       }
     } else {
       final PatternNode node = pattern.getAliasToNode().values().iterator().next();
       if (prefetchedAliases.contains(node.alias)) {
         //from prefetch
-        plan.chain(new MatchFirstStep(context, node, profilingEnabled));
+        plan.chain(new MatchFirstStep(context, node));
       } else {
         //from actual execution plan
         final String typez = aliasTypes.get(node.alias);
@@ -282,7 +281,7 @@ public class MatchExecutionPlanner {
         final Rid rid = aliasRids.get(node.alias);
         final WhereClause filter = aliasFilters.get(node.alias);
         final SelectStatement select = createSelectStatement(typez, bucket, rid, filter);
-        plan.chain(new MatchFirstStep(context, node, select.createExecutionPlan(context, profilingEnabled), profilingEnabled));
+        plan.chain(new MatchFirstStep(context, node, select.createExecutionPlan(context)));
       }
     }
     return plan;
@@ -487,7 +486,7 @@ public class MatchExecutionPlanner {
   }
 
   private void addStepsFor(final SelectExecutionPlan plan, final EdgeTraversal edge, final CommandContext context,
-      final boolean first, final boolean profilingEnabled) {
+      final boolean first) {
     if (first) {
       final PatternNode patternNode = edge.out ? edge.edge.out : edge.edge.in;
       final String typez = this.aliasTypes.get(patternNode.alias);
@@ -508,18 +507,18 @@ public class MatchExecutionPlanner {
       final BasicCommandContext subContxt = new BasicCommandContext();
       subContxt.setParentWithoutOverridingChild(context);
       plan.chain(
-          new MatchFirstStep(context, patternNode, select.createExecutionPlan(subContxt, profilingEnabled), profilingEnabled));
+          new MatchFirstStep(context, patternNode, select.createExecutionPlan(subContxt)));
     }
     if (edge.edge.in.isOptionalNode()) {
       foundOptional = true;
-      plan.chain(new OptionalMatchStep(context, edge, profilingEnabled));
+      plan.chain(new OptionalMatchStep(context, edge));
     } else {
-      plan.chain(new MatchStep(context, edge, profilingEnabled));
+      plan.chain(new MatchStep(context, edge));
     }
   }
 
-  private void addPrefetchSteps(final SelectExecutionPlan result, final Set<String> aliasesToPrefetch, final CommandContext context,
-      final boolean profilingEnabled) {
+  private void addPrefetchSteps(final SelectExecutionPlan result, final Set<String> aliasesToPrefetch,
+      final CommandContext context) {
     for (final String alias : aliasesToPrefetch) {
       final String targetClass = aliasTypes.get(alias);
       final String targetCluster = aliasBuckets.get(alias);
@@ -527,8 +526,8 @@ public class MatchExecutionPlanner {
       final WhereClause filter = aliasFilters.get(alias);
       final SelectStatement prefetchStm = createSelectStatement(targetClass, targetCluster, targetRid, filter);
 
-      final MatchPrefetchStep step = new MatchPrefetchStep(context, prefetchStm.createExecutionPlan(context, profilingEnabled),
-          alias, profilingEnabled);
+      final MatchPrefetchStep step = new MatchPrefetchStep(context, prefetchStm.createExecutionPlan(context),
+          alias);
       result.chain(step);
     }
   }

@@ -141,6 +141,8 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
 
   @Override
   public Edge asEdge(final boolean loadContent) {
+    if (loadContent)
+      checkForLazyLoading();
     return this;
   }
 

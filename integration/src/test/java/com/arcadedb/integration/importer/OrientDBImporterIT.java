@@ -26,11 +26,14 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.net.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class OrientDBImporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
@@ -45,29 +48,29 @@ public class OrientDBImporterIT {
       final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -s -o").split(" "));
       importer.run().close();
 
-      Assertions.assertFalse(importer.isError());
-      Assertions.assertTrue(databaseDirectory.exists());
+      assertThat(importer.isError()).isFalse();
+      assertThat(databaseDirectory.exists()).isTrue();
 
       try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
         try (final Database database = factory.open()) {
           final DocumentType personType = database.getSchema().getType("Person");
-          Assertions.assertNotNull(personType);
-          Assertions.assertEquals(Type.INTEGER, personType.getProperty("id").getType());
-          Assertions.assertEquals(500, database.countType("Person", true));
-          Assertions.assertEquals(Schema.INDEX_TYPE.LSM_TREE, database.getSchema().getIndexByName("Person[id]").getType());
+          assertThat(personType).isNotNull();
+          assertThat(personType.getProperty("id").getType()).isEqualTo(Type.INTEGER);
+          assertThat(database.countType("Person", true)).isEqualTo(500);
+          assertThat(database.getSchema().getIndexByName("Person[id]").getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
 
           final DocumentType friendType = database.getSchema().getType("Friend");
-          Assertions.assertNotNull(friendType);
-          Assertions.assertEquals(Type.INTEGER, friendType.getProperty("id").getType());
-          Assertions.assertEquals(10_000, database.countType("Friend", true));
-          Assertions.assertEquals(Schema.INDEX_TYPE.LSM_TREE, database.getSchema().getIndexByName("Friend[id]").getType());
+          assertThat(friendType).isNotNull();
+          assertThat(friendType.getProperty("id").getType()).isEqualTo(Type.INTEGER);
+          assertThat(database.countType("Friend", true)).isEqualTo(10_000);
+          assertThat(database.getSchema().getIndexByName("Friend[id]").getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
 
           final File securityFile = new File("./server-users.jsonl");
-          Assertions.assertTrue(securityFile.exists());
+          assertThat(securityFile.exists()).isTrue();
 
           final String fileContent = FileUtils.readFileAsString(securityFile);
           final JSONObject security = new JSONObject(fileContent.substring(0, fileContent.indexOf("\n")));
-          Assertions.assertEquals("admin", security.getString("name"));
+          assertThat(security.getString("name")).isEqualTo("admin");
         }
       }
     } finally {
@@ -82,9 +85,9 @@ public class OrientDBImporterIT {
     final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + "2 -d " + DATABASE_PATH + " -s -o").split(" "));
     try {
       importer.run();
-      Assertions.fail("Expected File Not Found Exception");
+      fail("Expected File Not Found Exception");
     } catch (final IllegalArgumentException e) {
     }
-    Assertions.assertTrue(importer.isError());
+    assertThat(importer.isError()).isTrue();
   }
 }

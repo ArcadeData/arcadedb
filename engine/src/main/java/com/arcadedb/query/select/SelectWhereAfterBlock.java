@@ -70,7 +70,7 @@ public class SelectWhereAfterBlock {
     return select.timeout(timeoutValue, timeoutUnit, exceptionOnTimeout);
   }
 
-  public Select orderBy(final String property, final boolean order) {
-    return select.orderBy(property, order);
+  public Select orderBy(final String property, final boolean ascending) {
+    return select.orderBy(property, ascending);
   }
 }

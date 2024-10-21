@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
@@ -28,24 +29,50 @@ import java.util.*;
 import java.util.stream.*;
 
 /**
+ * Implementation of a {@link Result}.
+ * <p>
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
-  protected Map<String, Object> content;
-  protected Map<String, Object> temporaryContent;
-  protected Map<String, Object> metadata;
-  protected Document            element;
+  protected final Database            database;
+  protected final Object              value;
+  protected       Map<String, Object> content;
+  protected       Map<String, Object> temporaryContent;
+  protected       Map<String, Object> metadata;
+  protected       Document            element;
 
   public ResultInternal() {
-    content = new LinkedHashMap<>();
+    this.content = new LinkedHashMap<>();
+    this.database = null;
+    this.value = null;
   }
 
   public ResultInternal(final Map<String, Object> map) {
     this.content = map;
+    this.database = null;
+    this.value = null;
   }
 
-  public ResultInternal(final Identifiable ident) {
-    this.element = (Document) ident.getRecord();
+  public ResultInternal(final Identifiable indent) {
+    this.element = (Document) indent.getRecord();
+    this.database = null;
+    this.value = null;
+  }
+
+  public ResultInternal(final Database database) {
+    this.content = new LinkedHashMap<>();
+    this.database = database;
+    this.value = null;
+  }
+
+  public ResultInternal(final Object value) {
+    this.value = value;
+    this.database = null;
+  }
+
+  @Override
+  public Database getDatabase() {
+    return database;
   }
 
   public void setTemporaryProperty(final String name, Object value) {
@@ -95,9 +122,9 @@ public class ResultInternal implements Result {
     T result;
     if (content != null && !content.isEmpty())
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
-      result = (T) wrap(content.get(name));
+      result = (T) content.get(name);
     else if (element != null)
-      result = (T) wrap(element.get(name));
+      result = (T) element.get(name);
     else
       result = null;
 
@@ -110,9 +137,9 @@ public class ResultInternal implements Result {
   public <T> T getProperty(final String name, final Object defaultValue) {
     T result;
     if (content != null && content.containsKey(name))
-      result = (T) wrap(content.get(name));
+      result = (T) content.get(name);
     else if (element != null && element.has(name))
-      result = (T) wrap(element.get(name));
+      result = (T) element.get(name);
     else
       result = (T) defaultValue;
 
@@ -138,7 +165,15 @@ public class ResultInternal implements Result {
     return result instanceof Record ? (Record) result : null;
   }
 
-  private Object wrap(final Object input) {
+  /**
+   * Returns the input object transformed into a map when the value is a record. it works recursively.
+   * This method was originally used in OrientDB because all the record were immutable. With ArcadeDB all the
+   * records returned by a query are always immutable, so this method is not called automatically from the `getProperty()`.
+   * <p>
+   * From v24.5.1 this method is public to allow to be called for retro compatibility with existent code base or porting
+   * from OrientDB.
+   */
+  public static Object wrap(final Object input) {
     if (input instanceof Document && ((Document) input).getIdentity() == null && !(input instanceof EmbeddedDocument)) {
       final Document elem = ((Document) input);
       final ResultInternal result = new ResultInternal(elem.toMap(false));
@@ -146,67 +181,17 @@ public class ResultInternal implements Result {
         result.setProperty("@type", elem.getTypeName());
       return result;
 
-    } else if (isEmbeddedList(input)) {
-      return ((List) input).stream().map(this::wrap).collect(Collectors.toList());
-    } else if (isEmbeddedSet(input)) {
-      return ((Set) input).stream().map(this::wrap).collect(Collectors.toSet());
-    } else if (isEmbeddedMap(input)) {
+    } else if (input instanceof List) {
+      return ((List) input).stream().map(ResultInternal::wrap).collect(Collectors.toList());
+    } else if (input instanceof Set) {
+      return ((Set) input).stream().map(ResultInternal::wrap).collect(Collectors.toSet());
+    } else if (input instanceof Map) {
       final Map result = new HashMap();
-      for (final Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet()) {
+      for (final Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet())
         result.put(o.getKey(), wrap(o.getValue()));
-      }
       return result;
     }
     return input;
-  }
-
-  private boolean isEmbeddedSet(final Object input) {
-    if (input instanceof Set) {
-      for (final Object o : (Set) input) {
-        if (o instanceof Record)
-          return false;
-
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
-          return true;
-      }
-    }
-    return false;
-  }
-
-  private boolean isEmbeddedMap(final Object input) {
-    if (input instanceof Map) {
-      for (final Object o : ((Map) input).values()) {
-        if (o instanceof Record)
-          return false;//TODO
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
-          return true;
-      }
-    }
-    return false;
-  }
-
-  private boolean isEmbeddedList(final Object input) {
-    if (input instanceof List) {
-      for (final Object o : (List) input) {
-        if (o instanceof Record)
-          return false;
-        else if (isEmbeddedList(o))
-          return true;
-        else if (isEmbeddedSet(o))
-          return true;
-        else if (isEmbeddedMap(o))
-          return true;
-      }
-    }
-    return false;
   }
 
   public Set<String> getPropertyNames() {
@@ -255,7 +240,7 @@ public class ResultInternal implements Result {
 
     if (hasProperty("@rid")) {
       final Object rid = getProperty("@rid");
-      return Optional.of((RID) (rid instanceof RID ? rid : new RID( rid.toString())));
+      return Optional.of((RID) (rid instanceof RID ? rid : new RID(rid.toString())));
     }
     return Optional.empty();
   }
@@ -300,34 +285,35 @@ public class ResultInternal implements Result {
 
   @Override
   public String toString() {
-    if (element != null)
+    if (value != null)
+      return value.toString();
+    else if (element != null)
       return element.toString();
-
-    if (content != null)
-      return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n") + " }";
-
+    else if (content != null)
+      return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n")
+          + " }";
     return "{}";
   }
 
   @Override
-  public boolean equals(final Object obj) {
-    if (this == obj)
+  public boolean equals(final Object other) {
+    if (this == other)
       return true;
 
-    if (!(obj instanceof ResultInternal))
+    if (!(other instanceof ResultInternal))
       return false;
 
-    final ResultInternal resultObj = (ResultInternal) obj;
+    final ResultInternal otherResult = (ResultInternal) other;
     if (element != null) {
-      if (resultObj.getElement().isEmpty()) {
+      if (otherResult.getElement().isEmpty())
         return false;
-      }
-      return element.equals(resultObj.getElement().get());
-    } else {
-      if (resultObj.getElement().isPresent())
+      return element.equals(otherResult.getElement().get());
+    } else if (value != null)
+      return value.equals(otherResult.value);
+    else {
+      if (otherResult.getElement().isPresent())
         return false;
-
-      return this.content != null && this.content.equals(resultObj.content);
+      return this.content != null && this.content.equals(otherResult.content);
     }
   }
 
@@ -335,10 +321,10 @@ public class ResultInternal implements Result {
   public int hashCode() {
     if (element != null)
       return element.hashCode();
-
-    if (content != null)
+    else if (content != null)
       return content.hashCode();
-
+    else if (value != null)
+      return value.hashCode();
     return super.hashCode();
   }
 

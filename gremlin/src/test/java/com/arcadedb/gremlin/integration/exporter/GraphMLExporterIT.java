@@ -31,13 +31,14 @@ import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.stream.*;
 import java.util.zip.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class GraphMLExporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
@@ -54,30 +55,26 @@ public class GraphMLExporterIT {
     final var importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
     importer.run().close();
 
-    Assertions.assertFalse(importer.isError());
-    Assertions.assertTrue(databaseDirectory.exists());
+    assertThat(importer.isError()).isFalse();
+    assertThat(databaseDirectory.exists()).isTrue();
 
     new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format graphml").split(" ")).exportDatabase();
 
-    Assertions.assertTrue(file.exists());
-    Assertions.assertTrue(file.length() > 0);
+    assertThat(file.exists()).isTrue();
+    assertThat(file.length() > 0).isTrue();
 
     try (final ArcadeGraph graph = ArcadeGraph.open(importedDatabaseDirectory.getAbsolutePath())) {
       try (final GZIPInputStream is = new GZIPInputStream(new FileInputStream(file))) {
         graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
       }
 
-      Assertions.assertTrue(importedDatabaseDirectory.exists());
+      assertThat(importedDatabaseDirectory.exists()).isTrue();
 
       try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY)) {
-        Assertions.assertEquals(//
-            originalDatabase.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()),//
-            graph.getDatabase().getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
+        assertThat(graph.getDatabase().getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet())).isEqualTo(originalDatabase.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
         for (final DocumentType type : originalDatabase.getSchema().getTypes()) {
-          Assertions.assertEquals(//
-              originalDatabase.countType(type.getName(), true),//
-              graph.getDatabase().countType(type.getName(), true));
+          assertThat(graph.getDatabase().countType(type.getName(), true)).isEqualTo(originalDatabase.countType(type.getName(), true));
         }
       }
     }

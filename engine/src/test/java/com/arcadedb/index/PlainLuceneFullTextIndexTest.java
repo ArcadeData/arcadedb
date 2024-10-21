@@ -34,11 +34,12 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.store.FSDirectory;
-import org.junit.jupiter.api.Assertions;
 
 import java.io.*;
 import java.nio.file.*;
 import java.util.stream.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class PlainLuceneFullTextIndexTest {
   public static void main(String[] args) throws IOException, ParseException {
@@ -102,7 +103,7 @@ public class PlainLuceneFullTextIndexTest {
       final Query query = parser.parse("elec*");
       final ScoreDoc[] hits = searcher.search(query, 1000, Sort.RELEVANCE).scoreDocs;
 
-      Assertions.assertEquals(501, hits.length);
+      assertThat(hits.length).isEqualTo(501);
       // Iterate through the results:
       for (int i = 0; i < hits.length; i++) {
         final Document hitDoc = searcher.doc(hits[i].doc);

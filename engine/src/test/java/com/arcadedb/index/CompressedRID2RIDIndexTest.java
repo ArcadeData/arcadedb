@@ -20,8 +20,9 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class CompressedRID2RIDIndexTest extends TestHelper {
   private static final int TOT = 10_000_000;
@@ -34,21 +35,21 @@ public class CompressedRID2RIDIndexTest extends TestHelper {
       index.put(new RID(database, 3, i), new RID(database, 4, i));
 
     for (int i = 0; i < TOT; i++)
-      Assertions.assertEquals(new RID(database, 4, i), index.get(new RID(database, 3, i)));
+      assertThat(index.get(new RID(database, 3, i))).isEqualTo(new RID(database, 4, i));
 
     int found = 0;
     for (CompressedRID2RIDIndex.EntryIterator it = index.entryIterator(); it.hasNext(); ) {
       final RID key = it.getKeyRID();
       final RID value = it.getValueRID();
 
-      Assertions.assertEquals(3, key.getBucketId());
-      Assertions.assertEquals(4, value.getBucketId());
-      Assertions.assertEquals(key.getPosition(), value.getPosition());
+      assertThat(key.getBucketId()).isEqualTo(3);
+      assertThat(value.getBucketId()).isEqualTo(4);
+      assertThat(value.getPosition()).isEqualTo(key.getPosition());
 
       ++found;
       it.moveNext();
     }
 
-    Assertions.assertEquals(TOT, found);
+    assertThat(found).isEqualTo(TOT);
   }
 }

@@ -19,10 +19,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -50,8 +51,8 @@ public class GroupByExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select address, count(*) as occurrences from InputTx where address is not null group by address limit 10");
     while (result.hasNext()) {
       final Result row = result.next();
-      Assertions.assertNotNull(row.getProperty("address"));
-      Assertions.assertNotNull(row.getProperty("occurrences"));
+      assertThat(row.<String>getProperty("address")).isNotNull();
+      assertThat(row.<Long>getProperty("occurrences")).isNotNull();
     }
     result.close();
   }

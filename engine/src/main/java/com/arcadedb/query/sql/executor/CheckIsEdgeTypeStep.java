@@ -33,51 +33,44 @@ import com.arcadedb.schema.Schema;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
-
-  private final String targetClass;
-
-  boolean found = false;
+  private final String  targetClass;
+  private       boolean found = false;
 
   /**
    * @param targetClass      a type to be checked
    * @param context          execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckIsEdgeTypeStep(final String targetClass, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CheckIsEdgeTypeStep(final String targetClass, final CommandContext context) {
+    super(context);
     this.targetClass = targetClass;
-
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
 
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      if (found) {
+      if (found)
         return new InternalResultSet();
-      }
 
       final Database db = context.getDatabase();
-
       final Schema schema = db.getSchema();
 
       final DocumentType targettypez = schema.getType(this.targetClass);
-      if (targettypez == null) {
+      if (targettypez == null)
         throw new CommandExecutionException("Type not found: " + this.targetClass);
-      }
 
-      if (targettypez instanceof LocalEdgeType) {
+      if (targettypez instanceof LocalEdgeType)
         found = true;
-      }
-      if (!found) {
+
+      if (!found)
         throw new CommandExecutionException("Type ' '" + this.targetClass + "' is not an Edge type");
-      }
 
       return new InternalResultSet();
     } finally {
-      if (profilingEnabled) {
+      if (context.isProfiling()) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -88,8 +81,8 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
-    result.append("+ CHECK USERTYPE HIERARCHY (E)");
-    if (profilingEnabled) {
+    result.append("+ CHECK EDGE TYPE");
+    if (context.isProfiling()) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();

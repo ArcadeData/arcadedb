@@ -11,59 +11,40 @@ on:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        continue-on-error: [false]
-        include:
-          - os: windows-latest
-            continue-on-error: true
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: xembly/workflow-manager@v1
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+      - uses: actions/setup-python@f677139bbe7f9c59b41e40162b753c062f5d49a3 # v5.2.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          run: clean, cancel
-          verbose: false
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-      - uses: pre-commit/action@v3.0.1
+          python-version: "3.13.0"
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
       - name: Set up QEMU
-        if: ${{ matrix.os != 'windows-latest' }}
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        if: ${{ matrix.os != 'windows-latest' }}
         uses: docker/setup-buildx-action@v3
 
-      - name: Set up GraalVM 11
-        uses: graalvm/setup-graalvm@v1
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          version: "22.3.2"
-          gds-token: ${{ secrets.GDS_TOKEN }}
-          java-version: "11"
+          distribution: "temurin"
+          java-version: 17
           cache: "maven"
-          components: "native-image,js"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install jars
-        continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn --show-version clean install -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test
-        continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: E2E Test
-        if: ${{ success() && matrix.os != 'windows-latest' }}
+        if: success()
         run: mvn verify -pl e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,14 +60,12 @@ jobs:
           reporter: java-junit
 
       - name: Get coverage files
-        if: ${{ matrix.os != 'windows-latest' }}
         id: coverage-files-generator
-        run: |
-          echo ::set-output name=COVERAGE_FILES::$(find **/jacoco*.xml -printf '%p,')
+        run: echo "COVERAGE_FILES=$(find . -path **/jacoco*.xml -printf '%p,')" >> "$GITHUB_OUTPUT"
 
       - name: Codacy coverage reporter
-        if: ${{ matrix.os != 'windows-latest' }}
-        uses: codacy/codacy-coverage-reporter-action@v1
+        uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
         with:
+          language: java
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports: ${{ steps.coverage-files-generator.COVERAGE_FILES }}
+          coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}

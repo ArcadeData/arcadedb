@@ -39,14 +39,13 @@ public class SQLFunctionIn extends SQLFunctionMoveFiltered {
     return v2v(graph, iRecord, Vertex.DIRECTION.IN, iLabels);
   }
 
-  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels, final Iterable<Identifiable> iPossibleResults) {
-    if (iPossibleResults == null) {
+  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
+      final Iterable<Identifiable> iPossibleResults) {
+    if (iPossibleResults == null)
       return v2v(graph, iRecord, Vertex.DIRECTION.IN, iLabels);
-    }
 
-    if (!iPossibleResults.iterator().hasNext()) {
+    if (!iPossibleResults.iterator().hasNext())
       return Collections.emptyList();
-    }
 
     return v2v(graph, iRecord, Vertex.DIRECTION.IN, iLabels);
   }

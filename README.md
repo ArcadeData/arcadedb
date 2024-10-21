@@ -35,19 +35,19 @@
 </p>
 
 <p align="center">
-	<a href="https://github.com/arcadedata/arcadedb"><img height="25" src="/server/src/main/resources/static/images/social/github.svg" alt="Github	"></a>
+	<a href="https://github.com/arcadedata/arcadedb"><img height="25" src="studio/src/main/resources/static/images/social/github.svg" alt="Github"></a>
 	&nbsp;
-  <a href="https://www.linkedin.com/company/arcadedb/"><img height="25" src="/server/src/main/resources/static/images/social/linkedin.svg" alt="LinkedIn"></a>
+  <a href="https://www.linkedin.com/company/arcadedb/"><img height="25" src="studio/src/main/resources/static/images/social/linkedin.svg" alt="LinkedIn"></a>
   &nbsp;
-  <a href="https://twitter.com/arcade_db"><img height="25" src="/server/src/main/resources/static/images/social/twitter.svg" alt="Twitter"></a>
+  <a href="https://twitter.com/arcade_db"><img height="25" src="studio/src/main/resources/static/images/social/twitter.svg" alt="Twitter"></a>
   &nbsp;
-  <a href="https://www.youtube.com/@ArcadeDB"><img height="25" src="/server/src/main/resources/static/images/social/youtube.svg" alt="Youtube"></a>
+  <a href="https://www.youtube.com/@ArcadeDB"><img height="25" src="studio/src/main/resources/static/images/social/youtube.svg" alt="Youtube"></a>
   &nbsp;
-  <a href="https://discord.gg/w2Npx2B7hZ"><img height="25" src="/server/src/main/resources/static/images/social/discord.svg" alt="Discord"></a>
+  <a href="https://discord.gg/w2Npx2B7hZ"><img height="25" src="studio/src/main/resources/static/images/social/discord.svg" alt="Discord"></a>
   &nbsp;
-  <a href="https://stackoverflow.com/questions/tagged/arcadedb"><img height="25" src="/server/src/main/resources/static/images/social/stack-overflow.svg" alt="StackOverflow"></a>
+  <a href="https://stackoverflow.com/questions/tagged/arcadedb"><img height="25" src="studio/src/main/resources/static/images/social/stack-overflow.svg" alt="StackOverflow"></a>
 	&nbsp;
-	<a href="https://blog.arcadedb.com/"><img height="25" src="/server/src/main/resources/static/images/social/blog.svg" alt="Blog"></a>
+	<a href="https://blog.arcadedb.com/"><img height="25" src="studio/src/main/resources/static/images/social/blog.svg" alt="Blog"></a>
 </p>
 
 ArcadeDB is a Multi-Model DBMS (created originally as a fork
@@ -130,8 +130,9 @@ Recurrent and One-Time tiers. All the sponsorship received will be distributed t
 
 ### Contributing
 
-We would love for you to get involved with ArcadeDB project. If you wish to help, you can learn more about how you can contribute to
-this project in the [contribution guide](CONTRIBUTING.md).
+We would love for you to get involved with ArcadeDB project.
+If you wish to help, you can learn more about how you can contribute to this project in the [contribution guide](CONTRIBUTING.md).
+The nightly builds of the repository head can be found [here](https://s01.oss.sonatype.org/content/repositories/snapshots/com/arcadedb/arcadedb-package/).
 
 Have fun with data!
 

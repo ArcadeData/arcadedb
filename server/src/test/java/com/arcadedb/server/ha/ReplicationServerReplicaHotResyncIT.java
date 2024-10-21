@@ -23,10 +23,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
-import org.junit.jupiter.api.Assertions;
 
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
   private final    AtomicLong totalMessages = new AtomicLong();
@@ -42,12 +43,13 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
 
   @Override
   protected void onAfterTest() {
-    Assertions.assertTrue(hotResync);
-    Assertions.assertFalse(fullResync);
+    assertThat(hotResync).isTrue();
+    assertThat(fullResync).isFalse();
   }
 
   @Override
   protected void onBeforeStarting(final ArcadeDBServer server) {
+
     if (server.getServerName().equals("ArcadeDB_2"))
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
@@ -58,15 +60,15 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
           if (slowDown) {
             // SLOW DOWN A SERVER AFTER 5TH MESSAGE
             if (totalMessages.incrementAndGet() > 5) {
-              LogManager.instance().log(this, Level.FINE, "TEST: Slowing down response from replica server 2...");
-              CodeUtils.sleep(10_000);
+              LogManager.instance().log(this, Level.INFO, "TEST: Slowing down response from replica server 2...");
+              CodeUtils.sleep(5_000);
             }
           } else {
             if (type == TYPE.REPLICA_HOT_RESYNC) {
-              LogManager.instance().log(this, Level.FINE, "TEST: Received hot resync request");
+              LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request");
               hotResync = true;
             } else if (type == TYPE.REPLICA_FULL_RESYNC) {
-              LogManager.instance().log(this, Level.FINE, "TEST: Received full resync request");
+              LogManager.instance().log(this, Level.INFO, "TEST: Received full resync request");
               fullResync = true;
             }
           }
@@ -82,7 +84,7 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
             return;
 
           if ("ArcadeDB_2".equals(object) && type == TYPE.REPLICA_OFFLINE) {
-            LogManager.instance().log(this, Level.FINE, "TEST: Replica 2 is offline removing latency...");
+            LogManager.instance().log(this, Level.INFO, "TEST: Replica 2 is offline removing latency...");
             slowDown = false;
           }
         }

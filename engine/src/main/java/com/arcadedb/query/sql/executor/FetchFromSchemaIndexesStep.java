@@ -41,8 +41,8 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
 
   private int cursor = 0;
 
-  public FetchFromSchemaIndexesStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public FetchFromSchemaIndexesStep(final CommandContext context) {
+    super(context);
   }
 
   @Override
@@ -50,12 +50,12 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
     pullPrevious(context, nRecords);
 
     if (cursor == 0) {
-      final long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         final Schema schema = context.getDatabase().getSchema();
 
         for (final Index index : schema.getIndexes()) {
-          final ResultInternal r = new ResultInternal();
+          final ResultInternal r = new ResultInternal(context.getDatabase());
           result.add(r);
 
           try {
@@ -95,7 +95,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
           }
         }
       } finally {
-        if (profilingEnabled) {
+        if( context.isProfiling() ) {
           cost += (System.nanoTime() - begin);
         }
       }
@@ -127,7 +127,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA INDEXES";
-    if (profilingEnabled) {
+    if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
     return result;

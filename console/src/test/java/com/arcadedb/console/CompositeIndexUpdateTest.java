@@ -39,14 +39,19 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.time.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.io.PrintStream;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Issue https://github.com/ArcadeData/arcadedb/issues/1233
@@ -153,16 +158,16 @@ public class CompositeIndexUpdateTest {
     System.out.println();
 
     // insert TOTAL_ORDERS orders
-    Assertions.assertEquals(insertOrders(database, TOTAL_ORDERS).get("totalRows"), TOTAL_ORDERS);
+    assertThat(TOTAL_ORDERS).isEqualTo(insertOrders(database, TOTAL_ORDERS).get("totalRows"));
 
     // retrieve next eligible, it should return order id = 1
-    Assertions.assertEquals(retrieveNextEligibleOrder(database), 1);
+    assertThat(retrieveNextEligibleOrder(database)).isEqualTo(1);
 
     // update order 1 to ERROR
     updateOrderAsync(database, 1, "ERROR", LocalDateTime.now(), LocalDateTime.now().plusMinutes(5), "cs2minipds-test");
 
     // retrieve next eligible, it should return order id = 2
-    Assertions.assertEquals(retrieveNextEligibleOrder(database), 2);
+    assertThat(retrieveNextEligibleOrder(database)).isEqualTo(2);
     database.async().waitCompletion();
 
     // re-submit order
@@ -171,7 +176,7 @@ public class CompositeIndexUpdateTest {
 
     // retrieve correct order by id
     try (ResultSet resultSet = database.query("sql", "select status from Order where id = 1")) {
-      Assertions.assertEquals(resultSet.next().getProperty("status"), "PENDING");
+      assertThat(resultSet.next().<String>getProperty("status")).isEqualTo("PENDING");
     }
 
     try (ResultSet resultSet = database.query("sql", "SELECT  FROM Order WHERE status = 'PENDING' ORDER BY id ASC")) {
@@ -183,7 +188,7 @@ public class CompositeIndexUpdateTest {
 
     // retrieve next eligible, it should return order id = 1
     try {
-      Assertions.assertEquals(1, retrieveNextEligibleOrder(database));
+      assertThat(retrieveNextEligibleOrder(database)).isEqualTo(1);
     } finally {
       arcadeDBServer.stop();
     }
@@ -269,7 +274,7 @@ public class CompositeIndexUpdateTest {
         System.out.println("retrieve result = " + result.toJSON());
         return result.getProperty("id");
       } else {
-        Assertions.fail("no orders found");
+        fail("no orders found");
         return 0;
       }
     }
@@ -289,10 +294,10 @@ public class CompositeIndexUpdateTest {
       System.out.println("modified record = " + record);
       record.save();
     } else {
-      Assertions.fail("could not find order id = " + orderId);
+      fail("could not find order id = " + orderId);
     }
     if (!database.async().waitCompletion(3000)) {
-      Assertions.fail("timeout expired before order update completion");
+      fail("timeout expired before order update completion");
     }
     return updateCount.get();
   }
@@ -309,7 +314,7 @@ public class CompositeIndexUpdateTest {
         }
       });
     } catch (Exception e) {
-      Assertions.fail();
+      fail("");
     }
     return record[0];
   }

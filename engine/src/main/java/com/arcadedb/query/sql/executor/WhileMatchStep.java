@@ -30,15 +30,15 @@ public class WhileMatchStep extends AbstractUnrollStep {
   private final InternalExecutionPlan body;
   private final WhereClause           condition;
 
-  public WhileMatchStep(final CommandContext context, final WhereClause condition, final InternalExecutionPlan body, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public WhileMatchStep(final CommandContext context, final WhereClause condition, final InternalExecutionPlan body) {
+    super(context);
     this.body = body;
     this.condition = condition;
   }
 
   @Override
-  protected Collection<Result> unroll(final Result doc, final CommandContext iContext) {
-    body.reset(iContext);
+  protected Collection<Result> unroll(final Result doc, final CommandContext context) {
+    body.reset(context);
     final List<Result> result = new ArrayList<>();
     ResultSet block = body.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
     while (block.hasNext()) {

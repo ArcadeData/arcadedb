@@ -32,6 +32,9 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Fail.fail;
+
 public class QueryTest extends TestHelper {
   private static final int TOT = 10000;
 
@@ -62,21 +65,21 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
+        assertThat(record).isNotNull();
 
         final Set<String> prop = new HashSet<>();
         prop.addAll(record.getPropertyNames());
 
-        Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
-        Assertions.assertTrue(prop.contains("id"));
-        Assertions.assertTrue(prop.contains("name"));
-        Assertions.assertTrue(prop.contains("surname"));
+        assertThat(record.getPropertyNames().size()).isEqualTo(3);
+        assertThat(prop).contains("id", "name", "surname");
 
         total.incrementAndGet();
       }
 
-      Assertions.assertEquals(TOT, total.get());
-    });
+      assertThat(total.get()).isEqualTo(TOT);
+
+    }
+    );
   }
 
   @Test
@@ -91,17 +94,16 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-
-        Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
-        Assertions.assertEquals(123, (int) record.getProperty("id"));
-        Assertions.assertEquals("Jay", record.getProperty("name"));
-        Assertions.assertEquals("Miner123", record.getProperty("surname"));
+        assertThat(record).isNotNull();
+        assertThat(record.getPropertyNames().size()).isEqualTo(3);
+        assertThat((int) record.<Integer>getProperty("id")).isEqualTo(123);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Jay");
+        assertThat(record.<String>getProperty("surname")).isEqualTo("Miner123");
 
         total.incrementAndGet();
       }
 
-      Assertions.assertEquals(1, total.get());
+      assertThat(total.get()).isEqualTo(1);
     });
   }
 
@@ -116,13 +118,12 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-
-        Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
+        assertThat(record).isNotNull();
+        assertThat(record.getPropertyNames().size()).isEqualTo(3);
         total.incrementAndGet();
       }
 
-      Assertions.assertEquals(TOT, total.get());
+      assertThat(total.get()).isEqualTo(TOT);
     });
   }
 
@@ -138,23 +139,22 @@ public class QueryTest extends TestHelper {
       AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-
-        Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
-        Assertions.assertEquals(123, (int) record.getProperty("id"));
-        Assertions.assertEquals("Jay", record.getProperty("name"));
-        Assertions.assertEquals("Miner123", record.getProperty("surname"));
+        assertThat(record).isNotNull();
+        assertThat(record.getPropertyNames().size()).isEqualTo(3);
+        assertThat((int) record.<Integer>getProperty("id")).isEqualTo(123);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Jay");
+        assertThat(record.<String>getProperty("surname")).isEqualTo("Miner123");
 
         total.incrementAndGet();
       }
 
-      Assertions.assertEquals(1, total.get());
+      assertThat(total.get()).isEqualTo(1);
 
       // CHECK STATEMENT CACHE
-      Assertions.assertTrue(((DatabaseInternal) database).getStatementCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname"));
+      assertThat(((DatabaseInternal) database).getStatementCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname")).isTrue();
 
       // CHECK EXECUTION PLAN CACHE
-      Assertions.assertTrue(((DatabaseInternal) database).getExecutionPlanCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname"));
+      assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname")).isTrue();
 
       // EXECUTE THE 2ND TIME
       rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
@@ -162,17 +162,17 @@ public class QueryTest extends TestHelper {
       total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-
-        Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
-        Assertions.assertEquals(123, (int) record.getProperty("id"));
-        Assertions.assertEquals("Jay", record.getProperty("name"));
-        Assertions.assertEquals("Miner123", record.getProperty("surname"));
+        assertThat(record).isNotNull();
+assertThat(record).isNotNull();
+assertThat(record.getPropertyNames().size()).isEqualTo(3);
+assertThat((int) record.<Integer>getProperty("id")).isEqualTo(123);
+assertThat(record.<String>getProperty("name")).isEqualTo("Jay");
+assertThat(record.<String>getProperty("surname")).isEqualTo("Miner123");
 
         total.incrementAndGet();
       }
 
-      Assertions.assertEquals(1, total.get());
+      assertThat(total.get()).isEqualTo(1);
     });
   }
 
@@ -186,11 +186,11 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertTrue((int) record.getProperty("id") > TOT - 11);
+        assertThat(record).isNotNull();
+        assertThat(record.<Integer>getProperty("id") > TOT - 11).isTrue();
         total.incrementAndGet();
       }
-      Assertions.assertEquals(10, total.get());
+      assertThat(total.get()).isEqualTo(10);
     });
   }
 
@@ -204,11 +204,12 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertTrue((int) record.getProperty("id") >= TOT - 11);
+        assertThat(record).isNotNull();
+        assertThat(record.<Integer>getProperty("id") >= TOT - 11).isTrue();
+
         total.incrementAndGet();
       }
-      Assertions.assertEquals(11, total.get());
+      assertThat(total.get()).isEqualTo(11);
     });
   }
 
@@ -222,11 +223,11 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertTrue((int) record.getProperty("id") < 10);
+        assertThat(record).isNotNull();
+        assertThat( record.<Integer>getProperty("id") < 10).isTrue();
         total.incrementAndGet();
       }
-      Assertions.assertEquals(10, total.get());
+      assertThat(total.get()).isEqualTo(10);
     });
   }
 
@@ -240,11 +241,11 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertTrue((int) record.getProperty("id") <= 10);
+        assertThat(record).isNotNull();
+        assertThat(record.<Integer>getProperty("id") <= 10).isTrue();
         total.incrementAndGet();
       }
-      Assertions.assertEquals(11, total.get());
+      assertThat(total.get()).isEqualTo(11);
     });
   }
 
@@ -258,11 +259,11 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
-        Assertions.assertTrue((int) record.getProperty("id") <= 10);
+        assertThat(record).isNotNull();
+        assertThat(record.<Integer>getProperty("id") <= 10).isTrue();
         total.incrementAndGet();
       }
-      Assertions.assertEquals(11, total.get());
+      assertThat(total.get()).isEqualTo(11);
     });
   }
 
@@ -274,11 +275,11 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX Foo SET name = 'bar'");
 
       final ResultSet rs = database.query("SQL", "SELECT FROM Foo");
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
     });
@@ -291,12 +292,13 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE EDGE TYPE TheEdge");
       database.command("SQL", "CREATE VERTEX Foo SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX Foo SET name = 'bar'");
-      database.command("SQL", "CREATE EDGE TheEdge FROM (SELECT FROM Foo WHERE name ='foo') TO (SELECT FROM Foo WHERE name ='bar')");
+      database.command("SQL",
+          "CREATE EDGE TheEdge FROM (SELECT FROM Foo WHERE name ='foo') TO (SELECT FROM Foo WHERE name ='bar')");
 
       final ResultSet rs = database.query("SQL", "SELECT FROM TheEdge");
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
     });
@@ -312,21 +314,22 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'bar'");
       database.command("SQL",
-          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass + " WHERE name ='bar')");
+          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass
+              + " WHERE name ='bar')");
 
       ResultSet rs = database.query("SQL", "SELECT FROM " + edgeClass);
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
 
       rs = database.query("SQL", "SELECT out()[0].name as name from " + vertexClass + " where name = 'foo'");
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Result item = rs.next();
       final String name = item.getProperty("name");
-      Assertions.assertTrue(name.contains("bar"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(name.contains("bar")).isTrue();
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
     });
@@ -336,10 +339,10 @@ public class QueryTest extends TestHelper {
   public void testMethod() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", "SELECT 'bar'.prefix('foo') as name");
-      Assertions.assertTrue(rs.hasNext());
-      Assertions.assertEquals("foobar", rs.next().getProperty("name"));
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("foobar");
 
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
     });
@@ -355,20 +358,21 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'bar'");
       database.command("SQL",
-          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass + " WHERE name ='bar')");
+          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass
+              + " WHERE name ='bar')");
 
       ResultSet rs = database.query("SQL", "SELECT FROM " + edgeClass);
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
 
       rs = database.query("SQL", "MATCH {type:" + vertexClass + ", as:a} -" + edgeClass + "->{}  RETURN $patterns");
       rs.getExecutionPlan().get().prettyPrint(0, 2);
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Result item = rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
     });
@@ -384,20 +388,21 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'foo'");
       database.command("SQL", "CREATE VERTEX " + vertexClass + " SET name = 'bar'");
       database.command("SQL",
-          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass + " WHERE name ='bar')");
+          "CREATE EDGE " + edgeClass + " FROM (SELECT FROM " + vertexClass + " WHERE name ='foo') TO (SELECT FROM " + vertexClass
+              + " WHERE name ='bar')");
 
       ResultSet rs = database.query("SQL", "SELECT FROM " + edgeClass);
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
 
       rs = database.query("SQL", "MATCH {type:" + vertexClass + ", as:a} --> {}  RETURN $patterns");
       rs.getExecutionPlan().get().prettyPrint(0, 2);
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       final Result item = rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
 
       rs.close();
     });
@@ -407,19 +412,19 @@ public class QueryTest extends TestHelper {
   public void testLike() {
     database.transaction(() -> {
       ResultSet rs = database.command("SQL", "SELECT FROM V WHERE surname LIKE '%in%' LIMIT 1");
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
       rs.close();
 
       rs = database.command("SQL", "SELECT FROM V WHERE surname LIKE 'Mi?er%' LIMIT 1");
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       rs.next();
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
       rs.close();
 
       rs = database.command("SQL", "SELECT FROM V WHERE surname LIKE 'baz' LIMIT 1");
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(rs.hasNext()).isFalse();
       rs.close();
 
     });
@@ -433,20 +438,20 @@ public class QueryTest extends TestHelper {
       database.command("SQL", "insert into V set age = '100%'");
 
       ResultSet rs = database.command("SQL", "SELECT FROM V WHERE age LIKE '10\\%'");
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       Result result = rs.next();
-      Assertions.assertEquals("10%", result.getProperty("age"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(result.<String>getProperty("age")).isEqualTo("10%");
+      assertThat(rs.hasNext()).isFalse();
       rs.close();
 
       rs = database.command("SQL", "SELECT FROM V WHERE age LIKE \"10%\" ORDER BY age");
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       result = rs.next();
-      Assertions.assertEquals("10%", result.getProperty("age"));
-      Assertions.assertTrue(rs.hasNext());
+      assertThat(result.<String>getProperty("age")).isEqualTo("10%");
+      assertThat(rs.hasNext()).isTrue();
       result = rs.next();
-      Assertions.assertEquals("100%", result.getProperty("age"));
-      Assertions.assertFalse(rs.hasNext());
+      assertThat(result.<String>getProperty("age")).isEqualTo("100%");
+      assertThat(rs.hasNext()).isFalse();
       rs.close();
     });
   }
@@ -469,7 +474,7 @@ public class QueryTest extends TestHelper {
           final Result record = rs.next();
           LogManager.instance().log(this, Level.INFO, "Found record %s", null, record);
         }
-        Assertions.fail("Timeout should be triggered");
+        fail("Timeout should be triggered");
       } catch (final TimeoutException e) {
         // OK
       }
@@ -487,19 +492,19 @@ public class QueryTest extends TestHelper {
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
-        Assertions.assertNotNull(record);
+        assertThat(record).isNotNull();
 
         final Set<String> prop = new HashSet<>();
         prop.addAll(record.getPropertyNames());
 
-        Assertions.assertEquals(2, record.getPropertyNames().size());
-        Assertions.assertTrue(prop.contains("@rid"));
-        Assertions.assertTrue(prop.contains("name"));
+        assertThat(record.getPropertyNames()).hasSize(2);
+        assertThat(prop.contains("@rid")).isTrue();
+        assertThat(prop.contains("name")).isTrue();
 
         total.incrementAndGet();
       }
 
-      Assertions.assertEquals(2, total.get());
+      assertThat(total.get()).isEqualTo(2);
     });
   }
 
@@ -516,8 +521,37 @@ public class QueryTest extends TestHelper {
       query += ")";
 
       try (ResultSet set = database.query("sql", query)) {
-        Assertions.assertEquals(set.stream().count(), 0);
+        assertThat(set.stream().count()).isEqualTo(0);
       }
     });
   }
+
+  @Test
+  public void testCollectionsInProjections() {
+    try (ResultSet set = database.query("sql", "SELECT [\"a\",\"b\",\"c\"] as coll")) {
+      Collection<String> coll = set.nextIfAvailable().getProperty("coll");
+      assertThat(coll.size()).isEqualTo(3);
+      assertThat(coll.contains("a")).isTrue();
+      assertThat(coll.contains("b")).isTrue();
+      assertThat(coll.contains("c")).isTrue();
+    }
+  }
+
+  @Test
+  public void testCollectionsInProjectionsContains() {
+    try (ResultSet set = database.query("sql", "SELECT ([\"a\",\"b\",\"c\"] CONTAINS (@this ILIKE \"C\")) as coll")) {
+      final Object coll = set.nextIfAvailable().getProperty("coll");
+      assertThat((Boolean) coll).isTrue();
+    }
+  }
+
+  @Test
+  public void testCollectionsOfObjectsInProjectionsContains() {
+    try (ResultSet set = database.query("sql",
+        "SELECT ([{\"x\":\"a\"},{\"x\":\"b\"},{\"x\":\"c\"}] CONTAINS (x ILIKE \"C\")) as coll")) {
+      final Object coll = set.nextIfAvailable().getProperty("coll");
+      assertThat((Boolean) coll).isTrue();
+    }
+  }
+
 }

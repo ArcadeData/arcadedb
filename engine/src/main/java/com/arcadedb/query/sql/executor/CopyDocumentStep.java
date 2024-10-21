@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.schema.DocumentType;
 
 /**
  * <p>Reads an upstream result set and returns a new result set that contains copies of the original OResult instances
@@ -35,8 +36,8 @@ public class CopyDocumentStep extends AbstractExecutionStep {
 
   private final String targetType;
 
-  public CopyDocumentStep(final CommandContext context, final String targetType, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CopyDocumentStep(final CommandContext context, final String targetType) {
+    super(context);
     this.targetType = targetType;
   }
 
@@ -52,11 +53,10 @@ public class CopyDocumentStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result toCopy = upstream.next();
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           Record resultDoc = null;
           if (toCopy.isElement()) {
-
             final Record docToCopy = toCopy.getElement().get().getRecord();
 
             if (docToCopy instanceof Document) {
@@ -68,13 +68,13 @@ public class CopyDocumentStep extends AbstractExecutionStep {
               ((MutableDocument) resultDoc).set(((Document) docToCopy).toMap(false));
             }
           } else {
-            resultDoc = toCopy.toElement().getRecord();
+            final DocumentType type = context.getDatabase().getSchema().getType(targetType);
+            resultDoc = type.newRecord().set(toCopy.toMap()).save();
           }
           return new UpdatableResult((MutableDocument) resultDoc);
         } finally {
-          if (profilingEnabled) {
+          if (context.isProfiling())
             cost += (System.nanoTime() - begin);
-          }
         }
       }
 
@@ -92,9 +92,9 @@ public class CopyDocumentStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COPY DOCUMENT");
-    if (profilingEnabled) {
+    if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
-    }
+
     return result.toString();
   }
 

@@ -39,7 +39,7 @@ import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +48,9 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class ServerProfilingIT {
   private static       ArcadeDBServer SERVER;
@@ -351,13 +354,13 @@ public class ServerProfilingIT {
 
       final ServerSecurityUser elon = setCurrentUser("elon", database);
       checkElonUser(elon);
-      Assertions.assertTrue(elon.getAuthorizedDatabases().contains(database.getName()));
+      assertThat(elon.getAuthorizedDatabases().contains(database.getName())).isTrue();
 
       createSchemaNotAllowed(database);
 
       // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
       final ServerSecurityUser root = setCurrentUser("root", database);
-      Assertions.assertTrue(root.getAuthorizedDatabases().contains("*"));
+      assertThat(root.getAuthorizedDatabases().contains("*")).isTrue();
 
       createSchema(database);
 
@@ -417,7 +420,7 @@ public class ServerProfilingIT {
         ++count;
       }
 
-      Assertions.assertEquals(10, count);
+      assertThat(count).isEqualTo(10);
 
       count = 0;
       for (final ResultSet iter = database.query("sql", "select from Document1"); iter.hasNext(); ) {
@@ -425,7 +428,7 @@ public class ServerProfilingIT {
         ++count;
       }
 
-      Assertions.assertEquals(10, count);
+      assertThat(count).isEqualTo(10);
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);
@@ -469,7 +472,7 @@ public class ServerProfilingIT {
         for (final Iterator<Record> iter = database.iterateType("Document1", true); iter.hasNext(); ) {
           iter.next();
         }
-        Assertions.fail();
+        fail("");
       } catch (final TimeoutException e) {
         // EXPECTED
       }
@@ -478,7 +481,7 @@ public class ServerProfilingIT {
         for (final ResultSet iter = database.query("sql", "select from Document1"); iter.hasNext(); ) {
           iter.next();
         }
-        Assertions.fail();
+        fail("");
       } catch (final TimeoutException e) {
         // EXPECTED
       }
@@ -495,7 +498,7 @@ public class ServerProfilingIT {
   @Test
   void testGroupsReload() throws Throwable {
     final File file = new File("./target/config/" + SecurityGroupFileRepository.FILE_NAME);
-    Assertions.assertTrue(file.exists());
+    assertThat(file.exists()).isTrue();
 
     final JSONObject json = new JSONObject(FileUtils.readFileAsString(file));
 
@@ -508,7 +511,7 @@ public class ServerProfilingIT {
 
       Thread.sleep(300);
 
-      Assertions.assertTrue(SECURITY.getDatabaseGroupsConfiguration("*").getBoolean("reloaded"));
+      assertThat(SECURITY.getDatabaseGroupsConfiguration("*").getBoolean("reloaded")).isTrue();
     } finally {
       // RESTORE THE ORIGINAL FILE AND WAIT FOR TO RELOAD
       FileUtils.writeContentToStream(file, original);
@@ -535,7 +538,7 @@ public class ServerProfilingIT {
 
       final Thread cfgUpdaterThread = new Thread(() -> {
         final File file = new File("./target/config/" + SecurityGroupFileRepository.FILE_NAME);
-        Assertions.assertTrue(file.exists());
+        assertThat(file.exists()).isTrue();
 
         try {
           for (int i = 0; i < CYCLES; i++) {
@@ -543,14 +546,14 @@ public class ServerProfilingIT {
             json.getJSONObject("databases").getJSONObject("*").getJSONObject("groups").put("reloaded", i);
             FileUtils.writeContentToStream(file, json.toString(2).getBytes());
             Thread.sleep(150);
-            Assertions.assertEquals(i, SECURITY.getDatabaseGroupsConfiguration("*").getInt("reloaded"));
+            assertThat(SECURITY.getDatabaseGroupsConfiguration("*").getInt("reloaded")).isEqualTo(i);
 
             semaphore.countDown();
           }
 
         } catch (Exception e) {
           e.printStackTrace();
-          Assertions.fail(e);
+          fail("", e);
         }
       });
 
@@ -562,7 +565,7 @@ public class ServerProfilingIT {
 
       cfgUpdaterThread.join();
 
-      Assertions.assertEquals(CYCLES - 1, SECURITY.getDatabaseGroupsConfiguration("*").getInt("reloaded"));
+      assertThat(SECURITY.getDatabaseGroupsConfiguration("*").getInt("reloaded")).isEqualTo(CYCLES - 1);
 
       dropSchema(database);
 
@@ -592,29 +595,29 @@ public class ServerProfilingIT {
   private void expectedSecurityException(final CallableNoReturn callback) throws Throwable {
     try {
       callback.call();
-      Assertions.fail();
+      fail("");
     } catch (final SecurityException e) {
       // EXPECTED
     }
   }
 
   private void checkElonUser(final ServerSecurityUser elon) {
-    Assertions.assertNotNull(elon);
+    assertThat(elon).isNotNull();
     final ServerSecurityUser authElon = SECURITY.authenticate("elon", "musk", null);
-    Assertions.assertNotNull(authElon);
-    Assertions.assertEquals(elon.getName(), authElon.getName());
+    assertThat(authElon).isNotNull();
+    assertThat(authElon.getName()).isEqualTo(elon.getName());
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target/config");
-    Assertions.assertEquals(2, repository.getUsers().size());
-    Assertions.assertEquals("elon", repository.getUsers().get(1).getString("name"));
+    assertThat(repository.getUsers().size()).isEqualTo(2);
+    assertThat(repository.getUsers().get(1).getString("name")).isEqualTo("elon");
   }
 
   private ServerSecurityUser setCurrentUser(final String userName, final DatabaseInternal database) {
     final ServerSecurityUser user = SECURITY.getUser(userName);
     final SecurityDatabaseUser dbUser = user.getDatabaseUser(database);
     DatabaseContext.INSTANCE.init(database).setCurrentUser(dbUser);
-    Assertions.assertEquals(dbUser, DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).getCurrentUser());
-    Assertions.assertEquals(userName, dbUser.getName());
+    assertThat(DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).getCurrentUser()).isEqualTo(dbUser);
+    assertThat(dbUser.getName()).isEqualTo(userName);
     return user;
   }
 

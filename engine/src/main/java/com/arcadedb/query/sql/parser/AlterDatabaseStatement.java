@@ -107,7 +107,7 @@ public class AlterDatabaseStatement extends DDLStatement {
       }
     }
 
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "alter database");
     result.setProperty("attribute", settingNameAsString);
     result.setProperty("oldValue", oldValue);

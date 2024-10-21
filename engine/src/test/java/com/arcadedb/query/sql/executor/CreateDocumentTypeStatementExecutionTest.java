@@ -21,8 +21,11 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -35,7 +38,7 @@ public class CreateDocumentTypeStatementExecutionTest {
       final ResultSet result = db.command("sql", "create document type " + className);
       final Schema schema = db.getSchema();
       final DocumentType clazz = schema.getType(className);
-      Assertions.assertNotNull(clazz);
+      assertThat(clazz).isNotNull();
       result.close();
     });
   }
@@ -47,8 +50,8 @@ public class CreateDocumentTypeStatementExecutionTest {
       final ResultSet result = db.command("sql", "create document type " + className + " buckets 32");
       final Schema schema = db.getSchema();
       final DocumentType clazz = schema.getType(className);
-      Assertions.assertNotNull(clazz);
-      Assertions.assertEquals(32, clazz.getBuckets(false).size());
+      assertThat(clazz).isNotNull();
+      assertThat(clazz.getBuckets(false)).hasSize(32);
       result.close();
     });
   }
@@ -60,12 +63,12 @@ public class CreateDocumentTypeStatementExecutionTest {
       ResultSet result = db.command("sql", "create document type " + className + " if not exists");
       final Schema schema = db.getSchema();
       DocumentType clazz = schema.getType(className);
-      Assertions.assertNotNull(clazz);
+      assertThat(clazz).isNotNull();
       result.close();
 
       result = db.command("sql", "create document type " + className + " if not exists");
       clazz = schema.getType(className);
-      Assertions.assertNotNull(clazz);
+      assertThat(clazz).isNotNull();
       result.close();
     });
   }

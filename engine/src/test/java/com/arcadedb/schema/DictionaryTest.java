@@ -25,16 +25,20 @@ import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Iterator;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class DictionaryTest extends TestHelper {
   @Test
   public void updateName() {
     database.transaction(() -> {
-      Assertions.assertFalse(database.getSchema().existsType("V"));
+      Assertions.assertThat(database.getSchema().existsType("V")).isFalse();
 
       final DocumentType type = database.getSchema().buildDocumentType().withName("V").withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
@@ -49,10 +53,10 @@ public class DictionaryTest extends TestHelper {
       }
     });
 
-    Assertions.assertEquals(4, database.getSchema().getDictionary().getDictionaryMap().size());
+    assertThat(database.getSchema().getDictionary().getDictionaryMap().size()).isEqualTo(4);
 
     database.transaction(() -> {
-      Assertions.assertTrue(database.getSchema().existsType("V"));
+      Assertions.assertThat(database.getSchema().existsType("V")).isTrue();
 
       final MutableDocument v = database.newDocument("V");
       v.set("id", 10);
@@ -62,14 +66,14 @@ public class DictionaryTest extends TestHelper {
       v.save();
     });
 
-    Assertions.assertEquals(5, database.getSchema().getDictionary().getDictionaryMap().size());
+    assertThat(database.getSchema().getDictionary().getDictionaryMap().size()).isEqualTo(5);
 
     database.transaction(() -> {
-      Assertions.assertTrue(database.getSchema().existsType("V"));
+      Assertions.assertThat(database.getSchema().existsType("V")).isTrue();
       database.getSchema().getDictionary().updateName("name", "firstName");
     });
 
-    Assertions.assertEquals(5, database.getSchema().getDictionary().getDictionaryMap().size());
+    assertThat(database.getSchema().getDictionary().getDictionaryMap().size()).isEqualTo(5);
 
     database.transaction(() -> {
       final ResultSet iter = database.query("sql", "select from V order by id asc");
@@ -78,29 +82,29 @@ public class DictionaryTest extends TestHelper {
       while (iter.hasNext()) {
         final Document d = (Document) iter.next().getRecord().get();
 
-        Assertions.assertEquals(i, d.getInteger("id"));
-        Assertions.assertEquals("Jay", d.getString("firstName"));
-        Assertions.assertEquals("Miner", d.getString("surname"));
+        Assertions.assertThat(d.getInteger("id")).isEqualTo(i);
+        Assertions.assertThat(d.getString("firstName")).isEqualTo("Jay");
+        Assertions.assertThat(d.getString("surname")).isEqualTo("Miner");
 
         if (i == 10)
-          Assertions.assertEquals("newProperty", d.getString("newProperty"));
+          Assertions.assertThat(d.getString("newProperty")).isEqualTo("newProperty");
         else
-          Assertions.assertNull(d.getString("newProperty"));
+          Assertions.assertThat(d.getString("newProperty")).isNull();
 
-        Assertions.assertNull(d.getString("name"));
+        Assertions.assertThat(d.getString("name")).isNull();
 
         ++i;
       }
 
-      Assertions.assertEquals(11, i);
+      Assertions.assertThat(i).isEqualTo(11);
     });
 
     try {
       database.transaction(() -> {
-        Assertions.assertTrue(database.getSchema().existsType("V"));
+        Assertions.assertThat(database.getSchema().existsType("V")).isTrue();
         database.getSchema().getDictionary().updateName("V", "V2");
       });
-      Assertions.fail();
+      fail("");
     } catch (final Exception e) {
     }
   }
@@ -123,13 +127,13 @@ public class DictionaryTest extends TestHelper {
 
     for (final Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
       final Vertex v = iterator.next().asVertex();
-      Assertions.assertEquals(11, v.getPropertyNames().size());
+      assertThat(v.getPropertyNames().size()).isEqualTo(11);
 
       final int origin = v.getInteger("origin");
 
       for (int k = 0; k < 10; k++) {
         final Integer value = v.getInteger("p" + ((origin * 10) + k));
-        Assertions.assertEquals((origin * 10) + k, value);
+        assertThat(value).isEqualTo((origin * 10) + k);
       }
     }
   }
@@ -156,13 +160,13 @@ public class DictionaryTest extends TestHelper {
 
     for (final Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
       final Vertex v = iterator.next().asVertex();
-      Assertions.assertEquals(11, v.getPropertyNames().size());
+      assertThat(v.getPropertyNames().size()).isEqualTo(11);
 
       final int origin = v.getInteger("origin");
 
       for (int k = 0; k < 10; k++) {
         final Integer value = v.getInteger("p" + ((origin * 10) + k));
-        Assertions.assertEquals((origin * 10) + k, value);
+        assertThat(value).isEqualTo((origin * 10) + k);
       }
     }
   }
@@ -189,13 +193,13 @@ public class DictionaryTest extends TestHelper {
 
     for (final Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
       final Vertex v = iterator.next().asVertex();
-      Assertions.assertEquals(11, v.getPropertyNames().size());
+      assertThat(v.getPropertyNames().size()).isEqualTo(11);
 
       final int origin = v.getInteger("origin");
 
       for (int k = 0; k < 10; k++) {
         final Integer value = v.getInteger("p" + ((origin * 10) + k));
-        Assertions.assertEquals((origin * 10) + k, value);
+        assertThat(value).isEqualTo((origin * 10) + k);
       }
     }
   }
@@ -224,13 +228,13 @@ public class DictionaryTest extends TestHelper {
 
     for (final Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
       final Vertex v = iterator.next().asVertex();
-      Assertions.assertEquals(11, v.getPropertyNames().size());
+      assertThat(v.getPropertyNames().size()).isEqualTo(11);
 
       final int origin = v.getInteger("origin");
 
       for (int k = 0; k < 10; k++) {
         final Integer value = v.getInteger("p" + ((origin * 10) + k));
-        Assertions.assertEquals((origin * 10) + k, value);
+        assertThat(value).isEqualTo((origin * 10) + k);
       }
     }
   }

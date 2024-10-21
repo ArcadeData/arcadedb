@@ -32,17 +32,16 @@ import java.util.*;
  * Created by luigidellaquila on 19/09/16.
  */
 public class ForEachStep extends AbstractExecutionStep {
-  private final Identifier      loopVariable;
-  private final Expression      source;
-  public final  List<Statement> body;
-
-  Iterator iterator;
-  private ExecutionStepInternal finalResult = null;
-  private boolean               initiated   = false;
+  private final Identifier            loopVariable;
+  private final Expression            source;
+  public final  List<Statement>       body;
+  private       Iterator              iterator;
+  private       ExecutionStepInternal finalResult = null;
+  private       boolean               initiated   = false;
 
   public ForEachStep(final Identifier loopVariable, final Expression oExpression, final List<Statement> statements,
-      final CommandContext context, final boolean enableProfiling) {
-    super(context, enableProfiling);
+      final CommandContext context) {
+    super(context);
     this.loopVariable = loopVariable;
     this.source = oExpression;
     this.body = statements;
@@ -61,19 +60,21 @@ public class ForEachStep extends AbstractExecutionStep {
       context.setVariable(loopVariable.getStringValue(), iterator.next());
       final ScriptExecutionPlan plan = initPlan(context);
       final ExecutionStepInternal result = plan.executeFull();
+
       if (result != null) {
         this.finalResult = result;
         return result.syncPull(context, nRecords);
       }
     }
-    finalResult = new EmptyStep(context, false);
-    return finalResult.syncPull(context, nRecords);
+    context.setVariable(loopVariable.getStringValue(), null);
 
+    finalResult = new EmptyStep(context);
+    return finalResult.syncPull(context, nRecords);
   }
 
   protected void init(final CommandContext context) {
     if (!this.initiated) {
-      final Object val = source.execute(new ResultInternal(), context);
+      final Object val = source.execute(new ResultInternal(context.getDatabase()), context);
       this.iterator = MultiValue.getMultiValueIterator(val);
       this.initiated = true;
     }
@@ -84,7 +85,7 @@ public class ForEachStep extends AbstractExecutionStep {
     subCtx1.setParent(context);
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
     for (final Statement stm : body)
-      plan.chain(stm.createExecutionPlan(subCtx1, profilingEnabled), profilingEnabled);
+      plan.chain(stm.createExecutionPlan(subCtx1));
 
     return plan;
   }

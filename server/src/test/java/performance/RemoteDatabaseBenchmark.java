@@ -25,10 +25,11 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.Assertions;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
   private static final int TOTAL              = 10_000;
@@ -107,11 +108,11 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
       last = allIds.get(i);
     }
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, allIds.size());
+    assertThat(allIds.size()).isEqualTo(TOTAL * CONCURRENT_THREADS);
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, totalRecordsOnClusters);
+    assertThat(totalRecordsOnClusters).isEqualTo(TOTAL * CONCURRENT_THREADS);
 
-    Assertions.assertEquals(TOTAL * CONCURRENT_THREADS, database.countType("User", true));
+    assertThat(database.countType("User", true)).isEqualTo(TOTAL * CONCURRENT_THREADS);
 
     database.close();
   }

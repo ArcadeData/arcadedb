@@ -40,9 +40,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   private int nextItem = 0;
 
-  public AggregateProjectionCalculationStep(final Projection projection, final GroupBy groupBy, final long limit, final CommandContext context,
-      final long timeoutMillis, final boolean profilingEnabled) {
-    super(projection, context, profilingEnabled);
+  public AggregateProjectionCalculationStep(final Projection projection, final GroupBy groupBy, final long limit,
+      final CommandContext context,
+      final long timeoutMillis) {
+    super(projection, context);
     this.groupBy = groupBy;
     this.timeoutMillis = timeoutMillis;
     this.limit = limit;
@@ -78,7 +79,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private void executeAggregation(final CommandContext context, final int nRecords) {
     final long timeoutBegin = System.currentTimeMillis();
 
-    final ExecutionStepInternal prevStep = checkForPrevious("Cannot execute an aggregation or a GROUP BY without a previous result");
+    final ExecutionStepInternal prevStep = checkForPrevious(
+        "Cannot execute an aggregation or a GROUP BY without a previous result");
     ResultSet lastRs = prevStep.syncPull(context, nRecords);
     while (lastRs.hasNext()) {
       if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
@@ -105,7 +107,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   }
 
   private void aggregate(final Result next, final CommandContext context) {
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       final List<Object> key = new ArrayList<>();
       if (groupBy != null) {
@@ -116,16 +118,15 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       }
       ResultInternal preAggr = aggregateResults.get(key);
       if (preAggr == null) {
-        if (limit > 0 && aggregateResults.size() > limit) {
+        if (limit > 0 && aggregateResults.size() > limit)
           return;
-        }
-        preAggr = new ResultInternal();
+
+        preAggr = new ResultInternal(context.getDatabase());
 
         for (final ProjectionItem proj : this.projection.getItems()) {
           final String alias = proj.getProjectionAlias().getStringValue();
-          if (!proj.isAggregate(context)) {
+          if (!proj.isAggregate(context))
             preAggr.setProperty(alias, proj.execute(next, context));
-          }
         }
         aggregateResults.put(key, preAggr);
       }
@@ -142,9 +143,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         }
       }
     } finally {
-      if (profilingEnabled) {
+      if (context.isProfiling())
         cost += (System.nanoTime() - begin);
-      }
     }
   }
 
@@ -152,11 +152,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE AGGREGATE PROJECTIONS";
-    if (profilingEnabled) {
+    if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
-    }
+
     result += "\n" + spaces + "      " + projection.toString() + "" + (groupBy == null ? "" : (spaces + "\n  " + groupBy));
     return result;
   }
-
 }

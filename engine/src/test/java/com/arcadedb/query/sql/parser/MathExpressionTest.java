@@ -19,11 +19,12 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.Result;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Created by luigidellaquila on 02/07/15.
@@ -39,28 +40,28 @@ public class MathExpressionTest {
         MathExpression.Operator.STAR, MathExpression.Operator.SLASH, MathExpression.Operator.REM };
 
     for (final MathExpression.Operator op : basicOps) {
-      Assertions.assertEquals(op.apply(1, 1).getClass(), Integer.class);
+      assertThat(op.apply(1, 1).getClass()).isEqualTo(Integer.class);
 
-      Assertions.assertEquals(op.apply((short) 1, (short) 1).getClass(), Integer.class);
+      assertThat(op.apply((short) 1, (short) 1).getClass()).isEqualTo(Integer.class);
 
-      Assertions.assertEquals(op.apply(1l, 1l).getClass(), Long.class);
-      Assertions.assertEquals(op.apply(1f, 1f).getClass(), Float.class);
-      Assertions.assertEquals(op.apply(1d, 1d).getClass(), Double.class);
-      Assertions.assertEquals(op.apply(BigDecimal.ONE, BigDecimal.ONE).getClass(), BigDecimal.class);
+      assertThat(op.apply(1l, 1l).getClass()).isEqualTo(Long.class);
+      assertThat(op.apply(1f, 1f).getClass()).isEqualTo(Float.class);
+      assertThat(op.apply(1d, 1d).getClass()).isEqualTo(Double.class);
+      assertThat(op.apply(BigDecimal.ONE, BigDecimal.ONE).getClass()).isEqualTo(BigDecimal.class);
 
-      Assertions.assertEquals(op.apply(1l, 1).getClass(), Long.class);
-      Assertions.assertEquals(op.apply(1f, 1).getClass(), Float.class);
-      Assertions.assertEquals(op.apply(1d, 1).getClass(), Double.class);
-      Assertions.assertEquals(op.apply(BigDecimal.ONE, 1).getClass(), BigDecimal.class);
+      assertThat(op.apply(1l, 1).getClass()).isEqualTo(Long.class);
+      assertThat(op.apply(1f, 1).getClass()).isEqualTo(Float.class);
+      assertThat(op.apply(1d, 1).getClass()).isEqualTo(Double.class);
+      assertThat(op.apply(BigDecimal.ONE, 1).getClass()).isEqualTo(BigDecimal.class);
 
-      Assertions.assertEquals(op.apply(1, 1l).getClass(), Long.class);
-      Assertions.assertEquals(op.apply(1, 1f).getClass(), Float.class);
-      Assertions.assertEquals(op.apply(1, 1d).getClass(), Double.class);
-      Assertions.assertEquals(op.apply(1, BigDecimal.ONE).getClass(), BigDecimal.class);
+      assertThat(op.apply(1, 1l).getClass()).isEqualTo(Long.class);
+      assertThat(op.apply(1, 1f).getClass()).isEqualTo(Float.class);
+      assertThat(op.apply(1, 1d).getClass()).isEqualTo(Double.class);
+      assertThat(op.apply(1, BigDecimal.ONE).getClass()).isEqualTo(BigDecimal.class);
     }
 
-    Assertions.assertEquals(MathExpression.Operator.PLUS.apply(Integer.MAX_VALUE, 1).getClass(), Long.class);
-    Assertions.assertEquals(MathExpression.Operator.MINUS.apply(Integer.MIN_VALUE, 1).getClass(), Long.class);
+    assertThat(MathExpression.Operator.PLUS.apply(Integer.MAX_VALUE, 1).getClass()).isEqualTo(Long.class);
+    assertThat(MathExpression.Operator.MINUS.apply(Integer.MIN_VALUE, 1).getClass()).isEqualTo(Long.class);
   }
 
   @Test
@@ -79,8 +80,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(1));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(208, result);
+    assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(208);
   }
 
   @Test
@@ -105,8 +106,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(1));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(16, result);
+    assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(16);
   }
 
   @Test
@@ -119,8 +120,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(1));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(2, result);
+    assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(2);
   }
 
   @Test
@@ -133,8 +134,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(1));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(3, result);
+    assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(3);
   }
 
   @Test
@@ -145,8 +146,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(1));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(1, result);
+    assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(1);
   }
 
   @Test
@@ -157,8 +158,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(4));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(4, result);
+    assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(4);
   }
 
   @Test
@@ -169,8 +170,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(4));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(5, result);
+    assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(5);
   }
 
   @Test
@@ -181,7 +182,7 @@ public class MathExpressionTest {
     exp.childExpressions.add(nullValue());
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertNull(result);
+    assertThat(result).isNull();
   }
 
   @Test
@@ -192,8 +193,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(1));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(5, result);
+    assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(5);
   }
 
   @Test
@@ -213,8 +214,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(integer(5));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof List<?>);
-    Assertions.assertEquals(5, ((List<Object>) result).get(3));
+    assertThat(result instanceof List<?>).isTrue();
+    assertThat(((List<Object>) result).get(3)).isEqualTo(5);
   }
 
   @Test
@@ -225,8 +226,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(str("test"));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof List<?>);
-    Assertions.assertEquals("test", ((List<Object>) result).get(3));
+    assertThat(result instanceof List<?>).isTrue();
+    assertThat(((List<Object>) result).get(3)).isEqualTo("test");
   }
 
   @Test
@@ -237,9 +238,9 @@ public class MathExpressionTest {
     exp.childExpressions.add(str("a"));
 
     final Object result = exp.execute((Result) null, null);
-    Assertions.assertTrue(result instanceof List<?>);
-    Assertions.assertEquals(3, ((List<?>) result).size());
-    Assertions.assertFalse(((List<Object>) result).contains("a"));
+    assertThat(result instanceof List<?>).isTrue();
+    assertThat(((List<?>) result).size()).isEqualTo(3);
+    assertThat(((List<Object>) result).contains("a")).isFalse();
   }
 
   private void testNullCoalescingGeneric(final MathExpression left, final MathExpression right, final Object expected) {
@@ -249,8 +250,8 @@ public class MathExpressionTest {
     exp.childExpressions.add(right);
 
     final Object result = exp.execute((Result) null, null);
-    //    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(expected, result);
+    //    Assertions.assertThat(result instanceof Integer).isTrue();
+    assertThat(result).isEqualTo(expected);
   }
 
   private MathExpression integer(final Number i) {

@@ -29,8 +29,8 @@ public class TimeoutStep extends AbstractExecutionStep {
 
   private Long expiryTime;
 
-  public TimeoutStep(final Timeout timeout, final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public TimeoutStep(final Timeout timeout, final CommandContext context) {
+    super(context);
     this.timeout = timeout;
   }
 
@@ -57,6 +57,6 @@ public class TimeoutStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new TimeoutStep(this.timeout.copy(), context, profilingEnabled);
+    return new TimeoutStep(this.timeout.copy(), context);
   }
 }

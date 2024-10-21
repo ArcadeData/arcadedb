@@ -22,11 +22,12 @@ package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.SQLMethod;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodExcludeTest {
 
@@ -44,10 +45,10 @@ class SQLMethodExcludeTest {
     resultInternal.setProperty("name", "Foo");
     resultInternal.setProperty("surname", "Bar");
 
-    final Object result = method.execute(resultInternal, null, null, null, new Object[] { "name" });
-    Assertions.assertNotNull(result);
-    Assertions.assertTrue(((Map) result).containsKey("surname"));
-    Assertions.assertFalse(((Map) result).containsKey("name"));
-    Assertions.assertEquals("Bar", ((Map) result).get("surname"));
+    final Object result = method.execute(resultInternal, null, null, new Object[] { "name" });
+    assertThat(result).isNotNull();
+    assertThat(((Map) result).containsKey("surname")).isTrue();
+    assertThat(((Map) result).containsKey("name")).isFalse();
+    assertThat(((Map) result).get("surname")).isEqualTo("Bar");
   }
 }

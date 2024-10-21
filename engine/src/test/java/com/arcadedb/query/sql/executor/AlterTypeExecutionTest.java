@@ -23,10 +23,11 @@ import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.stream.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -36,40 +37,40 @@ public class AlterTypeExecutionTest extends TestHelper {
   public void sqlAlterTypeInheritanceUsing() {
     database.command("sql", "CREATE VERTEX TYPE Car");
 
-    Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().isEmpty());
+    assertThat(database.getSchema().getType("Car").getSuperTypes().isEmpty()).isTrue();
 
     database.command("sql", "CREATE VERTEX TYPE Vehicle");
     database.command("sql", "ALTER TYPE Car SUPERTYPE +Vehicle");
 
-    Assertions.assertEquals(1, database.getSchema().getType("Car").getSuperTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Vehicle"));
-    Assertions.assertEquals(1, database.getSchema().getType("Vehicle").getSubTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Vehicle").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Car"));
-    Assertions.assertTrue(database.getSchema().getType("Vehicle").isSuperTypeOf("Car"));
+    assertThat(database.getSchema().getType("Car").getSuperTypes().size()).isEqualTo(1);
+    assertThat(database.getSchema().getType("Car").getSuperTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Vehicle")).isTrue();
+    assertThat(database.getSchema().getType("Vehicle").getSubTypes().size()).isEqualTo(1);
+    assertThat(database.getSchema().getType("Vehicle").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Car")).isTrue();
+    assertThat(database.getSchema().getType("Vehicle").isSuperTypeOf("Car")).isTrue();
 
     database.command("sql", "CREATE VERTEX TYPE Suv");
-    Assertions.assertTrue(database.getSchema().getType("Suv").getSuperTypes().isEmpty());
+    assertThat(database.getSchema().getType("Suv").getSuperTypes().isEmpty()).isTrue();
 
     database.command("sql", "ALTER TYPE Suv SUPERTYPE +Car");
-    Assertions.assertEquals(1, database.getSchema().getType("Suv").getSuperTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
-    Assertions.assertEquals(1, database.getSchema().getType("Car").getSubTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv"));
-    Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
+    assertThat(database.getSchema().getType("Suv").getSuperTypes().size()).isEqualTo(1);
+    assertThat(database.getSchema().getType("Car").isSuperTypeOf("Suv")).isTrue();
+    assertThat(database.getSchema().getType("Car").getSubTypes().size()).isEqualTo(1);
+    assertThat(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv")).isTrue();
+    assertThat(database.getSchema().getType("Car").isSuperTypeOf("Suv")).isTrue();
 
     database.command("sql", "ALTER TYPE Car SUPERTYPE -Vehicle");
-    Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().isEmpty());
-    Assertions.assertTrue(database.getSchema().getType("Vehicle").getSubTypes().isEmpty());
+    assertThat(database.getSchema().getType("Car").getSuperTypes().isEmpty()).isTrue();
+    assertThat(database.getSchema().getType("Vehicle").getSubTypes().isEmpty()).isTrue();
 
     database.command("sql", "ALTER TYPE Suv SUPERTYPE +Vehicle, +Car");
-    Assertions.assertEquals(2, database.getSchema().getType("Suv").getSuperTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
-    Assertions.assertTrue(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv"));
-    Assertions.assertEquals(1, database.getSchema().getType("Car").getSubTypes().size());
-    Assertions.assertEquals(1, database.getSchema().getType("Vehicle").getSubTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv"));
-    Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
-    Assertions.assertTrue(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv"));
+    assertThat(database.getSchema().getType("Suv").getSuperTypes().size()).isEqualTo(2);
+    assertThat(database.getSchema().getType("Car").isSuperTypeOf("Suv")).isTrue();
+    assertThat(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv")).isTrue();
+    assertThat(database.getSchema().getType("Car").getSubTypes().size()).isEqualTo(1);
+    assertThat(database.getSchema().getType("Vehicle").getSubTypes().size()).isEqualTo(1);
+    assertThat(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv")).isTrue();
+    assertThat(database.getSchema().getType("Car").isSuperTypeOf("Suv")).isTrue();
+    assertThat(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv")).isTrue();
   }
 
   @Test
@@ -80,8 +81,8 @@ public class AlterTypeExecutionTest extends TestHelper {
     database.command("sql", "ALTER TYPE Account BucketSelectionStrategy `partitioned('id')`");
 
     final BucketSelectionStrategy strategy = database.getSchema().getType("Account").getBucketSelectionStrategy();
-    Assertions.assertEquals("partitioned", strategy.getName());
-    Assertions.assertEquals("id", ((PartitionedBucketSelectionStrategy) strategy).getProperties().get(0));
+    assertThat(strategy.getName()).isEqualTo("partitioned");
+    assertThat(((PartitionedBucketSelectionStrategy) strategy).getProperties().get(0)).isEqualTo("id");
   }
 
   @Test
@@ -89,19 +90,19 @@ public class AlterTypeExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE Suv");
 
     database.command("sql", "ALTER TYPE Suv CUSTOM description = 'test'");
-    Assertions.assertEquals("test", database.getSchema().getType("Suv").getCustomValue("description"));
+    assertThat(database.getSchema().getType("Suv").getCustomValue("description")).isEqualTo("test");
 
     database.command("sql", "ALTER TYPE Suv CUSTOM age = 3");
-    Assertions.assertEquals(3, database.getSchema().getType("Suv").getCustomValue("age"));
+    assertThat(database.getSchema().getType("Suv").getCustomValue("age")).isEqualTo(3);
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
     final JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("custom");
-    Assertions.assertEquals("test", customMap.getString("description"));
-    Assertions.assertEquals(3, customMap.getInt("age"));
+    assertThat(customMap.getString("description")).isEqualTo("test");
+    assertThat(customMap.getInt("age")).isEqualTo(3);
 
     database.command("sql", "ALTER TYPE Suv CUSTOM age = null");
-    Assertions.assertNull(database.getSchema().getType("Suv").getCustomValue("age"));
-    Assertions.assertFalse(database.getSchema().getType("Suv").getCustomKeys().contains("age"));
+    assertThat(database.getSchema().getType("Suv").getCustomValue("age")).isNull();
+    assertThat(database.getSchema().getType("Suv").getCustomKeys().contains("age")).isFalse();
   }
 
   @Test

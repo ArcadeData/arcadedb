@@ -29,12 +29,15 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * This test stresses the index compaction by forcing using only 1MB of RAM for compaction causing multiple page compacted index.
@@ -110,7 +113,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       checkRanges(1, 3);
 
     } catch (final InterruptedException e) {
-      Assertions.fail(e);
+      fail("", e);
     } finally {
       GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(300);
       GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(10);
@@ -125,7 +128,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
             ((IndexInternal) index).scheduleCompaction();
             ((IndexInternal) index).compact();
           } catch (final Exception e) {
-            Assertions.fail(e);
+            fail("", e);
           }
       }
   }
@@ -161,7 +164,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         public void call(final Throwable exception) {
           LogManager.instance().log(this, Level.SEVERE, "TEST: ERROR: ", exception);
           exception.printStackTrace();
-          Assertions.fail(exception);
+          fail(exception);
         }
       });
 
@@ -209,7 +212,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   }
 
   private void checkLookups(final int step, final int expectedItemsPerSameKey) {
-    database.transaction(() -> Assertions.assertEquals(TOT * expectedItemsPerSameKey, database.countType(TYPE_NAME, false)));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME,false)).isEqualTo(TOT * expectedItemsPerSameKey));
 
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup all the keys...");
 
@@ -220,20 +223,20 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
     for (long id = 0; id < TOT; id += step) {
       try {
         final IndexCursor records = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { id });
-        Assertions.assertNotNull(records);
+        assertThat(Optional.ofNullable(records)).isNotNull();
 
         int count = 0;
         for (final Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
           final Identifiable rid = it.next();
           final Document record = (Document) rid.getRecord();
-          Assertions.assertEquals("" + id, record.get("id"));
+          assertThat(record.get("id")).isEqualTo("" + id);
           ++count;
         }
 
         if (count != expectedItemsPerSameKey)
           LogManager.instance().log(this, Level.FINE, "Cannot find key '%s'", null, id);
 
-        Assertions.assertEquals(expectedItemsPerSameKey, count, "Wrong result for lookup of key " + id);
+        assertThat(count).as("Wrong result for lookup of key " + id).isEqualTo(expectedItemsPerSameKey);
 
         checked++;
 
@@ -245,14 +248,14 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           begin = System.currentTimeMillis();
         }
       } catch (final Exception e) {
-        Assertions.fail("Error on lookup key " + id, e);
+        fail("Error on lookup key " + id, e);
       }
     }
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
   }
 
   private void checkRanges(final int step, final int expectedItemsPerSameKey) {
-    database.transaction(() -> Assertions.assertEquals(TOT * expectedItemsPerSameKey, database.countType(TYPE_NAME, false)));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME,false)).isEqualTo(TOT * expectedItemsPerSameKey));
 
     LogManager.instance().log(this, Level.FINE, "TEST: Range pair of keys...");
 
@@ -265,14 +268,14 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
     for (long number = 0; number < TOT - 1; number += step) {
       try {
         final IndexCursor records = ((RangeIndex) index).range(true, new Object[] { number }, true, new Object[] { number + 1 }, true);
-        Assertions.assertNotNull(records);
+        assertThat(Optional.ofNullable(records)).isNotNull();
 
         int count = 0;
         for (final Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
           for (int i = 0; i < expectedItemsPerSameKey; i++) {
             final Identifiable rid = it.next();
             final Document record = (Document) rid.getRecord();
-            Assertions.assertEquals(number + count, record.getLong("number"));
+            assertThat(record.getLong("number")).isEqualTo(number + count);
           }
           ++count;
         }
@@ -280,7 +283,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         if (count != 2)
           LogManager.instance().log(this, Level.FINE, "Cannot find key '%s'", null, number);
 
-        Assertions.assertEquals(2, count, "Wrong result for lookup of key " + number);
+        assertThat(count).as("Wrong result for lookup of key " + number).isEqualTo(2);
 
         checked++;
 
@@ -292,7 +295,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           begin = System.currentTimeMillis();
         }
       } catch (final Exception e) {
-        Assertions.fail("Error on lookup key " + number, e);
+        fail("Error on lookup key " + number, e);
       }
     }
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");

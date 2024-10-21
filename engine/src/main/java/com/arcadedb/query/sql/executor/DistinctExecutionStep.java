@@ -36,8 +36,8 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   Result    nextValue;
   private final long maxElementsAllowed;
 
-  public DistinctExecutionStep(final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public DistinctExecutionStep(final CommandContext context) {
+    super(context);
     final Database db = context == null ? null : context.getDatabase();
     maxElementsAllowed = db == null ?
         GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
@@ -93,7 +93,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
       if (lastResult == null || !lastResult.hasNext()) {
         return;
       }
-      final long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         nextValue = lastResult.next();
         if (alreadyVisited(nextValue)) {
@@ -102,7 +102,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
           markAsVisited(nextValue);
         }
       } finally {
-        if (profilingEnabled) {
+        if (context.isProfiling()) {
           cost += (System.nanoTime() - begin);
         }
       }
@@ -154,9 +154,8 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ DISTINCT";
-    if (profilingEnabled) {
+    if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
-    }
     return result;
   }
 

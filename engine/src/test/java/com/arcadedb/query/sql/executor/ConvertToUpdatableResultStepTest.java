@@ -22,10 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
-import org.junit.jupiter.api.Assertions;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
 
 public class ConvertToUpdatableResultStepTest {
 
@@ -39,8 +42,8 @@ public class ConvertToUpdatableResultStepTest {
       final String type = TestHelper.createRandomType(database).getName();
 
       final CommandContext context = new BasicCommandContext();
-      final ConvertToUpdatableResultStep step = new ConvertToUpdatableResultStep(context, false);
-      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final ConvertToUpdatableResultStep step = new ConvertToUpdatableResultStep(context);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
         boolean done = false;
 
         @Override
@@ -69,13 +72,13 @@ public class ConvertToUpdatableResultStepTest {
       while (result.hasNext()) {
         final Result currentItem = result.next();
         if (!(currentItem.getClass().equals(UpdatableResult.class))) {
-          Assertions.fail("There is an item in result set that is not an instance of OUpdatableResult");
+          fail("There is an item in result set that is not an instance of OUpdatableResult");
         }
         if (!currentItem.getElement().get().get(STRING_PROPERTY).equals(documents.get(counter).get(STRING_PROPERTY))) {
-          Assertions.fail("String Document property inside Result instance is not preserved");
+          fail("String Document property inside Result instance is not preserved");
         }
         if (!currentItem.getElement().get().get(INTEGER_PROPERTY).equals(documents.get(counter).get(INTEGER_PROPERTY))) {
-          Assertions.fail("Integer Document property inside Result instance is not preserved");
+          fail("Integer Document property inside Result instance is not preserved");
         }
         counter++;
       }

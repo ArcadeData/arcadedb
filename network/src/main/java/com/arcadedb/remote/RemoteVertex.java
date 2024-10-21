@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.MutableEdge;
@@ -115,14 +116,46 @@ public class RemoteVertex {
     return resultSet.hasNext();
   }
 
+  public RID moveTo(final String targetType, final String targetBucket) {
+    final StringBuilder command = new StringBuilder(
+        "move vertex ").append(vertex.getIdentity()).append(" to");
+
+    if (targetType != null)
+      command.append(" TYPE:`").append(targetType).append("`");
+    if (targetBucket != null)
+      command.append(" `").append(targetBucket).append("`");
+
+    final ResultSet resultSet = remoteDatabase.command("sql", command.toString());
+
+    return resultSet.nextIfAvailable().getVertex().get().getIdentity();
+  }
+
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
-      final Object... properties) {
+      Object... properties) {
     if (!bidirectional)
       throw new UnsupportedOperationException("Creating unidirectional edges is not supported from remote database");
 
-    StringBuilder query = new StringBuilder("create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
-    if (properties.length > 0) {
+    StringBuilder query = new StringBuilder(
+        "create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
+    if (properties != null && properties.length > 0) {
       query.append(" set ");
+
+      if (properties.length == 1 && properties[0] instanceof Map) {
+        // GET PROPERTIES FROM THE MAP
+        final Map<String, Object> map = (Map<String, Object>) properties[0];
+
+        properties = new Object[map.size() * 2];
+        int i = 0;
+        for (final Map.Entry<String, Object> entry : map.entrySet()) {
+          properties[i++] = entry.getKey();
+          properties[i++] = entry.getValue();
+        }
+
+      } else {
+        if (properties.length % 2 != 0)
+          throw new IllegalArgumentException("Properties must be an even number as pairs of name, value");
+      }
+
       for (int i = 0; i < properties.length; i += 2) {
         final String propName = (String) properties[i];
         final Object propValue = properties[i + 1];
@@ -130,7 +163,9 @@ public class RemoteVertex {
         if (i > 0)
           query.append(", ");
 
-        query.append(propName + " = ");
+        query.append("`");
+        query.append(propName);
+        query.append("` = ");
 
         if (propValue instanceof String)
           query.append("'");

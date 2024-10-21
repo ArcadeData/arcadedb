@@ -60,8 +60,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetBucketName, final String uniqueIndex,
       final Identifier fromAlias, final Identifier toAlias, final boolean unidirectional, final boolean ifNotExists,
-      final CommandContext context, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+      final CommandContext context) {
+    super(context);
     this.targetClass = targetClass;
     this.targetBucket = targetBucketName;
     this.uniqueIndexName = uniqueIndex;
@@ -94,7 +94,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         if (currentTo == null)
           loadNextFromTo();
 
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
 
           if (finished || currentBatch >= nRecords)
@@ -119,7 +119,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           currentBatch++;
           return result;
         } finally {
-          if (profilingEnabled) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -185,7 +185,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   protected void loadNextFromTo() {
-    final long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       edgeToUpdate = null;
       this.currentTo = null;
@@ -223,7 +223,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         this.currentTo = null;
       }
     } finally {
-      if (profilingEnabled) {
+      if( context.isProfiling() ) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -271,7 +271,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
     result +=
         spaces + "       CREATE EDGE " + targetClass + " FROM x TO y " + (unidirectional ? "UNIDIRECTIONAL" : "BIDIRECTIONAL");
-    if (profilingEnabled)
+    if ( context.isProfiling() )
       result += " (" + getCostFormatted() + ")";
 
     if (targetBucket != null)
@@ -289,6 +289,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   public ExecutionStep copy(final CommandContext context) {
     return new CreateEdgesStep(targetClass == null ? null : targetClass.copy(), targetBucket == null ? null : targetBucket.copy(),
         uniqueIndexName, fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), unidirectional,
-        ifNotExists, context, profilingEnabled);
+        ifNotExists, context);
   }
 }

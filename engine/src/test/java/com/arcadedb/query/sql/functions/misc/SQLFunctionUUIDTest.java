@@ -19,13 +19,16 @@
 package com.arcadedb.query.sql.functions.misc;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class SQLFunctionUUIDTest {
 
@@ -39,21 +42,21 @@ public class SQLFunctionUUIDTest {
   @Test
   public void testEmpty() {
     final Object result = uuid.getResult();
-    assertNull(result);
+    assertThat(result).isNull();
   }
 
   @Test
   public void testResult() {
     final String result = (String) uuid.execute(null, null, null, null, null);
-    assertNotNull(result);
+    assertThat(result).isNotNull();
   }
 
   @Test
   public void testQuery() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionUUIDTest", (db) -> {
       final ResultSet result = db.query("sql", "select uuid() as uuid");
-      assertNotNull(result);
-      assertNotNull(result.next().getProperty("uuid"));
+      assertThat((Iterator<? extends Result>) result).isNotNull();
+      assertThat(result.next().<String>getProperty("uuid")).isNotNull();
     });
   }
 }

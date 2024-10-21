@@ -84,6 +84,12 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
         if (validBuckets.contains(nextEdge.getBucketId()))
           return true;
+        else {
+          // FILTER IT OUT
+          nextEdge = null;
+          nextVertex = null;
+          next = null;
+        }
 
       } else {
         // FETCH NEXT CHUNK

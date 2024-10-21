@@ -50,8 +50,8 @@ public class SQLMethodTransform extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
-    if (ioResult == null || iParams == null || iParams.length == 0)
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+    if (value == null || iParams == null || iParams.length == 0)
       return null;
 
     final DefaultSQLMethodFactory methodFactory = ((SQLQueryEngine) iContext.getDatabase().getQueryEngine("SQL")).getMethodFactory();
@@ -62,30 +62,30 @@ public class SQLMethodTransform extends AbstractSQLMethod {
       transformers.add(methodFactory.createMethod(o.toString()));
     }
 
-    if (ioResult instanceof List) {
-      final List<Object> newList = new ArrayList<>(((List) ioResult).size());
-      for (Object o : (List) ioResult) {
+    if (value instanceof List) {
+      final List<Object> newList = new ArrayList<>(((List) value).size());
+      for (Object o : (List) value) {
         Object transformed = o;
 
         for (SQLMethod m : transformers)
-          transformed = m.execute(transformed, null, iContext, transformed, EMPTY_ARGS);
+          transformed = m.execute(transformed, null, iContext, EMPTY_ARGS);
 
         newList.add(transformed);
       }
       return newList;
-    } else if (ioResult instanceof Set) {
-      final Set<Object> newSet = new HashSet<>(((Set) ioResult).size());
-      for (Object o : (Set) ioResult) {
+    } else if (value instanceof Set) {
+      final Set<Object> newSet = new HashSet<>(((Set) value).size());
+      for (Object o : (Set) value) {
         Object transformed = o;
 
         for (SQLMethod m : transformers)
-          transformed = m.execute(transformed, null, iContext, transformed, EMPTY_ARGS);
+          transformed = m.execute(transformed, null, iContext, EMPTY_ARGS);
 
         newSet.add(transformed);
       }
       return newSet;
     }
 
-    return ioResult;
+    return value;
   }
 }

@@ -23,10 +23,11 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ServerImportDatabaseIT extends BaseGraphServerTest {
   public ServerImportDatabaseIT() {
@@ -61,7 +62,7 @@ public class ServerImportDatabaseIT extends BaseGraphServerTest {
   public void checkDefaultDatabases() {
     getServer(0).getSecurity().authenticate("elon", "musk", "Movies");
     final Database database = getServer(0).getDatabase("Movies");
-    Assertions.assertEquals(500, database.countType("Person", true));
+    assertThat(database.countType("Person", true)).isEqualTo(500);
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + "0/Movies"));
   }
 }

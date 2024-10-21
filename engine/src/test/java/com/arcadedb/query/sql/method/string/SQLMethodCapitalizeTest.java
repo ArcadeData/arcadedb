@@ -25,60 +25,52 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodCapitalizeTest {
+  private SQLMethod method;
 
-    private SQLMethod method;
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodCapitalize();
+  }
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodCapitalize();
-    }
+  @Test
+  void testNullReturnedAsNull() {
+    final Object result = method.execute(null, null, null, null);
+    assertThat(result).isNull();
+  }
 
-    @Test
-    void testNullReturnedAsNull() {
-        final Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isNull();
-    }
+  @Test
+  void testCapitalizeEmpty() {
+    final Object result = method.execute("", null, null, null);
+    assertThat(result).isEqualTo("");
+  }
 
+  @Test
+  void testCapitalizeIdentical() {
+    final Object result = method.execute("Capitalize This", null, null, null);
+    assertThat(result).isEqualTo("Capitalize This");
+  }
 
-    @Test
-    void testCapitalizeEmpty() {
-        final Object result = method.execute(null, null, null, "", null);
-        assertThat(result).isEqualTo("");
+  @Test
+  void testCapitalizeLower() {
+    final Object result = method.execute("capitalize this", null, null, null);
+    assertThat(result).isEqualTo("Capitalize This");
+  }
 
-    }
+  @Test
+  void testCapitalizeUpper() {
+    final Object result = method.execute("CAPITALIZE THIS", null, null, null);
+    assertThat(result).isEqualTo("Capitalize This");
+  }
 
-    @Test
-    void testCapitalizeIdentity() {
-        final Object result = method.execute(null, null, null, "Capitalize This", null);
-        assertThat(result).isEqualTo("Capitalize This");
+  @Test
+  void testCapitalizeSingle() {
+    final Object result = method.execute("c t", null, null, null);
+    assertThat(result).isEqualTo("C T");
+  }
 
-    }
-
-    @Test
-    void testCapitalizeLower() {
-        final Object result = method.execute(null, null, null, "CAPITALIZE THIS", null);
-        assertThat(result).isEqualTo("Capitalize This");
-
-    }
-
-    @Test
-    void testCapitalizeUpper() {
-        final Object result = method.execute(null, null, null, "capitalize this", null);
-        assertThat(result).isEqualTo("Capitalize This");
-
-    }
-
-    @Test
-    void testCapitalizeSingle() {
-        final Object result = method.execute(null, null, null, "c t", null);
-        assertThat(result).isEqualTo("C T");
-
-    }
-
-    @Test
-    void testCapitalizeNumbers() {
-        final Object result = method.execute(null, null, null, "111 222", null);
-        assertThat(result).isEqualTo("111 222");
-
-    }
+  @Test
+  void testCapitalizeNumbers() {
+    final Object result = method.execute("111 222", null, null, null);
+    assertThat(result).isEqualTo("111 222");
+  }
 }

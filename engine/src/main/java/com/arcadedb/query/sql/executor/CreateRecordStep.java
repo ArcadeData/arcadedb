@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -34,8 +35,12 @@ public class CreateRecordStep extends AbstractExecutionStep {
   private final int    total;
   private final String typeName;
 
-  public CreateRecordStep(final String typeName, final CommandContext context, final int total, final boolean profilingEnabled) {
-    super(context, profilingEnabled);
+  public CreateRecordStep(final String typeName, final CommandContext context, final int total) {
+    super(context);
+
+    if (typeName == null || typeName.isEmpty())
+      throw new CommandSQLParsingException("Record type is not specified");
+
     this.typeName = typeName;
     this.total = total;
   }
@@ -57,7 +62,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (!hasNext()) {
             throw new NoSuchElementException();
@@ -77,7 +82,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
           return new UpdatableResult(instance);
         } finally {
-          if (profilingEnabled) {
+          if (context.isProfiling()) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -92,7 +97,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CREATE EMPTY RECORDS");
-    if (profilingEnabled) {
+    if (context.isProfiling()) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     result.append("\n");

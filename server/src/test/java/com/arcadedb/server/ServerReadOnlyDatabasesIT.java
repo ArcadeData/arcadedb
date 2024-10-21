@@ -20,12 +20,12 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
 
@@ -50,10 +50,10 @@ public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
 
   @Test
   public void checkDefaultDatabases() throws IOException {
-    Assertions.assertTrue(getServer(0).existsDatabase("Universe"));
-    Assertions.assertTrue(getServer(0).existsDatabase("Amiga"));
+    assertThat(getServer(0).existsDatabase("Universe")).isTrue();
+    assertThat(getServer(0).existsDatabase("Amiga")).isTrue();
 
-    Assertions.assertTrue(READ_ONLY.equals(getServer(0).getDatabase("Universe").getMode()));
-    Assertions.assertTrue(READ_ONLY.equals(getServer(0).getDatabase("Amiga").getMode()));
+    assertThat(getServer(0).getDatabase("Universe").getMode()).isEqualTo(READ_ONLY);
+    assertThat(getServer(0).getDatabase("Amiga").getMode()).isEqualTo(READ_ONLY);
   }
 }

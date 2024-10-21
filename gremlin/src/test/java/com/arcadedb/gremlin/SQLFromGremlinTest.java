@@ -24,11 +24,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -53,14 +54,14 @@ public class SQLFromGremlinTest {
       int lastAge = 0;
       for (; result.hasNext(); ++i) {
         final Result row = result.next();
-        Assertions.assertEquals("Jay", row.getProperty("p.name"));
-        Assertions.assertTrue(row.getProperty("p.age") instanceof Number);
-        Assertions.assertTrue((int) row.getProperty("p.age") > lastAge);
+        assertThat(row.<String>getProperty("p.name")).isEqualTo("Jay");
+        assertThat(row.getProperty("p.age") instanceof Number).isTrue();
+        assertThat((int) row.getProperty("p.age") > lastAge).isTrue();
 
         lastAge = row.getProperty("p.age");
       }
 
-      Assertions.assertEquals(25, i);
+      assertThat(i).isEqualTo(25);
 
     } finally {
       graph.drop();

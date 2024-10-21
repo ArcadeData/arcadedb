@@ -24,10 +24,12 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Assertions;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class LSMTreeIndexCompositeTest extends TestHelper {
   private static final int TOT = 100;
@@ -38,8 +40,8 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
       final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("absoluteId").get(0);
       for (int i = 0; i < TOT * TOT; ++i) {
         final IndexCursor value = index.get(new Object[] { i });
-        Assertions.assertTrue(value.hasNext());
-        Assertions.assertEquals(i, value.next().asVertex().get("absoluteId"));
+        assertThat(value.hasNext()).isTrue();
+        assertThat(value.next().asVertex().get("absoluteId")).isEqualTo(i);
       }
     });
   }
@@ -51,11 +53,11 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
       for (int i = 0; i < TOT; ++i) {
         for (int k = 0; k < TOT; ++k) {
           final IndexCursor value = index.get(new Object[] { i, k });
-          Assertions.assertTrue(value.hasNext(), "id[" + i + "," + k + "]");
+          assertThat(value.hasNext()).withFailMessage("id[" + i + "," + k + "]").isTrue();
 
           final Vertex v = value.next().asVertex();
-          Assertions.assertEquals(i, v.get("directoryId"));
-          Assertions.assertEquals(k, v.get("fileId"));
+          assertThat(v.get("directoryId")).isEqualTo(i);
+          assertThat(v.get("fileId")).isEqualTo(k);
         }
       }
     });
@@ -67,10 +69,10 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
       final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("directoryId", "fileId").get(0);
       for (int i = 0; i < TOT; ++i) {
         final IndexCursor value = index.get(new Object[] { i, null });
-        Assertions.assertTrue(value.hasNext(), "id[" + i + "]");
+        assertThat(value.hasNext()).withFailMessage( "id[" + i + "]").isTrue();
 
         final Vertex v = value.next().asVertex();
-        Assertions.assertEquals(i, v.get("directoryId"));
+        assertThat(v.get("directoryId")).isEqualTo(i);
       }
     });
   }
@@ -78,7 +80,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
   protected void beginTest() {
     // CREATE SIMPLE GRAPH OF 2 LEVELS DIRECTORY FILE SYSTEM
     database.transaction(() -> {
-      Assertions.assertFalse(database.getSchema().existsType("File"));
+      assertThat(database.getSchema().existsType("File")).isFalse();
       final DocumentType file = database.getSchema().createVertexType("File");
       file.createProperty("absoluteId", Integer.class);
       file.createProperty("directoryId", Integer.class);
@@ -88,7 +90,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
 
       file.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
 
-      Assertions.assertFalse(database.getSchema().existsType("HasChildren"));
+      assertThat(database.getSchema().existsType("HasChildren")).isFalse();
       database.getSchema().createEdgeType("HasChildren");
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "HasChildren", "@out", "@in");
 

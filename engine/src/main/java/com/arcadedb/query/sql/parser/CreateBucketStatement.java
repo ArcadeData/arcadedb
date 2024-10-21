@@ -50,7 +50,7 @@ public class CreateBucketStatement extends DDLStatement {
     }
     final Bucket bucket = db.getSchema().createBucket(bucketName);
 
-    final ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "create bucket");
     result.setProperty("bucketName", bucketName);
     result.setProperty("bucketId", bucket.getFileId());
