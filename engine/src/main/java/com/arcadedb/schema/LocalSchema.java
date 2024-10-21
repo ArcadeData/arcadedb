@@ -375,7 +375,7 @@ public class LocalSchema implements Schema {
 
           ++copied;
 
-          if (copied % transactionBatchSize == 0) {
+          if (transactionBatchSize > 0 && copied % transactionBatchSize == 0) {
             database.commit();
             database.begin();
           }
