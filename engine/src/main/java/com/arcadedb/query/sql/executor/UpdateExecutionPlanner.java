@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Timeout;
-import com.arcadedb.query.sql.parser.UpdateEdgeStatement;
 import com.arcadedb.query.sql.parser.UpdateOperations;
 import com.arcadedb.query.sql.parser.UpdateStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
@@ -46,15 +45,12 @@ public class UpdateExecutionPlanner {
   protected final boolean                returnBefore;
   protected final boolean                returnAfter;
   protected final boolean                returnCount;
-  protected       boolean                updateEdge = false;
   protected final Projection             returnProjection;
   public final    Limit                  limit;
   public final    Timeout                timeout;
 
   public UpdateExecutionPlanner(final UpdateStatement oUpdateStatement) {
-    if (oUpdateStatement instanceof UpdateEdgeStatement) {
-      updateEdge = true;
-    }
+
     this.target = oUpdateStatement.getTarget().copy();
     this.whereClause = oUpdateStatement.getWhereClause() == null ? null : oUpdateStatement.getWhereClause().copy();
     this.operations =
@@ -75,8 +71,6 @@ public class UpdateExecutionPlanner {
     final UpdateExecutionPlan result = new UpdateExecutionPlan(context);
 
     handleTarget(result, context, this.target, this.whereClause, this.timeout);
-    if (updateEdge)
-      result.chain(new CheckRecordImplementationStep(context, Edge.class));
 
     handleUpsert(result, context, this.target, this.whereClause, this.upsert);
     handleTimeout(result, context, this.timeout);
@@ -172,10 +166,6 @@ public class UpdateExecutionPlanner {
         switch (op.getType()) {
         case UpdateOperations.TYPE_SET:
           plan.chain(new UpdateSetStep(op.getUpdateItems(), context));
-          //TODO: ARCADEDB MANAGES EDGES IN DIFFERENT WAY. DO WE NEED THIS?
-          //if(updateEdge){
-          //plan.chain(new UpdateEdgePointersStep( context));
-          //}
           break;
         case UpdateOperations.TYPE_REMOVE:
           plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), context));
