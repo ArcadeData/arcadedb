@@ -482,11 +482,12 @@ public class TypeConversionTest extends TestHelper {
     try {
       database.begin();
       final LocalDateTime date1 = LocalDateTime.now();
+      final LocalDateTime date2 = LocalDateTime.now().plusSeconds(1);
+
       ResultSet resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date1);
       assertThat(resultSet.hasNext()).isTrue();
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date1.truncatedTo(ChronoUnit.MICROS));
 
-      final LocalDateTime date2 = LocalDateTime.now().plusSeconds(1);
       resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date2);
       assertThat(resultSet.hasNext()).isTrue();
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date2.truncatedTo(ChronoUnit.MICROS));
@@ -499,7 +500,7 @@ public class TypeConversionTest extends TestHelper {
       assertThat(resultSet.hasNext()).isFalse();
 
       try {
-        Thread.sleep(1001);
+        TimeUnit.SECONDS.sleep(1);
       } catch (InterruptedException e) {
         throw new RuntimeException(e);
       }
