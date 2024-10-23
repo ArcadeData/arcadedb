@@ -27,6 +27,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.NanoClock;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
@@ -360,8 +362,7 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      assertThat(
-          zonedDateTime.truncatedTo(ChronoUnit.SECONDS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_second"))).isTrue();
+      assertThat(doc.getZonedDateTime("datetime_second")).isEqualTo(zonedDateTime.truncatedTo(ChronoUnit.SECONDS));
 
       database.transaction(() -> {
         // TEST MILLISECONDS PRECISION
@@ -370,8 +371,8 @@ public class TypeConversionTest extends TestHelper {
       });
 
       doc.reload();
-      assertThat(
-          zonedDateTime.truncatedTo(ChronoUnit.MILLIS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_millis"))).isTrue();
+
+      assertThat(doc.getZonedDateTime("datetime_millis")).isEqualTo(zonedDateTime.truncatedTo(ChronoUnit.MILLIS));
 
       if (!System.getProperty("os.name").startsWith("Windows")) {
         // NOTE: ON WINDOWS MICROSECONDS ARE NOT HANDLED CORRECTLY
@@ -383,8 +384,7 @@ public class TypeConversionTest extends TestHelper {
         });
 
         doc.reload();
-        assertThat(
-            zonedDateTime.truncatedTo(ChronoUnit.MICROS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime_micros"))).isTrue();
+        assertThat(doc.getZonedDateTime("datetime_micros")).isEqualTo(zonedDateTime.truncatedTo(ChronoUnit.MICROS));
       }
 
       // TEST NANOSECOND PRECISION
@@ -475,10 +475,8 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
+  @DisabledOnOs(OS.WINDOWS)
   public void testSQLMath() {
-    if (System.getProperty("os.name").startsWith("Windows"))
-      // NOTE: ON WINDOWS MICROSECONDS ARE NOT HANDLED CORRECTLY
-      return;
 
     database.command("sql", "alter database dateTimeImplementation `java.time.LocalDateTime`");
     try {
