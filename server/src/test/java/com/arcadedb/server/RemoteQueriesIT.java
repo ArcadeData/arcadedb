@@ -139,9 +139,6 @@ public class RemoteQueriesIT {
       String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
       try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
           assertThat(resultSet1.next().<String>getProperty("id")).isEqualTo("1");
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        e.printStackTrace();
       }
     });
 
@@ -153,9 +150,6 @@ public class RemoteQueriesIT {
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
       try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
         assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        e.printStackTrace();
       }
     });
     // drop index
@@ -167,9 +161,6 @@ public class RemoteQueriesIT {
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
       try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
         assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        e.printStackTrace();
       }
     });
   }

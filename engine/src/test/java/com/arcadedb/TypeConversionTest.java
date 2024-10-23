@@ -482,14 +482,12 @@ public class TypeConversionTest extends TestHelper {
     try {
       database.begin();
       final LocalDateTime date1 = LocalDateTime.now();
-      final LocalDateTime date2 = LocalDateTime.now().plusSeconds(1);
+      final LocalDateTime date2 = date1.plusSeconds(1);
 
       ResultSet resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date1);
-      assertThat(resultSet.hasNext()).isTrue();
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date1.truncatedTo(ChronoUnit.MICROS));
 
       resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date2);
-      assertThat(resultSet.hasNext()).isTrue();
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date2.truncatedTo(ChronoUnit.MICROS));
 
       resultSet = database.command("sql", "select from ConversionTest where datetime_micros between ? and ?", date1, date2);
@@ -509,11 +507,11 @@ public class TypeConversionTest extends TestHelper {
 
       assertThat(resultSet.hasNext()).isTrue();
       Result result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isFalse();
+      assertThat(result.<Duration>getProperty("diff")).isPositive();
 
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isFalse();
+      assertThat(result.<Duration>getProperty("diff")).isPositive();
 
       assertThat(resultSet.hasNext()).isFalse();
 
@@ -525,11 +523,11 @@ public class TypeConversionTest extends TestHelper {
               """);
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isFalse();
+      assertThat(result.<Duration>getProperty("diff")).isPositive();
 
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isFalse();
+      assertThat(result.<Duration>getProperty("diff")).isPositive();
 
       assertThat(resultSet.hasNext()).isFalse();
 
@@ -542,11 +540,11 @@ public class TypeConversionTest extends TestHelper {
 
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
+      assertThat(result.<Duration>getProperty("diff")).isNegative();
 
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
+      assertThat(result.<Duration>getProperty("diff")).isNegative();
 
       assertThat(resultSet.hasNext()).isFalse();
 
@@ -560,11 +558,11 @@ public class TypeConversionTest extends TestHelper {
 
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
+      assertThat(result.<Duration>getProperty("diff")).isNegative();
 
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
+      assertThat(result.<Duration>getProperty("diff")).isNegative();
 
       assertThat(resultSet.hasNext()).isFalse();
 
@@ -578,11 +576,11 @@ public class TypeConversionTest extends TestHelper {
 
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
+      assertThat(result.<Duration>getProperty("diff")).isNegative();
 
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(((Duration) result.getProperty("diff")).isNegative()).as("Returned " + result.getProperty("diff")).isTrue();
+      assertThat(result.<Duration>getProperty("diff")).isNegative();
 
       assertThat(resultSet.hasNext()).isFalse();
 
