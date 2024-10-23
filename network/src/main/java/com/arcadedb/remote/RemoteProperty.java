@@ -67,6 +67,11 @@ public class RemoteProperty extends AbstractProperty {
   }
 
   @Override
+  public Property setHidden(boolean hidden) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public Property setMax(String max) {
     throw new UnsupportedOperationException();
   }
