@@ -34,18 +34,18 @@ jobs:
           cache: "maven"
 
       - name: Install jars
-        run: mvn --show-version clean install -DskipTests
+        run: ./mvnw --show-version clean install -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test
-        run: mvn verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
+        run: ./mvnw verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: E2E Test
         if: success()
-        run: mvn verify -pl e2e
+        run: ./mvnw verify -pl e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
