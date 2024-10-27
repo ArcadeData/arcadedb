@@ -35,19 +35,14 @@ import com.arcadedb.schema.VertexType;
 
 public class RecordFactory {
   public Record newImmutableRecord(final Database database, final DocumentType type, final RID rid, final byte recordType) {
-    switch (recordType) {
-    case Document.RECORD_TYPE:
-      return new ImmutableDocument(database, type, rid, null);
-    case Vertex.RECORD_TYPE:
-      return new ImmutableVertex(database, type, rid, null);
-    case Edge.RECORD_TYPE:
-      return new ImmutableEdge(database, type, rid, null);
-    case EdgeSegment.RECORD_TYPE:
-      return new MutableEdgeSegment(database, rid, null);
-    case EmbeddedDocument.RECORD_TYPE:
-      return new ImmutableEmbeddedDocument(database, type, null, null);
-    }
-    throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
+    return switch (recordType) {
+      case Document.RECORD_TYPE -> new ImmutableDocument(database, type, rid, null);
+      case Vertex.RECORD_TYPE -> new ImmutableVertex(database, type, rid, null);
+      case Edge.RECORD_TYPE -> new ImmutableEdge(database, type, rid, null);
+      case EdgeSegment.RECORD_TYPE -> new MutableEdgeSegment(database, rid, null);
+      case EmbeddedDocument.RECORD_TYPE -> new ImmutableEmbeddedDocument(database, type, null, null);
+      default -> throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
+    };
   }
 
   public Record newImmutableRecord(final Database database, final DocumentType type, final RID rid, final Binary content, final EmbeddedModifier modifier) {
@@ -64,10 +59,8 @@ public class RecordFactory {
   }
 
   public Record newMutableRecord(final Database database, final DocumentType type) {
-    if (type instanceof LocalVertexType)
-      return new MutableVertex(database, (VertexType) type, null);
-    if (type instanceof LocalEdgeType)
-      return new MutableEdge(database, (EdgeType) type, null);
+    if (type instanceof LocalVertexType vertexType) return new MutableVertex(database, vertexType, null);
+    if (type instanceof LocalEdgeType edgeType) return new MutableEdge(database, edgeType, null);
     return new MutableDocument(database, type, null);
   }
 
@@ -76,18 +69,13 @@ public class RecordFactory {
     final byte recordType = content.getByte();
     content.position(pos);
 
-    switch (recordType) {
-    case Document.RECORD_TYPE:
-      return new MutableDocument(database, type, rid, content);
-    case Vertex.RECORD_TYPE:
-      return new MutableVertex(database, (VertexType) type, rid);
-    case Edge.RECORD_TYPE:
-      return new MutableEdge(database, (EdgeType) type, rid);
-    case EdgeSegment.RECORD_TYPE:
-      return new MutableEdgeSegment(database, rid);
-    case EmbeddedDocument.RECORD_TYPE:
-      return new MutableEmbeddedDocument(database, type, content, modifier);
-    }
-    throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
+    return switch (recordType) {
+      case Document.RECORD_TYPE -> new MutableDocument(database, type, rid, content);
+      case Vertex.RECORD_TYPE -> new MutableVertex(database, (VertexType) type, rid);
+      case Edge.RECORD_TYPE -> new MutableEdge(database, (EdgeType) type, rid);
+      case EdgeSegment.RECORD_TYPE -> new MutableEdgeSegment(database, rid);
+      case EmbeddedDocument.RECORD_TYPE -> new MutableEmbeddedDocument(database, type, content, modifier);
+      default -> throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
+    };
   }
 }

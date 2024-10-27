@@ -547,9 +547,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       iter.setLimit(getResultSetLimit());
       iter.setTimeout(getReadTimeout(), true);
 
-      for (final Bucket b : type.getBuckets(polymorphic)) {
+      for (final Bucket b : type.getBuckets(polymorphic))
         iter.addIterator(b.iterator());
-      }
       return iter;
     });
   }
