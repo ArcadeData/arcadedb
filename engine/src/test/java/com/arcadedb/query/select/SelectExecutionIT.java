@@ -325,21 +325,17 @@ public class SelectExecutionIT extends TestHelper {
     });
 
     final SelectCompiled select = database.select().fromType("Parallel")//
-        .where().property("name").like().value("P%").and()//
+        .where().property("name").like().value("P%")
+        .and()//
         .property("id").lt().value(1_000_000)//
-        .compile().parallel();
+        .compile()
+        .parallel();
 
-    for (int i = 0; i < 10; i++) {
-      final long beginTime = System.currentTimeMillis();
-
-      Spliterator<Vertex> vertexSpliterator = Spliterators.spliteratorUnknownSize(select.vertices(), Spliterator.NONNULL);
-      List<Vertex> list = StreamSupport.stream(vertexSpliterator, false)
-          .peek(r -> assertThat(r.getString("name")).startsWith("P"))
-          .toList();
-      assertThat(list).hasSize(1_000_000);
-
-      System.out.println(i + " " + (System.currentTimeMillis() - beginTime));
-    }
+    Spliterator<Vertex> vertexSpliterator = Spliterators.spliteratorUnknownSize(select.vertices(), Spliterator.NONNULL);
+    long size = StreamSupport.stream(vertexSpliterator, false)
+        .peek(r -> assertThat(r.getString("name")).startsWith("P"))
+        .count();
+    assertThat(size).isEqualTo(1_000_000);
   }
 
   @Test
