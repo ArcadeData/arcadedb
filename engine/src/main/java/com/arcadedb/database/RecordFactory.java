@@ -53,19 +53,14 @@ public class RecordFactory {
   public Record newImmutableRecord(final Database database, final DocumentType type, final RID rid, final Binary content, final EmbeddedModifier modifier) {
     final byte recordType = content.getByte();
 
-    switch (recordType) {
-    case Document.RECORD_TYPE:
-      return new ImmutableDocument(database, type, rid, content);
-    case Vertex.RECORD_TYPE:
-      return new ImmutableVertex(database, type, rid, content);
-    case Edge.RECORD_TYPE:
-      return new ImmutableEdge(database, type, rid, content);
-    case EdgeSegment.RECORD_TYPE:
-      return new MutableEdgeSegment(database, rid, content);
-    case EmbeddedDocument.RECORD_TYPE:
-      return new ImmutableEmbeddedDocument(database, type, content, modifier);
-    }
-    throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
+    return switch (recordType) {
+      case Document.RECORD_TYPE -> new ImmutableDocument(database, type, rid, content);
+      case Vertex.RECORD_TYPE -> new ImmutableVertex(database, type, rid, content);
+      case Edge.RECORD_TYPE -> new ImmutableEdge(database, type, rid, content);
+      case EdgeSegment.RECORD_TYPE -> new MutableEdgeSegment(database, rid, content);
+      case EmbeddedDocument.RECORD_TYPE -> new ImmutableEmbeddedDocument(database, type, content, modifier);
+      default -> throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
+    };
   }
 
   public Record newMutableRecord(final Database database, final DocumentType type) {
