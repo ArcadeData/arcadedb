@@ -182,7 +182,7 @@ public class SelectExecutionIT extends TestHelper {
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
         assertThat(v.getInteger("id").equals(3) && v.getString("name").equals("Elon2") ||//
-          v.getString("name").equals("Elon")).isTrue();
+            v.getString("name").equals("Elon")).isTrue();
       }
     }
 
@@ -195,7 +195,7 @@ public class SelectExecutionIT extends TestHelper {
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
         assertThat(v.getInteger("id").equals(3) ||//
-          v.getString("name").equals("Elon2") && v.getString("name").equals("Elon")).isTrue();
+            v.getString("name").equals("Elon2") && v.getString("name").equals("Elon")).isTrue();
       }
     }
   }
@@ -318,22 +318,25 @@ public class SelectExecutionIT extends TestHelper {
     database.getSchema().createVertexType("Parallel");
     database.transaction(() -> {
       for (int i = 0; i < 1_000_000; i++) {
-        database.newVertex("Parallel").set("id", i, "float", 3.14F, "name", "Elon").save();
+        database.newVertex("Parallel")
+            .set("id", i, "float", 3.14F, "name", "Player")
+            .save();
       }
     });
 
     final SelectCompiled select = database.select().fromType("Parallel")//
-        .where().property("name").like().value("E%").and()//
+        .where().property("name").like().value("P%").and()//
         .property("id").lt().value(1_000_000)//
         .compile().parallel();
 
     for (int i = 0; i < 10; i++) {
       final long beginTime = System.currentTimeMillis();
 
-      final SelectIterator<Vertex> result = select.vertices();
-      final List<Vertex> list = result.toList();
-      assertThat(list.size()).isEqualTo(1_000_000);
-      list.forEach(r -> assertTrue(r.getString("name").startsWith("E")));
+      Spliterator<Vertex> vertexSpliterator = Spliterators.spliteratorUnknownSize(select.vertices(), Spliterator.NONNULL);
+      List<Vertex> list = StreamSupport.stream(vertexSpliterator, false)
+          .peek(r -> assertThat(r.getString("name")).startsWith("P"))
+          .toList();
+      assertThat(list).hasSize(1_000_000);
 
       System.out.println(i + " " + (System.currentTimeMillis() - beginTime));
     }
@@ -404,14 +407,13 @@ public class SelectExecutionIT extends TestHelper {
       callback.run();
       failed = false;
     } catch (Throwable e) {
-      if (!expectedException.equals(e.getClass()))
-        e.printStackTrace();
+      if (!expectedException.equals(e.getClass())) e.printStackTrace();
 
       assertThat(e.getClass()).isEqualTo(expectedException);
-      assertThat(e.getMessage().contains(mustContains)).as("Expected '" + mustContains + "' in the error message. Error message is: " + e.getMessage()).isTrue();
+      assertThat(e.getMessage().contains(mustContains)).as(
+          "Expected '" + mustContains + "' in the error message. Error message is: " + e.getMessage()).isTrue();
     }
 
-    if (!failed)
-      fail("Expected exception " + expectedException);
+    if (!failed) fail("Expected exception " + expectedException);
   }
 }
