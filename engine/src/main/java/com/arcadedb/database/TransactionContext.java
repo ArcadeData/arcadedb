@@ -229,7 +229,7 @@ public class TransactionContext implements Transaction {
     if (database.isOpen())
       for (final Record r : modifiedRecordsCache.values())
         try {
-          System.out.println("transaction context--->reload");
+//          System.out.println("transaction context--->reload");
           r.reload();
         } catch (final Exception e) {
           // IGNORE EXCEPTION (RECORD DELETED OR TYPE REMOVED)
