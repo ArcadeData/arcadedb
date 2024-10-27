@@ -44,6 +44,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -491,11 +493,8 @@ public class TypeConversionTest extends TestHelper {
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date2.truncatedTo(ChronoUnit.MICROS));
 
       resultSet = database.command("sql", "select from ConversionTest where datetime_micros between ? and ?", date1, date2);
-      assertThat(resultSet.hasNext()).isTrue();
-      resultSet.next();
-      assertThat(resultSet.hasNext()).isTrue();
-      resultSet.next();
-      assertThat(resultSet.hasNext()).isFalse();
+
+      assertThat(StreamSupport.stream(resultSet,false)).hasSize(2);
 
       try {
         TimeUnit.SECONDS.sleep(1);
@@ -505,15 +504,11 @@ public class TypeConversionTest extends TestHelper {
 
       resultSet = database.command("sql", "select sysdate() - datetime_micros as diff from ConversionTest");
 
-      assertThat(resultSet.hasNext()).isTrue();
-      Result result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isPositive();
+      long resultsize = StreamSupport.stream(resultSet, false)
+          .peek(r -> assertThat(r.<Duration>getProperty("diff")).isPositive())
+          .count();
 
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isPositive();
-
-      assertThat(resultSet.hasNext()).isFalse();
+      assertThat(resultsize).isEqualTo(2);
 
       resultSet = database.command("sql",
           """
@@ -521,15 +516,12 @@ public class TypeConversionTest extends TestHelper {
               from ConversionTest
               where sysdate() - datetime_micros < duration(100000000000, 'nanosecond')
               """);
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isPositive();
 
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isPositive();
+      resultsize = StreamSupport.stream(resultSet, false)
+          .peek(r -> assertThat(r.<Duration>getProperty("diff")).isPositive())
+          .count();
 
-      assertThat(resultSet.hasNext()).isFalse();
+      assertThat(resultsize).isEqualTo(2);
 
       resultSet = database.command("sql",
           """
@@ -538,15 +530,11 @@ public class TypeConversionTest extends TestHelper {
               where abs( datetime_micros - sysdate() ) < duration(100000000000, 'nanosecond')
               """);
 
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isNegative();
+      resultsize = StreamSupport.stream(resultSet, false)
+          .peek(r -> assertThat(r.<Duration>getProperty("diff")).isNegative())
+          .count();
 
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isNegative();
-
-      assertThat(resultSet.hasNext()).isFalse();
+      assertThat(resultsize).isEqualTo(2);
 
       resultSet = database.command("sql",
           """
@@ -556,15 +544,11 @@ public class TypeConversionTest extends TestHelper {
               """,
           DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now()));
 
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isNegative();
+      resultsize = StreamSupport.stream(resultSet, false)
+          .peek(r -> assertThat(r.<Duration>getProperty("diff")).isNegative())
+          .count();
 
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isNegative();
-
-      assertThat(resultSet.hasNext()).isFalse();
+      assertThat(resultsize).isEqualTo(2);
 
       resultSet = database.command("sql",
           """
@@ -574,15 +558,11 @@ public class TypeConversionTest extends TestHelper {
               """,
           DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now()));
 
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isNegative();
+      resultsize = StreamSupport.stream(resultSet, false)
+          .peek(r -> assertThat(r.<Duration>getProperty("diff")).isNegative())
+          .count();
 
-      assertThat(resultSet.hasNext()).isTrue();
-      result = resultSet.next();
-      assertThat(result.<Duration>getProperty("diff")).isNegative();
-
-      assertThat(resultSet.hasNext()).isFalse();
+      assertThat(resultsize).isEqualTo(2);
 
       database.commit();
     } finally {
