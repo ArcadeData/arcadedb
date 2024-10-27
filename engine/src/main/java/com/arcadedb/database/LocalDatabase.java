@@ -686,7 +686,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (loadRecordContent || type == null) {
         final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
-        System.out.println("call invokeAfterReadEvents for record");
+//        System.out.println("call invokeAfterReadEvents for record");
         return invokeAfterReadEvents(record);
       }
 
@@ -1610,10 +1610,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (record instanceof Document) {
       final DocumentType type = ((Document) record).getType();
       if (type != null) {
-        System.out.println("invokeAfterReadEvents for type = pre");
+//        System.out.println("invokeAfterReadEvents for type = pre");
 
         Record record1 = ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
-        System.out.println("invokeAfterReadEvents for type = after");
+//        System.out.println("invokeAfterReadEvents for type = after");
 
         return record1;
       }
