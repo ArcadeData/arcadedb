@@ -146,10 +146,15 @@
             <version>${graalvm.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.graalvm.js</groupId>
+            <groupId>org.graalvm.polyglot</groupId>
+            <artifactId>polyglot</artifactId>
+            <version>${graalvm.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.polyglot</groupId>
             <artifactId>js</artifactId>
             <version>${graalvm.version}</version>
-            <scope>runtime</scope>
+            <type>pom</type>
         </dependency>
     </dependencies>
 </project>
