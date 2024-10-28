@@ -39,15 +39,11 @@ public class JSONSerializer {
     this.database = database;
   }
 
-  public JSONObject map2json(final Map<String, Object> map, final String... includeProperties) {
-    return map2json(map, null, includeProperties);
-  }
-
   public JSONObject map2json(final Map<String, Object> map, final DocumentType type, final String... includeProperties) {
     final JSONObject json = new JSONObject();
 
     final Set<String> includePropertiesSet;
-    if (includeProperties != null && includeProperties.length > 0) {
+    if (includeProperties.length > 0) {
       includePropertiesSet = new HashSet<>();
       for (String p : includeProperties)
         includePropertiesSet.add(p);
@@ -58,9 +54,11 @@ public class JSONSerializer {
       if (includePropertiesSet != null && !includePropertiesSet.contains(entry.getKey()))
         continue;
 
-      Type propertyType = null;
+      final Type propertyType;
       if (type != null && type.existsProperty(entry.getKey()))
         propertyType = type.getProperty(entry.getKey()).getType();
+      else
+        propertyType = null;
 
       final Object value = convertToJSONType(entry.getValue(), propertyType);
 
