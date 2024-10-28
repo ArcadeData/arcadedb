@@ -111,7 +111,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
-    final JSONObject result = new JSONSerializer(database).map2json(map, type, null);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type);
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", type.getName());
