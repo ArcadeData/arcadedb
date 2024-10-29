@@ -51,9 +51,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
     assertThat(item).isNotNull();
-    assertThat(item.<Integer>getProperty("one")).isEqualTo(1);
-    assertThat(item.<Integer>getProperty("two")).isEqualTo(2);
-    assertThat(item.<Integer>getProperty("2 + 3")).isEqualTo(5);
+    assertThat(item.<Object>getProperty("one")).isEqualTo(1);
+    assertThat(item.<Object>getProperty("two")).isEqualTo(2);
+    assertThat(item.<Object>getProperty("2 + 3")).isEqualTo(5);
 
     result.close();
   }
@@ -120,9 +120,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
     assertThat(item).isNotNull();
-    assertThat(item.<Integer>getProperty("one")).isEqualTo(1);
-    assertThat(item.<Integer>getProperty("two")).isEqualTo(2);
-    assertThat(item.<Integer>getProperty("2 + 3")).isEqualTo(5);
+    assertThat(item.<Object>getProperty("one")).isEqualTo(1);
+    assertThat(item.<Object>getProperty("two")).isEqualTo(2);
+    assertThat(item.<Object>getProperty("2 + 3")).isEqualTo(5);
 
     result.close();
   }

@@ -217,9 +217,7 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        assertThat(found)
-            .withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times")
-            .isEqualTo(1);
+        assertThat(found).isEqualTo(1).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times");
       }
 
       assertThat(total).isEqualTo(TOT);
@@ -229,9 +227,8 @@ public class LSMTreeIndexTest extends TestHelper {
         for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
-          assertThat(index.get(new Object[] { i }).hasNext())
-              .withFailMessage("Found item with key " + i + " inside the TX by using get()")
-              .isFalse();
+          assertThat(index.get(new Object[] { i }).hasNext()).isFalse()
+              .withFailMessage("Found item with key " + i + " inside the TX by using get()");
         }
       }
 
@@ -269,9 +266,8 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
 
-          assertThat(cursor.hasNext() && cursor.next() != null)
-              .withFailMessage("Found item with key " + i + " after the TX was committed by using range()")
-              .isFalse();
+          assertThat(cursor.hasNext() && cursor.next() != null).isFalse()
+              .withFailMessage("Found item with key " + i + " after the TX was committed by using range()");
         }
       }
     }, true, 0);
@@ -389,7 +385,7 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(1);
+        assertThat(found).isEqualTo(1).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times");
       }
 
       assertThat(total).isEqualTo(TOT);
@@ -400,7 +396,7 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          assertThat(index.get(new Object[] { i }).hasNext()).withFailMessage("Found item with key " + i).isFalse();
+          assertThat(index.get(new Object[] { i }).hasNext()).isFalse().withFailMessage("Found item with key " + i);
         }
       }
     });
@@ -436,7 +432,7 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(1);
+        assertThat(found).isEqualTo(1).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times");
       }
 
       assertThat(total).isEqualTo(TOT);
@@ -472,7 +468,7 @@ public class LSMTreeIndexTest extends TestHelper {
     database.transaction(() -> {
       for (int i = 0; i < 1000; ++i) {
         final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
-        assertThat(cursor.hasNext()).withFailMessage("Key " + i + " not found").isTrue();
+        assertThat(cursor.hasNext()).isTrue().withFailMessage("Key " + i + " not found");
 
         final Document doc = cursor.next().asDocument();
         doc.modify().set("id", i + TOT).save();
@@ -541,7 +537,7 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(0);
+        assertThat(found).isEqualTo(0).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times");
       }
 
       assertThat(total).isEqualTo(0);
