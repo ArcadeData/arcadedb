@@ -100,6 +100,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             }
 
           }
+          break;
 
         } catch (final NeedRetryException | TimeoutException | TransactionException e) {
           if (e instanceof TimeoutException) {
@@ -108,18 +109,17 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
           }
           // IGNORE IT
           LogManager.instance()
-              .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
+              .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d): %s", counter, retry, maxRetry,
+                  e.getMessage());
           CodeUtils.sleep(500);
 
         } catch (final DuplicatedKeyException e) {
           // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
-          LogManager.instance().log(this, Level.SEVERE, "Error: %s (IGNORE IT)", null, e.toString());
+          LogManager.instance().log(this, Level.SEVERE, "Error: %s (IGNORE IT)", e.getMessage());
         } catch (final Exception e) {
           // IGNORE IT
-          LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", e, e.getMessage());
+          LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", e.getMessage());
         }
-
-        break;
       }
     }
 
