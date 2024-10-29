@@ -43,11 +43,9 @@ public class JSONSerializer {
     final JSONObject json = new JSONObject();
 
     final Set<String> includePropertiesSet;
-    if (includeProperties.length > 0) {
-      includePropertiesSet = new HashSet<>();
-      for (String p : includeProperties)
-        includePropertiesSet.add(p);
-    } else
+    if (includeProperties.length > 0)
+      includePropertiesSet = new HashSet<>(Arrays.asList(includeProperties));
+    else
       includePropertiesSet = null;
 
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
