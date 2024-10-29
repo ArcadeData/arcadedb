@@ -56,6 +56,7 @@ public abstract class BaseRecord implements Record {
       try {
         buffer = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
 
+       // System.out.println("reload -- > invokeAfterReadEvents ");
         final Record loaded = database.invokeAfterReadEvents(this);
         if (loaded == null) {
           buffer = null;

@@ -139,9 +139,6 @@ public class RemoteQueriesIT {
       String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
       try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
           assertThat(resultSet1.next().<String>getProperty("id")).isEqualTo("1");
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        e.printStackTrace();
       }
     });
 
@@ -153,9 +150,6 @@ public class RemoteQueriesIT {
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
       try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
         assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        e.printStackTrace();
       }
     });
     // drop index
@@ -167,9 +161,6 @@ public class RemoteQueriesIT {
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
       try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
         assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        e.printStackTrace();
       }
     });
   }
@@ -200,34 +191,30 @@ public class RemoteQueriesIT {
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
     Database database = arcadeDBServer.getDatabase("testLocalDateTimeOrderBy");
-    String name, type;
-    LocalDateTime start, stop;
+
     DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
     Result result;
     String sqlString = "INSERT INTO Product SET name = ?, type = ?, start = ?, stop = ?";
 
-    name = "CS_OPER_AUX_ORBDOR_20220318T215523_20220320T002323_F001.EEF";
-    type = "AUX_ORBDOR";
-    start = LocalDateTime.parse("20220318T215523", FILENAME_TIME_FORMAT);
-    stop = LocalDateTime.parse("20220320T002323", FILENAME_TIME_FORMAT);
-    Object[] parameters1 = { name, type, start, stop };
-    try (ResultSet resultSet = database.command("sql", sqlString, parameters1)) {
+    String name = "CS_OPER_AUX_ORBDOR_20220318T215523_20220320T002323_F001.EEF";
+    String type = "AUX_ORBDOR";
+    LocalDateTime start = LocalDateTime.parse("20220318T215523", FILENAME_TIME_FORMAT);
+    LocalDateTime stop = LocalDateTime.parse("20220320T002323", FILENAME_TIME_FORMAT);
+    try (ResultSet resultSet = database.command("sql", sqlString, name, type, start, stop)) {
       assertThat(resultSet.hasNext()).isTrue();
       result = resultSet.next();
-      assertThat(start).as("start value retrieved does not match start value inserted").isEqualTo(result.getProperty("start"));
-    } catch (Exception e) {
-      e.printStackTrace();
+      assertThat(start).as("start value retrieved does not match start value inserted").isEqualTo(result.<LocalDateTime>getProperty("start"));
     }
+
     sqlString = "SELECT name, start, stop FROM Product WHERE type = ? AND start <= ? AND stop >= ? ORDER BY start DESC";
     type = "AUX_ORBDOR";
     start = LocalDateTime.parse("2022-03-19T00:26:24.404379", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
     stop = LocalDateTime.parse("2022-03-19T00:28:26.525650", DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
-    Object[] parameters2 = { type, start, stop };
-    try (ResultSet resultSet = database.query("sql", sqlString, parameters2)) {
+    try (ResultSet resultSet = database.query("sql", sqlString, type, start, stop)) {
       assertThat(resultSet.hasNext()).isTrue();
       while (resultSet.hasNext()) {
         result = resultSet.next();
-        //Assertions.assertThat(result.getProperty("start").equals(start)).as("start value retrieved does not match start value inserted").isTrue();
+        assertThat(result.<LocalDateTime>getProperty("start")).isNotEqualTo(start);
       }
     }
   }

@@ -232,11 +232,12 @@ public class RecordEventsRegistry implements RecordEvents {
   public Record onAfterRead(Record record) {
     if (afterReadListeners.isEmpty())
       return record;
+    //   System.out.println(Thread.currentThread().getName() + " :: onAfterread");
 
     for (AfterRecordReadListener listener : afterReadListeners) {
+//      System.out.println("call listener");
       record = listener.onAfterRead(record);
-      if (record == null)
-        return null;
+      if (record == null) return null;
     }
     return record;
   }
