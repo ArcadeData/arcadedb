@@ -167,7 +167,7 @@ public class ContainsCondition extends BooleanExpression {
           return true;
         else if (item instanceof Result && condition.evaluate((Result) item, context))
           return true;
-        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map<?, ?>) item), context))
+        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), context))
           return true;
         else if (condition.evaluate(new ResultInternal(item), context))
           return true;
