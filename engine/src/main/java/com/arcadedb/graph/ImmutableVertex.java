@@ -66,7 +66,6 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
   public MutableVertex modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
-//    System.out.println("ImmutableVertex-->modify-->recordinCache:: " + recordInCache);
     if (recordInCache != null) {
       if (recordInCache instanceof MutableVertex fromCache)
         return fromCache;
@@ -78,7 +77,6 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
         database.getTransaction()
             .getPageToModify(rid.getPageId(), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(),
                 false);
-//        System.out.println("ImmutableVertex-->modify--->reload");
         reload();
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on reloading vertex " + rid, e);
