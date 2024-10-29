@@ -235,8 +235,7 @@ public class RecordEventsRegistry implements RecordEvents {
 
     for (AfterRecordReadListener listener : afterReadListeners) {
       record = listener.onAfterRead(record);
-      if (record == null)
-        return null;
+      if (record == null) return null;
     }
     return record;
   }
