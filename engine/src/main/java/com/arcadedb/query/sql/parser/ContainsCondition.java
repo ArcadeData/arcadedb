@@ -43,59 +43,56 @@ public class ContainsCondition extends BooleanExpression {
   public boolean execute(final Object left, Object right) {
     if (left instanceof Collection) {
       if (right instanceof Collection) {
-        if (((Collection) right).size() == 1) {
-          Object item = ((Collection) right).iterator().next();
+        if (((Collection<?>) right).size() == 1) {
+          Object item = ((Collection<?>) right).iterator().next();
           if (item instanceof Result && ((Result) item).getPropertyNames().size() == 1) {
             final Object propValue = ((Result) item).getProperty(((Result) item).getPropertyNames().iterator().next());
-            if (((Collection) left).contains(propValue)) {
+            if (((Collection<?>) left).contains(propValue))
               return true;
-            }
           }
-          if (((Collection) left).contains(item)) {
+          if (((Collection<?>) left).contains(item))
             return true;
-          }
+
           if (item instanceof Result)
             item = ((Result) item).getElement().orElse(null);
 
-          if (item instanceof Identifiable && ((Collection) left).contains(item))
+          if (item instanceof Identifiable && ((Collection<?>) left).contains(item))
             return true;
         }
 
         return MultiValue.contains(left, right);
       }
-      if (right instanceof Iterable) {
-        right = ((Iterable) right).iterator();
-      }
-      if (right instanceof Iterator) {
-        final Iterator iterator = (Iterator) right;
+
+      if (right instanceof Iterable)
+        right = ((Iterable<?>) right).iterator();
+
+      if (right instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (!((Collection) left).contains(next)) {
+          if (!((Collection<?>) left).contains(next))
             return false;
-          }
         }
       }
-      for (final Object o : (Collection) left) {
-        if (equalsInContainsSpace(o, right)) {
+      for (final Object o : (Collection<?>) left) {
+        if (equalsInContainsSpace(o, right))
           return true;
-        }
       }
       return false;
     }
 
-    Iterator leftIterator = null;
-    if (left instanceof Iterable) {
-      leftIterator = ((Iterable) left).iterator();
-    } else if (left instanceof Iterator) {
-      leftIterator = (Iterator) left;
-    }
-    if (leftIterator != null) {
-      if (!(right instanceof Iterable)) {
-        right = Collections.singleton(right);
-      }
-      right = ((Iterable) right).iterator();
+    Iterator<?> leftIterator = null;
+    if (left instanceof Iterable)
+      leftIterator = ((Iterable<?>) left).iterator();
+    else if (left instanceof Iterator)
+      leftIterator = (Iterator<?>) left;
 
-      final Iterator rightIterator = (Iterator) right;
+    if (leftIterator != null) {
+      if (!(right instanceof Iterable))
+        right = Collections.singleton(right);
+
+      right = ((Iterable<?>) right).iterator();
+
+      final Iterator<?> rightIterator = (Iterator<?>) right;
       while (rightIterator.hasNext()) {
         final Object leftItem = rightIterator.next();
         boolean found = false;
@@ -107,17 +104,15 @@ public class ContainsCondition extends BooleanExpression {
           }
         }
 
-        if (!found) {
+        if (!found)
           return false;
-        }
 
         // here left iterator should go from beginning, that can be done only for iterable
         // if left at input is iterator result can be invalid
         // TODO what if left is Iterator!!!???, should we make temporary Collection , to be able to
         // iterate from beginning
-        if (left instanceof Iterable) {
-          leftIterator = ((Iterable) left).iterator();
-        }
+        if (left instanceof Iterable)
+          leftIterator = ((Iterable<?>) left).iterator();
       }
       return true;
     }
@@ -125,11 +120,10 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   private boolean equalsInContainsSpace(final Object left, final Object right) {
-    if (left == null && right == null) {
+    if (left == null && right == null)
       return true;
-    } else {
+    else
       return QueryOperatorEquals.equals(left, right);
-    }
   }
 
   @Override
@@ -139,9 +133,9 @@ public class ContainsCondition extends BooleanExpression {
       final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
-      if (!MultiValue.isMultiValue(leftValue)) {
+      if (!MultiValue.isMultiValue(leftValue))
         return false;
-      }
+
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
@@ -163,9 +157,9 @@ public class ContainsCondition extends BooleanExpression {
       final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
-      if (!MultiValue.isMultiValue(leftValue)) {
+      if (!MultiValue.isMultiValue(leftValue))
         return false;
-      }
+
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
@@ -226,7 +220,7 @@ public class ContainsCondition extends BooleanExpression {
     final List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
     final List<String> conditionX = condition == null ? null : condition.getMatchPatternInvolvedAliases();
 
-    final List<String> result = new ArrayList<String>();
+    final List<String> result = new ArrayList<>();
     if (leftX != null)
       result.addAll(leftX);
 
@@ -247,9 +241,8 @@ public class ContainsCondition extends BooleanExpression {
   public boolean isIndexAware(final IndexSearchInfo info) {
     if (left.isBaseIdentifier()) {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        if (right != null) {
+        if (right != null)
           return right.isEarlyCalculated(info.getContext());
-        }
       }
     }
     return false;

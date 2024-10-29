@@ -18,8 +18,8 @@
  */
 package com.arcadedb.query.sql.parser.operators;
 
-import com.arcadedb.query.sql.parser.ContainsCondition;
-import com.arcadedb.query.sql.parser.InOperator;
+import com.arcadedb.query.sql.parser.ContainsAnyCondition;
+import com.arcadedb.query.sql.parser.ContainsAnyCondition;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -27,12 +27,12 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
+ * @author Luca Garulli (l.garulli-(at)-arcadedata.com)
  */
-public class ContainsConditionTest {
+public class ContainsAnyConditionTest {
   @Test
   public void test() {
-    final ContainsCondition op = new ContainsCondition(-1);
+    final ContainsAnyCondition op = new ContainsAnyCondition(-1);
 
     assertThat(op.execute(null, null)).isFalse();
     assertThat(op.execute(null, "foo")).isFalse();
@@ -54,7 +54,7 @@ public class ContainsConditionTest {
 
   @Test
   public void testIterable() {
-    final Iterable<?> left = new Iterable<>() {
+    final Iterable left = new Iterable() {
       private final List<Integer> ls = Arrays.asList(3, 1, 2);
 
       @Override
@@ -63,7 +63,7 @@ public class ContainsConditionTest {
       }
     };
 
-    final Iterable<?> right = new Iterable<>() {
+    final Iterable right = new Iterable() {
       private final List<Integer> ls = Arrays.asList(2, 3);
 
       @Override
@@ -72,13 +72,13 @@ public class ContainsConditionTest {
       }
     };
 
-    final ContainsCondition op = new ContainsCondition(-1);
+    final ContainsAnyCondition op = new ContainsAnyCondition(-1);
     assertThat(op.execute(left, right)).isTrue();
   }
 
   @Test
   public void issue1785() {
-    final ContainsCondition op = new ContainsCondition(-1);
+    final ContainsAnyCondition op = new ContainsAnyCondition(-1);
 
     final List<Object> nullList = new ArrayList<>();
     nullList.add(null);
