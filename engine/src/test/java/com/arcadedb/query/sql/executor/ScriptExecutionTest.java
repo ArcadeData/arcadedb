@@ -65,21 +65,21 @@ public class ScriptExecutionTest extends TestHelper {
     String className = "testIf";
     database.getSchema().createDocumentType(className);
     database.transaction(() -> {
-      String script = """
-              INSERT INTO %s SET name = 'foo';
-              LET $1 = SELECT count(*) as count FROM %s WHERE name ='bar';
-              IF($1.size() = 0 OR $1[0].count = 0){
-                  INSERT INTO %s SET name = 'bar';
-              }
-              LET $2 = SELECT count(*) as count FROM %s WHERE name ='bar';
-              IF($2.size() = 0 OR $2[0].count = 0){
-                  INSERT INTO %s SET name = 'bar';
-              }
-          """.formatted(className, className, className, className, className);
+      String script = "";
+      script += "INSERT INTO " + className + " SET name = 'foo';";
+      script += "LET $1 = SELECT count(*) as count FROM " + className + " WHERE name ='bar';";
+      script += "IF($1.size() = 0 OR $1[0].count = 0){";
+      script += "   INSERT INTO " + className + " SET name = 'bar';";
+      script += "}";
+      script += "LET $2 = SELECT count(*) as count FROM " + className + " WHERE name ='bar';";
+      script += "IF($2.size() = 0 OR $2[0].count = 0){";
+      script += "   INSERT INTO " + className + " SET name = 'bar';";
+      script += "}";
+
       database.command("sqlscript", script);
     });
     ResultSet rs = database.query("sql", "SELECT count(*) as count from " + className);
-    assertThat(rs.next().<Long>getProperty("count")).isEqualTo(2L);
+    assertThat(rs.next().<Long>getProperty("count")).isEqualTo( 2L);
   }
 
   @Test
@@ -88,15 +88,14 @@ public class ScriptExecutionTest extends TestHelper {
     database.getSchema().createDocumentType(className);
 
     database.transaction(() -> {
-      String script = """
-              INSERT INTO %s SET name = 'foo';
-              LET $1 = SELECT count(*) as count FROM %s WHERE name ='foo';
-              IF($1.size() = 0 OR $1[0].count = 0){
-                  INSERT INTO %s SET name = 'bar';
-                  RETURN;
-              }
-              INSERT INTO %s SET name = 'baz';
-          """.formatted(className, className, className, className);
+      String script = "";
+      script += "INSERT INTO " + className + " SET name = 'foo';";
+      script += "LET $1 = SELECT count(*) as count FROM " + className + " WHERE name ='foo';";
+      script += "IF($1.size() = 0 OR $1[0].count = 0){";
+      script += "   INSERT INTO " + className + " SET name = 'bar';";
+      script += "   RETURN;";
+      script += "}";
+      script += "INSERT INTO " + className + " SET name = 'baz';";
       database.command("sqlscript", script);
     });
 
@@ -110,14 +109,13 @@ public class ScriptExecutionTest extends TestHelper {
     database.getSchema().createDocumentType(className);
 
     database.transaction(() -> {
-      String script = """
-              INSERT INTO %s SET name = 'foo';
-              LET $1 = SELECT count(*) as count FROM %s WHERE name ='foo';
-              IF($1.size() > 0 ){
-                  RETURN 'OK';
-              }
-              RETURN 'FAIL';
-          """.formatted(className, className);
+      String script = "";
+      script += "INSERT INTO " + className + " SET name = 'foo';";
+      script += "LET $1 = SELECT count(*) as count FROM " + className + " WHERE name ='foo';";
+      script += "IF($1.size() > 0 ){";
+      script += "   RETURN 'OK';";
+      script += "}";
+      script += "RETURN 'FAIL';";
       ResultSet result = database.command("sqlscript", script);
 
       Result item = result.next();
@@ -133,14 +131,13 @@ public class ScriptExecutionTest extends TestHelper {
     database.getSchema().createDocumentType(className);
 
     database.transaction(() -> {
-      String script = """
-              INSERT INTO %s SET name = 'foo';
-              LET $1 = SELECT count(*) as count FROM %s WHERE name ='foo';
-              IF($1.size() = 0 ){
-                  RETURN 'FAIL';
-              }
-              RETURN 'OK';
-          """.formatted(className, className);
+      String script = "";
+      script += "INSERT INTO " + className + " SET name = 'foo';";
+      script += "LET $1 = SELECT count(*) as count FROM " + className + " WHERE name ='foo';";
+      script += "IF($1.size() = 0 ){";
+      script += "   RETURN 'FAIL';";
+      script += "}";
+      script += "RETURN 'OK';";
       ResultSet result = database.command("sqlscript", script);
 
       Result item = result.next();
@@ -153,14 +150,13 @@ public class ScriptExecutionTest extends TestHelper {
   @Test
   public void testLazyExecutionPlanning() {
     database.transaction(() -> {
-      String script = """
-              LET $1 = SELECT FROM (select from schema:types) where name = 'nonExistingClass';
-              IF($1.size() > 0) {
-                  SELECT FROM nonExistingClass;
-                  RETURN 'FAIL';
-              }
-              RETURN 'OK';
-          """;
+      String script = "";
+      script += "LET $1 = SELECT FROM (select from schema:types) where name = 'nonExistingClass';";
+      script += "IF($1.size() > 0) {";
+      script += "   SELECT FROM nonExistingClass;";
+      script += "   RETURN 'FAIL';";
+      script += "}";
+      script += "RETURN 'OK';";
       ResultSet result = database.command("sqlscript", script);
 
       Result item = result.next();
@@ -178,16 +174,15 @@ public class ScriptExecutionTest extends TestHelper {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(defineThrowCME());
 
     database.transaction(() -> {
-      String script = """
-              LET $retries = 0;
-              BEGIN;
-              INSERT INTO %s set attempt = $retries;
-              LET $retries = $retries + 1;
-              IF($retries < 5) {
-                  SELECT throwCME(#-1:-1, 1, 1, 1);
-              }
-              COMMIT RETRY 10;
-          """.formatted(className);
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "INSERT INTO " + className + " set attempt = $retries;";
+      script += "LET $retries = $retries + 1;";
+      script += "IF($retries < 5) {";
+      script += "  SELECT throwCME(#-1:-1, 1, 1, 1);";
+      script += "}";
+      script += "COMMIT RETRY 10;";
       database.command("sqlscript", script);
     });
 
@@ -210,14 +205,13 @@ public class ScriptExecutionTest extends TestHelper {
     });
 
     final int TOTAL = 1000;
-    String script = """
-            LET $retries = 0;
-            BEGIN;
-            UPDATE %s set attempt = attempt + 1 WHERE id = 0;
-            LET $retries = $retries + 1;
-            COMMIT;
-        """.formatted(className);
     for (int i = 0; i < TOTAL; i++) {
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "UPDATE " + className + " set attempt = attempt + 1 WHERE id = 0;";
+      script += "LET $retries = $retries + 1;";
+      script += "COMMIT;";
       database.async().command("sqlscript", script, null);
     }
 
@@ -237,14 +231,13 @@ public class ScriptExecutionTest extends TestHelper {
 
     //database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
 
-    script = """
-            LET $retries = 0;
-            BEGIN;
-            UPDATE %s set attempt += 1 WHERE id = 1;
-            LET $retries = $retries + 1;
-            COMMIT RETRY 100;
-        """.formatted(className);
     for (int i = 0; i < TOTAL; i++) {
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "UPDATE " + className + " set attempt += 1 WHERE id = 1;";
+      script += "LET $retries = $retries + 1;";
+      script += "COMMIT RETRY 100;";
       database.async().command("sqlscript", script, null);
     }
 
@@ -266,16 +259,14 @@ public class ScriptExecutionTest extends TestHelper {
       database.newDocument(className).set("id", 0).save();
     });
 
-    String script = """
-        LET $retries = 0;
-        BEGIN;
-        UPDATE %s set attempt = attempt + 1 WHERE id = 0;
-        LET $retries = $retries + 1;
-        COMMIT;
-        """.formatted(className);
-    ;
     final int TOTAL = 10_000;
     for (int i = 0; i < TOTAL; i++) {
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "UPDATE " + className + " set attempt = attempt + 1 WHERE id = 0;";
+      script += "LET $retries = $retries + 1;";
+      script += "COMMIT;";
       database.async().command("sqlscript", script, null);
     }
 
@@ -284,7 +275,7 @@ public class ScriptExecutionTest extends TestHelper {
     ResultSet result = database.query("sql", "select from " + className + " where id = 0");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
-    assertThat(item.<Integer>getProperty("attempt")).as("Found attempts = " + item.getProperty("attempt")).isLessThan(TOTAL);
+    assertThat((Integer) item.getProperty("attempt") < TOTAL).as("Found attempts = " + item.getProperty("attempt")).isTrue();
     assertThat(result.hasNext()).isFalse();
     result.close();
 
@@ -295,15 +286,13 @@ public class ScriptExecutionTest extends TestHelper {
 
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
 
-    script = """
-        LET $retries = 0;
-        BEGIN;
-        UPDATE %s set attempt += 1 WHERE id = 1;
-        LET $retries = $retries + 1;
-        COMMIT RETRY 100;
-        """.formatted(className);
-    ;
     for (int i = 0; i < TOTAL; i++) {
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "UPDATE " + className + " set attempt += 1 WHERE id = 1;";
+      script += "LET $retries = $retries + 1;";
+      script += "COMMIT RETRY 100;";
       database.async().command("sqlscript", script, null);
     }
 
@@ -317,7 +306,7 @@ public class ScriptExecutionTest extends TestHelper {
     result = database.query("sql", "select from " + className + " where id = 1");
     assertThat(result.hasNext()).isTrue();
     item = result.next();
-    assertThat(item.<Integer>getProperty("attempt")).isEqualTo(TOTAL);
+    assertThat((Integer) item.getProperty("attempt")).isEqualTo(TOTAL);
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
@@ -330,15 +319,13 @@ public class ScriptExecutionTest extends TestHelper {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(defineThrowCME());
 
     database.transaction(() -> {
-      String script = """
-          LET $retries = 0;
-          BEGIN;
-          INSERT INTO %s set attempt = $retries;
-          LET $retries = $retries + 1;
-          SELECT throwCME(#-1:-1, 1, 1, 1);
-          COMMIT RETRY 10;
-          """.formatted(className);
-      ;
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "INSERT INTO " + className + " set attempt = $retries;";
+      script += "LET $retries = $retries + 1;";
+      script += "SELECT throwCME(#-1:-1, 1, 1, 1);";
+      script += "COMMIT RETRY 10;";
       try {
         database.command("sqlscript", script);
       } catch (ConcurrentModificationException x) {
@@ -358,16 +345,14 @@ public class ScriptExecutionTest extends TestHelper {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(defineThrowCME());
 
     database.transaction(() -> {
-      String script = """
-          LET $retries = 0;
-          BEGIN;
-          INSERT INTO %s set attempt = $retries;
-          LET $retries = $retries + 1;
-          SELECT throwCME(#-1:-1, 1, 1, 1);
-          COMMIT RETRY 10 ELSE CONTINUE;
-          INSERT INTO %s set name = 'foo';
-          """.formatted(className, className);
-      ;
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "INSERT INTO " + className + " set attempt = $retries;";
+      script += "LET $retries = $retries + 1;";
+      script += "SELECT throwCME(#-1:-1, 1, 1, 1);";
+      script += "COMMIT RETRY 10 ELSE CONTINUE;";
+      script += "INSERT INTO " + className + " set name = 'foo';";
 
       database.command("sqlscript", script);
 
@@ -388,17 +373,15 @@ public class ScriptExecutionTest extends TestHelper {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(defineThrowCME());
 
     database.transaction(() -> {
-      String script = """
-          LET $retries = 0;
-          BEGIN;
-          INSERT INTO %s set attempt = $retries;
-          LET $retries = $retries + 1;
-          SELECT throwCME(#-1:-1, 1, 1, 1);
-          COMMIT RETRY 10 ELSE {
-          INSERT INTO %s set name = 'foo';
-          }
-          AND CONTINUE;
-          """.formatted(className, className);
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "INSERT INTO " + className + " set attempt = $retries;";
+      script += "LET $retries = $retries + 1;";
+      script += "SELECT throwCME(#-1:-1, 1, 1, 1);";
+      script += "COMMIT RETRY 10 ELSE {";
+      script += "INSERT INTO " + className + " set name = 'foo';";
+      script += "} AND CONTINUE;";
 
       database.command("sqlscript", script);
     });
@@ -419,16 +402,15 @@ public class ScriptExecutionTest extends TestHelper {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(defineThrowCME());
 
     database.transaction(() -> {
-      String script = """
-              LET $retries = 0;
-              BEGIN;
-              INSERT INTO %s set attempt = $retries;
-              LET $retries = $retries + 1;
-              SELECT throwCME(#-1:-1, 1, 1, 1);
-              COMMIT RETRY 10 ELSE {
-                  INSERT INTO %s set name = 'foo';
-              } AND FAIL;
-          """.formatted(className, className);
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "INSERT INTO " + className + " set attempt = $retries;";
+      script += "LET $retries = $retries + 1;";
+      script += "SELECT throwCME(#-1:-1, 1, 1, 1);";
+      script += "COMMIT RETRY 10 ELSE {";
+      script += "INSERT INTO " + className + " set name = 'foo';";
+      script += "} AND FAIL;";
 
       try {
         database.command("sqlscript", script);
@@ -453,16 +435,15 @@ public class ScriptExecutionTest extends TestHelper {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(defineThrowCME());
 
     database.transaction(() -> {
-      String script = """
-              LET $retries = 0;
-              BEGIN;
-              INSERT INTO %s set attempt = $retries;
-              LET $retries = $retries + 1;
-              SELECT throwCME(#-1:-1, 1, 1, 1);
-              COMMIT RETRY 10 ELSE {
-                  INSERT INTO %s set name = 'foo';
-              }
-          """.formatted(className, className);
+      String script = "";
+      script += "LET $retries = 0;";
+      script += "BEGIN;";
+      script += "INSERT INTO " + className + " set attempt = $retries;";
+      script += "LET $retries = $retries + 1;";
+      script += "SELECT throwCME(#-1:-1, 1, 1, 1);";
+      script += "COMMIT RETRY 10 ELSE {";
+      script += "INSERT INTO " + className + " set name = 'foo';";
+      script += "}";
 
       try {
         database.command("sqlscript", script);
@@ -505,31 +486,29 @@ public class ScriptExecutionTest extends TestHelper {
   @Test
   public void testAssignOnEdgeCreate() {
     database.transaction(() -> {
-      String script = """
-              create vertex type V if not exists;
-              create edge type E if not exists;
-              create edge type IndirectEdge if not exists extends E;
+      String script = "";
+      script += "create vertex type V if not exists;\n";
+      script += "create edge type E if not exists;\n";
+      script += "create edge type IndirectEdge if not exists extends E;\n";
 
-              insert into V set name = 'a', PrimaryName = 'foo1';
-              insert into V set name = 'b', PrimaryName = 'foo2';
-              insert into V set name = 'c', PrimaryName = 'foo3';
-              insert into V set name = 'd', PrimaryName = 'foo4';
+      script += "insert into V set name = 'a', PrimaryName = 'foo1';\n";
+      script += "insert into V set name = 'b', PrimaryName = 'foo2';\n";
+      script += "insert into V set name = 'c', PrimaryName = 'foo3';\n";
+      script += "insert into V set name = 'd', PrimaryName = 'foo4';\n";
 
-              create edge E from (select from V where name = 'a') to (select from V where name = 'b');
-              create edge E from (select from V where name = 'c') to (select from V where name = 'd');
-          """;
+      script += "create edge E from (select from V where name = 'a') to (select from V where name = 'b');\n";
+      script += "create edge E from (select from V where name = 'c') to (select from V where name = 'd');\n";
       database.command("sqlscript", script).close();
     });
 
-    String script = """
-            begin;
-            LET SourceDataset = SELECT expand(out()) from V where name = 'a';
-            LET TarDataset = SELECT expand(out()) from V where name = 'c';
-            IF ($SourceDataset[0] != $TarDataset[0]) {
-                CREATE EDGE IndirectEdge FROM $SourceDataset To $TarDataset SET Source = $SourceDataset[0].PrimaryName;
-            }
-            commit retry 10;
-        """;
+    String script = "begin;\n";
+    script += "LET SourceDataset = SELECT expand(out()) from V where name = 'a';\n";
+    script += "LET TarDataset = SELECT expand(out()) from V where name = 'c';\n";
+    script += "IF ($SourceDataset[0] != $TarDataset[0])\n";
+    script += "{\n";
+    script += "CREATE EDGE IndirectEdge FROM $SourceDataset To $TarDataset SET Source = $SourceDataset[0].PrimaryName;\n";
+    script += "};\n";
+    script += "commit retry 10;\n";
 
     database.command("sqlscript", script).close();
 

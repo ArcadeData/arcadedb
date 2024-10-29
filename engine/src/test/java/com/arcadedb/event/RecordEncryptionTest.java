@@ -18,10 +18,8 @@
  */
 package com.arcadedb.event;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -83,24 +81,19 @@ public class RecordEncryptionTest extends TestHelper
   @Test
   public void testEncryption() {
     database.transaction(() -> {
-      final MutableVertex v1 = database.newVertex("BackAccount")
-          .set("secret", "Nobody must know Elon and Zuck are brothers")
+      final MutableVertex v1 = database.newVertex("BackAccount").set("secret", "Nobody must know Elon and Zuck are brothers")
           .save();
     });
 
     assertThat(creates.get()).isEqualTo(1);
 
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
-
     database.transaction(() -> {
-      final Record v1 = database.iterateType("BackAccount", true).next();
-      assertThat(v1.asDocument().getString("secret")).isEqualTo("Nobody must know Elon and Zuck are brothers");
-//      assertThat(v1.asDocument().getInteger("reads")).isEqualTo(1);
+      final Vertex v1 = database.iterateType("BackAccount", true).next().asVertex();
+      assertThat(v1.getString("secret")).isEqualTo("Nobody must know Elon and Zuck are brothers");
     });
 
     assertThat(reads.get()).isEqualTo(1);
-
-    System.out.println("----------------------");
 
     database.transaction(() -> {
       final MutableVertex v1 = database.iterateType("BackAccount", true).next().asVertex().modify();
@@ -120,14 +113,10 @@ public class RecordEncryptionTest extends TestHelper
 
   @Override
   public Record onAfterRead(Record record) {
-    System.out.println("read doc");
-    final MutableDocument doc = record.asDocument().modify();
-    System.out.println("after read doc");
+    final MutableVertex doc = record.asVertex().modify();
     try {
       doc.set("secret", decrypt(ALGORITHM, doc.getString("secret"), key, ivParameterSpec));
       reads.incrementAndGet();
-      doc.set("reads", reads.get());
-      System.out.println(Thread.currentThread().getName() + " -  in listener-->read = " + reads.get());
       return doc;
     } catch (Exception e) {
       throw new SecurityException(e);
