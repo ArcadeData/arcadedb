@@ -40,38 +40,35 @@ public class ContainsAnyCondition extends BooleanExpression {
 
   public boolean execute(Object left, Object right) {
     if (left instanceof Collection) {
-      if (right instanceof Iterable) {
-        right = ((Iterable) right).iterator();
-      }
-      if (right instanceof Iterator) {
-        final Iterator iterator = (Iterator) right;
+      if (right instanceof Iterable)
+        right = ((Iterable<?>) right).iterator();
+
+      if (right instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (((Collection) left).contains(next)) {
+          if (((Collection<?>) left).contains(next))
             return true;
-          }
         }
       }
-      return false;
+      return ((Collection<?>) left).contains(right);
     }
-    if (left instanceof Iterable) {
-      left = ((Iterable) left).iterator();
-    }
-    if (left instanceof Iterator) {
-      if (!(right instanceof Iterable)) {
-        right = Collections.singleton(right);
-      }
-      right = ((Iterable) right).iterator();
 
-      final Iterator leftIterator = (Iterator) left;
-      final Iterator rightIterator = (Iterator) right;
+    if (left instanceof Iterable)
+      left = ((Iterable<?>) left).iterator();
+
+    if (left instanceof Iterator<?> leftIterator) {
+      if (!(right instanceof Iterable))
+        right = Collections.singleton(right);
+
+      right = ((Iterable<?>) right).iterator();
+
+      final Iterator<?> rightIterator = (Iterator<?>) right;
       while (rightIterator.hasNext()) {
         final Object leftItem = rightIterator.next();
         while (leftIterator.hasNext()) {
           final Object rightItem = leftIterator.next();
-          if (leftItem != null && leftItem.equals(rightItem)) {
+          if (leftItem != null && leftItem.equals(rightItem))
             return true;
-          }
         }
       }
     }
@@ -85,23 +82,20 @@ public class ContainsAnyCondition extends BooleanExpression {
       final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
-      if (!MultiValue.isMultiValue(leftValue)) {
+      if (!MultiValue.isMultiValue(leftValue))
         return false;
-      }
+
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, context)) {
+          if (!rightBlock.evaluate((Identifiable) item, context))
             return false;
-          }
         } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, context)) {
+          if (!rightBlock.evaluate((Result) item, context))
             return false;
-          }
-        } else if (!rightBlock.evaluate(new ResultInternal(item), context)) {
+        } else if (!rightBlock.evaluate(new ResultInternal(item), context))
           return false;
-        }
       }
       return true;
     }
@@ -114,23 +108,20 @@ public class ContainsAnyCondition extends BooleanExpression {
       final Object rightValue = right.execute(currentRecord, context);
       return execute(leftValue, rightValue);
     } else {
-      if (!MultiValue.isMultiValue(leftValue)) {
+      if (!MultiValue.isMultiValue(leftValue))
         return false;
-      }
+
       final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, context)) {
+          if (!rightBlock.evaluate((Identifiable) item, context))
             return false;
-          }
         } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, context)) {
+          if (!rightBlock.evaluate((Result) item, context))
             return false;
-          }
-        } else if (!rightBlock.evaluate(new ResultInternal(item), context)) {
+        } else if (!rightBlock.evaluate(new ResultInternal(item), context))
           return false;
-        }
       }
       return true;
     }

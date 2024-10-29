@@ -40,33 +40,31 @@ public class ContainsAllCondition extends BooleanExpression {
   public boolean execute(Object left, Object right) {
     if (left instanceof Collection) {
       if (right instanceof Collection)
-        return ((Collection) left).containsAll((Collection) right);
+        return ((Collection<?>) left).containsAll((Collection<?>) right);
 
       if (right instanceof Iterable)
-        right = ((Iterable) right).iterator();
+        right = ((Iterable<?>) right).iterator();
 
-      if (right instanceof Iterator) {
-        final Iterator iterator = (Iterator) right;
+      if (right instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (!((Collection) left).contains(next)) {
+          if (!((Collection<?>) left).contains(next))
             return false;
-          }
+
         }
       }
       return ((Collection) left).contains(right);
     }
     if (left instanceof Iterable)
-      left = ((Iterable) left).iterator();
+      left = ((Iterable<?>) left).iterator();
 
-    if (left instanceof Iterator) {
+    if (left instanceof Iterator<?> leftIterator) {
       if (!(right instanceof Iterable))
         right = Collections.singleton(right);
 
-      right = ((Iterable) right).iterator();
+      right = ((Iterable<?>) right).iterator();
 
-      final Iterator leftIterator = (Iterator) left;
-      final Iterator rightIterator = (Iterator) right;
+      final Iterator<?> rightIterator = (Iterator<?>) right;
       while (rightIterator.hasNext()) {
         final Object leftItem = rightIterator.next();
         boolean found = false;

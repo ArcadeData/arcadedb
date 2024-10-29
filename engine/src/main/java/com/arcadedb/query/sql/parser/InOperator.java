@@ -31,36 +31,32 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
 
   @Override
   public boolean execute(final DatabaseInternal database, Object left, Object right) {
-    if (left == null) {
-      return false;
-    }
     if (right instanceof Collection) {
-      if (left instanceof Collection) {
-        return ((Collection) right).containsAll((Collection) left);
-      }
-      if (left instanceof Iterable) {
-        left = ((Iterable) left).iterator();
-      }
-      if (left instanceof Iterator) {
-        final Iterator iterator = (Iterator) left;
+      if (left instanceof Collection<?>)
+        return ((Collection<?>) right).containsAll((Collection<?>) left);
+
+      if (left instanceof Iterable)
+        left = ((Iterable<?>) left).iterator();
+
+      if (left instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (!((Collection) right).contains(next)) {
+          if (!((Collection<?>) right).contains(next)) {
             return false;
           }
         }
       }
-      return ((Collection) right).contains(left);
+      return ((Collection<?>) right).contains(left);
     }
-    if (right instanceof Iterable) {
-      right = ((Iterable) right).iterator();
-    }
-    if (right instanceof Iterator) {
-      if (left instanceof Iterable) {
-        left = ((Iterable) left).iterator();
-      }
-      final Iterator leftIterator = (Iterator) left;
-      final Iterator rightIterator = (Iterator) right;
+
+    if (right instanceof Iterable)
+      right = ((Iterable<?>) right).iterator();
+
+    if (right instanceof Iterator<?> rightIterator) {
+      if (left instanceof Iterable)
+        left = ((Iterable<?>) left).iterator();
+
+      final Iterator<?> leftIterator = (Iterator<?>) left;
       while (leftIterator.hasNext()) {
         final Object leftItem = leftIterator.next();
         boolean found = false;
@@ -71,9 +67,9 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
             break;
           }
         }
-        if (!found) {
+        if (!found)
           return false;
-        }
+
       }
       return true;
     }

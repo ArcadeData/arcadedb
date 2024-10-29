@@ -49,7 +49,16 @@ public class InOperatorTest {
     assertThat(op.execute(null, "foo", list1)).isFalse();
     assertThat(op.execute(null, "a", list1)).isTrue();
     assertThat(op.execute(null, 1, list1)).isTrue();
+  }
 
-    // TODO
+  @Test
+  public void issue1785() {
+    final InOperator op = new InOperator(-1);
+
+    final List<Object> nullList = new ArrayList<>();
+    nullList.add(null);
+
+    assertThat(op.execute(null, null, nullList)).isTrue();
+    assertThat(op.execute(null, nullList, nullList)).isTrue();
   }
 }
