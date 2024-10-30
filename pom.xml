@@ -183,6 +183,7 @@
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                     </systemPropertyVariables>
                     <argLine>
+                        @{argLine}
                         --add-exports java.management/sun.management=ALL-UNNAMED
                         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
@@ -220,6 +221,7 @@
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                     </systemPropertyVariables>
                     <argLine>
+                        @{itCoverageAgent}
                         --add-exports java.management/sun.management=ALL-UNNAMED
                         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
@@ -487,6 +489,7 @@
                                 </goals>
                                 <phase>pre-integration-test</phase>
                                 <configuration>
+                                    <destFile>jacooc-it.exec</destFile>
                                     <propertyName>itCoverageAgent</propertyName>
                                     <excludes>
                                         <exclude>**/SqlParserTokenManager.class</exclude>
