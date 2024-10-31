@@ -72,7 +72,7 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
       final String setting = settingName.getStringValue().toLowerCase(Locale.ENGLISH);
-      final Object finalValue = settingValue.execute((Identifiable) null, context);
+      final Object finalValue = setting.equalsIgnoreCase("default") ? settingValue.toString() : settingValue.execute((Identifiable) null, context);
 
       final Object oldValue;
 
@@ -93,7 +93,7 @@ public class AlterPropertyStatement extends DDLStatement {
         property.setMin("" + finalValue);
       } else if (setting.equalsIgnoreCase("default")) {
         oldValue = property.getDefaultValue();
-        property.setDefaultValue(settingValue.toString());
+        property.setDefaultValue("" + finalValue);
       } else if (setting.equalsIgnoreCase("regexp")) {
         oldValue = property.getRegexp();
         property.setRegexp("" + finalValue);
