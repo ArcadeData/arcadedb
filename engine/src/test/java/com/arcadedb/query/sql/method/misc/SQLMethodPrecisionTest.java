@@ -53,21 +53,26 @@ class SQLMethodPrecisionTest {
 
   @Test
   void testLocalDateTime() throws Exception {
-    testPrecision("microsecond", () -> LocalDateTime.now());
-    testPrecision("millisecond", () -> LocalDateTime.now());
+    testPrecision("microsecond", LocalDateTime::now);
+    testPrecision("microseconds", LocalDateTime::now);
+    testPrecision("millisecond", LocalDateTime::now);
+    testPrecision("milliseconds", LocalDateTime::now);
   }
 
   @Test
   void testZonedDateTime() throws Exception {
-    testPrecision("microsecond", () -> ZonedDateTime.now());
-    testPrecision("millisecond", () -> ZonedDateTime.now());
+    testPrecision("microsecond", ZonedDateTime::now);
+    testPrecision("millisecond", ZonedDateTime::now);
   }
 
   @Test
   void testInstant() throws Exception {
     testPrecision("microsecond", () -> new NanoClock().instant());
+    testPrecision("microseconds", () -> new NanoClock().instant());
     testPrecision("millisecond", () -> new NanoClock().instant());
+    testPrecision("milliseconds", () -> new NanoClock().instant());
     testPrecision("nanosecond", () -> new NanoClock().instant());
+    testPrecision("nanoseconds", () -> new NanoClock().instant());
   }
 
   @Test

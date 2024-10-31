@@ -32,7 +32,15 @@ import com.arcadedb.query.sql.function.math.SQLFunctionMathAbstract;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Shortest path algorithm to find the shortest path from one node to another node in a directed graph.
@@ -47,7 +55,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     super(NAME);
   }
 
-  private static class OShortestPathContext {
+  private static class ShortestPathContext {
     Vertex           sourceVertex;
     Vertex           destinationVertex;
     Vertex.DIRECTION directionLeft  = Vertex.DIRECTION.BOTH;
@@ -59,14 +67,14 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     ArrayDeque<Vertex> queueLeft  = new ArrayDeque<>();
     ArrayDeque<Vertex> queueRight = new ArrayDeque<>();
 
-    final Set<RID> leftVisited  = new HashSet<RID>();
-    final Set<RID> rightVisited = new HashSet<RID>();
-
-    final Map<RID, RID> previouses = new HashMap<RID, RID>();
-    final Map<RID, RID> nexts      = new HashMap<RID, RID>();
+    final Set<RID>      leftVisited  = new HashSet<>();
+    final Set<RID>      rightVisited = new HashSet<>();
+    final Map<RID, RID> previouses   = new HashMap<>();
+    final Map<RID, RID> nexts        = new HashMap<>();
 
     Vertex current;
     Vertex currentRight;
+
     public Integer maxDepth;
     /**
      * option that decides whether or not to return the edge information
@@ -74,99 +82,98 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     public Boolean edge;
   }
 
-  public List<RID> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public List<RID> execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
 
-    final OShortestPathContext context = new OShortestPathContext();
+    final ShortestPathContext shortestPathContext = new ShortestPathContext();
 
-    Object source = iParams[0];
+    Object source = params[0];
     if (MultiValue.isMultiValue(source)) {
       if (MultiValue.getSize(source) > 1)
         throw new IllegalArgumentException("Only one sourceVertex is allowed");
       source = MultiValue.getFirstValue(source);
-      if (source instanceof Result && ((Result) source).isElement()) {
-        source = ((Result) source).getElement().get();
+      if (source instanceof Result result && result.isElement()) {
+        source = result.getElement().get();
       }
     }
 
     //    source = record.get((String) source);
 
-    if (source instanceof Identifiable) {
-      final Document elem = (Document) ((Identifiable) source).getRecord();
+    if (source instanceof Identifiable identifiable) {
+      final Document elem = (Document) identifiable.getRecord();
       if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The sourceVertex must be a vertex record");
 
-      context.sourceVertex = (Vertex) elem;
+      shortestPathContext.sourceVertex = (Vertex) elem;
     } else {
       throw new IllegalArgumentException("The sourceVertex must be a vertex record");
     }
 
-    Object dest = iParams[1];
+    Object dest = params[1];
     if (MultiValue.isMultiValue(dest)) {
       if (MultiValue.getSize(dest) > 1)
         throw new IllegalArgumentException("Only one destinationVertex is allowed");
       dest = MultiValue.getFirstValue(dest);
-      if (dest instanceof Result && ((Result) dest).isElement()) {
-        dest = ((Result) dest).getElement().get();
+      if (dest instanceof Result result && result.isElement()) {
+        dest = result.getElement().get();
       }
     }
 
     //    dest = record.get((String) dest);
 
-    if (dest instanceof Identifiable) {
-      final Document elem = (Document) ((Identifiable) dest).getRecord();
-      if (!(elem instanceof Vertex))
+    if (dest instanceof Identifiable identifiable1) {
+      final Document elem = (Document) identifiable1.getRecord();
+      if (!(elem instanceof Vertex vertex))
         throw new IllegalArgumentException("The destinationVertex must be a vertex record");
 
-      context.destinationVertex = (Vertex) elem;
+      shortestPathContext.destinationVertex = vertex;
     } else {
       throw new IllegalArgumentException("The destinationVertex must be a vertex record");
     }
 
-    if (context.sourceVertex.equals(context.destinationVertex)) {
-      final List<RID> result = new ArrayList<RID>(1);
-      result.add(context.destinationVertex.getIdentity());
+    if (shortestPathContext.sourceVertex.equals(shortestPathContext.destinationVertex)) {
+      final List<RID> result = new ArrayList<>(1);
+      result.add(shortestPathContext.destinationVertex.getIdentity());
       return result;
     }
 
-    if (iParams.length > 2 && iParams[2] != null) {
-      context.directionLeft = Vertex.DIRECTION.valueOf(iParams[2].toString().toUpperCase(Locale.ENGLISH));
+    if (params.length > 2 && params[2] != null) {
+      shortestPathContext.directionLeft = Vertex.DIRECTION.valueOf(params[2].toString().toUpperCase(Locale.ENGLISH));
     }
-    if (context.directionLeft == Vertex.DIRECTION.OUT) {
-      context.directionRight = Vertex.DIRECTION.IN;
-    } else if (context.directionLeft == Vertex.DIRECTION.IN) {
-      context.directionRight = Vertex.DIRECTION.OUT;
+    if (shortestPathContext.directionLeft == Vertex.DIRECTION.OUT) {
+      shortestPathContext.directionRight = Vertex.DIRECTION.IN;
+    } else if (shortestPathContext.directionLeft == Vertex.DIRECTION.IN) {
+      shortestPathContext.directionRight = Vertex.DIRECTION.OUT;
     }
 
-    context.edgeType = null;
-    if (iParams.length > 3) {
-      context.edgeType = iParams[3] == null ? null : "" + iParams[3];
+    shortestPathContext.edgeType = null;
+    if (params.length > 3) {
+      shortestPathContext.edgeType = params[3] == null ? null : "" + params[3];
     }
-    context.edgeTypeParam = null;
-    if (iParams.length > 3 && iParams[3] != null) {
-      if (iParams[3] instanceof List) {
-        final List<String> list = (List<String>) iParams[3];
-        context.edgeTypeParam = list.toArray(new String[list.size()]);
+    shortestPathContext.edgeTypeParam = null;
+    if (params.length > 3 && params[3] != null) {
+      if (params[3] instanceof List<?> list) {
+        shortestPathContext.edgeTypeParam = list.toArray(new String[0]);
       } else
-        context.edgeTypeParam = new String[] { context.edgeType };
+        shortestPathContext.edgeTypeParam = new String[] { shortestPathContext.edgeType };
     }
 
-    if (iParams.length > 4) {
-      bindAdditionalParams(iParams[4], context);
+    if (params.length > 4) {
+      bindAdditionalParams(params[4], shortestPathContext);
     }
 
-    context.queueLeft.add(context.sourceVertex);
-    context.leftVisited.add(context.sourceVertex.getIdentity());
+    shortestPathContext.queueLeft.add(shortestPathContext.sourceVertex);
+    shortestPathContext.leftVisited.add(shortestPathContext.sourceVertex.getIdentity());
 
-    context.queueRight.add(context.destinationVertex);
-    context.rightVisited.add(context.destinationVertex.getIdentity());
+    shortestPathContext.queueRight.add(shortestPathContext.destinationVertex);
+    shortestPathContext.rightVisited.add(shortestPathContext.destinationVertex.getIdentity());
 
     int depth = 1;
     while (true) {
-      if (context.maxDepth != null && context.maxDepth <= depth) {
+      if (shortestPathContext.maxDepth != null && shortestPathContext.maxDepth <= depth) {
         break;
       }
-      if (context.queueLeft.isEmpty() || context.queueRight.isEmpty())
+      if (shortestPathContext.queueLeft.isEmpty() || shortestPathContext.queueRight.isEmpty())
         break;
 
       if (Thread.interrupted())
@@ -174,57 +181,57 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
       List<RID> neighborIdentity;
 
-      if (context.queueLeft.size() <= context.queueRight.size()) {
+      if (shortestPathContext.queueLeft.size() <= shortestPathContext.queueRight.size()) {
         // START EVALUATING FROM LEFT
-        neighborIdentity = walkLeft(context);
+        neighborIdentity = walkLeft(shortestPathContext);
         if (neighborIdentity != null)
           return neighborIdentity;
         depth++;
-        if (context.maxDepth != null && context.maxDepth <= depth) {
+        if (shortestPathContext.maxDepth != null && shortestPathContext.maxDepth <= depth) {
           break;
         }
 
-        if (context.queueLeft.isEmpty())
+        if (shortestPathContext.queueLeft.isEmpty())
           break;
 
-        neighborIdentity = walkRight(context);
+        neighborIdentity = walkRight(shortestPathContext);
         if (neighborIdentity != null)
           return neighborIdentity;
 
       } else {
         // START EVALUATING FROM RIGHT
-        neighborIdentity = walkRight(context);
+        neighborIdentity = walkRight(shortestPathContext);
         if (neighborIdentity != null)
           return neighborIdentity;
 
         depth++;
-        if (context.maxDepth != null && context.maxDepth <= depth) {
+        if (shortestPathContext.maxDepth != null && shortestPathContext.maxDepth <= depth) {
           break;
         }
 
-        if (context.queueRight.isEmpty())
+        if (shortestPathContext.queueRight.isEmpty())
           break;
 
-        neighborIdentity = walkLeft(context);
+        neighborIdentity = walkLeft(shortestPathContext);
         if (neighborIdentity != null)
           return neighborIdentity;
       }
 
       depth++;
     }
-    return new ArrayList<RID>();
+    return new ArrayList<>();
 
   }
 
-  private void bindAdditionalParams(final Object additionalParams, final OShortestPathContext context) {
+  private void bindAdditionalParams(final Object additionalParams, final ShortestPathContext context) {
     if (additionalParams == null)
       return;
 
     Map<String, Object> mapParams = null;
-    if (additionalParams instanceof Map)
-      mapParams = (Map) additionalParams;
-    else if (additionalParams instanceof Identifiable)
-      mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).toMap();
+    if (additionalParams instanceof Map map)
+      mapParams = map;
+    else if (additionalParams instanceof Identifiable identifiable)
+      mapParams = identifiable.getRecord().asDocument().toMap();
 
     if (mapParams != null) {
       context.maxDepth = integer(mapParams.get("maxDepth"));
@@ -237,12 +244,12 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     if (fromObject == null)
       return null;
 
-    if (fromObject instanceof Number)
-      return ((Number) fromObject).intValue();
+    if (fromObject instanceof Number number)
+      return number.intValue();
 
-    if (fromObject instanceof String) {
+    if (fromObject instanceof String string) {
       try {
-        return Integer.parseInt(fromObject.toString());
+        return Integer.parseInt(string);
       } catch (final NumberFormatException ignore) {
       }
     }
@@ -258,12 +265,12 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     if (fromObject == null)
       return null;
 
-    if (fromObject instanceof Boolean)
-      return (Boolean) fromObject;
+    if (fromObject instanceof Boolean bool)
+      return bool;
 
-    if (fromObject instanceof String) {
+    if (fromObject instanceof String string) {
       try {
-        return Boolean.parseBoolean(fromObject.toString());
+        return Boolean.parseBoolean(string);
       } catch (final NumberFormatException ignore) {
       }
     }
@@ -281,7 +288,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
    *
    * @author Thomas Young (YJJThomasYoung@hotmail.com)
    */
-  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.DIRECTION direction, final String... types) {
+  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.DIRECTION direction,
+      final String... types) {
     if (direction == Vertex.DIRECTION.BOTH) {
       final MultiIterator<Vertex> vertexIterator = new MultiIterator<>();
       final MultiIterator<Edge> edgeIterator = new MultiIterator<>();
@@ -317,7 +325,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     return "shortestPath(<sourceVertex>, <destinationVertex>, [<direction>, [ <edgeTypeAsString> ]])";
   }
 
-  protected List<RID> walkLeft(final SQLFunctionShortestPath.OShortestPathContext context) {
+  protected List<RID> walkLeft(final ShortestPathContext context) {
     final ArrayDeque<Vertex> nextLevelQueue = new ArrayDeque<>();
     if (!Boolean.TRUE.equals(context.edge)) {
       while (!context.queueLeft.isEmpty()) {
@@ -330,8 +338,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
           neighbors = context.current.getVertices(context.directionLeft, context.edgeTypeParam);
         }
         for (final Vertex neighbor : neighbors) {
-          final Vertex v = neighbor;
-          final RID neighborIdentity = v.getIdentity();
+          final RID neighborIdentity = neighbor.getIdentity();
 
           if (context.rightVisited.contains(neighborIdentity)) {
             context.previouses.put(neighborIdentity, context.current.getIdentity());
@@ -340,7 +347,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
           if (!context.leftVisited.contains(neighborIdentity)) {
             context.previouses.put(neighborIdentity, context.current.getIdentity());
 
-            nextLevelQueue.offer(v);
+            nextLevelQueue.offer(neighbor);
             context.leftVisited.add(neighborIdentity);
           }
 
@@ -382,7 +389,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     return null;
   }
 
-  protected List<RID> walkRight(final SQLFunctionShortestPath.OShortestPathContext context) {
+  protected List<RID> walkRight(final ShortestPathContext context) {
     final ArrayDeque<Vertex> nextLevelQueue = new ArrayDeque<>();
     if (!Boolean.TRUE.equals(context.edge)) {
       while (!context.queueRight.isEmpty()) {
@@ -395,8 +402,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
           neighbors = context.currentRight.getVertices(context.directionRight, context.edgeTypeParam);
         }
         for (final Vertex neighbor : neighbors) {
-          final Vertex v = neighbor;
-          final RID neighborIdentity = v.getIdentity();
+          final RID neighborIdentity = neighbor.getIdentity();
 
           if (context.leftVisited.contains(neighborIdentity)) {
             context.nexts.put(neighborIdentity, context.currentRight.getIdentity());
@@ -406,7 +412,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
             context.nexts.put(neighborIdentity, context.currentRight.getIdentity());
 
-            nextLevelQueue.offer(v);
+            nextLevelQueue.offer(neighbor);
             context.rightVisited.add(neighborIdentity);
           }
 

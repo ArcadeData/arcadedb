@@ -23,8 +23,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.*;
-
 /**
  * Generates a UUID as a 128-bits value using the Leach-Salz variant. For more information look at:
  * http://docs.oracle.com/javase/6/docs/api/java/util/UUID.html.
@@ -46,17 +44,8 @@ public class SQLFunctionVersion extends SQLFunctionAbstract {
     return Constants.getVersion();
   }
 
-  @Override
-  public boolean aggregateResults() {
-    return false;
-  }
-
   public String getSyntax() {
     return "version()";
   }
 
-  @Override
-  public Object getResult() {
-    return null;
-  }
 }

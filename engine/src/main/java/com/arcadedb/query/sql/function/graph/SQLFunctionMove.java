@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 import com.arcadedb.utility.FileUtils;
 
-import java.util.*;
+import java.util.ArrayList;
 
 /**
  * Created by luigidellaquila on 03/01/17.
@@ -45,45 +45,48 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     return "Syntax error: " + name + "([<labels>])";
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParameters,
-      final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParameters, final CommandContext iContext) {
 
     final String[] labels;
     if (iParameters != null && iParameters.length > 0 && iParameters[0] != null)
-      labels = MultiValue.array(iParameters, String.class, iArgument -> FileUtils.getStringContent(iArgument));
+      labels = MultiValue.array(iParameters, String.class, FileUtils::getStringContent);
     else
       labels = null;
 
     return SQLQueryEngine.foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels), iThis, iContext);
   }
 
-  protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
+  protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+      final String[] iLabels) {
     if (iRecord != null) {
       final Document rec = (Document) iRecord.getRecord();
-      if (rec instanceof Vertex)
-        return ((Vertex) rec).getVertices(iDirection, iLabels);
+      if (rec instanceof Vertex vertex)
+        return vertex.getVertices(iDirection, iLabels);
     }
     return null;
   }
 
-  protected Object v2e(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
+  protected Object v2e(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+      final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
-    if (rec instanceof Vertex)
-      return ((Vertex) rec).getEdges(iDirection, iLabels);
+    if (rec instanceof Vertex vertex)
+      return vertex.getEdges(iDirection, iLabels);
     return null;
 
   }
 
-  protected Object e2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {
+  protected Object e2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+      final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
-    if (rec instanceof Edge) {
+    if (rec instanceof Edge edge) {
       if (iDirection == Vertex.DIRECTION.BOTH) {
-        final List results = new ArrayList();
-        results.add(((Edge) rec).getOutVertex());
-        results.add(((Edge) rec).getInVertex());
+        var results = new ArrayList<Vertex>();
+        results.add(edge.getOutVertex());
+        results.add(edge.getInVertex());
         return results;
       }
-      return ((Edge) rec).getVertex(iDirection);
+      return edge.getVertex(iDirection);
     }
 
     return null;

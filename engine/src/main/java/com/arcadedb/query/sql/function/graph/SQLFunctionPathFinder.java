@@ -23,7 +23,12 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.math.SQLFunctionMathAbstract;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Abstract class to find paths between nodes.
@@ -35,7 +40,7 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
   protected Map<RID, Vertex> predecessors;
   protected Map<RID, Float>  distance;
 
-  protected Vertex           paramSourceVertex;
+  protected       Vertex           paramSourceVertex;
   protected       Vertex           paramDestinationVertex;
   protected final Vertex.DIRECTION paramDirection = Vertex.DIRECTION.OUT;
   protected       CommandContext   context;
@@ -48,9 +53,9 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
 
   protected LinkedList<Vertex> execute(final CommandContext iContext) {
     context = iContext;
-    unSettledNodes = new HashSet<Vertex>();
-    distance = new HashMap<RID, Float>();
-    predecessors = new HashMap<RID, Vertex>();
+    unSettledNodes = new HashSet<>();
+    distance = new HashMap<>();
+    predecessors = new HashMap<>();
     distance.put(paramSourceVertex.getIdentity(), MIN);
     unSettledNodes.add(paramSourceVertex);
 

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.index;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -31,13 +30,19 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -217,9 +222,7 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        assertThat(found)
-            .withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times")
-            .isEqualTo(1);
+        assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(1);
       }
 
       assertThat(total).isEqualTo(TOT);
@@ -229,9 +232,8 @@ public class LSMTreeIndexTest extends TestHelper {
         for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
-          assertThat(index.get(new Object[] { i }).hasNext())
-              .withFailMessage("Found item with key " + i + " inside the TX by using get()")
-              .isFalse();
+          assertThat(index.get(new Object[] { i }).hasNext()).withFailMessage(
+              "Found item with key " + i + " inside the TX by using get()").isFalse();
         }
       }
 
@@ -255,9 +257,8 @@ public class LSMTreeIndexTest extends TestHelper {
         for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
-          assertThat(index.get(new Object[] { i }).hasNext())
-              .withFailMessage("Found item with key " + i + " after the TX was committed")
-              .isFalse();
+          assertThat(index.get(new Object[] { i }).hasNext()).withFailMessage(
+              "Found item with key " + i + " after the TX was committed").isFalse();
         }
       }
 
@@ -269,9 +270,8 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
 
-          assertThat(cursor.hasNext() && cursor.next() != null)
-              .withFailMessage("Found item with key " + i + " after the TX was committed by using range()")
-              .isFalse();
+          assertThat(cursor.hasNext() && cursor.next() != null).withFailMessage(
+              "Found item with key " + i + " after the TX was committed by using range()").isFalse();
         }
       }
     }, true, 0);
@@ -302,9 +302,7 @@ public class LSMTreeIndexTest extends TestHelper {
           }
         }
 
-        assertThat(found)
-            .withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times")
-            .isEqualTo(1);
+        assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(1);
       }
 
       assertThat(total).isEqualTo(TOT);
@@ -340,9 +338,8 @@ public class LSMTreeIndexTest extends TestHelper {
           if (index instanceof TypeIndex)
             continue;
 
-          assertThat(index.get(new Object[] { i }).hasNext())
-              .withFailMessage("Found item with key " + i + " after the TX was committed")
-              .isFalse();
+          assertThat(index.get(new Object[] { i }).hasNext()).withFailMessage(
+              "Found item with key " + i + " after the TX was committed").isFalse();
         }
       }
 
@@ -354,9 +351,8 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
 
-          assertThat(cursor.hasNext() && cursor.next() != null)
-              .withFailMessage("Found item with key " + i + " after the TX was committed by using range()")
-              .isFalse();
+          assertThat(cursor.hasNext() && cursor.next() != null).withFailMessage(
+              "Found item with key " + i + " after the TX was committed by using range()").isFalse();
         }
       }
     }, true, 0);
@@ -509,8 +505,8 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final ResultSet resultSet = database.query("sql", "select from " + TYPE_NAME);
-      for (final ResultSet it = resultSet; it.hasNext(); ) {
-        final Result r = it.next();
+      while (resultSet.hasNext()) {
+        final Result r = resultSet.next();
 
         assertThat(r.getElement().get().get("id")).isNotNull();
 
@@ -1063,8 +1059,8 @@ public class LSMTreeIndexTest extends TestHelper {
                   if (threadInserted % 1000 == 0)
                     LogManager.instance()
                         .log(this, Level.INFO, "%s Thread %d inserted record %s, total %d records with key %d (total=%d)", null,
-                            getClass(),
-                            Thread.currentThread().getId(), v.getIdentity(), i, threadInserted, crossThreadsInserted.get());
+                            getClass(), Thread.currentThread().getId(), v.getIdentity(), i, threadInserted,
+                            crossThreadsInserted.get());
 
                   keyPresent = true;
 
@@ -1116,8 +1112,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
     LogManager.instance()
         .log(this, Level.INFO, "%s Completed (inserted=%d needRetryExceptions=%d duplicatedExceptions=%d)", null, getClass(),
-            crossThreadsInserted.get(),
-            needRetryExceptions.get(), duplicatedExceptions.get());
+            crossThreadsInserted.get(), needRetryExceptions.get(), duplicatedExceptions.get());
 
     if (total != crossThreadsInserted.get()) {
       LogManager.instance().log(this, Level.INFO, "DUMP OF INSERTED RECORDS (ORDERED BY ID)");

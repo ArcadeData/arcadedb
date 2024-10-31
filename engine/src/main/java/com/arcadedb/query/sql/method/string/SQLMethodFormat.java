@@ -24,7 +24,9 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * @author Johann Sorel (Geomatys)
@@ -52,7 +54,7 @@ public class SQLMethodFormat extends AbstractSQLMethod {
 
     if (isCollectionOfDates(value)) {
       final List<String> result = new ArrayList<String>();
-      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(value);
+      final Iterator<?> iterator = MultiValue.getMultiValueIterator(value);
 
       while (iterator.hasNext())
         result.add(DateUtils.format(iterator.next(), format));
@@ -67,7 +69,7 @@ public class SQLMethodFormat extends AbstractSQLMethod {
 
   private boolean isCollectionOfDates(final Object value) {
     if (MultiValue.isMultiValue(value)) {
-      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(value);
+      final Iterator<?> iterator = MultiValue.getMultiValueIterator(value);
       while (iterator.hasNext()) {
         final Object item = iterator.next();
         if (item != null && !DateUtils.isDate(item)) {

@@ -44,13 +44,26 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.net.*;
-import java.nio.*;
-import java.nio.charset.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Postgres Reference for Protocol Messages: https://www.postgresql.org/docs/9.6/protocol-message-formats.html
@@ -150,45 +163,20 @@ public class PostgresNetworkExecutor extends Thread {
               consecutiveErrors = 0;
 
               switch (type) {
-              case 'P':
-                parseCommand();
-                break;
-
-              case 'B':
-                bindCommand();
-                break;
-
-              case 'E':
-                executeCommand();
-                break;
-
-              case 'Q':
-                queryCommand();
-                break;
-
-              case 'S':
-                syncCommand();
-                break;
-
-              case 'D':
-                describeCommand();
-                break;
-
-              case 'C':
-                closeCommand();
-                break;
-
-              case 'H':
-                flushCommand();
-                break;
-
-              case 'X':
+              case 'P' -> parseCommand();
+              case 'B' -> bindCommand();
+              case 'E' -> executeCommand();
+              case 'Q' -> queryCommand();
+              case 'S' -> syncCommand();
+              case 'D' -> describeCommand();
+              case 'C' -> closeCommand();
+              case 'H' -> flushCommand();
+              case 'X' -> {
                 // TERMINATE
                 shutdown = true;
                 return;
-
-              default:
-                throw new PostgresProtocolException("Message '" + type + "' not managed");
+              }
+              default -> throw new PostgresProtocolException("Message '" + type + "' not managed");
               }
 
             }, 'P', 'B', 'E', 'Q', 'S', 'D', 'C', 'H', 'X');
@@ -363,9 +351,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s (thread=%s)", queryText, Thread.currentThread().getId());
 
-      final String[] query = getLanguageAndQuery(queryText);
-      final String language = query[0];
-      queryText = query[1];
+      final Query query = getLanguageAndQuery(queryText);
 
       final ResultSet resultSet;
       if (queryText.startsWith("SET ")) {
@@ -382,7 +368,7 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (ignoreQueries.contains(queryText))
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       else
-        resultSet = database.command(language, queryText);
+        resultSet = database.command(query.language, query.query);
 
       final List<Result> cachedResultset = browseAndCacheResultSet(resultSet, 0);
 
@@ -813,14 +799,12 @@ public class PostgresNetworkExecutor extends Thread {
         portal.columns.put("TABLE_SCHEM", PostgresType.VARCHAR);
         portal.columns.put("TABLE_CATALOG", PostgresType.VARCHAR);
       } else {
-        final String[] query = getLanguageAndQuery(portal.query);
-        final String language = query[0];
-        final String queryText = query[1];
+        final Query query = getLanguageAndQuery(portal.query);
 
-        switch (language) {
+        switch (query.language) {
         case "sql":
           final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-          portal.sqlStatement = sqlEngine.parse(queryText, (DatabaseInternal) database);
+          portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
 
           if (portal.query.equalsIgnoreCase("BEGIN") || portal.query.equalsIgnoreCase("BEGIN TRANSACTION")) {
             explicitTransactionStarted = true;
@@ -833,7 +817,7 @@ public class PostgresNetworkExecutor extends Thread {
 
         default:
           portal.executed = true;
-          final ResultSet resultSet = database.command(language, queryText);
+          final ResultSet resultSet = database.command(query.language, query.query);
           portal.cachedResultset = browseAndCacheResultSet(resultSet, 0);
           portal.columns = getColumns(portal.cachedResultset);
         }
@@ -1182,23 +1166,20 @@ public class PostgresNetworkExecutor extends Thread {
     return resultSet;
   }
 
-  private String[] getLanguageAndQuery(final String query) {
+  private Query getLanguageAndQuery(final String query) {
     String language = "sql";
     String queryText = query;
-    if (queryText.startsWith("{cypher}")) {
-      language = "cypher";
-      queryText = queryText.substring("{cypher}".length());
-    } else if (queryText.startsWith("{gremlin}")) {
-      language = "gremlin";
-      queryText = queryText.substring("{gremlin}".length());
-    } else if (queryText.startsWith("{mongo}")) {
-      language = "mongo";
-      queryText = queryText.substring("{mongo}".length());
-    } else if (queryText.startsWith("{graphql}")) {
-      language = "graphql";
-      queryText = queryText.substring("{graphql}".length());
+
+    // Regular expression to match language prefixes
+    Pattern pattern = Pattern.compile("\\{(\\w+)\\}");
+    Matcher matcher = pattern.matcher(query);
+
+    if (matcher.find()) {
+      language = matcher.group(1);
+      queryText = query.substring(matcher.end());
     }
-    return new String[] { language, queryText };
+
+    return new Query(language, queryText);
   }
 
   private void emptyQueryResponse() {
@@ -1213,4 +1194,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (explicitTransactionStarted)
       errorInTransaction = true;
   }
+
+  private record Query(String language, String query) {
+  }
+
 }

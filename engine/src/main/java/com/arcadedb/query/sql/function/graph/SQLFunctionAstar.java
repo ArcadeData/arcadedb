@@ -29,7 +29,14 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.FileUtils;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.Locale;
+import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.Set;
 
 /**
  * A*'s algorithm describes how to find the cheapest path from one node to another node in a directed weighted graph with husrestic
@@ -45,21 +52,22 @@ import java.util.*;
 public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   public static final String NAME = "astar";
 
-  private   String              paramWeightFieldName = "weight";
-  private         long                currentDepth = 0;
-  protected final Set<Vertex>         closedSet    = new HashSet<Vertex>();
-  protected final Map<Vertex, Vertex> cameFrom     = new HashMap<Vertex, Vertex>();
+  private         String              paramWeightFieldName = "weight";
+  private         long                currentDepth         = 0;
+  protected final Set<Vertex>         closedSet            = new HashSet<Vertex>();
+  protected final Map<Vertex, Vertex> cameFrom             = new HashMap<Vertex, Vertex>();
 
   protected final Map<Vertex, Double>   gScore = new HashMap<Vertex, Double>();
   protected final Map<Vertex, Double>   fScore = new HashMap<Vertex, Double>();
-  protected final PriorityQueue<Vertex> open   = new PriorityQueue<Vertex>(1, (nodeA, nodeB) -> Double.compare(fScore.get(nodeA), fScore.get(nodeB)));
+  protected final PriorityQueue<Vertex> open   = new PriorityQueue<Vertex>(1,
+      (nodeA, nodeB) -> Double.compare(fScore.get(nodeA), fScore.get(nodeB)));
 
   public SQLFunctionAstar() {
     super(NAME);
   }
 
-  public LinkedList<Vertex> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public LinkedList<Vertex> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParams, final CommandContext iContext) {
     context = iContext;
     final SQLFunctionAstar context = this;
 
@@ -93,20 +101,22 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       if (MultiValue.getSize(dest) > 1)
         throw new IllegalArgumentException("Only one destinationVertex is allowed");
       dest = MultiValue.getFirstValue(dest);
-      if (dest instanceof Result && ((Result) dest).isElement()) {
-        dest = ((Result) dest).getElement().get();
+      if (dest instanceof Result result && result.isElement()) {
+        dest = result.getElement().get();
       }
     }
 
     if (record != null)
       dest = record.get((String) dest);
+    if (record != null)
+      dest = record.get((String) dest);
 
-    if (dest instanceof Identifiable) {
-      final Document elem = (Document) ((Identifiable) dest).getRecord();
-      if (!(elem instanceof Vertex))
+    if (dest instanceof Identifiable identifiable) {
+      final Document elem = (Document) identifiable.getRecord();
+      if (!(elem instanceof Vertex vertex)) {
         throw new IllegalArgumentException("The destinationVertex must be a vertex record");
-
-      paramDestinationVertex = (Vertex) elem;
+      }
+      paramDestinationVertex = vertex;
     } else {
       throw new IllegalArgumentException("The destinationVertex must be a vertex record");
     }
@@ -232,7 +242,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       context.paramVertexAxisNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES));
       if (mapParams.get(SQLFunctionAstar.PARAM_DIRECTION) != null) {
         if (mapParams.get(SQLFunctionAstar.PARAM_DIRECTION) instanceof String) {
-          context.paramDirection = Vertex.DIRECTION.valueOf(stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_DIRECTION), "OUT").toUpperCase(Locale.ENGLISH));
+          context.paramDirection = Vertex.DIRECTION.valueOf(
+              stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_DIRECTION), "OUT").toUpperCase(Locale.ENGLISH));
         } else {
           context.paramDirection = (Vertex.DIRECTION) mapParams.get(SQLFunctionAstar.PARAM_DIRECTION);
         }
@@ -240,7 +251,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
       context.paramParallel = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_PARALLEL), false);
       context.paramMaxDepth = longOrDefault(mapParams.get(SQLFunctionAstar.PARAM_MAX_DEPTH), context.paramMaxDepth);
-      context.paramEmptyIfMaxDepth = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_EMPTY_IF_MAX_DEPTH), context.paramEmptyIfMaxDepth);
+      context.paramEmptyIfMaxDepth = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_EMPTY_IF_MAX_DEPTH),
+          context.paramEmptyIfMaxDepth);
       context.paramTieBreaker = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_TIE_BREAKER), context.paramTieBreaker);
       context.paramDFactor = doubleOrDefault(mapParams.get(SQLFunctionAstar.PARAM_D_FACTOR), context.paramDFactor);
       if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) != null) {

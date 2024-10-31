@@ -30,12 +30,13 @@ import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-
 import org.junit.jupiter.api.BeforeEach;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.File;
+import java.util.Collection;
+import java.util.Random;
+import java.util.UUID;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -74,7 +75,33 @@ public abstract class TestHelper {
   }
 
   public static void executeInNewDatabase(final DatabaseTest<Database> callback) throws Exception {
-    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + UUID.randomUUID())) {
+    executeInNewDatabase(UUID.randomUUID().toString(), callback);
+//    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + UUID.randomUUID())) {
+//      if (factory.exists()) {
+//        factory.open().drop();
+//        assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isNull();
+//      }
+//
+//      final Database database = factory.create();
+//      assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isEqualTo(database);
+//      try {
+//        database.begin();
+//        callback.call(database);
+//        database.commit();
+//      } finally {
+//        if (database.isTransactionActive())
+//          database.rollback();
+//        database.drop();
+//      }
+//    }
+  }
+
+  public static DocumentType createRandomType(final Database database) {
+    return database.getSchema().createDocumentType("RandomType" + new Random().nextInt(100_000));
+  }
+
+  public static void executeInNewDatabase(final String testName, final DatabaseTest<Database> callback) throws Exception {
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases" + testName)) {
       if (factory.exists()) {
         factory.open().drop();
         assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isNull();
@@ -90,26 +117,6 @@ public abstract class TestHelper {
         if (database.isTransactionActive())
           database.rollback();
         database.drop();
-      }
-    }
-  }
-
-  public static DocumentType createRandomType(final Database database) {
-    return database.getSchema().createDocumentType("RandomType" + new Random().nextInt(100_000));
-  }
-
-  public static void executeInNewDatabase(final String testName, final DatabaseTest<DatabaseInternal> callback) throws Exception {
-    try (final DatabaseFactory factory = new DatabaseFactory("./target/" + testName)) {
-      if (factory.exists())
-        factory.open().drop();
-
-      final DatabaseInternal database = (DatabaseInternal) factory.create();
-      assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isEqualTo(database);
-      try {
-        callback.call(database);
-      } finally {
-        database.drop();
-        assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isNull();
       }
     }
   }

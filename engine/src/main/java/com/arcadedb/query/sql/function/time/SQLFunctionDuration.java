@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.*;
+import java.time.Duration;
 
 /**
  * Returns a java.time.Duration.
@@ -43,20 +43,23 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams.length != 2)
+  public Object execute(final Object thisObject, final Identifiable currentRecord, final Object currentResult,
+      final Object[] params, final CommandContext context) {
+    if (params.length != 2)
       throw new IllegalArgumentException("duration() function expected 2 parameters: amount and time-unit");
 
-    long amount;
-    if (iParams[0] instanceof Number)
-      amount = ((Number) iParams[0]).longValue();
-    else if (iParams[0] instanceof String)
-      amount = Long.parseLong(iParams[0].toString());
-    else
-      throw new IllegalArgumentException("amount '" + iParams[0] + "' not a number or a string");
+    long amount = getAmount(params[0]);
 
-    return Duration.of(amount, DateUtils.parsePrecision(iParams[1].toString()));
+    return Duration.of(amount, DateUtils.parsePrecision(params[1].toString()));
+  }
+
+  private static long getAmount(Object param) {
+    if (param instanceof Number number)
+      return number.longValue();
+    else if (param instanceof String string)
+      return Long.parseLong(string);
+    else
+      throw new IllegalArgumentException("amount '" + param + "' not a number or a string");
   }
 
   public String getSyntax() {

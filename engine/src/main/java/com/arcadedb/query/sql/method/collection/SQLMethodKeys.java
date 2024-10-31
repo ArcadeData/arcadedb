@@ -24,7 +24,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 /**
  * @author Johann Sorel (Geomatys)
@@ -40,22 +43,19 @@ public class SQLMethodKeys extends AbstractSQLMethod {
   @Override
   public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
       final Object[] iParams) {
-    if (value instanceof Map)
-      return ((Map<?, ?>) value).keySet();
+    if (value instanceof Map map)
+      return map.keySet();
 
-    if (value instanceof Document)
-      return Collections.singletonList(((Document) value).getPropertyNames());
+    if (value instanceof Document document)
+      return Collections.singletonList(document.getPropertyNames());
 
-    if (value instanceof Result) {
-      final Result res = (Result) value;
-      return res.getPropertyNames();
+    if (value instanceof Result result) {
+      return result.getPropertyNames();
     }
 
-    if (value instanceof Collection) {
-      final List<Object> result = new ArrayList<>();
-      for (final Object o : (Collection<Object>) value) {
-        result.addAll((Collection<Object>) execute(value, iCurrentRecord, iContext, iParams));
-      }
+    if (value instanceof Collection<?> collection) {
+      final List<Object> result = collection.stream()
+          .flatMap(o -> ((Collection<Object>) execute(o, iCurrentRecord, iContext, iParams)).stream()).toList();
       return result;
     }
     return null;

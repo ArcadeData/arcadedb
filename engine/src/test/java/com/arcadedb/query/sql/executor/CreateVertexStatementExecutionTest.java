@@ -21,10 +21,12 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.Schema;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -40,24 +42,18 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
   @Test
   public void testVerticesContentJsonArray() {
     final String className = "testVertexContentArray";
-    database.getSchema().createVertexType(className, 1);
+    database.getSchema().buildVertexType().withName(className).withTotalBuckets(1).create();
 
-    String array = "[";
-    for (int i = 0; i < 1000; i++) {
-      if (i > 0)
-        array += ",";
-      array += "{'name':'name" + i + "', 'surname':'surname" + i + "'}";
-    }
-    array += "]";
-
+    String array = IntStream.range(0, 1000).mapToObj(i -> String.format("{'name':'name%d', 'surname':'surname%d'}", i, i))
+        .collect(Collectors.joining(",", "[", "]"));
     ResultSet result = database.command("sql", "create vertex " + className + " content " + array);
 
     for (int i = 0; i < 1000; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       assertThat(item).isNotNull();
-      assertThat(item.<String>getProperty("name").toString()).isEqualTo("name" + i);
-      assertThat(item.getProperty("surname").toString()).isEqualTo("surname" + i);
+      assertThat(item.<String>getProperty("name")).isEqualTo("name" + i);
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname" + i);
     }
     assertThat(result.hasNext()).isFalse();
 
@@ -67,8 +63,8 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
       Result item = result.next();
       assertThat(item).isNotNull();
-      assertThat(item.<String>getProperty("name").toString()).isEqualTo("name" + i);
-      assertThat(item.getProperty("surname").toString()).isEqualTo("surname" + i);
+      assertThat(item.<String>getProperty("name")).isEqualTo("name" + i);
+      assertThat(item.<String>getProperty("surname")).isEqualTo("surname" + i);
     }
 
     assertThat(result.hasNext()).isFalse();

@@ -170,10 +170,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       queryEngineManager = new QueryEngineManager();
       graphEngine = new GraphEngine(this);
 
-    } catch (final Exception e) {
-      if (e instanceof DatabaseOperationException)
-        throw (DatabaseOperationException) e;
-
+    } catch (DatabaseOperationException e) {
+      throw e;
+    } catch (Exception e) {
       throw new DatabaseOperationException("Error on creating new database instance", e);
     }
   }
