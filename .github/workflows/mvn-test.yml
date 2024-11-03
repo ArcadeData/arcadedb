@@ -57,7 +57,7 @@ jobs:
         if: success() || failure()
         with:
           name: Test Report - ${{ matrix.os }}
-          path: "**/surefire-reports/TEST*.xml"
+          path: "**/surefire-reports/TEST*.xml, **/failsafe-reports/TEST*.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
