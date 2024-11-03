@@ -205,13 +205,18 @@
                 </executions>
                 <configuration>
                     <excludes>
-                        <exclude>**/*HASplitBrainIT.java</exclude>
-                        <exclude>**/*HTTP2ServersIT.java</exclude>
-                        <exclude>**/ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>
-                        <exclude>**/IndexOperations3ServersIT.java</exclude>
-                        <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>
-                        <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>
-                        <exclude>${exclude.tests}</exclude>
+                        <!--                        <exclude>**/*HASplitBrainIT.java</exclude>-->
+                        <!--                        <exclude>**/*HTTP2ServersIT.java</exclude>-->
+                        <!--                    com/arcadedb/integration/backup/FullBackupIT.java,-->
+                        <!--                    com/arcadedb/server/ha/HASplitBrainIT.java,-->
+                        <!--                    com/arcadedb/server/ha/ReplicationServerQuorumMajority2ServersOutIT.java-->
+                        <!--                        <exclude>**/IndexOperations3ServersIT.java</exclude>-->
+                        <!--                        <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>-->
+                        <!--                        <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>-->
+                        <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>
+                        <exclude>**/*HARandomCrashIT.java</exclude>
+                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>
+                        <exclude>**/*ReplicationServerLeaderChanges3TimesIT</exclude>
                     </excludes>
                     <skipITs>${skipIntegration}</skipITs>
                     <argLine>${itCoverageAgent}</argLine>
@@ -490,10 +495,10 @@
                                 </goals>
                                 <phase>pre-integration-test</phase>
                                 <configuration>
-                                    <destFile>jacooc-it.exec</destFile>
+                                    <destFile>${project.build.directory}/jacoco-it.exec</destFile>
                                     <propertyName>itCoverageAgent</propertyName>
                                     <excludes>
-                                        <exclude>**/SqlParserTokenManager.class</exclude>
+                                        <exclude>**/SqlParserTokenManager*</exclude>
                                     </excludes>
                                 </configuration>
                             </execution>
@@ -503,11 +508,13 @@
                                 <goals>
                                     <goal>report</goal>
                                 </goals>
-                                <configuration>
-                                    <excludes>
-                                        <exclude>**/SqlParserTokenManager.class</exclude>
-                                    </excludes>
-                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>report-it</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>report-integration</goal>
+                                </goals>
                             </execution>
                         </executions>
                     </plugin>
@@ -524,14 +531,6 @@
             <id>integration</id>
             <properties>
                 <skipIntegration>false</skipIntegration>
-                <exclude.tests>
-                    com/arcadedb/integration/backup/FullBackupIT.java,
-                    com/arcadedb/server/ha/HASplitBrainIT.java,
-                    com/arcadedb/server/ha/ReplicationServerLeaderChanges3TimesIT.java,
-                    com/arcadedb/server/ha/ReplicationServerLeaderDownIT.java,
-                    com/arcadedb/server/ha/HARandomCrashIT.java,
-                    com/arcadedb/server/ha/ReplicationServerQuorumMajority2ServersOutIT.java
-                </exclude.tests>
             </properties>
         </profile>
         <profile>

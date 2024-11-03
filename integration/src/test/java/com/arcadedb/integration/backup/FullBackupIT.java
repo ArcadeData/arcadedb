@@ -138,8 +138,10 @@ public class FullBackupIT {
             for (int j = 0; j < 500; j++) {
               importedDatabase.begin();
               for (int k = 0; k < 500; k++) {
-                final MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId)
-                    .set("id", totalPerThread.getAndIncrement()).save();
+                final MutableVertex v = importedDatabase.newVertex("BackupTest")
+                    .set("thread", threadId)
+                    .set("id", totalPerThread.getAndIncrement())
+                    .save();
                 assertThat(v.getIdentity().getBucketId()).isEqualTo(threadBucket.getFileId());
 
                 if (k + 1 % 100 == 0) {
@@ -241,7 +243,6 @@ public class FullBackupIT {
   public void beforeTests() {
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
     FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored"));
-    if (file.exists())
-      file.delete();
+    if (file.exists()) file.delete();
   }
 }
