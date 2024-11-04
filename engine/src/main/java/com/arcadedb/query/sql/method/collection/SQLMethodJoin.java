@@ -38,7 +38,10 @@ public class SQLMethodJoin extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable record, final CommandContext context, final Object[] params) {
+  public Object execute(final Object value,
+      final Identifiable record,
+      final CommandContext context,
+      final Object[] params) {
 
     if (value == null) {
       return null;
@@ -46,10 +49,15 @@ public class SQLMethodJoin extends AbstractSQLMethod {
 
     if (value instanceof List<?> list) {
 
-      final String separator = Optional.ofNullable(params).filter(p -> p.length > 0).filter(p -> p[0] != null)
-          .map(p -> p[0].toString()).orElse(",");
+      final String separator = Optional.ofNullable(params)
+          .filter(p -> p.length > 0)
+          .filter(p -> p[0] != null)
+          .map(p -> p[0].toString())
+          .orElse(",");
 
-      return list.stream().map(Object::toString).collect(Collectors.joining(separator));
+      return list.stream()
+          .map(Object::toString)
+          .collect(Collectors.joining(separator));
 
     } else
       return value.toString();
