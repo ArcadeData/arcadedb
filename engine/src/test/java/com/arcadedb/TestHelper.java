@@ -76,24 +76,6 @@ public abstract class TestHelper {
 
   public static void executeInNewDatabase(final DatabaseTest<Database> callback) throws Exception {
     executeInNewDatabase(UUID.randomUUID().toString(), callback);
-//    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + UUID.randomUUID())) {
-//      if (factory.exists()) {
-//        factory.open().drop();
-//        assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isNull();
-//      }
-//
-//      final Database database = factory.create();
-//      assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isEqualTo(database);
-//      try {
-//        database.begin();
-//        callback.call(database);
-//        database.commit();
-//      } finally {
-//        if (database.isTransactionActive())
-//          database.rollback();
-//        database.drop();
-//      }
-//    }
   }
 
   public static DocumentType createRandomType(final Database database) {
