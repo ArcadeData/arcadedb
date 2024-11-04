@@ -108,8 +108,6 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
     if (record != null)
       dest = record.get((String) dest);
-    if (record != null)
-      dest = record.get((String) dest);
 
     if (dest instanceof Identifiable identifiable) {
       final Document elem = (Document) identifiable.getRecord();
