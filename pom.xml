@@ -318,7 +318,8 @@
                         <shadedClassifierName>shaded</shadedClassifierName>
                         <shadeTestJar>false</shadeTestJar>
                         <minimizeJar>false</minimizeJar>
-                        <promoteTransitiveDependencies>true</promoteTransitiveDependencies>
+                        <promoteTransitiveDependencies>false</promoteTransitiveDependencies>
+                        <createDependencyReducedPom>false</createDependencyReducedPom>
                         <transformers>
                             <transformer
                                     implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
